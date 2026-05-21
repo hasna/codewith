@@ -23,6 +23,7 @@ use crate::bottom_pane::slash_commands::find_slash_command;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 
 const DEFAULT_LOOP_PROMPT_DISPLAY: &str = "Default loop prompt";
 
@@ -76,6 +77,45 @@ impl ChatWidget {
             return;
         }
         self.toggle_service_tier_from_ui(command);
+        self.bottom_pane.record_pending_slash_command_history();
+    }
+
+    pub(super) fn handle_service_tier_command_with_args_dispatch(
+        &mut self,
+        command: ServiceTierCommand,
+        args: String,
+    ) {
+        if self.active_side_conversation {
+            self.add_error_message(format!(
+                "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
+                command.name
+            ));
+            self.bottom_pane.drain_pending_submission_state();
+            self.bottom_pane.record_pending_slash_command_history();
+            return;
+        }
+
+        match parse_service_tier_state_arg(&args) {
+            Some(ServiceTierStateArg::On) => {
+                self.set_service_tier_selection(Some(command.id));
+            }
+            Some(ServiceTierStateArg::Off) => {
+                self.set_service_tier_selection(Some(
+                    SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
+                ));
+            }
+            None => {
+                let command_name = command.name;
+                self.add_error_message(format!("Unrecognized /{command_name} option: {args}"));
+                self.add_info_message(
+                    format!("Usage: /{command_name} [on|off]"),
+                    Some(format!(
+                        "Examples: /{command_name}, /{command_name} on, /{command_name} off"
+                    )),
+                );
+            }
+        }
+        self.bottom_pane.drain_pending_submission_state();
         self.bottom_pane.record_pending_slash_command_history();
     }
 
@@ -985,6 +1025,11 @@ impl ChatWidget {
             };
         }
 
+        if let SlashCommandItem::ServiceTier(command) = command {
+            self.handle_service_tier_command_with_args_dispatch(command, rest.trim().to_string());
+            return QueueDrain::Continue;
+        }
+
         if !command.supports_inline_args() {
             self.submit_user_message(UserMessage {
                 text,
@@ -1194,4 +1239,18 @@ fn loop_create_request_to_api(
         },
     };
     (prompt, prompt_source, schedule)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceTierStateArg {
+    On,
+    Off,
+}
+
+fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
+    match args.trim().to_ascii_lowercase().as_str() {
+        "on" | "enable" | "enabled" => Some(ServiceTierStateArg::On),
+        "off" | "disable" | "disabled" | "default" => Some(ServiceTierStateArg::Off),
+        _ => None,
+    }
 }

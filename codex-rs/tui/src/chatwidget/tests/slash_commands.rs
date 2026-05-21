@@ -2285,6 +2285,83 @@ async fn fast_keybinding_toggle_uses_same_events_as_fast_slash_command() {
 }
 
 #[tokio::test]
+async fn fast_slash_on_arg_enables_even_when_fast_is_already_selected() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+
+    chat.handle_service_tier_command_dispatch(fast_tier_command());
+    let _events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.bottom_pane
+        .set_composer_text("/fast on".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
+                ..
+            }) if service_tier == ServiceTier::Fast.request_value()
+        )),
+        "expected /fast on to keep fast-mode override; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistServiceTierSelection {
+                service_tier: Some(service_tier),
+            }
+            if service_tier == ServiceTier::Fast.request_value()
+        )),
+        "expected /fast on to persist fast-mode selection; events: {events:?}"
+    );
+    assert_eq!(
+        chat.current_service_tier(),
+        Some(ServiceTier::Fast.request_value())
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn fast_slash_off_arg_selects_default_service_tier() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+
+    chat.handle_service_tier_command_dispatch(fast_tier_command());
+    let _events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.bottom_pane
+        .set_composer_text("/fast off".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
+                ..
+            }) if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        )),
+        "expected /fast off to send default service tier override; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistServiceTierSelection {
+                service_tier: Some(service_tier)
+            } if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        )),
+        "expected /fast off to persist default service tier; events: {events:?}"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn fast_keybinding_toggle_requires_feature_and_idle_surface() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     set_fast_mode_test_catalog(&mut chat);

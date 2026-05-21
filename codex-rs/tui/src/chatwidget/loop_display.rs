@@ -306,6 +306,15 @@ fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
         format!("next {next}"),
         format!("prompt {prompt}"),
     ];
+    if let Some(lease_expires_at) = schedule.lease_expires_at {
+        parts.push(format!(
+            "running until {}",
+            format_schedule_timestamp(lease_expires_at)
+        ));
+    }
+    if let Some(last_run_at) = schedule.last_run_at {
+        parts.push(format!("last {}", format_schedule_timestamp(last_run_at)));
+    }
     if schedule.failure_count > 0 {
         parts.push(pluralize_with_amount(schedule.failure_count, "failure"));
     }
@@ -320,6 +329,12 @@ fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
     let mut parts = vec![thread_schedule_status_label(schedule.status).to_string()];
     parts.push(thread_schedule_spec_label(&schedule.schedule));
     parts.push(format!("next {next}"));
+    if let Some(lease_expires_at) = schedule.lease_expires_at {
+        parts.push(format!(
+            "running until {}",
+            format_schedule_timestamp(lease_expires_at)
+        ));
+    }
     if let Some(last_run_at) = schedule.last_run_at {
         parts.push(format!("last {}", format_schedule_timestamp(last_run_at)));
     }
@@ -382,6 +397,19 @@ fn loop_summary_lines(schedules: &[ThreadSchedule]) -> Vec<Line<'static>> {
             "  Timezone: ".dim(),
             schedule.timezone.clone().into(),
         ]));
+        let mut run_parts = Vec::new();
+        if schedule.lease_expires_at.is_some() {
+            run_parts.push("Running now".to_string());
+        }
+        if let Some(last_run_at) = schedule.last_run_at {
+            run_parts.push(format!("Last: {}", format_schedule_timestamp(last_run_at)));
+        }
+        if schedule.failure_count > 0 {
+            run_parts.push(pluralize_with_amount(schedule.failure_count, "failure"));
+        }
+        if !run_parts.is_empty() {
+            lines.push(Line::from(vec!["  ".dim(), run_parts.join("  ").into()]));
+        }
     }
 
     lines.push(Line::default());
@@ -481,6 +509,18 @@ mod tests {
         }
     }
 
+    fn lines_to_plain_strings(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn interval_schedule_summary_uses_human_label() {
         let schedule = test_schedule("sch_123", ThreadScheduleStatus::Active, Some(1_700_000_000));
@@ -489,6 +529,43 @@ mod tests {
             loop_schedule_summary(&schedule).contains("every 5 minutes"),
             "summary: {}",
             loop_schedule_summary(&schedule)
+        );
+    }
+
+    #[test]
+    fn loop_summary_surfaces_running_last_and_failure_state() {
+        let mut schedule =
+            test_schedule("sch_123", ThreadScheduleStatus::Active, Some(1_700_000_000));
+        schedule.last_run_at = Some(1_700_000_030);
+        schedule.lease_expires_at = Some(1_700_000_300);
+        schedule.failure_count = 2;
+
+        let rendered = lines_to_plain_strings(&loop_summary_lines(&[schedule.clone()])).join("\n");
+        assert!(
+            rendered.contains("Running now"),
+            "summary should show active lease: {rendered}"
+        );
+        assert!(
+            rendered.contains("Last: "),
+            "summary should show last run time: {rendered}"
+        );
+        assert!(
+            rendered.contains("2 failures"),
+            "summary should show failure count: {rendered}"
+        );
+
+        let manager_description = loop_manager_row_description(&schedule);
+        assert!(
+            manager_description.contains("running until "),
+            "manager row should show active lease: {manager_description}"
+        );
+        assert!(
+            manager_description.contains("last "),
+            "manager row should show last run time: {manager_description}"
+        );
+        assert!(
+            manager_description.contains("2 failures"),
+            "manager row should show failure count: {manager_description}"
         );
     }
 

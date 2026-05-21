@@ -290,6 +290,9 @@ pub enum InputResult {
     Command(SlashCommand),
     /// A bare model service-tier command parsed by the composer.
     ServiceTierCommand(ServiceTierCommand),
+    /// A model service-tier command with an explicit inline state, such as
+    /// `/fast on` or `/fast off`.
+    ServiceTierCommandWithArgs(ServiceTierCommand, String),
     /// An inline slash command and its trimmed argument text.
     ///
     /// The `TextElement` ranges are rebased into the argument string, while any pending local
@@ -2814,6 +2817,7 @@ impl ChatComposer {
                 | InputResult::Queued { .. }
                 | InputResult::Command(_)
                 | InputResult::ServiceTierCommand(_)
+                | InputResult::ServiceTierCommandWithArgs(_, _)
                 | InputResult::CommandWithArgs(_, _, _)
         ) {
             self.draft.textarea.enter_vim_normal_mode();
@@ -3001,6 +3005,22 @@ impl ChatComposer {
             self.builtin_command_flags(),
             &self.service_tier_commands,
         )?;
+
+        if let SlashCommandItem::ServiceTier(command) = command {
+            let command_item = SlashCommandItem::ServiceTier(command.clone());
+            if self.reject_slash_command_if_unavailable(&command_item) {
+                self.stage_slash_command_history(&command_item);
+                self.record_pending_slash_command_history();
+                return Some(InputResult::None);
+            }
+            self.stage_slash_command_history(&command_item);
+            self.draft.textarea.set_text_clearing_elements("");
+            self.draft.is_bash_mode = false;
+            return Some(InputResult::ServiceTierCommandWithArgs(
+                command,
+                rest.trim().to_string(),
+            ));
+        }
 
         if !command.supports_inline_args() {
             return None;
@@ -7900,6 +7920,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn service_tier_slash_command_dispatches_inline_state_arg() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_service_tier_commands_enabled(/*enabled*/ true);
+        composer.set_service_tier_commands(vec![ServiceTierCommand {
+            id: "priority".to_string(),
+            name: "fast".to_string(),
+            description: "Fastest inference with increased plan usage".to_string(),
+        }]);
+        type_chars_humanlike(&mut composer, &['/', 'f', 'a', 's', 't', ' ', 'o', 'n']);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            result,
+            InputResult::ServiceTierCommandWithArgs(
+                ServiceTierCommand {
+                    id: "priority".to_string(),
+                    name: "fast".to_string(),
+                    description: "Fastest inference with increased plan usage".to_string(),
+                },
+                "on".to_string(),
+            )
+        );
+    }
+
     fn flush_after_paste_burst(composer: &mut ChatComposer) -> bool {
         std::thread::sleep(PasteBurst::recommended_active_flush_delay());
         composer.flush_paste_burst_if_due()
@@ -7959,6 +8014,9 @@ mod tests {
             }
             InputResult::ServiceTierCommand(command) => {
                 panic!("expected init command, got service tier {command:?}")
+            }
+            InputResult::ServiceTierCommandWithArgs(command, args) => {
+                panic!("expected init command, got service tier {command:?} with args {args:?}")
             }
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
@@ -8464,6 +8522,9 @@ mod tests {
             InputResult::ServiceTierCommand(command) => {
                 panic!("expected diff command, got service tier {command:?}")
             }
+            InputResult::ServiceTierCommandWithArgs(command, args) => {
+                panic!("expected diff command, got service tier {command:?} with args {args:?}")
+            }
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch after Tab completion, got literal submit: {text}")
             }
@@ -8660,6 +8721,9 @@ mod tests {
             }
             InputResult::ServiceTierCommand(command) => {
                 panic!("expected mention command, got service tier {command:?}")
+            }
+            InputResult::ServiceTierCommandWithArgs(command, args) => {
+                panic!("expected mention command, got service tier {command:?} with args {args:?}")
             }
             InputResult::Submitted { text, .. } => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")

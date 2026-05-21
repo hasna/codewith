@@ -103,7 +103,7 @@ impl ChatWidget {
             .unwrap_or_default()
     }
 
-    fn set_service_tier_selection(&mut self, service_tier: Option<String>) {
+    pub(super) fn set_service_tier_selection(&mut self, service_tier: Option<String>) {
         self.set_service_tier(service_tier.clone());
         self.app_event_tx
             .send(AppEvent::CodexOp(AppCommand::override_turn_context(
