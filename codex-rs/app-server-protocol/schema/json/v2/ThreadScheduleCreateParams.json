@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadScheduleIntervalUnit": {
+      "enum": [
+        "minutes",
+        "hours",
+        "days"
+      ],
+      "type": "string"
+    },
+    "ThreadSchedulePromptSource": {
+      "enum": [
+        "inline",
+        "default"
+      ],
+      "type": "string"
+    },
+    "ThreadScheduleSpec": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "dynamic"
+              ],
+              "title": "DynamicThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DynamicThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "amount": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "interval"
+              ],
+              "title": "IntervalThreadScheduleSpecType",
+              "type": "string"
+            },
+            "unit": {
+              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+            }
+          },
+          "required": [
+            "amount",
+            "type",
+            "unit"
+          ],
+          "title": "IntervalThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "cron"
+              ],
+              "title": "CronThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "expression",
+            "type"
+          ],
+          "title": "CronThreadScheduleSpec",
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "expiresAt": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "nextRunAt": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "promptSource": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadSchedulePromptSource"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schedule": {
+      "$ref": "#/definitions/ThreadScheduleSpec"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "prompt",
+    "schedule",
+    "threadId"
+  ],
+  "title": "ThreadScheduleCreateParams",
+  "type": "object"
+}

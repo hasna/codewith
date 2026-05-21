@@ -300,10 +300,16 @@ pub(super) async fn ensure_listener_task_running(
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
-                    let raw_events_enabled = {
+                    let (raw_events_enabled, terminal_scheduled_run) = {
                         let mut thread_state = thread_state.lock().await;
                         thread_state.track_current_turn_event(&event.id, &event.msg);
-                        thread_state.experimental_raw_events
+                        let terminal_scheduled_run = matches!(
+                            event.msg,
+                            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                        )
+                        .then(|| thread_state.take_scheduled_run(&event.id))
+                        .flatten();
+                        (thread_state.experimental_raw_events, terminal_scheduled_run)
                     };
                     let subscribed_connection_ids = thread_state_manager
                         .subscribed_connection_ids(conversation_id)
@@ -339,6 +345,15 @@ pub(super) async fn ensure_listener_task_running(
                         fallback_model_provider.clone(),
                     )
                     .await;
+                    if let Some(scheduled_run) = terminal_scheduled_run {
+                        thread_schedule_runtime::finish_scheduled_run_after_turn(
+                            conversation_id,
+                            scheduled_run,
+                            &event.msg,
+                            &outgoing_for_task,
+                        )
+                        .await;
+                    }
                 }
                 unloading_watchers_open = unloading_state.wait_for_unloading_trigger() => {
                     if !unloading_watchers_open {
@@ -493,6 +508,26 @@ pub(super) async fn handle_thread_listener_command(
         }
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
             send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+        }
+        ThreadListenerCommand::EmitThreadScheduleUpdated { schedule } => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadScheduleUpdated(
+                    ThreadScheduleUpdatedNotification {
+                        thread_id: conversation_id.to_string(),
+                        schedule,
+                    },
+                ))
+                .await;
+        }
+        ThreadListenerCommand::EmitThreadScheduleDeleted { schedule_id } => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadScheduleDeleted(
+                    ThreadScheduleDeletedNotification {
+                        thread_id: conversation_id.to_string(),
+                        schedule_id,
+                    },
+                ))
+                .await;
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,

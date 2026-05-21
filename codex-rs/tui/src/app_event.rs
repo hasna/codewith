@@ -26,6 +26,8 @@ use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
@@ -281,6 +283,62 @@ pub(crate) enum AppEvent {
     /// Clear the current thread goal.
     ClearThreadGoal {
         thread_id: ThreadId,
+    },
+
+    /// Open the current thread loop schedule summary.
+    OpenThreadLoopManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open an editor for a thread loop schedule.
+    OpenThreadLoopEditor {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Open actions for a thread loop schedule.
+    OpenThreadLoopScheduleActions {
+        thread_id: ThreadId,
+        schedule_id: String,
+    },
+
+    /// Create a recurring prompt schedule for the current thread.
+    CreateThreadLoopSchedule {
+        thread_id: ThreadId,
+        prompt: String,
+        prompt_source: ThreadSchedulePromptSource,
+        schedule: ThreadScheduleSpec,
+    },
+
+    /// Update the prompt for a recurring prompt schedule.
+    UpdateThreadLoopSchedulePrompt {
+        thread_id: ThreadId,
+        schedule_id: String,
+        prompt: String,
+    },
+
+    /// Pause a recurring prompt schedule.
+    PauseThreadLoopSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Resume a recurring prompt schedule.
+    ResumeThreadLoopSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Delete a recurring prompt schedule.
+    DeleteThreadLoopSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Run a recurring prompt schedule immediately.
+    RunThreadLoopScheduleNow {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
     },
 
     /// Result of refreshing rate limits.

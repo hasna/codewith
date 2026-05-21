@@ -973,6 +973,9 @@ ON CONFLICT(thread_id, position) DO NOTHING
         let rows_affected = result.rows_affected();
         if rows_affected > 0 {
             self.thread_goals.delete_thread_goal(thread_id).await?;
+            self.thread_schedules
+                .delete_thread_schedules_for_thread(thread_id)
+                .await?;
         }
         Ok(rows_affected)
     }

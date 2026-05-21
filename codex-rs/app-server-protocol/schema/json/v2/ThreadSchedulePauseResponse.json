@@ -1,0 +1,181 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadSchedule": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failureCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastRunAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "leaseExpiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nextRunAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "promptSource": {
+          "$ref": "#/definitions/ThreadSchedulePromptSource"
+        },
+        "schedule": {
+          "$ref": "#/definitions/ThreadScheduleSpec"
+        },
+        "scheduleId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadScheduleStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "failureCount",
+        "prompt",
+        "promptSource",
+        "schedule",
+        "scheduleId",
+        "status",
+        "threadId",
+        "timezone",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleIntervalUnit": {
+      "enum": [
+        "minutes",
+        "hours",
+        "days"
+      ],
+      "type": "string"
+    },
+    "ThreadSchedulePromptSource": {
+      "enum": [
+        "inline",
+        "default"
+      ],
+      "type": "string"
+    },
+    "ThreadScheduleSpec": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "dynamic"
+              ],
+              "title": "DynamicThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DynamicThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "amount": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "interval"
+              ],
+              "title": "IntervalThreadScheduleSpecType",
+              "type": "string"
+            },
+            "unit": {
+              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+            }
+          },
+          "required": [
+            "amount",
+            "type",
+            "unit"
+          ],
+          "title": "IntervalThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "cron"
+              ],
+              "title": "CronThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "expression",
+            "type"
+          ],
+          "title": "CronThreadScheduleSpec",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadScheduleStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "expired"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schedule": {
+      "$ref": "#/definitions/ThreadSchedule"
+    }
+  },
+  "required": [
+    "schedule"
+  ],
+  "title": "ThreadSchedulePauseResponse",
+  "type": "object"
+}

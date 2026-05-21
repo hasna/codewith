@@ -720,6 +720,74 @@ impl App {
             AppEvent::ClearThreadGoal { thread_id } => {
                 self.clear_thread_goal(app_server, thread_id).await;
             }
+            AppEvent::OpenThreadLoopManager { thread_id } => {
+                self.open_thread_loop_manager(app_server, thread_id).await;
+            }
+            AppEvent::OpenThreadLoopEditor {
+                thread_id,
+                schedule_id,
+            } => {
+                self.open_thread_loop_editor(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::OpenThreadLoopScheduleActions {
+                thread_id,
+                schedule_id,
+            } => {
+                self.open_thread_loop_schedule_actions(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::CreateThreadLoopSchedule {
+                thread_id,
+                prompt,
+                prompt_source,
+                schedule,
+            } => {
+                self.create_thread_loop_schedule(
+                    app_server,
+                    thread_id,
+                    prompt,
+                    prompt_source,
+                    schedule,
+                )
+                .await;
+            }
+            AppEvent::UpdateThreadLoopSchedulePrompt {
+                thread_id,
+                schedule_id,
+                prompt,
+            } => {
+                self.update_thread_loop_schedule_prompt(app_server, thread_id, schedule_id, prompt)
+                    .await;
+            }
+            AppEvent::PauseThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            } => {
+                self.pause_thread_loop_schedule(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::ResumeThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            } => {
+                self.resume_thread_loop_schedule(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::DeleteThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            } => {
+                self.delete_thread_loop_schedule(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::RunThreadLoopScheduleNow {
+                thread_id,
+                schedule_id,
+            } => {
+                self.run_thread_loop_schedule_now(app_server, thread_id, schedule_id)
+                    .await;
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget

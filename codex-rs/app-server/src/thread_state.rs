@@ -3,6 +3,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
@@ -38,6 +39,14 @@ pub(crate) struct PendingThreadResumeRequest {
     pub(crate) redact_resume_payloads: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct ScheduledThreadScheduleRun {
+    pub(crate) schedule_id: String,
+    pub(crate) run_id: String,
+    pub(crate) lease_id: String,
+    pub(crate) state_db: StateDbHandle,
+}
+
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
@@ -51,6 +60,14 @@ pub(crate) enum ThreadListenerCommand {
     // EmitThreadGoalSnapshot is used to read and emit the latest goal state in the listener order.
     EmitThreadGoalSnapshot {
         state_db: StateDbHandle,
+    },
+    // EmitThreadScheduleUpdated orders app-server schedule changes with running-thread resume responses.
+    EmitThreadScheduleUpdated {
+        schedule: ThreadSchedule,
+    },
+    // EmitThreadScheduleDeleted orders app-server schedule deletions with running-thread resume responses.
+    EmitThreadScheduleDeleted {
+        schedule_id: String,
     },
     // ResolveServerRequest is used to notify the client that the request has been resolved.
     // It is executed in the thread listener's context to ensure that the resolved notification is ordered with regard to the request itself.
@@ -80,6 +97,7 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
+    scheduled_runs_by_turn_id: HashMap<String, ScheduledThreadScheduleRun>,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -133,6 +151,22 @@ impl ThreadState {
 
     pub(crate) fn active_turn_snapshot(&self) -> Option<Turn> {
         self.current_turn_history.active_turn_snapshot()
+    }
+
+    pub(crate) fn track_scheduled_run(
+        &mut self,
+        turn_id: String,
+        scheduled_run: ScheduledThreadScheduleRun,
+    ) {
+        self.scheduled_runs_by_turn_id
+            .insert(turn_id, scheduled_run);
+    }
+
+    pub(crate) fn take_scheduled_run(
+        &mut self,
+        turn_id: &str,
+    ) -> Option<ScheduledThreadScheduleRun> {
+        self.scheduled_runs_by_turn_id.remove(turn_id)
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {

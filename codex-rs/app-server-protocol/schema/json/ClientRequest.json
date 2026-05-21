@@ -3632,6 +3632,304 @@
       ],
       "type": "object"
     },
+    "ThreadScheduleCreateParams": {
+      "properties": {
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nextRunAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "promptSource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSchedulePromptSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schedule": {
+          "$ref": "#/definitions/ThreadScheduleSpec"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "prompt",
+        "schedule",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleDeleteParams": {
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleGetParams": {
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleIntervalUnit": {
+      "enum": [
+        "minutes",
+        "hours",
+        "days"
+      ],
+      "type": "string"
+    },
+    "ThreadScheduleListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadSchedulePauseParams": {
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadSchedulePromptSource": {
+      "enum": [
+        "inline",
+        "default"
+      ],
+      "type": "string"
+    },
+    "ThreadScheduleResumeParams": {
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleRunNowParams": {
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleSpec": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "dynamic"
+              ],
+              "title": "DynamicThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DynamicThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "amount": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "interval"
+              ],
+              "title": "IntervalThreadScheduleSpecType",
+              "type": "string"
+            },
+            "unit": {
+              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+            }
+          },
+          "required": [
+            "amount",
+            "type",
+            "unit"
+          ],
+          "title": "IntervalThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "cron"
+              ],
+              "title": "CronThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "expression",
+            "type"
+          ],
+          "title": "CronThreadScheduleSpec",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadScheduleStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "ThreadScheduleUpdateParams": {
+      "properties": {
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nextRunAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadScheduleSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scheduleId": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadScheduleStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scheduleId",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadSetNameParams": {
       "properties": {
         "name": {
@@ -4442,6 +4740,198 @@
         "params"
       ],
       "title": "Thread/goal/clearRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/create"
+          ],
+          "title": "Thread/schedule/createRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleCreateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/createRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/list"
+          ],
+          "title": "Thread/schedule/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/get"
+          ],
+          "title": "Thread/schedule/getRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleGetParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/getRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/update"
+          ],
+          "title": "Thread/schedule/updateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleUpdateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/updateRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/pause"
+          ],
+          "title": "Thread/schedule/pauseRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadSchedulePauseParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/pauseRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/resume"
+          ],
+          "title": "Thread/schedule/resumeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleResumeParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/resumeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/delete"
+          ],
+          "title": "Thread/schedule/deleteRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleDeleteParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/deleteRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/schedule/runNow"
+          ],
+          "title": "Thread/schedule/runNowRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadScheduleRunNowParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/schedule/runNowRequest",
       "type": "object"
     },
     {

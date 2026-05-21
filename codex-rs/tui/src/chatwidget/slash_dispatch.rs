@@ -6,6 +6,13 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::goal_validation::GoalObjectiveValidationSource;
+use super::loop_slash::LoopCreateRequest;
+use super::loop_slash::LoopIntervalUnit;
+use super::loop_slash::LoopManageCommand;
+use super::loop_slash::LoopPrompt;
+use super::loop_slash::LoopSchedule;
+use super::loop_slash::LoopSlashCommand;
+use super::loop_slash::parse_loop_slash_args;
 use super::*;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
@@ -13,6 +20,11 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleSpec;
+
+const DEFAULT_LOOP_PROMPT_DISPLAY: &str = "Default loop prompt";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -34,6 +46,9 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
+const LOOP_USAGE: &str = "Usage: /loop [interval|cron] <prompt>";
+const LOOP_USAGE_HINT: &str =
+    "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 
 impl ChatWidget {
@@ -44,7 +59,7 @@ impl ChatWidget {
     /// rule as normal text.
     pub(super) fn handle_slash_command_dispatch(&mut self, cmd: SlashCommand) {
         self.dispatch_command(cmd);
-        if cmd == SlashCommand::Goal {
+        if matches!(cmd, SlashCommand::Goal | SlashCommand::Loop) {
             self.bottom_pane.drain_pending_submission_state();
         }
         self.bottom_pane.record_pending_slash_command_history();
@@ -237,6 +252,21 @@ impl ChatWidget {
                     self.add_info_message(
                         GOAL_USAGE.to_string(),
                         Some(GOAL_USAGE_HINT.to_string()),
+                    );
+                }
+            }
+            SlashCommand::Loop => {
+                if !self.config.features.enabled(Feature::ScheduledTasks) {
+                    return;
+                }
+                if let Some(thread_id) = self.thread_id {
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadLoopManager { thread_id });
+                    self.append_message_history_entry("/loop".to_string());
+                } else {
+                    self.add_info_message(
+                        LOOP_USAGE.to_string(),
+                        Some(LOOP_USAGE_HINT.to_string()),
                     );
                 }
             }
@@ -746,6 +776,25 @@ impl ChatWidget {
                     self.bottom_pane.drain_pending_submission_state();
                 }
             }
+            SlashCommand::Loop if !trimmed.is_empty() => {
+                if !self.config.features.enabled(Feature::ScheduledTasks) {
+                    return;
+                }
+                let command = match parse_loop_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(LOOP_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.dispatch_loop_slash_command(command, trimmed, source);
+            }
             SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
                     let command = cmd.command();
@@ -791,6 +840,88 @@ impl ChatWidget {
             _ => self.dispatch_command(cmd),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
+    fn dispatch_loop_slash_command(
+        &mut self,
+        command: LoopSlashCommand,
+        trimmed: &str,
+        source: SlashCommandDispatchSource,
+    ) {
+        let Some(thread_id) = self.thread_id else {
+            if source == SlashCommandDispatchSource::Live {
+                self.queue_user_message_with_options(
+                    UserMessage {
+                        text: format!("/loop {trimmed}"),
+                        local_images: Vec::new(),
+                        remote_image_urls: Vec::new(),
+                        text_elements: Vec::new(),
+                        mention_bindings: Vec::new(),
+                    },
+                    QueuedInputAction::ParseSlash,
+                );
+                self.bottom_pane.drain_pending_submission_state();
+            } else {
+                self.add_info_message(LOOP_USAGE.to_string(), Some(LOOP_USAGE_HINT.to_string()));
+            }
+            return;
+        };
+
+        match command {
+            LoopSlashCommand::Default => {
+                self.app_event_tx
+                    .send(AppEvent::OpenThreadLoopManager { thread_id });
+            }
+            LoopSlashCommand::Create(request) => {
+                let (prompt, prompt_source, schedule) = loop_create_request_to_api(request);
+                self.app_event_tx.send(AppEvent::CreateThreadLoopSchedule {
+                    thread_id,
+                    prompt,
+                    prompt_source,
+                    schedule,
+                });
+            }
+            LoopSlashCommand::Manage(manage) => match manage {
+                LoopManageCommand::List => {
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadLoopManager { thread_id });
+                }
+                LoopManageCommand::Pause { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::PauseThreadLoopSchedule {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+                LoopManageCommand::Resume { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::ResumeThreadLoopSchedule {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+                LoopManageCommand::Delete { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::DeleteThreadLoopSchedule {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+                LoopManageCommand::RunNow { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::RunThreadLoopScheduleNow {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+                LoopManageCommand::Edit { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::OpenThreadLoopEditor {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+            },
+        }
+        self.append_message_history_entry(format!("/loop {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
             self.bottom_pane.drain_pending_submission_state();
         }
     }
@@ -913,6 +1044,7 @@ impl ChatWidget {
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
+            scheduled_tasks_command_enabled: self.config.features.enabled(Feature::ScheduledTasks),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
             realtime_conversation_enabled: self.realtime_conversation_enabled(),
@@ -958,6 +1090,7 @@ impl ChatWidget {
             | SlashCommand::Personality
             | SlashCommand::Plan
             | SlashCommand::Goal
+            | SlashCommand::Loop
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -1031,4 +1164,31 @@ impl ChatWidget {
         self.bottom_pane.drain_pending_submission_state();
         false
     }
+}
+
+fn loop_create_request_to_api(
+    request: LoopCreateRequest,
+) -> (String, ThreadSchedulePromptSource, ThreadScheduleSpec) {
+    let (prompt, prompt_source) = match request.prompt {
+        LoopPrompt::Inline(prompt) => (prompt, ThreadSchedulePromptSource::Inline),
+        LoopPrompt::Default => (
+            DEFAULT_LOOP_PROMPT_DISPLAY.to_string(),
+            ThreadSchedulePromptSource::Default,
+        ),
+    };
+    let schedule = match request.schedule {
+        LoopSchedule::Dynamic => ThreadScheduleSpec::Dynamic,
+        LoopSchedule::Interval(interval) => ThreadScheduleSpec::Interval {
+            amount: i64::from(interval.amount),
+            unit: match interval.unit {
+                LoopIntervalUnit::Minutes => ApiThreadScheduleIntervalUnit::Minutes,
+                LoopIntervalUnit::Hours => ApiThreadScheduleIntervalUnit::Hours,
+                LoopIntervalUnit::Days => ApiThreadScheduleIntervalUnit::Days,
+            },
+        },
+        LoopSchedule::Cron(cron) => ThreadScheduleSpec::Cron {
+            expression: cron.expression,
+        },
+    };
+    (prompt, prompt_source, schedule)
 }

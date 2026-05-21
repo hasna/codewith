@@ -13,6 +13,10 @@ The workflows in this directory are split so that pull requests get fast, review
   - `cargo shear`
   - `argument-comment-lint` on Linux, macOS, and Windows
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
+- `open-codex-cli.yml` builds the local-friendly `open-codex` CLI artifact on
+  Linux for pull requests, manual runs, and the `feat/loop-scheduled-tasks`
+  feature branch so this fork can be installed without replacing an existing
+  `codex` binary.
 
 ## Post-Merge On `main`
 

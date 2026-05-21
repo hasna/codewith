@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "scheduleId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "scheduleId",
+    "threadId"
+  ],
+  "title": "ThreadScheduleDeleteParams",
+  "type": "object"
+}

@@ -1,5 +1,8 @@
 use super::*;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use codex_app_server_protocol::ThreadScheduleIntervalUnit;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleSpec;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -716,6 +719,181 @@ async fn goal_slash_command_drops_attached_images() {
     assert!(chat.remote_image_urls().is_empty());
     assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
     assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn loop_slash_command_emits_create_schedule_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/loop 5m check whether CI is green";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected loop create event");
+    let AppEvent::CreateThreadLoopSchedule {
+        thread_id: actual_thread_id,
+        prompt,
+        prompt_source,
+        schedule,
+    } = event
+    else {
+        panic!("expected CreateThreadLoopSchedule, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(prompt, "check whether CI is green");
+    assert_eq!(prompt_source, ThreadSchedulePromptSource::Inline);
+    assert_eq!(
+        schedule,
+        ThreadScheduleSpec::Interval {
+            amount: 5,
+            unit: ThreadScheduleIntervalUnit::Minutes,
+        }
+    );
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn loop_slash_command_without_prompt_uses_default_loop_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/loop 5m";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected loop create event");
+    let AppEvent::CreateThreadLoopSchedule {
+        thread_id: actual_thread_id,
+        prompt,
+        prompt_source,
+        schedule,
+    } = event
+    else {
+        panic!("expected CreateThreadLoopSchedule, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(prompt, "Default loop prompt");
+    assert_eq!(prompt_source, ThreadSchedulePromptSource::Default);
+    assert_eq!(
+        schedule,
+        ThreadScheduleSpec::Interval {
+            amount: 5,
+            unit: ThreadScheduleIntervalUnit::Minutes,
+        }
+    );
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn loop_slash_command_emits_manage_events() {
+    let cases = [
+        ("/loop list", "list", None),
+        ("/loop pause sched-1", "pause", Some("sched-1")),
+        ("/loop resume sched-1", "resume", Some("sched-1")),
+        ("/loop delete sched-1", "delete", Some("sched-1")),
+        ("/loop run-now sched-1", "run-now", Some("sched-1")),
+        ("/loop edit sched-1", "edit", Some("sched-1")),
+    ];
+
+    for (command, expected_kind, expected_schedule_id) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected loop management event");
+        match (expected_kind, event) {
+            (
+                "list",
+                AppEvent::OpenThreadLoopManager {
+                    thread_id: actual_thread_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+            }
+            (
+                "pause",
+                AppEvent::PauseThreadLoopSchedule {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (
+                "resume",
+                AppEvent::ResumeThreadLoopSchedule {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (
+                "delete",
+                AppEvent::DeleteThreadLoopSchedule {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (
+                "run-now",
+                AppEvent::RunThreadLoopScheduleNow {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (
+                "edit",
+                AppEvent::OpenThreadLoopEditor {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (kind, event) => panic!("expected {kind} loop event, got {event:?}"),
+        }
+        assert_no_submit_op(&mut op_rx);
+    }
+}
+
+#[tokio::test]
+async fn bare_loop_slash_command_opens_manager_and_drains_attachments() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let remote_url = "https://example.com/loop.png".to_string();
+    let local_image = PathBuf::from("/tmp/loop-local.png");
+    chat.set_remote_image_urls(vec![remote_url]);
+    chat.bottom_pane
+        .set_composer_text("/loop".to_string(), Vec::new(), vec![local_image]);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenThreadLoopManager { thread_id: opened }) if opened == thread_id
+    );
+    assert!(chat.remote_image_urls().is_empty());
+    assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
 }
 
 #[tokio::test]
