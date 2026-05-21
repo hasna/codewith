@@ -72,8 +72,11 @@ codex-tools = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-json-to-toml = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+croner = { workspace = true }
 futures = { workspace = true }
+iana-time-zone = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

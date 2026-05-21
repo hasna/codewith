@@ -509,6 +509,46 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalClearResponse,
     },
+    ThreadScheduleCreate => "thread/schedule/create" {
+        params: v2::ThreadScheduleCreateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleCreateResponse,
+    },
+    ThreadScheduleList => "thread/schedule/list" {
+        params: v2::ThreadScheduleListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleListResponse,
+    },
+    ThreadScheduleGet => "thread/schedule/get" {
+        params: v2::ThreadScheduleGetParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleGetResponse,
+    },
+    ThreadScheduleUpdate => "thread/schedule/update" {
+        params: v2::ThreadScheduleUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleUpdateResponse,
+    },
+    ThreadSchedulePause => "thread/schedule/pause" {
+        params: v2::ThreadSchedulePauseParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadSchedulePauseResponse,
+    },
+    ThreadScheduleResume => "thread/schedule/resume" {
+        params: v2::ThreadScheduleResumeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleResumeResponse,
+    },
+    ThreadScheduleDelete => "thread/schedule/delete" {
+        params: v2::ThreadScheduleDeleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleDeleteResponse,
+    },
+    ThreadScheduleRunNow => "thread/schedule/runNow" {
+        params: v2::ThreadScheduleRunNowParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadScheduleRunNowResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -1472,6 +1512,9 @@ server_notification_definitions! {
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
+    ThreadScheduleUpdated => "thread/schedule/updated" (v2::ThreadScheduleUpdatedNotification),
+    ThreadScheduleDeleted => "thread/schedule/deleted" (v2::ThreadScheduleDeletedNotification),
+    ThreadScheduleRunUpdated => "thread/schedule/run/updated" (v2::ThreadScheduleRunUpdatedNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
@@ -3063,6 +3106,166 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&clear_request),
+            None
+        );
+    }
+
+    fn test_thread_schedule() -> v2::ThreadSchedule {
+        v2::ThreadSchedule {
+            thread_id: "thr_123".to_string(),
+            schedule_id: "sch_123".to_string(),
+            prompt: "check the deploy".to_string(),
+            prompt_source: v2::ThreadSchedulePromptSource::Inline,
+            schedule: v2::ThreadScheduleSpec::Interval {
+                amount: 5,
+                unit: v2::ThreadScheduleIntervalUnit::Minutes,
+            },
+            timezone: "UTC".to_string(),
+            status: v2::ThreadScheduleStatus::Active,
+            next_run_at: Some(1_700_000_300),
+            last_run_at: None,
+            expires_at: Some(1_700_604_800),
+            failure_count: 0,
+            lease_expires_at: None,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    fn test_thread_schedule_run() -> v2::ThreadScheduleRun {
+        v2::ThreadScheduleRun {
+            thread_id: "thr_123".to_string(),
+            schedule_id: "sch_123".to_string(),
+            run_id: "run_123".to_string(),
+            status: v2::ThreadScheduleRunStatus::Running,
+            lease_id: "lease_123".to_string(),
+            turn_id: Some("turn_123".to_string()),
+            error: None,
+            scheduled_for_at: Some(1_700_000_300),
+            started_at: 1_700_000_301,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn thread_schedule_methods_are_not_marked_experimental() {
+        let requests = [
+            ClientRequest::ThreadScheduleCreate {
+                request_id: RequestId::Integer(1),
+                params: v2::ThreadScheduleCreateParams {
+                    thread_id: "thr_123".to_string(),
+                    prompt: "check the deploy".to_string(),
+                    prompt_source: Some(v2::ThreadSchedulePromptSource::Inline),
+                    schedule: v2::ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: v2::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_700_000_300),
+                    expires_at: None,
+                },
+            },
+            ClientRequest::ThreadScheduleList {
+                request_id: RequestId::Integer(2),
+                params: v2::ThreadScheduleListParams {
+                    thread_id: "thr_123".to_string(),
+                    cursor: None,
+                    limit: Some(50),
+                },
+            },
+            ClientRequest::ThreadScheduleGet {
+                request_id: RequestId::Integer(3),
+                params: v2::ThreadScheduleGetParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                },
+            },
+            ClientRequest::ThreadScheduleUpdate {
+                request_id: RequestId::Integer(4),
+                params: v2::ThreadScheduleUpdateParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                    prompt: Some("check the rollout".to_string()),
+                    schedule: None,
+                    timezone: None,
+                    status: Some(v2::ThreadScheduleStatus::Paused),
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            },
+            ClientRequest::ThreadSchedulePause {
+                request_id: RequestId::Integer(5),
+                params: v2::ThreadSchedulePauseParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                },
+            },
+            ClientRequest::ThreadScheduleResume {
+                request_id: RequestId::Integer(6),
+                params: v2::ThreadScheduleResumeParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                },
+            },
+            ClientRequest::ThreadScheduleDelete {
+                request_id: RequestId::Integer(7),
+                params: v2::ThreadScheduleDeleteParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                },
+            },
+            ClientRequest::ThreadScheduleRunNow {
+                request_id: RequestId::Integer(8),
+                params: v2::ThreadScheduleRunNowParams {
+                    thread_id: "thr_123".to_string(),
+                    schedule_id: "sch_123".to_string(),
+                },
+            },
+        ];
+
+        for request in requests {
+            assert_eq!(
+                crate::experimental_api::ExperimentalApi::experimental_reason(&request),
+                None
+            );
+            assert_eq!(
+                request.serialization_scope(),
+                Some(ClientRequestSerializationScope::Thread {
+                    thread_id: "thr_123".to_string()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn thread_schedule_notifications_are_not_marked_experimental() {
+        let updated =
+            ServerNotification::ThreadScheduleUpdated(v2::ThreadScheduleUpdatedNotification {
+                thread_id: "thr_123".to_string(),
+                schedule: test_thread_schedule(),
+            });
+        let deleted =
+            ServerNotification::ThreadScheduleDeleted(v2::ThreadScheduleDeletedNotification {
+                thread_id: "thr_123".to_string(),
+                schedule_id: "sch_123".to_string(),
+            });
+        let run_updated = ServerNotification::ThreadScheduleRunUpdated(
+            v2::ThreadScheduleRunUpdatedNotification {
+                thread_id: "thr_123".to_string(),
+                run: test_thread_schedule_run(),
+            },
+        );
+
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&updated),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&deleted),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_updated),
             None
         );
     }

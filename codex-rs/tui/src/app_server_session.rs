@@ -85,6 +85,25 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadRollbackResponse;
+use codex_app_server_protocol::ThreadScheduleCreateParams;
+use codex_app_server_protocol::ThreadScheduleCreateResponse;
+use codex_app_server_protocol::ThreadScheduleDeleteParams;
+use codex_app_server_protocol::ThreadScheduleDeleteResponse;
+use codex_app_server_protocol::ThreadScheduleGetParams;
+use codex_app_server_protocol::ThreadScheduleGetResponse;
+use codex_app_server_protocol::ThreadScheduleListParams;
+use codex_app_server_protocol::ThreadScheduleListResponse;
+use codex_app_server_protocol::ThreadSchedulePauseParams;
+use codex_app_server_protocol::ThreadSchedulePauseResponse;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleResumeParams;
+use codex_app_server_protocol::ThreadScheduleResumeResponse;
+use codex_app_server_protocol::ThreadScheduleRunNowParams;
+use codex_app_server_protocol::ThreadScheduleRunNowResponse;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
+use codex_app_server_protocol::ThreadScheduleUpdateParams;
+use codex_app_server_protocol::ThreadScheduleUpdateResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
@@ -837,6 +856,166 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/goal/clear failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_create(
+        &mut self,
+        thread_id: ThreadId,
+        prompt: String,
+        prompt_source: ThreadSchedulePromptSource,
+        schedule: ThreadScheduleSpec,
+    ) -> Result<ThreadScheduleCreateResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.to_string(),
+                    prompt,
+                    prompt_source: Some(prompt_source),
+                    schedule,
+                    timezone: None,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/create failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadScheduleListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleList {
+                request_id,
+                params: ThreadScheduleListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/list failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_get(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) -> Result<ThreadScheduleGetResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleGet {
+                request_id,
+                params: ThreadScheduleGetParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/get failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_update(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+        prompt: Option<String>,
+        schedule: Option<ThreadScheduleSpec>,
+        status: Option<ThreadScheduleStatus>,
+    ) -> Result<ThreadScheduleUpdateResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                    prompt,
+                    schedule,
+                    timezone: None,
+                    status,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/update failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_pause(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) -> Result<ThreadSchedulePauseResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadSchedulePause {
+                request_id,
+                params: ThreadSchedulePauseParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/pause failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_resume(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) -> Result<ThreadScheduleResumeResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleResume {
+                request_id,
+                params: ThreadScheduleResumeParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/resume failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_delete(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) -> Result<ThreadScheduleDeleteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleDelete {
+                request_id,
+                params: ThreadScheduleDeleteParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/delete failed in TUI")
+    }
+
+    pub(crate) async fn thread_schedule_run_now(
+        &mut self,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) -> Result<ThreadScheduleRunNowResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.to_string(),
+                    schedule_id,
+                },
+            })
+            .await
+            .wrap_err("thread/schedule/runNow failed in TUI")
     }
 
     pub(crate) async fn logout_account(&mut self) -> Result<()> {

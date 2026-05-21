@@ -148,6 +148,13 @@ Example with notification opt-out:
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
+- `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
+- `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
+- `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
+- `thread/schedule/update` — update prompt, schedule, timezone, status, or run timestamps for a scheduled turn loop; emits `thread/schedule/updated`.
+- `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
+- `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
+- `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
@@ -559,6 +566,79 @@ Use `thread/goal/clear` to remove the current goal.
 { "method": "thread/goal/clear", "id": 30, "params": { "threadId": "thr_123" } }
 { "id": 30, "result": { "cleared": true } }
 { "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
+```
+
+### Example: Schedule a thread loop
+
+Use `thread/schedule/create` to run future turns on a materialized thread. Scheduled turns inherit the thread's persisted cwd, model, sandbox and permission policy, and approval behavior; they do not run on ephemeral threads and do not bypass normal turn execution. Each thread can have at most 50 non-expired schedules, and schedules expire after seven days by default unless `expiresAt` is supplied.
+
+Schedules support three shapes:
+
+- `{ "type": "dynamic" }` runs again after the server's default dynamic interval.
+- `{ "type": "interval", "amount": 5, "unit": "minutes" }` runs every N minutes, hours, or days.
+- `{ "type": "cron", "expression": "0 9 * * 1-5" }` uses a five-field numeric cron expression in the provided `timezone`.
+
+Set `promptSource` to `"inline"` to store and send `prompt` directly. Set it to `"default"` to resolve the prompt at execution time from `.codex/loop.md` in the thread cwd, then `$CODEX_HOME/loop.md`; the stored `prompt` field is only the display label in that mode.
+
+```json
+{ "method": "thread/schedule/create", "id": 31, "params": {
+    "threadId": "thr_123",
+    "prompt": "Check CI and fix any failures.",
+    "promptSource": "inline",
+    "schedule": { "type": "interval", "amount": 30, "unit": "minutes" },
+    "timezone": "UTC"
+} }
+{ "id": 31, "result": { "schedule": {
+    "threadId": "thr_123",
+    "scheduleId": "sched_123",
+    "prompt": "Check CI and fix any failures.",
+    "promptSource": "inline",
+    "schedule": { "type": "interval", "amount": 30, "unit": "minutes" },
+    "timezone": "UTC",
+    "status": "active",
+    "nextRunAt": 1776274200,
+    "lastRunAt": null,
+    "expiresAt": 1776877200,
+    "failureCount": 0,
+    "leaseExpiresAt": null,
+    "createdAt": 1776272400,
+    "updatedAt": 1776272400
+} } }
+{ "method": "thread/schedule/updated", "params": { "threadId": "thr_123", "schedule": { "scheduleId": "sched_123" } } }
+```
+
+```json
+{ "method": "thread/schedule/create", "id": 32, "params": {
+    "threadId": "thr_123",
+    "prompt": "",
+    "promptSource": "default",
+    "schedule": { "type": "cron", "expression": "0 9 * * 1-5" },
+    "timezone": "Europe/Bucharest"
+} }
+{ "id": 32, "result": { "schedule": { "promptSource": "default", "prompt": "Default loop prompt" } } }
+```
+
+Use `thread/schedule/list`, `thread/schedule/get`, and `thread/schedule/update` to manage stored schedules. Use `thread/schedule/pause`, `thread/schedule/resume`, and `thread/schedule/delete` for lifecycle operations. `thread/schedule/runNow` manually leases an active schedule and submits the scheduled prompt immediately:
+
+```json
+{ "method": "thread/schedule/runNow", "id": 33, "params": {
+    "threadId": "thr_123",
+    "scheduleId": "sched_123"
+} }
+{ "id": 33, "result": { "run": {
+    "threadId": "thr_123",
+    "scheduleId": "sched_123",
+    "runId": "run_123",
+    "status": "leased",
+    "leaseId": "lease_123",
+    "turnId": null,
+    "error": null,
+    "scheduledForAt": 1776272400,
+    "startedAt": 1776272400,
+    "completedAt": null
+} } }
+{ "method": "thread/schedule/run/updated", "params": { "threadId": "thr_123", "run": { "runId": "run_123", "status": "running" } } }
+{ "method": "thread/schedule/run/updated", "params": { "threadId": "thr_123", "run": { "runId": "run_123", "status": "completed" } } }
 ```
 
 ### Example: Archive a thread

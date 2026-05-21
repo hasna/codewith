@@ -1242,6 +1242,24 @@ fn user_message_display_from_inputs_hides_prompt_context() {
     );
 }
 
+#[test]
+fn user_message_display_from_inputs_hides_scheduled_loop_guardrail() {
+    let raw_message = "\
+You are running one scheduled /loop tick.
+
+Execute only the loop prompt below for this single tick. Do not wait, sleep, start a timer, or schedule the next tick; Codex already manages the loop cadence. If the loop prompt mentions a cadence like \"every minute\", treat that as the cadence that triggered this tick, not as an instruction to implement the cadence yourself.
+
+Loop prompt:
+ask me a funny question";
+    let rendered = ChatWidget::user_message_display_from_inputs(&[UserInput::Text {
+        text: raw_message.to_string(),
+        text_elements: Vec::new(),
+    }]);
+
+    insta::assert_snapshot!(rendered.message, @"Running scheduled loop.");
+    assert_eq!(rendered.text_elements, Vec::new());
+}
+
 #[tokio::test]
 async fn committed_user_message_with_hidden_prompt_context_renders_local_images() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

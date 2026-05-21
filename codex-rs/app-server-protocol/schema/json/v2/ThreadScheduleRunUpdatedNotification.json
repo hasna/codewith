@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadScheduleRun": {
+      "properties": {
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "leaseId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "scheduleId": {
+          "type": "string"
+        },
+        "scheduledForAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadScheduleRunStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "leaseId",
+        "runId",
+        "scheduleId",
+        "startedAt",
+        "status",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadScheduleRunStatus": {
+      "enum": [
+        "leased",
+        "running",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "run": {
+      "$ref": "#/definitions/ThreadScheduleRun"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "run",
+    "threadId"
+  ],
+  "title": "ThreadScheduleRunUpdatedNotification",
+  "type": "object"
+}

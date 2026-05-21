@@ -23,6 +23,10 @@ use codex_protocol::user_input::TextElement;
 
 use super::ChatWidget;
 
+const SCHEDULED_LOOP_TICK_PREFIX: &str = "You are running one scheduled /loop tick.\n\n";
+const SCHEDULED_LOOP_TICK_PROMPT_HEADER: &str = "\n\nLoop prompt:\n";
+const SCHEDULED_LOOP_TICK_DISPLAY: &str = "Running scheduled loop.";
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UserMessage {
     pub(super) text: String,
@@ -513,6 +517,15 @@ impl ChatWidget {
         local_images: Vec<PathBuf>,
         remote_image_urls: Vec<String>,
     ) -> UserMessageDisplay {
+        if is_scheduled_loop_tick_prompt(&message) {
+            return UserMessageDisplay {
+                message: SCHEDULED_LOOP_TICK_DISPLAY.to_string(),
+                remote_image_urls,
+                local_images,
+                text_elements: Vec::new(),
+            };
+        }
+
         let (message, prompt_request_offset) =
             crate::ide_context::extract_prompt_request_with_offset(&message);
         let prompt_request_end = prompt_request_offset + message.len();
@@ -606,4 +619,9 @@ impl ChatWidget {
             remote_image_urls,
         )
     }
+}
+
+fn is_scheduled_loop_tick_prompt(message: &str) -> bool {
+    message.starts_with(SCHEDULED_LOOP_TICK_PREFIX)
+        && message.contains(SCHEDULED_LOOP_TICK_PROMPT_HEADER)
 }

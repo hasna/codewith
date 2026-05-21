@@ -95,6 +95,19 @@ fn guardian_approval_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn scheduled_tasks_is_stable_and_enabled_by_default() {
+    let spec = Feature::ScheduledTasks.info();
+
+    assert_eq!(spec.stage, Stage::Stable);
+    assert_eq!(spec.key, "scheduled_tasks");
+    assert_eq!(Feature::ScheduledTasks.default_enabled(), true);
+    assert_eq!(
+        feature_for_key("scheduled_tasks"),
+        Some(Feature::ScheduledTasks)
+    );
+}
+
+#[test]
 fn external_migration_is_experimental_and_disabled_by_default() {
     let spec = Feature::ExternalMigration.info();
     let stage = spec.stage;

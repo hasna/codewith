@@ -1,0 +1,96 @@
+name: open-codex-cli
+
+on:
+  push:
+    branches:
+      - "feat/loop-scheduled-tasks"
+    paths:
+      - "codex-rs/**"
+      - ".github/workflows/open-codex-cli.yml"
+      - "scripts/open-codex"
+      - "justfile"
+  pull_request:
+    paths:
+      - "codex-rs/**"
+      - ".github/workflows/open-codex-cli.yml"
+      - "scripts/open-codex"
+      - "justfile"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Cargo profile to build for the downloadable open-codex artifact."
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - debug
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build open-codex Linux CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      BUILD_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'debug' }}
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+
+      - name: Build codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_args=(build --locked -p codex-cli --bin codex)
+          if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            cargo_args+=(--release)
+          fi
+          cargo "${cargo_args[@]}"
+
+      - name: Stage open-codex artifact
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          profile_dir=debug
+          if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            profile_dir=release
+          fi
+
+          stage_dir="dist/open-codex-linux-x86_64-${BUILD_PROFILE}"
+          archive="dist/open-codex-linux-x86_64-${BUILD_PROFILE}.tar.gz"
+          rm -rf "${stage_dir}" "${archive}"
+          mkdir -p "${stage_dir}"
+          install -m 0755 "../scripts/open-codex" "${stage_dir}/open-codex"
+          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/open-codex-bin"
+          "${stage_dir}/open-codex" --version
+          tar -C "${stage_dir}" -czf "${archive}" open-codex open-codex-bin
+
+          echo "archive=codex-rs/${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload open-codex artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: open-codex-linux-x86_64-${{ env.BUILD_PROFILE }}
+          path: ${{ steps.stage.outputs.archive }}

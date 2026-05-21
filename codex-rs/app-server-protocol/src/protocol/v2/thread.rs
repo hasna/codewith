@@ -748,6 +748,263 @@ pub struct ThreadGoalClearResponse {
     pub cleared: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadScheduleStatus {
+    Active,
+    Paused,
+    Expired,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadScheduleIntervalUnit {
+    Minutes,
+    Hours,
+    Days,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadScheduleSpec {
+    Dynamic,
+    Interval {
+        #[ts(type = "number")]
+        amount: i64,
+        unit: ThreadScheduleIntervalUnit,
+    },
+    Cron {
+        expression: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadSchedulePromptSource {
+    Inline,
+    Default,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSchedule {
+    pub thread_id: String,
+    pub schedule_id: String,
+    pub prompt: String,
+    pub prompt_source: ThreadSchedulePromptSource,
+    pub schedule: ThreadScheduleSpec,
+    pub timezone: String,
+    pub status: ThreadScheduleStatus,
+    #[ts(type = "number | null")]
+    pub next_run_at: Option<i64>,
+    #[ts(type = "number | null")]
+    pub last_run_at: Option<i64>,
+    #[ts(type = "number | null")]
+    pub expires_at: Option<i64>,
+    #[ts(type = "number")]
+    pub failure_count: i64,
+    #[ts(type = "number | null")]
+    pub lease_expires_at: Option<i64>,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadScheduleRunStatus {
+    Leased,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleRun {
+    pub thread_id: String,
+    pub schedule_id: String,
+    pub run_id: String,
+    pub status: ThreadScheduleRunStatus,
+    pub lease_id: String,
+    #[ts(type = "string | null")]
+    pub turn_id: Option<String>,
+    #[ts(type = "string | null")]
+    pub error: Option<String>,
+    #[ts(type = "number | null")]
+    pub scheduled_for_at: Option<i64>,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    #[ts(type = "number | null")]
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleCreateParams {
+    pub thread_id: String,
+    pub prompt: String,
+    #[ts(optional = nullable)]
+    pub prompt_source: Option<ThreadSchedulePromptSource>,
+    pub schedule: ThreadScheduleSpec,
+    #[ts(optional = nullable)]
+    pub timezone: Option<String>,
+    #[ts(optional = nullable)]
+    pub next_run_at: Option<i64>,
+    #[ts(optional = nullable)]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleCreateResponse {
+    pub schedule: ThreadSchedule,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleListParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleListResponse {
+    pub data: Vec<ThreadSchedule>,
+    #[ts(type = "string | null")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleGetParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleGetResponse {
+    pub schedule: Option<ThreadSchedule>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleUpdateParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+    #[ts(optional = nullable)]
+    pub prompt: Option<String>,
+    #[ts(optional = nullable)]
+    pub schedule: Option<ThreadScheduleSpec>,
+    #[ts(optional = nullable)]
+    pub timezone: Option<String>,
+    #[ts(optional = nullable)]
+    pub status: Option<ThreadScheduleStatus>,
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable, type = "number | null")]
+    pub next_run_at: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable, type = "number | null")]
+    pub expires_at: Option<Option<i64>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleUpdateResponse {
+    pub schedule: ThreadSchedule,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSchedulePauseParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSchedulePauseResponse {
+    pub schedule: ThreadSchedule,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleResumeParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleResumeResponse {
+    pub schedule: ThreadSchedule,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleDeleteParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleDeleteResponse {
+    pub deleted: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleRunNowParams {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleRunNowResponse {
+    pub run: ThreadScheduleRun,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1288,6 +1545,30 @@ pub struct ThreadGoalUpdatedNotification {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalClearedNotification {
     pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleUpdatedNotification {
+    pub thread_id: String,
+    pub schedule: ThreadSchedule,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleDeletedNotification {
+    pub thread_id: String,
+    pub schedule_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleRunUpdatedNotification {
+    pub thread_id: String,
+    pub run: ThreadScheduleRun,
 }
 
 /// Deprecated: Use `ContextCompaction` item type instead.

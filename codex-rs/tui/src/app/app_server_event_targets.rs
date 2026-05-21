@@ -62,6 +62,15 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadGoalCleared(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadScheduleUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadScheduleDeleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadScheduleRunUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadSettingsUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

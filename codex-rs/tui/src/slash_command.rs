@@ -36,6 +36,7 @@ pub enum SlashCommand {
     Compact,
     Plan,
     Goal,
+    Loop,
     Agent,
     Side,
     Btw,
@@ -114,6 +115,7 @@ impl SlashCommand {
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -151,6 +153,7 @@ impl SlashCommand {
                 | SlashCommand::Rename
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Loop
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
@@ -211,6 +214,7 @@ impl SlashCommand {
             | SlashCommand::Ps
             | SlashCommand::Stop
             | SlashCommand::Goal
+            | SlashCommand::Loop
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

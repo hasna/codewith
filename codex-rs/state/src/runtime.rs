@@ -62,6 +62,7 @@ mod goals;
 mod logs;
 mod memories;
 mod remote_control;
+mod schedules;
 #[cfg(test)]
 mod test_support;
 mod threads;
@@ -71,6 +72,10 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use schedules::ScheduleStore;
+pub use schedules::ThreadScheduleClaim;
+pub use schedules::ThreadScheduleCreateParams;
+pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
@@ -136,6 +141,7 @@ pub struct StateRuntime {
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
+    thread_schedules: ScheduleStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
@@ -225,6 +231,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
             pool,
             logs_pool,
             codex_home,
@@ -247,6 +254,10 @@ impl StateRuntime {
 
     pub fn thread_goals(&self) -> &GoalStore {
         &self.thread_goals
+    }
+
+    pub fn thread_schedules(&self) -> &ScheduleStore {
+        &self.thread_schedules
     }
 }
 

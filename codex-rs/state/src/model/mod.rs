@@ -5,6 +5,7 @@ mod log;
 mod memories;
 mod thread_goal;
 mod thread_metadata;
+mod thread_schedule;
 
 pub use agent_job::AgentJob;
 pub use agent_job::AgentJobCreateParams;
@@ -34,6 +35,14 @@ pub use thread_metadata::SortKey;
 pub use thread_metadata::ThreadMetadata;
 pub use thread_metadata::ThreadMetadataBuilder;
 pub use thread_metadata::ThreadsPage;
+pub use thread_schedule::ThreadSchedule;
+pub use thread_schedule::ThreadScheduleInterval;
+pub use thread_schedule::ThreadScheduleIntervalUnit;
+pub use thread_schedule::ThreadSchedulePromptSource;
+pub use thread_schedule::ThreadScheduleRun;
+pub use thread_schedule::ThreadScheduleRunStatus;
+pub use thread_schedule::ThreadScheduleSpec;
+pub use thread_schedule::ThreadScheduleStatus;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;
@@ -44,3 +53,5 @@ pub(crate) use thread_metadata::anchor_from_item;
 pub(crate) use thread_metadata::datetime_to_epoch_millis;
 pub(crate) use thread_metadata::datetime_to_epoch_seconds;
 pub(crate) use thread_metadata::epoch_millis_to_datetime;
+pub(crate) use thread_schedule::ThreadScheduleRow;
+pub(crate) use thread_schedule::ThreadScheduleRunRow;

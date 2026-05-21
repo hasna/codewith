@@ -34,6 +34,8 @@ use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
+use crate::request_processors::ThreadScheduleRequestProcessor;
+use crate::request_processors::ThreadScheduleRuntime;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
@@ -180,6 +182,8 @@ pub(crate) struct MessageProcessor {
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_processor: ThreadRequestProcessor,
+    thread_schedule_processor: ThreadScheduleRequestProcessor,
+    thread_schedule_runtime: ThreadScheduleRuntime,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
@@ -410,6 +414,28 @@ impl MessageProcessor {
             thread_state_manager.clone(),
             state_db.clone(),
         );
+        let thread_schedule_runtime = ThreadScheduleRuntime::new(
+            auth_manager.clone(),
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&config),
+            config_manager.clone(),
+            thread_state_manager.clone(),
+            Arc::clone(&pending_thread_unloads),
+            thread_watch_manager.clone(),
+            Arc::clone(&thread_list_state_permit),
+            Arc::clone(&skills_watcher),
+            state_db.clone(),
+        );
+        thread_schedule_runtime.start();
+        let thread_schedule_processor = ThreadScheduleRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&config),
+            thread_state_manager.clone(),
+            state_db.clone(),
+            thread_schedule_runtime.clone(),
+        );
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -501,6 +527,8 @@ impl MessageProcessor {
             search_processor,
             thread_goal_processor,
             thread_processor,
+            thread_schedule_processor,
+            thread_schedule_runtime,
             turn_processor,
             windows_sandbox_processor,
             request_serialization_queues: RequestSerializationQueues::default(),
@@ -511,6 +539,7 @@ impl MessageProcessor {
         self.account_processor.clear_external_auth();
         self.apps_processor.shutdown();
         self.skills_watcher.shutdown();
+        self.thread_schedule_runtime.shutdown();
     }
 
     pub(crate) async fn process_request(
@@ -691,6 +720,7 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        self.thread_schedule_runtime.drain_background_tasks().await;
         self.thread_processor.drain_background_tasks().await;
     }
 
@@ -1037,6 +1067,46 @@ impl MessageProcessor {
                     .thread_goal_clear(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadScheduleCreate { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_create(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleList { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_list(params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleGet { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_get(params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleUpdate { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_update(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadSchedulePause { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_pause(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleResume { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_resume(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleDelete { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_delete(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadScheduleRunNow { params, .. } => {
+                self.thread_schedule_processor
+                    .thread_schedule_run_now(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
                 self.thread_processor.thread_metadata_update(params).await
             }
@@ -1355,6 +1425,9 @@ impl MessageProcessor {
     }
 }
 
+#[cfg(test)]
+#[path = "message_processor_schedule_tests.rs"]
+mod message_processor_schedule_tests;
 #[cfg(test)]
 #[path = "message_processor_tracing_tests.rs"]
 mod message_processor_tracing_tests;
