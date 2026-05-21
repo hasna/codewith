@@ -16,7 +16,9 @@ The workflows in this directory are split so that pull requests get fast, review
 - `open-codex-cli.yml` builds the local-friendly `open-codex` CLI artifact on
   Linux for pull requests, manual runs, and the `feat/loop-scheduled-tasks`
   feature branch so this fork can be installed without replacing an existing
-  `codex` binary.
+  `codex` binary. The artifact uses an `open-codex` wrapper that defaults to
+  `~/.open-codex` for state so fork-only migrations do not mutate the regular
+  `~/.codex` profile.
 
 ## Post-Merge On `main`
 

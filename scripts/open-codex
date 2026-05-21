@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_dir() {
+  local source="${BASH_SOURCE[0]}"
+  while [[ -L "${source}" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "${source}")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "${source}")"
+    [[ "${source}" == /* ]] || source="${dir}/${source}"
+  done
+  cd -P "$(dirname "${source}")" >/dev/null 2>&1 && pwd
+}
+
+seed_open_codex_home() {
+  local open_home="$1"
+  local regular_home="${REGULAR_CODEX_HOME:-${HOME}/.codex}"
+
+  [[ -d "${regular_home}" ]] || return 0
+
+  local file
+  for file in auth.json config.json config.toml AGENTS.md models_cache.json; do
+    if [[ ! -e "${open_home}/${file}" && -f "${regular_home}/${file}" ]]; then
+      cp -p "${regular_home}/${file}" "${open_home}/${file}"
+    fi
+  done
+
+  local dir
+  for dir in instructions memories plugins rules skills themes; do
+    if [[ ! -e "${open_home}/${dir}" && -e "${regular_home}/${dir}" ]]; then
+      ln -s "${regular_home}/${dir}" "${open_home}/${dir}"
+    fi
+  done
+}
+
+find_open_codex_bin() {
+  local script_dir="$1"
+
+  if [[ -n "${OPEN_CODEX_BIN:-}" ]]; then
+    printf '%s\n' "${OPEN_CODEX_BIN}"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "${script_dir}/open-codex-bin" \
+    "${script_dir}/../codex-rs/target/debug/codex" \
+    "${script_dir}/../codex-rs/target/release/codex"; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+main() {
+  local script_dir
+  script_dir="$(resolve_script_dir)"
+
+  local codex_bin
+  if ! codex_bin="$(find_open_codex_bin "${script_dir}")"; then
+    printf 'open-codex: unable to find the Codex binary. Set OPEN_CODEX_BIN to its path.\n' >&2
+    return 127
+  fi
+
+  if [[ "${OPEN_CODEX_USE_DEFAULT_HOME:-0}" != "1" ]]; then
+    export CODEX_HOME="${OPEN_CODEX_HOME:-${HOME}/.open-codex}"
+    mkdir -p "${CODEX_HOME}"
+    seed_open_codex_home "${CODEX_HOME}"
+  fi
+
+  exec "${codex_bin}" "$@"
+}
+
+main "$@"

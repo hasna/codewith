@@ -7,11 +7,13 @@ on:
     paths:
       - "codex-rs/**"
       - ".github/workflows/open-codex-cli.yml"
+      - "scripts/open-codex"
       - "justfile"
   pull_request:
     paths:
       - "codex-rs/**"
       - ".github/workflows/open-codex-cli.yml"
+      - "scripts/open-codex"
       - "justfile"
   workflow_dispatch:
     inputs:
@@ -80,9 +82,10 @@ jobs:
           archive="dist/open-codex-linux-x86_64-${BUILD_PROFILE}.tar.gz"
           rm -rf "${stage_dir}" "${archive}"
           mkdir -p "${stage_dir}"
-          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/open-codex"
+          install -m 0755 "../scripts/open-codex" "${stage_dir}/open-codex"
+          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/open-codex-bin"
           "${stage_dir}/open-codex" --version
-          tar -C "${stage_dir}" -czf "${archive}" open-codex
+          tar -C "${stage_dir}" -czf "${archive}" open-codex open-codex-bin
 
           echo "archive=codex-rs/${archive}" >> "$GITHUB_OUTPUT"
 
