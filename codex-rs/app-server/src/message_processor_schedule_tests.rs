@@ -17,6 +17,7 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
@@ -48,6 +49,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudRequirementsLoader;
 use codex_config::LoaderOverrides;
+use codex_config::TomlValue;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
@@ -83,10 +85,15 @@ struct ScheduleHarness {
 
 impl ScheduleHarness {
     async fn new() -> Result<Self> {
+        Self::new_with_cli_overrides(Vec::new()).await
+    }
+
+    async fn new_with_cli_overrides(cli_overrides: Vec<(String, TomlValue)>) -> Result<Self> {
         let server = create_mock_responses_server_repeating_assistant("Scheduled done").await;
         let codex_home = TempDir::new()?;
         let workspace = TempDir::new()?;
-        let config = Arc::new(build_test_config(codex_home.path(), &server.uri()).await?);
+        let config =
+            Arc::new(build_test_config(codex_home.path(), &server.uri(), cli_overrides).await?);
         let state_db = codex_state::StateRuntime::init(
             config.sqlite_home.clone(),
             config.model_provider_id.clone(),
@@ -168,20 +175,44 @@ impl ScheduleHarness {
         self.read_response(request_id).await
     }
 
-    async fn start_materialized_thread(&mut self) -> ThreadStartResponse {
+    async fn request_error(&mut self, request: ClientRequest) -> JSONRPCErrorError {
+        let request_id = match request.id() {
+            RequestId::Integer(request_id) => *request_id,
+            request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
+        };
+        self.processor
+            .process_request(
+                TEST_CONNECTION_ID,
+                request_from_client_request(request),
+                &AppServerTransport::Stdio,
+                Arc::clone(&self.session),
+            )
+            .await;
+        self.read_error(request_id).await
+    }
+
+    async fn start_thread(&mut self, ephemeral: bool) -> ThreadStartResponse {
         let request_id = self.request_id();
         let response: ThreadStartResponse = self
             .request(ClientRequest::ThreadStart {
                 request_id,
                 params: ThreadStartParams {
                     cwd: Some(self.workspace_cwd()),
-                    ephemeral: Some(false),
+                    ephemeral: Some(ephemeral),
                     ..ThreadStartParams::default()
                 },
             })
             .await;
         self.read_thread_started_notification().await;
         response
+    }
+
+    async fn start_materialized_thread(&mut self) -> ThreadStartResponse {
+        self.start_thread(/*ephemeral*/ false).await
+    }
+
+    async fn start_ephemeral_thread(&mut self) -> ThreadStartResponse {
+        self.start_thread(/*ephemeral*/ true).await
     }
 
     async fn read_response<T>(&mut self, request_id: i64) -> T
@@ -214,6 +245,43 @@ impl ScheduleHarness {
                 }
                 OutgoingMessage::Error(error) if error.id == RequestId::Integer(request_id) => {
                     panic!("request {request_id} failed: {:?}", error.error);
+                }
+                _ => {
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn read_error(&mut self, request_id: i64) -> JSONRPCErrorError {
+        loop {
+            let envelope =
+                tokio::time::timeout(std::time::Duration::from_secs(5), self.outgoing_rx.recv())
+                    .await
+                    .expect("timed out waiting for error")
+                    .expect("outgoing channel closed");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                ..
+            } = envelope
+            else {
+                continue;
+            };
+            if connection_id != TEST_CONNECTION_ID {
+                continue;
+            }
+            match message {
+                OutgoingMessage::Response(response)
+                    if response.id == RequestId::Integer(request_id) =>
+                {
+                    panic!(
+                        "request {request_id} unexpectedly succeeded: {:?}",
+                        response.result
+                    );
+                }
+                OutgoingMessage::Error(error) if error.id == RequestId::Integer(request_id) => {
+                    return error.error;
                 }
                 _ => {
                     continue;
@@ -352,7 +420,11 @@ where
         .expect("schedule harness thread should not panic")
 }
 
-async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config> {
+async fn build_test_config(
+    codex_home: &Path,
+    server_uri: &str,
+    cli_overrides: Vec<(String, TomlValue)>,
+) -> Result<Config> {
     write_mock_responses_config_toml(
         codex_home,
         server_uri,
@@ -365,6 +437,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 
     Ok(ConfigBuilder::default()
         .codex_home(codex_home.to_path_buf())
+        .cli_overrides(cli_overrides)
         .build()
         .await?)
 }
@@ -410,6 +483,145 @@ async fn build_test_processor(
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
     }));
     (processor, outgoing_rx)
+}
+
+#[test]
+fn thread_schedule_requests_reject_when_feature_disabled() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new_with_cli_overrides(vec![(
+            "features.scheduled_tasks".to_string(),
+            TomlValue::Boolean(false),
+        )])
+        .await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "should not be scheduled".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!("scheduled_tasks feature is disabled", error.message);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_requests_reject_ephemeral_threads() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_ephemeral_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "should only run on materialized threads".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            format!("ephemeral thread does not support scheduled tasks: {thread_id}"),
+            error.message
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_run_now_rejects_ambiguous_schedule_id_prefix() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let mut schedules_by_prefix: BTreeMap<char, Vec<String>> = BTreeMap::new();
+
+        for index in 0..17 {
+            let request_id = harness.request_id();
+            let response: ThreadScheduleCreateResponse = harness
+                .request(ClientRequest::ThreadScheduleCreate {
+                    request_id,
+                    params: ThreadScheduleCreateParams {
+                        thread_id: thread_id.clone(),
+                        prompt: format!("scheduled task {index}"),
+                        prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                        schedule: ThreadScheduleSpec::Interval {
+                            amount: 1,
+                            unit: ThreadScheduleIntervalUnit::Hours,
+                        },
+                        timezone: Some("UTC".to_string()),
+                        next_run_at: Some(1_900_000_000 + index),
+                        expires_at: Some(1_900_604_800),
+                    },
+                })
+                .await;
+            assert_eq!(
+                response.schedule,
+                harness.read_schedule_updated(&thread_id).await.schedule
+            );
+            let prefix = response
+                .schedule
+                .schedule_id
+                .chars()
+                .next()
+                .expect("schedule id should not be empty");
+            schedules_by_prefix
+                .entry(prefix)
+                .or_default()
+                .push(response.schedule.schedule_id);
+        }
+
+        let ambiguous_prefix = schedules_by_prefix
+            .into_iter()
+            .find_map(|(prefix, schedule_ids)| (schedule_ids.len() > 1).then_some(prefix))
+            .expect("17 UUID-like schedule ids should share at least one hex prefix")
+            .to_string();
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id,
+                    schedule_id: ambiguous_prefix.clone(),
+                },
+            })
+            .await;
+        assert_eq!(
+            format!("schedule id prefix is ambiguous: {ambiguous_prefix}"),
+            error.message
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
 }
 
 #[test]

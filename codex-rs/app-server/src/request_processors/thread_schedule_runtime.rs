@@ -1,6 +1,6 @@
 use super::*;
-use crate::request_processors::thread_schedule_processor::api_thread_schedule_from_state;
-use crate::request_processors::thread_schedule_processor::api_thread_schedule_run_from_state;
+use crate::request_processors::thread_schedule_api::api_thread_schedule_from_state;
+use crate::request_processors::thread_schedule_api::api_thread_schedule_run_from_state;
 use chrono_tz::Tz;
 use croner::Cron;
 use std::str::FromStr;

@@ -495,6 +495,7 @@ mod process_exec_processor;
 mod remote_control_processor;
 mod search;
 mod thread_processor;
+mod thread_schedule_api;
 mod thread_schedule_default_prompt;
 mod thread_schedule_processor;
 mod thread_schedule_runtime;

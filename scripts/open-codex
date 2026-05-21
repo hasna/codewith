@@ -16,12 +16,18 @@ seed_open_codex_home() {
   local open_home="$1"
   local regular_home="${REGULAR_CODEX_HOME:-${HOME}/.codex}"
 
+  chmod go-rwx "${open_home}" 2>/dev/null || true
   [[ -d "${regular_home}" ]] || return 0
 
   local file
   for file in auth.json config.json config.toml AGENTS.md models_cache.json; do
     if [[ ! -e "${open_home}/${file}" && -f "${regular_home}/${file}" ]]; then
       cp -p "${regular_home}/${file}" "${open_home}/${file}"
+      case "${file}" in
+        auth.json | config.json | config.toml)
+          chmod go-rwx "${open_home}/${file}" 2>/dev/null || true
+          ;;
+      esac
     fi
   done
 
@@ -31,6 +37,47 @@ seed_open_codex_home() {
       ln -s "${regular_home}/${dir}" "${open_home}/${dir}"
     fi
   done
+
+  mirror_disabled_feature_flag "${regular_home}/config.toml" "${open_home}/config.toml" "apps"
+}
+
+mirror_disabled_feature_flag() {
+  local regular_config="$1"
+  local open_config="$2"
+  local feature="$3"
+
+  [[ -f "${regular_config}" && -f "${open_config}" ]] || return 0
+  grep -Eq "^[[:space:]]*${feature}[[:space:]]*=[[:space:]]*false[[:space:]]*$" "${regular_config}" || return 0
+  grep -Eq "^[[:space:]]*${feature}[[:space:]]*=" "${open_config}" && return 0
+
+  local temp_config
+  temp_config="$(mktemp "${open_config}.XXXXXX")"
+  awk -v feature="${feature}" '
+    BEGIN {
+      in_features = 0
+      inserted = 0
+    }
+    /^\[features\]$/ {
+      in_features = 1
+      print
+      next
+    }
+    /^\[/ && in_features && !inserted {
+      print feature " = false"
+      inserted = 1
+      in_features = 0
+    }
+    {
+      print
+    }
+    END {
+      if (in_features && !inserted) {
+        print feature " = false"
+      }
+    }
+  ' "${open_config}" >"${temp_config}"
+  chmod --reference="${open_config}" "${temp_config}" 2>/dev/null || true
+  mv "${temp_config}" "${open_config}"
 }
 
 find_open_codex_bin() {
@@ -67,7 +114,7 @@ main() {
 
   if [[ "${OPEN_CODEX_USE_DEFAULT_HOME:-0}" != "1" ]]; then
     export CODEX_HOME="${OPEN_CODEX_HOME:-${HOME}/.open-codex}"
-    mkdir -p "${CODEX_HOME}"
+    mkdir -p -m 700 "${CODEX_HOME}"
     seed_open_codex_home "${CODEX_HOME}"
   fi
 
