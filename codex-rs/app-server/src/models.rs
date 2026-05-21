@@ -6,6 +6,7 @@ use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_core::ThreadManager;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 
@@ -14,6 +15,19 @@ pub async fn supported_models(
     include_hidden: bool,
 ) -> Vec<Model> {
     thread_manager
+        .list_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .into_iter()
+        .filter(|preset| include_hidden || preset.show_in_picker)
+        .map(model_from_preset)
+        .collect()
+}
+
+pub async fn supported_models_from_manager(
+    models_manager: SharedModelsManager,
+    include_hidden: bool,
+) -> Vec<Model> {
+    models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await
         .into_iter()

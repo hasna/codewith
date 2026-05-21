@@ -551,6 +551,9 @@
             "runtime_metrics": {
               "type": "boolean"
             },
+            "scheduled_tasks": {
+              "type": "boolean"
+            },
             "search_tool": {
               "type": "boolean"
             },
@@ -4480,6 +4483,9 @@
           "type": "boolean"
         },
         "runtime_metrics": {
+          "type": "boolean"
+        },
+        "scheduled_tasks": {
           "type": "boolean"
         },
         "search_tool": {

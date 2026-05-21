@@ -7,7 +7,46 @@ use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_features::Stage;
+use codex_model_provider_info::ModelProviderInfo;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
+
+fn provider_picker_preset(
+    slug: &str,
+    default_reasoning_effort: ReasoningEffortConfig,
+) -> ModelPreset {
+    let reasoning_description = match default_reasoning_effort {
+        ReasoningEffortConfig::None => "none",
+        ReasoningEffortConfig::Minimal => "minimal",
+        ReasoningEffortConfig::Low => "low",
+        ReasoningEffortConfig::Medium => "medium",
+        ReasoningEffortConfig::High => "high",
+        ReasoningEffortConfig::XHigh => "extra high",
+    }
+    .to_string();
+
+    ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: default_reasoning_effort,
+            description: reasoning_description,
+        }],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
 
 #[tokio::test]
 async fn realtime_error_closes_without_followup_closed_info() {
@@ -2197,6 +2236,61 @@ async fn model_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn provider_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let openai_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let openrouter_provider = ModelProviderInfo::create_openrouter_provider();
+    chat.config.model_provider_id = "openai".to_string();
+    chat.config.model_provider = openai_provider.clone();
+    chat.config.model_providers = HashMap::from([
+        ("openai".to_string(), openai_provider),
+        ("openrouter".to_string(), openrouter_provider),
+    ]);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openai".to_string(),
+        crate::legacy_core::test_support::all_model_presets().clone(),
+    )));
+
+    chat.open_provider_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("provider_selection_popup", popup);
+    assert!(
+        !popup.contains("OPENROUTER_API_KEY"),
+        "provider picker should not render secret environment keys:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn provider_selection_emits_selected_provider_id() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let openai_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let openrouter_provider = ModelProviderInfo::create_openrouter_provider();
+    chat.config.model_provider_id = "openai".to_string();
+    chat.config.model_provider = openai_provider.clone();
+    chat.config.model_providers = HashMap::from([
+        ("openai".to_string(), openai_provider),
+        ("openrouter".to_string(), openrouter_provider),
+    ]);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openai".to_string(),
+        crate::legacy_core::test_support::all_model_presets().clone(),
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_provider_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SelectModelProvider { provider_id }) if provider_id == "openrouter"
+    );
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2301,6 +2395,83 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
     assert!(
         !popup.contains("test-hidden-model"),
         "expected hidden model to be excluded from picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn inactive_provider_model_selection_updates_default_only() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openai".to_string();
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openrouter".to_string(),
+        vec![provider_picker_preset(
+            "codex-auto-balanced",
+            ReasoningEffortConfig::Medium,
+        )],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_model_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistDefaultModelSelection {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::Medium),
+            } if provider_id == "openrouter" && model == "codex-auto-balanced"
+        )),
+        "expected provider-scoped default selection event; events: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            AppEvent::UpdateModel(_)
+                | AppEvent::UpdateReasoningEffort(_)
+                | AppEvent::PersistModelSelection { .. }
+        )),
+        "inactive provider selection must not mutate the active thread; events: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn inactive_provider_reasoning_selection_updates_default_only() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openai".to_string();
+    let preset = provider_picker_preset("openrouter/deepseek-v3.2", ReasoningEffortConfig::High);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openrouter".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_reasoning_popup(preset);
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistDefaultModelSelection {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::High),
+            } if provider_id == "openrouter" && model == "openrouter/deepseek-v3.2"
+        )),
+        "expected provider-scoped default reasoning event; events: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            AppEvent::UpdateModel(_)
+                | AppEvent::UpdateReasoningEffort(_)
+                | AppEvent::PersistModelSelection { .. }
+        )),
+        "inactive provider reasoning must not mutate the active thread; events: {events:?}"
     );
 }
 

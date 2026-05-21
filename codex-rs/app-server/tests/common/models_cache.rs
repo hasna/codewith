@@ -94,6 +94,7 @@ pub fn write_models_cache_with_models(
         "fetched_at": fetched_at,
         "etag": null,
         "client_version": client_version,
+        "provider_cache_key": "openai",
         "models": models
     });
     std::fs::write(cache_path, serde_json::to_string_pretty(&cache)?)

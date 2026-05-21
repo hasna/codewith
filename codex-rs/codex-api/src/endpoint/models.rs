@@ -4,11 +4,18 @@ use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::WebSearchToolType;
 use http::HeaderMap;
 use http::Method;
 use http::header::ETAG;
+use serde::Deserialize;
 use std::sync::Arc;
 
 pub struct ModelsClient<T: HttpTransport> {
@@ -61,15 +68,123 @@ impl<T: HttpTransport> ModelsClient<T> {
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
 
-        let ModelsResponse { models } = serde_json::from_slice::<ModelsResponse>(&resp.body)
-            .map_err(|e| {
-                ApiError::Stream(format!(
-                    "failed to decode models response: {e}; body: {}",
-                    String::from_utf8_lossy(&resp.body)
-                ))
-            })?;
+        let models = decode_models_response(&resp.body).map_err(|e| {
+            ApiError::Stream(format!(
+                "failed to decode models response: {e}; body: {}",
+                String::from_utf8_lossy(&resp.body)
+            ))
+        })?;
 
         Ok((models, header_etag))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ModelsEndpointResponse {
+    Codex(ModelsResponse),
+    OpenAiCompatible(OpenAiCompatibleModelsResponse),
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleModelsResponse {
+    data: Vec<OpenAiCompatibleModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleModel {
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    context_length: Option<i64>,
+    architecture: Option<OpenAiCompatibleArchitecture>,
+    supported_parameters: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleArchitecture {
+    input_modalities: Option<Vec<String>>,
+}
+
+fn decode_models_response(body: &[u8]) -> Result<Vec<ModelInfo>, serde_json::Error> {
+    let response = serde_json::from_slice::<ModelsEndpointResponse>(body)?;
+    Ok(match response {
+        ModelsEndpointResponse::Codex(ModelsResponse { models }) => models,
+        ModelsEndpointResponse::OpenAiCompatible(OpenAiCompatibleModelsResponse { data }) => data
+            .into_iter()
+            .enumerate()
+            .map(|(index, model)| model.into_model_info(i32::try_from(index).unwrap_or(i32::MAX)))
+            .collect(),
+    })
+}
+
+impl OpenAiCompatibleModel {
+    fn into_model_info(self, priority: i32) -> ModelInfo {
+        let OpenAiCompatibleModel {
+            id,
+            name,
+            description,
+            context_length,
+            architecture,
+            supported_parameters,
+        } = self;
+        let supports_tools = supported_parameters
+            .as_ref()
+            .is_some_and(|params| params.iter().any(|param| param == "tools"));
+        ModelInfo {
+            slug: id.clone(),
+            display_name: name.unwrap_or_else(|| id.clone()),
+            description,
+            default_reasoning_level: None,
+            supported_reasoning_levels: Vec::new(),
+            shell_type: ConfigShellToolType::Default,
+            visibility: ModelVisibility::List,
+            supported_in_api: true,
+            priority,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            availability_nux: None,
+            upgrade: None,
+            base_instructions: String::new(),
+            model_messages: None,
+            supports_reasoning_summaries: false,
+            default_reasoning_summary: ReasoningSummary::Auto,
+            support_verbosity: false,
+            default_verbosity: None,
+            apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+            supports_parallel_tool_calls: supports_tools,
+            supports_image_detail_original: false,
+            context_window: context_length,
+            max_context_window: context_length,
+            auto_compact_token_limit: None,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: Vec::new(),
+            input_modalities: architecture
+                .and_then(|architecture| architecture.input_modalities)
+                .map(input_modalities_from_openai_compatible)
+                .unwrap_or_else(|| vec![InputModality::Text]),
+            used_fallback_model_metadata: false,
+            supports_search_tool: false,
+        }
+    }
+}
+
+fn input_modalities_from_openai_compatible(modalities: Vec<String>) -> Vec<InputModality> {
+    let parsed = modalities
+        .into_iter()
+        .filter_map(|modality| match modality.as_str() {
+            "text" => Some(InputModality::Text),
+            "image" => Some(InputModality::Image),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if parsed.is_empty() {
+        vec![InputModality::Text]
+    } else {
+        parsed
     }
 }
 
@@ -242,6 +357,68 @@ mod tests {
         assert_eq!(models[0].slug, "gpt-test");
         assert_eq!(models[0].supported_in_api, true);
         assert_eq!(models[0].priority, 1);
+    }
+
+    #[test]
+    fn parses_openai_compatible_models_response() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "openrouter/auto",
+                        "name": "OpenRouter Auto",
+                        "description": "Routes to a model automatically",
+                        "context_length": 1_048_576,
+                        "architecture": {
+                            "input_modalities": ["text", "image", "file"]
+                        },
+                        "supported_parameters": ["tools", "temperature"]
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        assert_eq!(
+            models,
+            vec![ModelInfo {
+                slug: "openrouter/auto".to_string(),
+                display_name: "OpenRouter Auto".to_string(),
+                description: Some("Routes to a model automatically".to_string()),
+                default_reasoning_level: None,
+                supported_reasoning_levels: Vec::new(),
+                shell_type: ConfigShellToolType::Default,
+                visibility: ModelVisibility::List,
+                supported_in_api: true,
+                priority: 0,
+                additional_speed_tiers: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                availability_nux: None,
+                upgrade: None,
+                base_instructions: String::new(),
+                model_messages: None,
+                supports_reasoning_summaries: false,
+                default_reasoning_summary: ReasoningSummary::Auto,
+                support_verbosity: false,
+                default_verbosity: None,
+                apply_patch_tool_type: None,
+                web_search_tool_type: WebSearchToolType::Text,
+                truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+                supports_parallel_tool_calls: true,
+                supports_image_detail_original: false,
+                context_window: Some(1_048_576),
+                max_context_window: Some(1_048_576),
+                auto_compact_token_limit: None,
+                effective_context_window_percent: 95,
+                experimental_supported_tools: Vec::new(),
+                input_modalities: vec![InputModality::Text, InputModality::Image],
+                used_fallback_model_metadata: false,
+                supports_search_tool: false,
+            }]
+        );
     }
 
     #[tokio::test]

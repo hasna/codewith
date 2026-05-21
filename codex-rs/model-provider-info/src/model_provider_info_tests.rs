@@ -299,6 +299,16 @@ fn test_built_in_model_providers_include_amazon_bedrock() {
 }
 
 #[test]
+fn test_built_in_model_providers_include_openrouter() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(OPENROUTER_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_openrouter_provider())
+    );
+}
+
+#[test]
 fn test_merge_configured_model_providers_adds_custom_provider() {
     let custom_provider = ModelProviderInfo {
         name: "Custom".to_string(),
@@ -310,6 +320,31 @@ fn test_merge_configured_model_providers_adds_custom_provider() {
 
     let mut expected = built_in_model_providers(/*openai_base_url*/ None);
     expected.insert("custom".to_string(), custom_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_openrouter_override() {
+    let openrouter_provider = ModelProviderInfo {
+        name: "OpenRouter Mirror".to_string(),
+        base_url: Some("https://openrouter.example.com/api/v1".to_string()),
+        env_key: Some("OPENROUTER_MIRROR_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        OPENROUTER_PROVIDER_ID.to_string(),
+        openrouter_provider.clone(),
+    )]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    expected.insert(OPENROUTER_PROVIDER_ID.to_string(), openrouter_provider);
 
     assert_eq!(
         merge_configured_model_providers(

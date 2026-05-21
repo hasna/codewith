@@ -72,7 +72,7 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
 
 #[derive(Debug)]
 struct TestModelsEndpoint {
-    has_command_auth: bool,
+    has_provider_auth: bool,
     uses_codex_backend: bool,
     responses: Mutex<VecDeque<Vec<ModelInfo>>>,
     fetch_count: AtomicUsize,
@@ -81,7 +81,7 @@ struct TestModelsEndpoint {
 impl TestModelsEndpoint {
     fn new(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
-            has_command_auth: false,
+            has_provider_auth: false,
             uses_codex_backend: true,
             responses: Mutex::new(responses.into()),
             fetch_count: AtomicUsize::new(0),
@@ -90,7 +90,7 @@ impl TestModelsEndpoint {
 
     fn without_refresh(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
-            has_command_auth: false,
+            has_provider_auth: false,
             uses_codex_backend: false,
             responses: Mutex::new(responses.into()),
             fetch_count: AtomicUsize::new(0),
@@ -146,8 +146,8 @@ impl ExternalAuth for TestUnresolvedExternalApiKeyAuth {
 
 #[async_trait]
 impl ModelsEndpointClient for TestModelsEndpoint {
-    fn has_command_auth(&self) -> bool {
-        self.has_command_auth
+    fn has_provider_auth(&self) -> bool {
+        self.has_provider_auth
     }
 
     async fn uses_codex_backend(&self) -> bool {
@@ -187,7 +187,43 @@ fn openai_manager_for_tests_with_auth(
     endpoint_client: Arc<dyn ModelsEndpointClient>,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> OpenAiModelsManager {
-    OpenAiModelsManager::new(codex_home, endpoint_client, auth_manager)
+    openai_manager_for_tests_with_provider_key(
+        codex_home,
+        "openai".to_string(),
+        endpoint_client,
+        auth_manager,
+    )
+}
+
+fn openai_manager_for_tests_with_provider_key(
+    codex_home: std::path::PathBuf,
+    provider_cache_key: String,
+    endpoint_client: Arc<dyn ModelsEndpointClient>,
+    auth_manager: Option<Arc<AuthManager>>,
+) -> OpenAiModelsManager {
+    openai_manager_for_tests_with_provider_key_and_catalog(
+        codex_home,
+        provider_cache_key,
+        BundledModelCatalog::UseAsFallback,
+        endpoint_client,
+        auth_manager,
+    )
+}
+
+fn openai_manager_for_tests_with_provider_key_and_catalog(
+    codex_home: std::path::PathBuf,
+    provider_cache_key: String,
+    bundled_model_catalog: BundledModelCatalog,
+    endpoint_client: Arc<dyn ModelsEndpointClient>,
+    auth_manager: Option<Arc<AuthManager>>,
+) -> OpenAiModelsManager {
+    OpenAiModelsManager::new(
+        codex_home,
+        provider_cache_key,
+        bundled_model_catalog,
+        endpoint_client,
+        auth_manager,
+    )
 }
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
@@ -496,7 +532,7 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
     )];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
-        has_command_auth: true,
+        has_provider_auth: true,
         uses_codex_backend: false,
         responses: Mutex::new(vec![remote_models.clone()].into()),
         fetch_count: AtomicUsize::new(0),
@@ -517,6 +553,39 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
         .expect("refresh succeeds");
 
     assert_eq!(manager.get_remote_models().await, expected);
+    assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
+}
+
+#[tokio::test]
+async fn refresh_available_models_uses_provider_catalog_without_bundled_fallback() {
+    let remote_models = vec![remote_model(
+        "provider-visible-remote",
+        "Provider Visible",
+        /*priority*/ 0,
+    )];
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = Arc::new(TestModelsEndpoint {
+        has_provider_auth: true,
+        uses_codex_backend: false,
+        responses: Mutex::new(vec![remote_models.clone()].into()),
+        fetch_count: AtomicUsize::new(0),
+    });
+    let manager = openai_manager_for_tests_with_provider_key_and_catalog(
+        codex_home.path().to_path_buf(),
+        "openrouter".to_string(),
+        BundledModelCatalog::Disabled,
+        endpoint.clone(),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "provider-api-key",
+        ))),
+    );
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    assert_eq!(manager.get_remote_models().await, remote_models);
     assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
 }
 
@@ -611,6 +680,55 @@ async fn refresh_available_models_refetches_when_version_mismatch() {
         endpoint.fetch_count(),
         2,
         "version mismatch should fetch models again"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_refetches_when_provider_cache_key_mismatches() {
+    let initial_models = vec![remote_model("first-provider", "First", /*priority*/ 1)];
+    let other_provider_models = vec![remote_model(
+        "second-provider",
+        "Second",
+        /*priority*/ 2,
+    )];
+    let codex_home = tempdir().expect("temp dir");
+    let first_endpoint = TestModelsEndpoint::new(vec![initial_models.clone()]);
+    let first_manager = openai_manager_for_tests_with_provider_key(
+        codex_home.path().to_path_buf(),
+        "first-provider".to_string(),
+        first_endpoint,
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    );
+
+    first_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    let second_endpoint = TestModelsEndpoint::new(vec![other_provider_models.clone()]);
+    let second_manager = openai_manager_for_tests_with_provider_key(
+        codex_home.path().to_path_buf(),
+        "second-provider".to_string(),
+        second_endpoint.clone(),
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    );
+    second_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("provider switch refresh succeeds");
+
+    assert_models_contain(
+        &second_manager.get_remote_models().await,
+        &other_provider_models,
+    );
+    assert_eq!(
+        second_endpoint.fetch_count(),
+        1,
+        "provider mismatch should fetch instead of reusing another provider cache"
     );
 }
 
@@ -715,7 +833,7 @@ impl TestAuthAwareModelsEndpoint {
 
 #[async_trait]
 impl ModelsEndpointClient for TestAuthAwareModelsEndpoint {
-    fn has_command_auth(&self) -> bool {
+    fn has_provider_auth(&self) -> bool {
         false
     }
 

@@ -7,6 +7,7 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -149,24 +150,44 @@ pub fn create_model_provider(
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> SharedModelProvider {
+    create_model_provider_with_id(provider_info.name.clone(), provider_info, auth_manager)
+}
+
+/// Creates the default runtime model provider for configured provider metadata
+/// with a stable provider identifier for provider-scoped caches.
+pub fn create_model_provider_with_id(
+    provider_id: impl Into<String>,
+    provider_info: ModelProviderInfo,
+    auth_manager: Option<Arc<AuthManager>>,
+) -> SharedModelProvider {
     if provider_info.is_amazon_bedrock() {
         Arc::new(AmazonBedrockModelProvider::new(provider_info))
     } else {
-        Arc::new(ConfiguredModelProvider::new(provider_info, auth_manager))
+        Arc::new(ConfiguredModelProvider::new(
+            provider_id.into(),
+            provider_info,
+            auth_manager,
+        ))
     }
 }
 
 /// Runtime model provider backed by configured `ModelProviderInfo`.
 #[derive(Clone, Debug)]
 struct ConfiguredModelProvider {
+    provider_id: String,
     info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
 }
 
 impl ConfiguredModelProvider {
-    fn new(provider_info: ModelProviderInfo, auth_manager: Option<Arc<AuthManager>>) -> Self {
+    fn new(
+        provider_id: String,
+        provider_info: ModelProviderInfo,
+        auth_manager: Option<Arc<AuthManager>>,
+    ) -> Self {
         let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
         Self {
+            provider_id,
             info: provider_info,
             auth_manager,
         }
@@ -250,8 +271,15 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));
+                let bundled_model_catalog = if self.info.is_openai() {
+                    BundledModelCatalog::UseAsFallback
+                } else {
+                    BundledModelCatalog::Disabled
+                };
                 Arc::new(OpenAiModelsManager::new(
                     codex_home,
+                    self.provider_id.clone(),
+                    bundled_model_catalog,
                     endpoint,
                     self.auth_manager.clone(),
                 ))

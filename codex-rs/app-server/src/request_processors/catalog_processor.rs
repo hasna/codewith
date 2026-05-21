@@ -94,6 +94,31 @@ fn errors_to_info(
         .collect()
 }
 
+fn provider_display_name(id: &str, provider: &ModelProviderInfo) -> String {
+    let name = provider.name.trim();
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn provider_auth_kind(provider: &ModelProviderInfo) -> ModelProviderAuthKind {
+    if provider.aws.is_some() {
+        ModelProviderAuthKind::Aws
+    } else if provider.auth.is_some() {
+        ModelProviderAuthKind::Command
+    } else if provider.experimental_bearer_token.is_some() {
+        ModelProviderAuthKind::BearerToken
+    } else if provider.env_key.is_some() {
+        ModelProviderAuthKind::Environment
+    } else if provider.requires_openai_auth {
+        ModelProviderAuthKind::OpenAi
+    } else {
+        ModelProviderAuthKind::None
+    }
+}
+
 impl CatalogRequestProcessor {
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
@@ -142,7 +167,16 @@ impl CatalogRequestProcessor {
         &self,
         params: ModelListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        Self::list_models(self.thread_manager.clone(), params)
+        self.list_models(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn model_provider_list(
+        &self,
+        params: ModelProviderListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.model_provider_list_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -231,15 +265,39 @@ impl CatalogRequestProcessor {
     }
 
     async fn list_models(
-        thread_manager: Arc<ThreadManager>,
+        &self,
         params: ModelListParams,
     ) -> Result<ModelListResponse, JSONRPCErrorError> {
         let ModelListParams {
             limit,
             cursor,
             include_hidden,
+            model_provider,
         } = params;
-        let models = supported_models(thread_manager, include_hidden.unwrap_or(false)).await;
+        let include_hidden = include_hidden.unwrap_or(false);
+        let models = match model_provider {
+            Some(model_provider) => {
+                let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+                let provider_info = config
+                    .model_providers
+                    .get(&model_provider)
+                    .ok_or_else(|| {
+                        invalid_request(format!("model provider not found: {model_provider}"))
+                    })?
+                    .clone();
+                let provider = create_model_provider_with_id(
+                    model_provider,
+                    provider_info,
+                    Some(Arc::clone(&self.auth_manager)),
+                );
+                let models_manager = provider.models_manager(
+                    config.codex_home.to_path_buf(),
+                    config.model_catalog.clone(),
+                );
+                supported_models_from_manager(models_manager, include_hidden).await
+            }
+            None => supported_models(self.thread_manager.clone(), include_hidden).await,
+        };
         let total = models.len();
 
         if total == 0 {
@@ -275,6 +333,33 @@ impl CatalogRequestProcessor {
             data: items,
             next_cursor,
         })
+    }
+
+    async fn model_provider_list_response(
+        &self,
+        params: ModelProviderListParams,
+    ) -> Result<ModelProviderListResponse, JSONRPCErrorError> {
+        let ModelProviderListParams {} = params;
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let mut data = config
+            .model_providers
+            .iter()
+            .map(|(id, provider)| ModelProviderSummary {
+                id: id.clone(),
+                name: provider_display_name(id, provider),
+                auth_kind: provider_auth_kind(provider),
+                requires_openai_auth: provider.requires_openai_auth,
+                is_current: id == &config.model_provider_id,
+            })
+            .collect::<Vec<_>>();
+        data.sort_by(|left, right| {
+            right
+                .is_current
+                .cmp(&left.is_current)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ModelProviderListResponse { data })
     }
 
     async fn list_collaboration_modes(

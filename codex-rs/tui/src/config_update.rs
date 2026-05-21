@@ -69,6 +69,20 @@ pub(crate) fn build_model_selection_edits(
     ]
 }
 
+pub(crate) fn build_model_provider_selection_edits(
+    profile: Option<&str>,
+    provider_id: &str,
+    model: &str,
+    effort: Option<impl ToString>,
+) -> Vec<ConfigEdit> {
+    let mut edits = vec![replace_config_value(
+        profile_scoped_key_path(profile, "model_provider"),
+        serde_json::json!(provider_id),
+    )];
+    edits.extend(build_model_selection_edits(profile, model, effort));
+    edits
+}
+
 pub(crate) fn build_service_tier_selection_edits(
     profile: Option<&str>,
     service_tier: Option<&str>,
@@ -152,6 +166,49 @@ mod tests {
         assert_eq!(
             app_scoped_key_path("plugin.linear", "enabled"),
             "apps.\"plugin.linear\".enabled"
+        );
+    }
+
+    #[test]
+    fn model_provider_selection_edits_update_provider_model_and_effort() {
+        assert_eq!(
+            build_model_provider_selection_edits(
+                Some("team.prod"),
+                "openrouter",
+                "openai/o4-mini",
+                Some("medium"),
+            ),
+            vec![
+                replace_config_value(
+                    "profiles.\"team.prod\".model_provider",
+                    serde_json::json!("openrouter"),
+                ),
+                replace_config_value(
+                    "profiles.\"team.prod\".model",
+                    serde_json::json!("openai/o4-mini"),
+                ),
+                replace_config_value(
+                    "profiles.\"team.prod\".model_reasoning_effort",
+                    serde_json::json!("medium"),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_provider_selection_edits_clear_default_effort() {
+        assert_eq!(
+            build_model_provider_selection_edits(
+                /*profile*/ None,
+                "openrouter",
+                "openai/o4-mini",
+                Option::<String>::None,
+            ),
+            vec![
+                replace_config_value("model_provider", serde_json::json!("openrouter")),
+                replace_config_value("model", serde_json::json!("openai/o4-mini")),
+                clear_config_value("model_reasoning_effort"),
+            ]
         );
     }
 }

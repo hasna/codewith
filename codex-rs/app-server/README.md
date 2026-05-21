@@ -195,7 +195,8 @@ Example with notification opt-out:
 - `fs/watch` — subscribe this connection to filesystem change notifications for an absolute file or directory path and caller-provided `watchId`; returns the canonicalized `path`.
 - `fs/unwatch` — stop sending notifications for a prior `fs/watch`; returns `{}`.
 - `fs/changed` — notification emitted when watched paths change, including the `watchId` and `changedPaths`.
-- `model/list` — list available models (set `includeHidden: true` to include entries with `hidden: true`), with reasoning effort options, `additionalSpeedTiers`, `serviceTiers`, optional `defaultServiceTier`, optional legacy `upgrade` model ids, optional `upgradeInfo` metadata (`model`, `upgradeCopy`, `modelLink`, `migrationMarkdown`), and optional `availabilityNux` metadata.
+- `model/list` — list available models (set `includeHidden: true` to include entries with `hidden: true`; set `modelProvider` to a configured provider id to browse that provider without changing the active thread), with reasoning effort options, `additionalSpeedTiers`, `serviceTiers`, optional `defaultServiceTier`, optional legacy `upgrade` model ids, optional `upgradeInfo` metadata (`model`, `upgradeCopy`, `modelLink`, `migrationMarkdown`), and optional `availabilityNux` metadata.
+- `modelProvider/list` — list configured model providers as safe summaries for provider pickers. The response includes provider id, display name, auth kind, whether OpenAI auth is required, and which provider is current; it does not return API keys, bearer tokens, auth commands, URLs, or headers.
 - `modelProvider/capabilities/read` — read provider-level capabilities for the currently configured model provider.
 - `experimentalFeature/list` — list feature flags with stage metadata (`beta`, `underDevelopment`, `stable`, etc.), enabled/default-enabled state, and cursor pagination. Pass `threadId` when showing feature state for an existing loaded thread so `enabled` is computed from that thread's refreshed config, including project-local config for the thread's cwd; if omitted, the server uses its default config resolution context. For non-beta flags, `displayName`/`description`/`announcement` are `null`.
 - `permissionProfile/list` — beta; list available permission profile ids with optional display `description` text, using cursor pagination. Pass `cwd` when the caller needs project-local `[permissions.<id>]` entries to be included in the current catalog view.
@@ -234,6 +235,52 @@ Example with notification opt-out:
 - `config/value/write` — write a single config key/value to the user's config.toml on disk; dotted paths such as `desktop.someKey` use the same generic write surface.
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk, with optional `reloadUserConfig: true` to hot-reload loaded threads, including multiple `desktop.*` edits.
 - `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`, `allowedPermissions`), lifecycle hook lockdown (`allowManagedHooksOnly`), computer use policy (`computerUse`), pinned feature values (`featureRequirements`), managed lifecycle hooks (`hooks`), `enforceResidency`, and `network` constraints such as canonical domain/socket permissions plus `managedAllowedDomainsOnly` and `dangerFullAccessDenylistOnly`.
+
+### Example: List model providers and provider-scoped models
+
+Use `modelProvider/list` to build a provider picker without exposing secrets or low-level provider configuration. Provider summaries are sorted with the current provider first.
+
+```json
+{ "method": "modelProvider/list", "id": 30, "params": {} }
+{ "id": 30, "result": {
+    "data": [
+        { "id": "openai", "name": "OpenAI", "authKind": "openAi", "requiresOpenaiAuth": true, "isCurrent": true },
+        { "id": "openrouter", "name": "OpenRouter", "authKind": "environment", "requiresOpenaiAuth": false, "isCurrent": false }
+    ]
+} }
+```
+
+Pass a provider id to `model/list` when the client wants to browse or switch defaults for a provider that is not the current thread provider. Omitting `modelProvider` preserves the existing behavior and lists models for the active provider.
+
+```json
+{ "method": "model/list", "id": 31, "params": {
+    "modelProvider": "openrouter",
+    "includeHidden": true
+} }
+{ "id": 31, "result": {
+    "data": [
+        {
+            "id": "openrouter/auto",
+            "model": "openrouter/auto",
+            "upgrade": null,
+            "upgradeInfo": null,
+            "availabilityNux": null,
+            "displayName": "openrouter/auto",
+            "description": "",
+            "hidden": false,
+            "supportedReasoningEfforts": [],
+            "defaultReasoningEffort": "none",
+            "inputModalities": ["text"],
+            "supportsPersonality": false,
+            "additionalSpeedTiers": [],
+            "serviceTiers": [],
+            "defaultServiceTier": null,
+            "isDefault": false
+        }
+    ],
+    "nextCursor": null
+} }
+```
 
 ### Example: Start or resume a thread
 

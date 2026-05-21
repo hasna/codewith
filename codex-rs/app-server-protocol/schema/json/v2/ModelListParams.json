@@ -23,6 +23,13 @@
         "integer",
         "null"
       ]
+    },
+    "modelProvider": {
+      "description": "Provider id whose models should be listed. Omission uses the active provider.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ModelListParams",

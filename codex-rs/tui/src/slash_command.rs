@@ -13,6 +13,7 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Provider,
     Ide,
     Permissions,
     Keymap,
@@ -107,6 +108,7 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Provider => "choose the default model provider",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -188,6 +190,7 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
+            | SlashCommand::Provider
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -275,6 +278,18 @@ mod tests {
     fn pet_alias_parses_to_pets_command() {
         assert_eq!(SlashCommand::Pets.command(), "pets");
         assert_eq!(SlashCommand::from_str("pet"), Ok(SlashCommand::Pets));
+    }
+
+    #[test]
+    fn model_command_is_singular() {
+        assert_eq!(SlashCommand::Model.command(), "model");
+        assert!(SlashCommand::from_str("models").is_err());
+    }
+
+    #[test]
+    fn provider_command_is_singular() {
+        assert_eq!(SlashCommand::Provider.command(), "provider");
+        assert!(SlashCommand::from_str("providers").is_err());
     }
 
     #[test]

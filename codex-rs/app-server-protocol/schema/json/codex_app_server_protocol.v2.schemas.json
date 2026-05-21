@@ -2378,6 +2378,30 @@
             },
             "method": {
               "enum": [
+                "modelProvider/list"
+              ],
+              "title": "ModelProvider/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ModelProviderListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ModelProvider/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "modelProvider/capabilities/read"
               ],
               "title": "ModelProvider/capabilities/readRequestMethod",
@@ -8194,6 +8218,13 @@
             "integer",
             "null"
           ]
+        },
+        "modelProvider": {
+          "description": "Provider id whose models should be listed. Omission uses the active provider.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "title": "ModelListParams",
@@ -8222,6 +8253,17 @@
       "title": "ModelListResponse",
       "type": "object"
     },
+    "ModelProviderAuthKind": {
+      "enum": [
+        "none",
+        "openAi",
+        "environment",
+        "command",
+        "aws",
+        "bearerToken"
+      ],
+      "type": "string"
+    },
     "ModelProviderCapabilitiesReadParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ModelProviderCapabilitiesReadParams",
@@ -8246,6 +8288,54 @@
         "webSearch"
       ],
       "title": "ModelProviderCapabilitiesReadResponse",
+      "type": "object"
+    },
+    "ModelProviderListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ModelProviderListParams",
+      "type": "object"
+    },
+    "ModelProviderListResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/definitions/ModelProviderSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "title": "ModelProviderListResponse",
+      "type": "object"
+    },
+    "ModelProviderSummary": {
+      "properties": {
+        "authKind": {
+          "$ref": "#/definitions/ModelProviderAuthKind"
+        },
+        "id": {
+          "type": "string"
+        },
+        "isCurrent": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "requiresOpenaiAuth": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "authKind",
+        "id",
+        "isCurrent",
+        "name",
+        "requiresOpenaiAuth"
+      ],
       "type": "object"
     },
     "ModelRerouteReason": {

@@ -838,6 +838,72 @@ impl App {
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
             }
+            AppEvent::SelectModelProvider { provider_id } => {
+                let Some(provider_info) = self.config.model_providers.get(&provider_id).cloned()
+                else {
+                    self.chat_widget
+                        .add_error_message(format!("Unknown model provider: {provider_id}"));
+                    return Ok(AppRunControl::Continue);
+                };
+                let models = match app_server
+                    .list_models_for_provider(provider_id.clone())
+                    .await
+                {
+                    Ok(models) => models,
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to load models for provider `{provider_id}`: {err}"
+                        ));
+                        return Ok(AppRunControl::Continue);
+                    }
+                };
+                let selected = models
+                    .iter()
+                    .find(|model| model.show_in_picker && model.is_default)
+                    .or_else(|| models.iter().find(|model| model.show_in_picker))
+                    .or_else(|| models.first())
+                    .cloned();
+                let Some(selected) = selected else {
+                    self.chat_widget.add_error_message(format!(
+                        "Provider `{provider_id}` did not return any models."
+                    ));
+                    return Ok(AppRunControl::Continue);
+                };
+                let effort = Some(selected.default_reasoning_effort);
+                let profile = self.active_profile.as_deref();
+                let edits = crate::config_update::build_model_provider_selection_edits(
+                    profile,
+                    provider_id.as_str(),
+                    selected.model.as_str(),
+                    effort,
+                );
+                match crate::config_update::write_config_batch(app_server.request_handle(), edits)
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.model_provider_id = provider_id.clone();
+                        self.config.model_provider = provider_info;
+                        self.config.model = Some(selected.model.clone());
+                        self.config.model_reasoning_effort = effort;
+                        let model_catalog =
+                            Arc::new(ModelCatalog::new_for_provider(provider_id.clone(), models));
+                        self.model_catalog = model_catalog.clone();
+                        self.chat_widget.set_model_catalog(model_catalog);
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Default provider changed to {provider_id}; new chats will use {}.",
+                                selected.model
+                            ),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save provider `{provider_id}`: {err}"
+                        ));
+                    }
+                }
+            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)
@@ -1403,6 +1469,39 @@ impl App {
                             self.chat_widget
                                 .add_error_message(format!("Failed to save default model: {err}"));
                         }
+                    }
+                }
+            }
+            AppEvent::PersistDefaultModelSelection {
+                provider_id,
+                model,
+                effort,
+            } => {
+                let profile = self.active_profile.as_deref();
+                match crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    crate::config_update::build_model_selection_edits(
+                        profile,
+                        model.as_str(),
+                        effort,
+                    ),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        self.config.model = Some(model.clone());
+                        self.config.model_reasoning_effort = effort;
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Default model for {provider_id} changed to {model}; active chats keep their current provider."
+                            ),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save default model `{model}` for provider `{provider_id}`: {err}"
+                        ));
                     }
                 }
             }

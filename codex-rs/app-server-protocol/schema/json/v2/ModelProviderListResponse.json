@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ModelProviderAuthKind": {
+      "enum": [
+        "none",
+        "openAi",
+        "environment",
+        "command",
+        "aws",
+        "bearerToken"
+      ],
+      "type": "string"
+    },
+    "ModelProviderSummary": {
+      "properties": {
+        "authKind": {
+          "$ref": "#/definitions/ModelProviderAuthKind"
+        },
+        "id": {
+          "type": "string"
+        },
+        "isCurrent": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "requiresOpenaiAuth": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "authKind",
+        "id",
+        "isCurrent",
+        "name",
+        "requiresOpenaiAuth"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/definitions/ModelProviderSummary"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "ModelProviderListResponse",
+  "type": "object"
+}

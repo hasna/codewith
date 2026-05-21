@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 2258
+expression: popup
+---
+  Select Provider
+  Set the default provider for new chats and model browsing.
+
+› 1. OpenAI (current)  Uses Codex/OpenAI login
+  2. OpenRouter        openrouter
+
+  Press enter to confirm or esc to go back

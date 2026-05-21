@@ -16,14 +16,20 @@ use tracing::info;
 pub(crate) struct ModelsCacheManager {
     cache_path: PathBuf,
     cache_ttl: Duration,
+    provider_cache_key: String,
 }
 
 impl ModelsCacheManager {
     /// Create a new cache manager with the given path and TTL.
-    pub(crate) fn new(cache_path: PathBuf, cache_ttl: Duration) -> Self {
+    pub(crate) fn new(
+        cache_path: PathBuf,
+        cache_ttl: Duration,
+        provider_cache_key: String,
+    ) -> Self {
         Self {
             cache_path,
             cache_ttl,
+            provider_cache_key,
         }
     }
 
@@ -56,6 +62,15 @@ impl ModelsCacheManager {
             );
             return None;
         }
+        if cache.provider_cache_key.as_deref() != Some(self.provider_cache_key.as_str()) {
+            info!(
+                cache_path = %self.cache_path.display(),
+                expected_provider_cache_key = %self.provider_cache_key,
+                cached_provider_cache_key = ?cache.provider_cache_key,
+                "models cache: provider cache key mismatch"
+            );
+            return None;
+        }
         if !cache.is_fresh(self.cache_ttl) {
             info!(
                 cache_path = %self.cache_path.display(),
@@ -84,6 +99,7 @@ impl ModelsCacheManager {
             fetched_at: Utc::now(),
             etag,
             client_version: Some(client_version),
+            provider_cache_key: Some(self.provider_cache_key.clone()),
             models: models.to_vec(),
         };
         if let Err(err) = self.save_internal(&cache).await {
@@ -97,6 +113,12 @@ impl ModelsCacheManager {
             Some(cache) => cache,
             None => return Err(io::Error::new(ErrorKind::NotFound, "cache not found")),
         };
+        if cache.provider_cache_key.as_deref() != Some(self.provider_cache_key.as_str()) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "cache provider key mismatch",
+            ));
+        }
         cache.fetched_at = Utc::now();
         self.save_internal(&cache).await
     }
@@ -165,6 +187,8 @@ pub(crate) struct ModelsCache {
     pub(crate) etag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_cache_key: Option<String>,
     pub(crate) models: Vec<ModelInfo>,
 }
 

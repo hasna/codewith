@@ -67,8 +67,11 @@ impl OpenAiModelsEndpoint {
 
 #[async_trait]
 impl ModelsEndpointClient for OpenAiModelsEndpoint {
-    fn has_command_auth(&self) -> bool {
+    fn has_provider_auth(&self) -> bool {
         self.provider_info.has_command_auth()
+            || self.provider_info.env_key.is_some()
+            || self.provider_info.experimental_bearer_token.is_some()
+            || self.provider_info.aws.is_some()
     }
 
     async fn uses_codex_backend(&self) -> bool {
@@ -226,22 +229,35 @@ mod tests {
     }
 
     #[test]
-    fn command_auth_provider_reports_command_auth_without_cached_auth() {
+    fn command_auth_provider_reports_provider_auth_without_cached_auth() {
         let endpoint = OpenAiModelsEndpoint::new(
             provider_info_with_command_auth(),
             /*auth_manager*/ None,
         );
 
-        assert!(endpoint.has_command_auth());
+        assert!(endpoint.has_provider_auth());
     }
 
     #[test]
-    fn provider_without_command_auth_reports_no_command_auth() {
+    fn env_key_provider_reports_provider_auth_without_cached_auth() {
+        let endpoint = OpenAiModelsEndpoint::new(
+            ModelProviderInfo {
+                env_key: Some("OPENROUTER_API_KEY".to_string()),
+                ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+            },
+            /*auth_manager*/ None,
+        );
+
+        assert!(endpoint.has_provider_auth());
+    }
+
+    #[test]
+    fn provider_without_provider_auth_reports_no_provider_auth() {
         let endpoint = OpenAiModelsEndpoint::new(
             ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             /*auth_manager*/ None,
         );
 
-        assert!(!endpoint.has_command_auth());
+        assert!(!endpoint.has_provider_auth());
     }
 }

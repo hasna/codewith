@@ -257,6 +257,7 @@ impl AppServerSession {
                     cursor: None,
                     limit: None,
                     include_hidden: Some(true),
+                    model_provider: None,
                 },
             })
             .await
@@ -332,6 +333,31 @@ impl AppServerSession {
             has_chatgpt_account,
             available_models,
         })
+    }
+
+    pub(crate) async fn list_models_for_provider(
+        &mut self,
+        provider_id: String,
+    ) -> Result<Vec<ModelPreset>> {
+        let request_id = self.next_request_id();
+        let response: ModelListResponse = self
+            .client
+            .request_typed(ClientRequest::ModelList {
+                request_id,
+                params: ModelListParams {
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(true),
+                    model_provider: Some(provider_id),
+                },
+            })
+            .await
+            .wrap_err("model/list failed while switching providers")?;
+        Ok(response
+            .data
+            .into_iter()
+            .map(model_preset_from_api_model)
+            .collect())
     }
 
     /// Fetches the current account info without refreshing the auth token.
