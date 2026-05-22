@@ -44,6 +44,8 @@ async fn read_amazon_bedrock_provider_capabilities() -> Result<()> {
     std::fs::write(
         codex_home.path().join("config.toml"),
         r#"model_provider = "amazon-bedrock"
+
+[model_providers.amazon-bedrock.aws]
 "#,
     )?;
     let mut mcp = McpProcess::new(codex_home.path()).await?;

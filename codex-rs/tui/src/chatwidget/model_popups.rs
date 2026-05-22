@@ -4,9 +4,26 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+
+const MAX_PICKER_DESCRIPTION_WORDS: usize = 8;
+
+fn short_picker_description(description: &str) -> String {
+    description
+        .split_whitespace()
+        .take(MAX_PICKER_DESCRIPTION_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn short_picker_description_optional(description: &str) -> Option<String> {
+    let description = short_picker_description(description);
+    (!description.is_empty()).then_some(description)
+}
 
 impl ChatWidget {
-    /// Open a popup to choose a quick auto model. Selecting "All models"
+    /// Open a popup to choose a quick auto model. Selecting "Model catalog"
     /// opens the full picker with every available preset.
     pub(crate) fn open_model_popup(&mut self) {
         if !self.is_session_configured() {
@@ -48,6 +65,7 @@ impl ChatWidget {
             .config
             .model_providers
             .iter()
+            .filter(|(id, _)| matches!(id.as_str(), OPENAI_PROVIDER_ID | OPENROUTER_PROVIDER_ID))
             .map(|(id, provider)| {
                 let name = provider.name.trim();
                 let display_name = if name.is_empty() {
@@ -69,9 +87,9 @@ impl ChatWidget {
             .into_iter()
             .map(|(provider_id, display_name, requires_openai_auth)| {
                 let auth_label = if requires_openai_auth {
-                    "Uses Codex/OpenAI login"
+                    "Uses Codex or OpenAI login"
                 } else {
-                    "Uses provider API key or local access"
+                    "Uses a provider API key"
                 };
                 let actions: Vec<SelectionAction> = vec![Box::new({
                     let provider_id = provider_id.clone();
@@ -83,7 +101,7 @@ impl ChatWidget {
                 })];
                 SelectionItem {
                     name: display_name,
-                    description: Some(provider_id.clone()),
+                    description: Some(short_picker_description(&provider_id)),
                     selected_description: Some(auth_label.to_string()),
                     is_current: provider_id == current_provider_id,
                     actions,
@@ -95,9 +113,7 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Select Provider".bold()));
-        header.push(Line::from(
-            "Set the default provider for new chats and model browsing.".dim(),
-        ));
+        header.push(Line::from("Switch chat provider and model.".dim()));
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
             items,
@@ -121,7 +137,7 @@ impl ChatWidget {
     fn model_menu_warning_line(&self) -> Option<Line<'static>> {
         let base_url = self.custom_openai_base_url()?;
         let warning = format!(
-            "Warning: OpenAI base URL is overridden to {base_url}. Selecting models may not be supported or work properly."
+            "Warning: OpenAI base URL is overridden to {base_url}. Selecting a model may not be supported or work properly."
         );
         Some(Line::from(warning.red()))
     }
@@ -173,8 +189,7 @@ impl ChatWidget {
         let mut items: Vec<SelectionItem> = auto_presets
             .into_iter()
             .map(|preset| {
-                let description =
-                    (!preset.description.is_empty()).then_some(preset.description.clone());
+                let description = short_picker_description_optional(&preset.description);
                 let model = preset.model.clone();
                 let should_prompt_plan_mode_scope = self.should_prompt_plan_mode_reasoning_scope(
                     model.as_str(),
@@ -208,12 +223,10 @@ impl ChatWidget {
             })];
 
             let is_current = !items.iter().any(|item| item.is_current);
-            let description = Some(format!(
-                "Choose a specific model and reasoning level (current: {current_label})"
-            ));
+            let description = Some(format!("Browse catalog; current {current_label}"));
 
             items.push(SelectionItem {
-                name: "All models".to_string(),
+                name: "Model catalog".to_string(),
                 description,
                 is_current,
                 actions,
@@ -222,10 +235,7 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header(
-            "Select Model",
-            "Pick a quick auto mode or browse all models.",
-        );
+        let header = self.model_menu_header("Select Model", "Pick from model catalog.");
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
             items,
@@ -250,7 +260,7 @@ impl ChatWidget {
     pub(crate) fn open_all_models_popup(&mut self, presets: Vec<ModelPreset>) {
         if presets.is_empty() {
             self.add_info_message(
-                "No additional models are available right now.".to_string(),
+                "No model catalog entries are available right now.".to_string(),
                 /*hint*/ None,
             );
             return;
@@ -258,17 +268,30 @@ impl ChatWidget {
 
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
-            let description =
-                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let description = short_picker_description_optional(&preset.description);
             let is_current = preset.model.as_str() == self.current_model();
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
-            let preset_for_action = preset.clone();
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                let preset_for_event = preset_for_action.clone();
-                tx.send(AppEvent::OpenReasoningPopup {
-                    model: preset_for_event,
-                });
-            })];
+            let should_prompt_plan_mode_scope = self.should_prompt_plan_mode_reasoning_scope(
+                preset.model.as_str(),
+                Some(preset.default_reasoning_effort),
+            );
+            let actions: Vec<SelectionAction> = if single_supported_effort {
+                Self::model_selection_actions(
+                    preset.model.clone(),
+                    Some(preset.default_reasoning_effort),
+                    should_prompt_plan_mode_scope,
+                    self.model_catalog.provider_id().map(str::to_string),
+                    self.model_selection_updates_active_thread(),
+                )
+            } else {
+                let preset_for_action = preset.clone();
+                vec![Box::new(move |tx| {
+                    let preset_for_event = preset_for_action.clone();
+                    tx.send(AppEvent::OpenReasoningPopup {
+                        model: preset_for_event,
+                    });
+                })]
+            };
             items.push(SelectionItem {
                 name: preset.model.clone(),
                 description,
@@ -281,10 +304,7 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header(
-            "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
-        );
+        let header = self.model_menu_header("Select Model and Effort", "Pick a model and effort.");
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,

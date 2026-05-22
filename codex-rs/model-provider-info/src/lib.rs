@@ -4,6 +4,8 @@
 //!   1. Built-in defaults compiled into the binary so Codex works out-of-the-box.
 //!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
+//!
+//! The built-in picker surface is intentionally small: OpenAI plus OpenRouter.
 
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
@@ -437,20 +439,10 @@ pub fn built_in_model_providers(
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
     let openrouter_provider = P::create_openrouter_provider();
-    let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
 
     [
         (OPENAI_PROVIDER_ID, openai_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
-        (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
-        (
-            OLLAMA_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
-        ),
-        (
-            LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
-        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -460,8 +452,10 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable, but the built-in Amazon Bedrock provider allows the
-/// user to set `aws.profile` and `aws.region`.
+/// generally overridable. OpenRouter remains overridable so users can point it
+/// at an OpenRouter-compatible mirror. Amazon Bedrock is no longer built in,
+/// but an explicit `[model_providers.amazon-bedrock.aws]` block still enables
+/// the provider with the default Bedrock endpoint and optional AWS profile.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
@@ -476,8 +470,10 @@ pub fn merge_configured_model_providers(
                 ));
             }
 
+            let built_in_provider = model_providers.entry(key).or_insert_with(|| {
+                ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None)
+            });
             if let Some(aws_override) = aws_override
-                && let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID)
                 && let Some(built_in_aws) = built_in_provider.aws.as_mut()
             {
                 if let Some(profile) = aws_override.profile {

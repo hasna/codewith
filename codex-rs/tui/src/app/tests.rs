@@ -5526,6 +5526,40 @@ async fn thread_setting_update_params_sync_model_and_default_reasoning() {
 }
 
 #[tokio::test]
+async fn thread_setting_update_params_sync_provider_model_and_reasoning_together() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.active_thread_id = Some(thread_id);
+
+    app.chat_widget.set_model("openrouter/deepseek-v3.2");
+    app.chat_widget
+        .set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    let params = app
+        .active_thread_model_provider_setting_update_params(
+            "openrouter".to_string(),
+            "openrouter/deepseek-v3.2".to_string(),
+            Some(ReasoningEffortConfig::High),
+        )
+        .expect("active thread should produce update params");
+
+    assert_eq!(params.thread_id, thread_id.to_string());
+    assert_eq!(params.model_provider, Some("openrouter".to_string()));
+    assert_eq!(params.model, Some("openrouter/deepseek-v3.2".to_string()));
+    assert_eq!(params.effort, Some(ReasoningEffortConfig::High));
+    let collaboration_mode = params
+        .collaboration_mode
+        .expect("collaboration mode should sync with provider switch");
+    assert_eq!(
+        collaboration_mode.settings.model,
+        "openrouter/deepseek-v3.2"
+    );
+    assert_eq!(
+        collaboration_mode.settings.reasoning_effort,
+        Some(ReasoningEffortConfig::High)
+    );
+}
+
+#[tokio::test]
 async fn inactive_thread_settings_notification_updates_cached_collaboration_mode() {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();

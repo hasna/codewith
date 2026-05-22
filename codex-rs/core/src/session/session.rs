@@ -41,7 +41,7 @@ pub(crate) struct Session {
 
 #[derive(Clone)]
 pub(crate) struct SessionConfiguration {
-    /// Provider identifier ("openai", "openrouter", ...).
+    /// Provider used to send subsequent turns.
     pub(super) provider: ModelProviderInfo,
 
     pub(super) collaboration_mode: CollaborationMode,
@@ -234,6 +234,33 @@ impl SessionConfiguration {
                 None => Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
             };
         }
+        if let Some(model_provider_id) = &updates.model_provider_id {
+            let Some(provider) = next_configuration
+                .original_config_do_not_use
+                .model_providers
+                .get(model_provider_id)
+                .cloned()
+            else {
+                let mut allowed = next_configuration
+                    .original_config_do_not_use
+                    .model_providers
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                allowed.sort();
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_provider",
+                    candidate: model_provider_id.clone(),
+                    allowed: format!("[{}]", allowed.join(", ")),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            };
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            config.model_provider_id.clone_from(model_provider_id);
+            config.model_provider.clone_from(&provider);
+            next_configuration.provider = provider;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
         }
@@ -420,6 +447,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
+    pub(crate) model_provider_id: Option<String>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,

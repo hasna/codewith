@@ -27,6 +27,7 @@ use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -41,7 +42,7 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
     .await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
@@ -63,8 +64,6 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
         "settings-only update should not start a model request"
     );
 
-    start_text_turn(&mut mcp, thread.id.clone()).await?;
-
     let updated = read_thread_settings_updated(&mut mcp).await?;
     assert_eq!(updated.thread_id, thread.id);
     assert_eq!(updated.thread_settings.model, model_id);
@@ -72,6 +71,8 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
         updated.thread_settings.service_tier.as_deref(),
         Some(service_tier_id.as_str())
     );
+
+    start_text_turn(&mut mcp, thread.id.clone()).await?;
 
     timeout(
         DEFAULT_TIMEOUT,
@@ -90,6 +91,70 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
                     == Some(service_tier_id.as_str())
         }),
         "future turn did not use updated model/service tier: {request_bodies:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_model_provider_updates_future_turns() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(codex_home.path().join("config.toml"))?
+        .write_all(
+            format!(
+                r#"
+[model_providers.mock_provider_two]
+name = "Second mock provider"
+base_url = "{}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+"#,
+                server.uri()
+            )
+            .as_bytes(),
+        )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model_provider: Some("mock_provider_two".to_string()),
+            model: Some("mock-model-two".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.model_provider, "mock_provider_two");
+    assert_eq!(updated.thread_settings.model, "mock-model-two");
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request_bodies = received_response_bodies(&server).await?;
+    assert!(
+        request_bodies
+            .iter()
+            .any(|body| { body.get("model").and_then(Value::as_str) == Some("mock-model-two") }),
+        "future turn did not use updated provider/model: {request_bodies:#?}"
     );
     Ok(())
 }
@@ -144,7 +209,7 @@ async fn thread_settings_update_null_service_tier_uses_default() -> Result<()> {
     .await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
@@ -389,6 +454,15 @@ fn service_tier_model_and_tier_id() -> Result<(String, String)> {
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
         .context("bundled model catalog should include a picker model with service tiers")?;
     Ok((model.id.clone(), model.service_tiers[0].id.clone()))
+}
+
+fn write_mock_provider_models_cache(codex_home: &std::path::Path) -> Result<()> {
+    write_models_cache(codex_home)?;
+    let cache_path = codex_home.join("models_cache.json");
+    let mut cache: Value = serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
+    cache["provider_cache_key"] = Value::String("mock_provider".to_string());
+    std::fs::write(cache_path, serde_json::to_string_pretty(&cache)?)?;
+    Ok(())
 }
 
 fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io::Result<()> {

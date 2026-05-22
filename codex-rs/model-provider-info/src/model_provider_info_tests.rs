@@ -287,14 +287,18 @@ fn test_amazon_bedrock_provider_adds_mantle_client_agent_header() {
 }
 
 #[test]
-fn test_built_in_model_providers_include_amazon_bedrock() {
+fn test_built_in_model_providers_only_include_openai_and_openrouter() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 
     assert_eq!(
         providers
-            .get(AMAZON_BEDROCK_PROVIDER_ID)
-            .map(ModelProviderInfo::is_amazon_bedrock),
-        Some(true)
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            OPENAI_PROVIDER_ID.to_string(),
+            OPENROUTER_PROVIDER_ID.to_string(),
+        ])
     );
 }
 
@@ -369,13 +373,12 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_profile_override
     )]);
 
     let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    expected
-        .get_mut(AMAZON_BEDROCK_PROVIDER_ID)
-        .expect("Amazon Bedrock provider should be built in")
-        .aws = Some(ModelProviderAwsAuthInfo {
+    let mut bedrock_provider = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+    bedrock_provider.aws = Some(ModelProviderAwsAuthInfo {
         profile: Some("codex-bedrock".to_string()),
         region: Some("us-west-2".to_string()),
     });
+    expected.insert(AMAZON_BEDROCK_PROVIDER_ID.to_string(), bedrock_provider);
 
     assert_eq!(
         merge_configured_model_providers(
@@ -426,12 +429,18 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
         },
     )]);
 
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    expected.insert(
+        AMAZON_BEDROCK_PROVIDER_ID.to_string(),
+        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+    );
+
     assert_eq!(
         merge_configured_model_providers(
             built_in_model_providers(/*openai_base_url*/ None),
             configured_model_providers,
         ),
-        Ok(built_in_model_providers(/*openai_base_url*/ None))
+        Ok(expected)
     );
 }
 

@@ -882,16 +882,34 @@ impl App {
                 {
                     Ok(()) => {
                         self.config.model_provider_id = provider_id.clone();
-                        self.config.model_provider = provider_info;
+                        self.config.model_provider = provider_info.clone();
                         self.config.model = Some(selected.model.clone());
                         self.config.model_reasoning_effort = effort;
                         let model_catalog =
                             Arc::new(ModelCatalog::new_for_provider(provider_id.clone(), models));
                         self.model_catalog = model_catalog.clone();
+                        let runtime_base_url =
+                            super::resolve_runtime_model_provider_base_url(&provider_info).await;
+                        self.chat_widget.set_model_provider(
+                            provider_id.clone(),
+                            provider_info,
+                            runtime_base_url,
+                        );
                         self.chat_widget.set_model_catalog(model_catalog);
+                        self.chat_widget.set_model(&selected.model);
+                        self.on_update_reasoning_effort(effort);
+                        self.sync_active_thread_model_provider_setting(
+                            app_server,
+                            provider_id.clone(),
+                            selected.model.clone(),
+                            effort,
+                        )
+                        .await;
+                        self.sync_active_thread_service_tier_to_cached_session()
+                            .await;
                         self.chat_widget.add_info_message(
                             format!(
-                                "Default provider changed to {provider_id}; new chats will use {}.",
+                                "Provider changed to {provider_id}; current chat uses {}.",
                                 selected.model
                             ),
                             /*hint*/ None,
@@ -1428,11 +1446,11 @@ impl App {
                 }
             }
             AppEvent::PersistModelSelection { model, effort } => {
-                let profile = self.active_profile.as_deref();
+                let profile = self.active_profile.clone();
                 match crate::config_update::write_config_batch(
                     app_server.request_handle(),
                     crate::config_update::build_model_selection_edits(
-                        profile,
+                        profile.as_deref(),
                         model.as_str(),
                         effort,
                     ),
@@ -1440,6 +1458,9 @@ impl App {
                 .await
                 {
                     Ok(()) => {
+                        self.config.model = Some(model.clone());
+                        self.config.model_reasoning_effort = effort;
+                        self.refresh_status_line();
                         let effort_label = effort
                             .map(|selected_effort| selected_effort.to_string())
                             .unwrap_or_else(|| "default".to_string());
@@ -1449,7 +1470,7 @@ impl App {
                             message.push(' ');
                             message.push_str(label);
                         }
-                        if let Some(profile) = profile {
+                        if let Some(profile) = &profile {
                             message.push_str(" for ");
                             message.push_str(profile);
                             message.push_str(" profile");
@@ -1461,7 +1482,7 @@ impl App {
                             error = %err,
                             "failed to persist model selection"
                         );
-                        if let Some(profile) = profile {
+                        if let Some(profile) = &profile {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to save model for profile `{profile}`: {err}"
                             ));

@@ -443,6 +443,11 @@ pub struct ThreadSettingsOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
+    /// Updated model provider id. When set, future turns use the provider from
+    /// the current config's provider map.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///
     /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear the

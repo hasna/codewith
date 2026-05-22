@@ -14,7 +14,7 @@ use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
-const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent running on the selected model. You and the user share the same workspace and collaborate to achieve the user's goals.";
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
@@ -65,6 +65,7 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    let base_instructions = fallback_base_instructions_for_slug(slug);
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
@@ -80,7 +81,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         default_service_tier: None,
         availability_nux: None,
         upgrade: None,
-        base_instructions: BASE_INSTRUCTIONS.to_string(),
+        base_instructions,
         model_messages: local_personality_messages_for_slug(slug),
         supports_reasoning_summaries: false,
         default_reasoning_summary: ReasoningSummary::Auto,
@@ -100,6 +101,10 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
     }
+}
+
+fn fallback_base_instructions_for_slug(slug: &str) -> String {
+    format!("You are currently running on model `{slug}`.\n\n{BASE_INSTRUCTIONS}")
 }
 
 fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {

@@ -36,6 +36,38 @@ impl App {
         })
     }
 
+    pub(super) async fn sync_active_thread_model_provider_setting(
+        &mut self,
+        app_server: &mut AppServerSession,
+        model_provider: String,
+        model: String,
+        effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) {
+        let Some(params) =
+            self.active_thread_model_provider_setting_update_params(model_provider, model, effort)
+        else {
+            return;
+        };
+        self.send_thread_settings_update(app_server, params).await;
+    }
+
+    pub(super) fn active_thread_model_provider_setting_update_params(
+        &self,
+        model_provider: String,
+        model: String,
+        effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) -> Option<ThreadSettingsUpdateParams> {
+        let thread_id = self.active_thread_id?;
+        Some(ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            model_provider: Some(model_provider),
+            model: Some(model),
+            effort,
+            collaboration_mode: Some(self.chat_widget.effective_collaboration_mode()),
+            ..ThreadSettingsUpdateParams::default()
+        })
+    }
+
     pub(super) async fn sync_active_thread_reasoning_setting(
         &mut self,
         app_server: &mut AppServerSession,
@@ -201,6 +233,7 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.sandbox_policy.is_some()
         || params.permissions.is_some()
         || params.model.is_some()
+        || params.model_provider.is_some()
         || params.service_tier.is_some()
         || params.effort.is_some()
         || params.summary.is_some()

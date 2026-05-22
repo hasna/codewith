@@ -25,6 +25,7 @@ use codex_config::types::ToolSuggestDisabledTool;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -3558,6 +3559,31 @@ async fn session_settings_legacy_fast_service_tier_update_uses_priority_request_
         updated.service_tier,
         Some(ServiceTier::Fast.request_value().to_string())
     );
+}
+
+#[tokio::test]
+async fn session_settings_model_provider_update_changes_turn_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let openrouter_provider = session_configuration
+        .original_config_do_not_use
+        .model_providers
+        .get(OPENROUTER_PROVIDER_ID)
+        .cloned()
+        .expect("OpenRouter should be configured");
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider_id: Some(OPENROUTER_PROVIDER_ID.to_string()),
+            ..Default::default()
+        })
+        .expect("model provider update should apply");
+
+    let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd.clone());
+    let snapshot = updated.thread_config_snapshot();
+    assert_eq!(updated.provider, openrouter_provider);
+    assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(per_turn_config.model_provider, openrouter_provider);
 }
 
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app_event::AppEvent;
+use codex_model_provider_info::ModelProviderInfo;
 
 impl ChatWidget {
     /// Set the approval policy in the widget's config copy.
@@ -210,6 +211,18 @@ impl ChatWidget {
 
     pub(crate) fn runtime_model_provider_base_url(&self) -> Option<&str> {
         self.runtime_model_provider_base_url.as_deref()
+    }
+
+    pub(crate) fn set_model_provider(
+        &mut self,
+        provider_id: String,
+        provider: ModelProviderInfo,
+        runtime_base_url: Option<String>,
+    ) {
+        self.config.model_provider_id = provider_id;
+        self.config.model_provider = provider;
+        self.runtime_model_provider_base_url = runtime_base_url;
+        self.refresh_status_line();
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -526,6 +539,14 @@ impl ChatWidget {
         let cwd_changed = self.config.cwd != settings.cwd;
         self.apply_thread_settings_cwd(settings.cwd.clone());
         self.config.model_provider_id = settings.model_provider.clone();
+        if let Some(provider) = self
+            .config
+            .model_providers
+            .get(&settings.model_provider)
+            .cloned()
+        {
+            self.config.model_provider = provider;
+        }
         self.set_service_tier(settings.service_tier.clone());
         self.set_approval_policy(settings.approval_policy);
         self.set_approvals_reviewer(settings.approvals_reviewer.to_core());

@@ -2263,6 +2263,39 @@ async fn provider_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn provider_selection_only_shows_openai_and_openrouter() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let openai_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let openrouter_provider = ModelProviderInfo::create_openrouter_provider();
+    chat.config.model_provider_id = "openai".to_string();
+    chat.config.model_provider = openai_provider.clone();
+    chat.config.model_providers = HashMap::from([
+        ("openai".to_string(), openai_provider),
+        ("openrouter".to_string(), openrouter_provider),
+        (
+            "corp".to_string(),
+            ModelProviderInfo {
+                name: "Corp Provider".to_string(),
+                base_url: Some("https://corp.example.com/v1".to_string()),
+                ..ModelProviderInfo::default()
+            },
+        ),
+    ]);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openai".to_string(),
+        crate::legacy_core::test_support::all_model_presets().clone(),
+    )));
+
+    chat.open_provider_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("OpenAI"));
+    assert!(popup.contains("OpenRouter"));
+    assert!(!popup.contains("Corp Provider"));
+}
+
+#[tokio::test]
 async fn provider_selection_emits_selected_provider_id() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2288,6 +2321,49 @@ async fn provider_selection_emits_selected_provider_id() {
         rx.try_recv(),
         Ok(AppEvent::SelectModelProvider { provider_id }) if provider_id == "openrouter"
     );
+}
+
+#[tokio::test]
+async fn all_models_single_effort_selection_updates_model_and_closes() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openai".to_string();
+    let preset = provider_picker_preset("openrouter/deepseek-v3.2", ReasoningEffortConfig::High);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openai".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateModel(model) if model == "openrouter/deepseek-v3.2"
+        )),
+        "expected model update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::High))
+        )),
+        "expected reasoning update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistModelSelection {
+                model,
+                effort: Some(ReasoningEffortConfig::High),
+            } if model == "openrouter/deepseek-v3.2"
+        )),
+        "expected model persistence event; events: {events:?}"
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
 }
 
 #[tokio::test]
