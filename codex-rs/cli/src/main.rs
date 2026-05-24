@@ -52,6 +52,7 @@ mod doctor;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
+mod profile_cmd;
 mod remote_control_cmd;
 mod state_db_recovery;
 #[cfg(not(windows))]
@@ -130,6 +131,9 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Manage named authentication profiles.
+    Profile(ProfileCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -406,6 +410,13 @@ struct LoginCommand {
     #[arg(long = "device-auth")]
     use_device_code: bool,
 
+    #[arg(
+        long = "profile",
+        value_name = "NAME",
+        help = "Save this login as a named authentication profile"
+    )]
+    profile: Option<String>,
+
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
     /// Override the OAuth issuer base URL (advanced)
     #[arg(long = "experimental_issuer", value_name = "URL", hide = true)]
@@ -429,6 +440,41 @@ enum LoginSubcommand {
 struct LogoutCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
+}
+
+#[derive(Debug, Parser)]
+struct ProfileCommand {
+    #[clap(skip)]
+    config_overrides: CliConfigOverrides,
+
+    #[command(subcommand)]
+    action: ProfileSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum ProfileSubcommand {
+    /// List saved authentication profiles.
+    #[clap(visible_alias = "ls")]
+    List,
+
+    /// Save the current login as a named authentication profile.
+    Save {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
+    /// Switch active authentication to a saved profile.
+    Switch {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
+    /// Remove a saved authentication profile.
+    #[clap(visible_alias = "rm")]
+    Remove {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -1149,6 +1195,10 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             );
             match login_cli.action {
                 Some(LoginSubcommand::Status) => {
+                    if login_cli.profile.is_some() {
+                        eprintln!("`codex login status` does not accept --profile.");
+                        std::process::exit(1);
+                    }
                     run_login_status(login_cli.config_overrides).await;
                 }
                 None => {
@@ -1162,6 +1212,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             login_cli.config_overrides,
                             login_cli.issuer_base_url,
                             login_cli.client_id,
+                            login_cli.profile,
                         )
                         .await;
                     } else if login_cli.api_key.is_some() {
@@ -1171,12 +1222,22 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
                         let api_key = read_api_key_from_stdin();
-                        run_login_with_api_key(login_cli.config_overrides, api_key).await;
+                        run_login_with_api_key(
+                            login_cli.config_overrides,
+                            api_key,
+                            login_cli.profile,
+                        )
+                        .await;
                     } else if login_cli.with_access_token {
                         let access_token = read_access_token_from_stdin();
-                        run_login_with_access_token(login_cli.config_overrides, access_token).await;
+                        run_login_with_access_token(
+                            login_cli.config_overrides,
+                            access_token,
+                            login_cli.profile,
+                        )
+                        .await;
                     } else {
-                        run_login_with_chatgpt(login_cli.config_overrides).await;
+                        run_login_with_chatgpt(login_cli.config_overrides, login_cli.profile).await;
                     }
                 }
             }
@@ -1192,6 +1253,31 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_config_overrides.clone(),
             );
             run_logout(logout_cli.config_overrides).await;
+        }
+        Some(Subcommand::Profile(mut profile_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "profile",
+            )?;
+            prepend_config_flags(
+                &mut profile_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            match profile_cli.action {
+                ProfileSubcommand::List => {
+                    profile_cmd::run_profile_list(profile_cli.config_overrides).await;
+                }
+                ProfileSubcommand::Save { name } => {
+                    profile_cmd::run_profile_save(profile_cli.config_overrides, name).await;
+                }
+                ProfileSubcommand::Switch { name } => {
+                    profile_cmd::run_profile_switch(profile_cli.config_overrides, name).await;
+                }
+                ProfileSubcommand::Remove { name } => {
+                    profile_cmd::run_profile_remove(profile_cli.config_overrides, name).await;
+                }
+            }
         }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -1858,6 +1944,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::App(_)) => Some("app"),
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
+        Some(Subcommand::Profile(_)) => Some("profile"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),

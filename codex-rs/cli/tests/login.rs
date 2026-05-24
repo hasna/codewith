@@ -51,6 +51,56 @@ fn login_with_api_key_reads_stdin_and_writes_auth_json() -> Result<()> {
 }
 
 #[test]
+fn login_with_api_key_profile_saves_and_switches_auth_profiles() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_file_auth_config(codex_home.path())?;
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["login", "--with-api-key", "--profile", "work"])
+        .write_stdin("sk-work\n")
+        .assert()
+        .success()
+        .stderr(contains("Saved auth profile `work`"));
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["login", "--with-api-key", "--profile", "personal"])
+        .write_stdin("sk-personal\n")
+        .assert()
+        .success()
+        .stderr(contains("Saved auth profile `personal`"));
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["profile", "list"])
+        .assert()
+        .success()
+        .stdout(contains("* personal"))
+        .stdout(contains("  work"));
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["profile", "switch", "work"])
+        .assert()
+        .success()
+        .stderr(contains("Switched to auth profile `work`"));
+
+    let auth = read_auth_json(codex_home.path())?;
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-work");
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["profile", "remove", "personal"])
+        .assert()
+        .success()
+        .stderr(contains("Removed auth profile `personal`"));
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["profile", "list"])
+        .assert()
+        .success()
+        .stdout(contains("* work"));
+
+    Ok(())
+}
+
+#[test]
 fn login_with_access_token_rejects_invalid_jwt() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_file_auth_config(codex_home.path())?;

@@ -507,7 +507,14 @@ pub fn logout(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<bool> {
     let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    storage.delete()
+    let removed = storage.delete()?;
+    if removed
+        && auth_credentials_store_mode != AuthCredentialsStoreMode::Ephemeral
+        && let Err(err) = super::profile::clear_active_auth_profile(codex_home)
+    {
+        tracing::warn!("failed to clear active auth profile during logout: {err}");
+    }
+    Ok(removed)
 }
 
 pub async fn logout_with_revoke(
@@ -1874,13 +1881,20 @@ impl AuthManager {
     ) -> Result<(), RefreshTokenError> {
         let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
 
-        persist_tokens(
+        let auth_dot_json = persist_tokens(
             auth.storage(),
             refresh_response.id_token,
             refresh_response.access_token,
             refresh_response.refresh_token,
         )
         .map_err(RefreshTokenError::from)?;
+        if let Err(err) = super::profile::mirror_active_auth_profile(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            &auth_dot_json,
+        ) {
+            tracing::warn!("failed to update active auth profile after token refresh: {err}");
+        }
         self.reload().await;
 
         Ok(())
