@@ -15,8 +15,8 @@ This downloads the native package archive artifacts once, hydrates `vendor/` for
 package, and writes tarballs to `dist/npm/`.
 
 When `--package codex` is provided, the staging helper builds the lightweight
-`@openai/codex` meta package plus all platform-native `@openai/codex` variants
-that are later published under platform-specific dist-tags.
+`@hasnaxyz/iappcodex` meta package plus the configured Linux arm64 native
+`@hasnaxyz/iappcodex-linux-arm64` package.
 
 If you need to invoke `build_npm_package.py` directly, run
 `codex-cli/scripts/install_native_deps.py --component codex-package` first and pass

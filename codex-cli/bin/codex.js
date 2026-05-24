@@ -13,12 +13,12 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
-  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
-  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
-  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-unknown-linux-gnu": "@hasnaxyz/iappcodex-linux-x64",
+  "aarch64-unknown-linux-gnu": "@hasnaxyz/iappcodex-linux-arm64",
+  "x86_64-apple-darwin": "@hasnaxyz/iappcodex-darwin-x64",
+  "aarch64-apple-darwin": "@hasnaxyz/iappcodex-darwin-arm64",
+  "x86_64-pc-windows-msvc": "@hasnaxyz/iappcodex-win32-x64",
+  "aarch64-pc-windows-msvc": "@hasnaxyz/iappcodex-win32-arm64",
 };
 
 const { platform, arch } = process;
@@ -29,10 +29,10 @@ switch (platform) {
   case "android":
     switch (arch) {
       case "x64":
-        targetTriple = "x86_64-unknown-linux-musl";
+        targetTriple = "x86_64-unknown-linux-gnu";
         break;
       case "arm64":
-        targetTriple = "aarch64-unknown-linux-musl";
+        targetTriple = "aarch64-unknown-linux-gnu";
         break;
       default:
         break;
@@ -117,8 +117,8 @@ if (!nativePackage) {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
-      ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      ? "bun install -g @hasnaxyz/iappcodex@latest"
+      : "npm install -g @hasnaxyz/iappcodex@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );
