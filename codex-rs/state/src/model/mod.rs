@@ -46,7 +46,6 @@ pub use thread_schedule::ThreadScheduleStatus;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;
-pub(crate) use memories::Stage1OutputRow;
 pub(crate) use thread_goal::ThreadGoalRow;
 pub(crate) use thread_metadata::ThreadRow;
 pub(crate) use thread_metadata::anchor_from_item;
