@@ -43,7 +43,7 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "files": ["bin/codex.js"],
                 "repository": {
                     "type": "git",
-                    "url": "git+https://github.com/hasna/codex.git",
+                    "url": "git+https://github.com/hasnaxyz/iapp-codex.git",
                     "directory": "codex-cli",
                 },
                 "packageManager": PACKAGE_MANAGER,
@@ -76,7 +76,7 @@ class BuildNpmPackageTest(unittest.TestCase):
                 },
                 "repository": {
                     "type": "git",
-                    "url": "git+https://github.com/hasna/codex.git",
+                    "url": "git+https://github.com/hasnaxyz/iapp-codex.git",
                     "directory": "codex-cli",
                 },
                 "engines": {"node": ">=16"},
