@@ -70,7 +70,7 @@ INSERT INTO thread_schedules (
 RETURNING
 "#,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(schedule_id)
             .bind(params.thread_id.to_string())
             .bind(params.prompt_source.as_str())
@@ -99,7 +99,7 @@ RETURNING
 SELECT
 "#,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(schedule_id)
             .fetch_optional(self.pool.as_ref())
             .await?;
@@ -177,7 +177,7 @@ WHERE schedule_id = ?
 RETURNING
 "#,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(prompt)
             .bind(prompt_source.as_str())
             .bind(spec.kind)
@@ -290,7 +290,7 @@ WHERE schedule_id = (
 RETURNING
 "#,
         );
-        let schedule_row = sqlx::query(&sql)
+        let schedule_row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(lease_id)
             .bind(lease_expires_at_ms)
             .bind(now_ms)
@@ -333,7 +333,7 @@ WHERE schedule_id = ?
 RETURNING
 "#,
         );
-        let schedule_row = sqlx::query(&sql)
+        let schedule_row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(lease_id)
             .bind(lease_expires_at_ms)
             .bind(now_ms)
@@ -412,7 +412,7 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
 RETURNING
 "#,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(crate::ThreadScheduleRunStatus::Running.as_str())
             .bind(turn_id)
             .bind(schedule_id)

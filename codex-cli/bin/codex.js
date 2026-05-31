@@ -2,8 +2,9 @@
 // Unified entry point for the Codex CLI.
 
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, mkdirSync, realpathSync, chmodSync } from "fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -174,6 +175,21 @@ if (existsSync(pathDir)) {
 const updatedPath = getUpdatedPath(additionalDirs);
 
 const env = { ...process.env, PATH: updatedPath };
+function defaultIappCodexHome() {
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
+  return path.join(home, ".hasna", "internalapps", "codex");
+}
+
+function resolveIappCodexHome() {
+  return env.CODEX_HOME || env.IAPPCODEX_HOME || defaultIappCodexHome();
+}
+
+env.CODEX_HOME = resolveIappCodexHome();
+mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+if (process.platform !== "win32") {
+  chmodSync(env.CODEX_HOME, 0o700);
+}
+
 const packageManagerEnvVar =
   detectPackageManager() === "bun"
     ? "CODEX_MANAGED_BY_BUN"

@@ -168,6 +168,7 @@ impl OpenAiCompatibleModel {
                 .unwrap_or_else(|| vec![InputModality::Text]),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            tool_mode: None,
         }
     }
 }
@@ -417,6 +418,7 @@ mod tests {
                 input_modalities: vec![InputModality::Text, InputModality::Image],
                 used_fallback_model_metadata: false,
                 supports_search_tool: false,
+                tool_mode: None,
             }]
         );
     }

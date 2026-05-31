@@ -18,7 +18,7 @@ pub async fn run_mac_app_open_or_install(
             "Opening Codex Desktop at {app_path}...",
             app_path = app_path.display()
         );
-        open_codex_app(&app_path, &workspace).await?;
+        launch_codex_app(&app_path, &workspace).await?;
         return Ok(());
     }
     eprintln!("Codex Desktop not found; downloading installer...");
@@ -37,7 +37,7 @@ pub async fn run_mac_app_open_or_install(
         "Launching Codex Desktop from {installed_app}...",
         installed_app = installed_app.display()
     );
-    open_codex_app(&installed_app, &workspace).await?;
+    launch_codex_app(&installed_app, &workspace).await?;
     Ok(())
 }
 
@@ -77,7 +77,7 @@ fn candidate_codex_app_paths() -> Vec<PathBuf> {
     paths
 }
 
-async fn open_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()> {
+async fn launch_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()> {
     eprintln!(
         "Opening workspace {workspace}...",
         workspace = workspace.display()

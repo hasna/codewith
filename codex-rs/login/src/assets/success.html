@@ -162,7 +162,7 @@
     <main>
       <div class="content">
         <p class="message" id="status-message">You&rsquo;re signed in and may close this tab</p>
-        <button class="button" type="button" id="open-codex">
+        <button class="button" type="button" id="open-iapp-codex">
           <svg
             class="codex-mark"
             aria-hidden="true"
@@ -203,7 +203,7 @@
           window.location.href = CODEX_URL;
         }
 
-        document.getElementById("open-codex").addEventListener("click", openCodex);
+        document.getElementById("open-iapp-codex").addEventListener("click", openCodex);
         if (!preview) {
           setTimeout(openCodex, 250);
         }

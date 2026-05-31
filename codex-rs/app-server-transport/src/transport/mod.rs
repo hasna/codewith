@@ -7,9 +7,15 @@ use crate::outgoing_message::QueuedOutgoingMessage;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_core::config::find_codex_home;
+use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::IAPPCODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::validate_auth_profile_name;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -44,23 +50,82 @@ pub use websocket::start_websocket_acceptor;
 const OVERLOADED_ERROR_CODE: i64 = -32001;
 
 const APP_SERVER_CONTROL_SOCKET_DIR_NAME: &str = "app-server-control";
+const APP_SERVER_CONTROL_AUTH_PROFILES_DIR_NAME: &str = "auth_profiles";
 const APP_SERVER_CONTROL_SOCKET_FILE_NAME: &str = "app-server-control.sock";
 const APP_SERVER_STARTUP_LOCK_FILE_NAME: &str = "app-server-startup.lock";
 
 pub fn app_server_control_socket_path(codex_home: &Path) -> std::io::Result<AbsolutePathBuf> {
+    let auth_profile = selected_auth_profile_from_env()?;
+    app_server_control_socket_path_for_auth_profile(codex_home, auth_profile.as_deref())
+}
+
+pub fn app_server_control_socket_path_for_auth_profile(
+    codex_home: &Path,
+    auth_profile: Option<&str>,
+) -> std::io::Result<AbsolutePathBuf> {
     AbsolutePathBuf::from_absolute_path(
-        codex_home
-            .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        app_server_control_socket_dir(codex_home, auth_profile)?
             .join(APP_SERVER_CONTROL_SOCKET_FILE_NAME),
     )
 }
 
 pub fn app_server_startup_lock_path(codex_home: &Path) -> std::io::Result<AbsolutePathBuf> {
+    let auth_profile = selected_auth_profile_from_env()?;
+    app_server_startup_lock_path_for_auth_profile(codex_home, auth_profile.as_deref())
+}
+
+pub fn app_server_startup_lock_path_for_auth_profile(
+    codex_home: &Path,
+    auth_profile: Option<&str>,
+) -> std::io::Result<AbsolutePathBuf> {
     AbsolutePathBuf::from_absolute_path(
-        codex_home
-            .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        app_server_control_socket_dir(codex_home, auth_profile)?
             .join(APP_SERVER_STARTUP_LOCK_FILE_NAME),
     )
+}
+
+pub fn selected_auth_profile_from_env() -> std::io::Result<Option<String>> {
+    for env_var in [IAPPCODEX_AUTH_PROFILE_ENV_VAR, CODEX_AUTH_PROFILE_ENV_VAR] {
+        let Ok(raw_profile) = std::env::var(env_var) else {
+            continue;
+        };
+        let profile = raw_profile.trim();
+        if profile.is_empty() {
+            continue;
+        }
+        validate_auth_profile_name(profile).map_err(|err| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("{env_var} contains an invalid auth profile: {err}"),
+            )
+        })?;
+        return Ok(Some(profile.to_string()));
+    }
+
+    Ok(None)
+}
+
+fn app_server_control_socket_dir(
+    codex_home: &Path,
+    auth_profile: Option<&str>,
+) -> std::io::Result<PathBuf> {
+    let base_dir = codex_home.join(APP_SERVER_CONTROL_SOCKET_DIR_NAME);
+    let Some(auth_profile) = auth_profile else {
+        return Ok(base_dir);
+    };
+    let auth_profile = auth_profile.trim();
+    if auth_profile.is_empty() {
+        return Ok(base_dir);
+    }
+    validate_auth_profile_name(auth_profile).map_err(|err| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("invalid app-server auth profile: {err}"),
+        )
+    })?;
+    Ok(base_dir
+        .join(APP_SERVER_CONTROL_AUTH_PROFILES_DIR_NAME)
+        .join(auth_profile))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

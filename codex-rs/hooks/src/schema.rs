@@ -12,6 +12,8 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::events::common::SubagentHookContext;
+
 const GENERATED_DIR: &str = "generated";
 const POST_TOOL_USE_INPUT_FIXTURE: &str = "post-tool-use.command.input.schema.json";
 const POST_TOOL_USE_OUTPUT_FIXTURE: &str = "post-tool-use.command.output.schema.json";
@@ -58,6 +60,24 @@ impl JsonSchema for NullableString {
             instance_type: Some(vec![InstanceType::String, InstanceType::Null].into()),
             ..Default::default()
         })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SubagentCommandInputFields {
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+}
+
+impl From<Option<&SubagentHookContext>> for SubagentCommandInputFields {
+    fn from(value: Option<&SubagentHookContext>) -> Self {
+        match value {
+            Some(context) => Self {
+                agent_id: Some(context.agent_id.clone()),
+                agent_type: Some(context.agent_type.clone()),
+            },
+            None => Self::default(),
+        }
     }
 }
 
@@ -162,6 +182,7 @@ pub(crate) struct PostCompactCommandOutputWire {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PermissionRequestHookSpecificOutputWire {
+    #[schemars(schema_with = "permission_request_hook_event_name_schema")]
     pub hook_event_name: HookEventNameWire,
     #[serde(default)]
     pub decision: Option<PermissionRequestDecisionWire>,
@@ -203,6 +224,7 @@ pub(crate) enum PermissionRequestBehaviorWire {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PostToolUseHookSpecificOutputWire {
+    #[schemars(schema_with = "post_tool_use_hook_event_name_schema")]
     pub hook_event_name: HookEventNameWire,
     #[serde(default)]
     pub additional_context: Option<String>,
@@ -215,6 +237,7 @@ pub(crate) struct PostToolUseHookSpecificOutputWire {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreToolUseHookSpecificOutputWire {
+    #[schemars(schema_with = "pre_tool_use_hook_event_name_schema")]
     pub hook_event_name: HookEventNameWire,
     #[serde(default)]
     pub permission_decision: Option<PreToolUsePermissionDecisionWire>,
@@ -251,6 +274,10 @@ pub(crate) struct PreToolUseCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "pre_tool_use_hook_event_name_schema")]
@@ -270,6 +297,10 @@ pub(crate) struct PermissionRequestCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "permission_request_hook_event_name_schema")]
@@ -288,6 +319,10 @@ pub(crate) struct PostToolUseCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "post_tool_use_hook_event_name_schema")]
@@ -308,6 +343,10 @@ pub(crate) struct PreCompactCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "pre_compact_hook_event_name_schema")]
@@ -324,6 +363,10 @@ pub(crate) struct PostCompactCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "post_compact_hook_event_name_schema")]
@@ -348,6 +391,7 @@ pub(crate) struct SessionStartCommandOutputWire {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionStartHookSpecificOutputWire {
+    #[schemars(schema_with = "session_start_hook_event_name_schema")]
     pub hook_event_name: HookEventNameWire,
     #[serde(default)]
     pub additional_context: Option<String>,
@@ -361,7 +405,17 @@ pub(crate) struct SubagentStartCommandOutputWire {
     #[serde(flatten)]
     pub universal: HookUniversalOutputWire,
     #[serde(default)]
-    pub hook_specific_output: Option<SessionStartHookSpecificOutputWire>,
+    pub hook_specific_output: Option<SubagentStartHookSpecificOutputWire>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubagentStartHookSpecificOutputWire {
+    #[schemars(schema_with = "subagent_start_hook_event_name_schema")]
+    pub hook_event_name: HookEventNameWire,
+    #[serde(default)]
+    pub additional_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -383,6 +437,7 @@ pub(crate) struct UserPromptSubmitCommandOutputWire {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
+    #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
     pub hook_event_name: HookEventNameWire,
     #[serde(default)]
     pub additional_context: Option<String>,
@@ -486,6 +541,10 @@ pub(crate) struct UserPromptSubmitCommandInput {
     pub session_id: String,
     /// Codex extension: expose the active turn id to internal turn-scoped hooks.
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub transcript_path: NullableString,
     pub cwd: String,
     #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
@@ -663,7 +722,7 @@ fn canonicalize_json(value: &Value) -> Value {
         Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_by_key(|(key, _)| *key);
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
                 sorted.insert(key.clone(), canonicalize_json(child));
@@ -761,6 +820,7 @@ fn default_continue() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::NullableString;
     use super::PERMISSION_REQUEST_INPUT_FIXTURE;
     use super::PERMISSION_REQUEST_OUTPUT_FIXTURE;
     use super::POST_COMPACT_INPUT_FIXTURE;
@@ -772,10 +832,13 @@ mod tests {
     use super::PRE_TOOL_USE_INPUT_FIXTURE;
     use super::PRE_TOOL_USE_OUTPUT_FIXTURE;
     use super::PermissionRequestCommandInput;
+    use super::PermissionRequestCommandOutputWire;
     use super::PostCompactCommandInput;
     use super::PostToolUseCommandInput;
+    use super::PostToolUseCommandOutputWire;
     use super::PreCompactCommandInput;
     use super::PreToolUseCommandInput;
+    use super::PreToolUseCommandOutputWire;
     use super::SESSION_START_INPUT_FIXTURE;
     use super::SESSION_START_OUTPUT_FIXTURE;
     use super::STOP_INPUT_FIXTURE;
@@ -784,16 +847,23 @@ mod tests {
     use super::SUBAGENT_START_OUTPUT_FIXTURE;
     use super::SUBAGENT_STOP_INPUT_FIXTURE;
     use super::SUBAGENT_STOP_OUTPUT_FIXTURE;
+    use super::SessionStartCommandOutputWire;
     use super::StopCommandInput;
+    use super::SubagentCommandInputFields;
     use super::SubagentStartCommandInput;
+    use super::SubagentStartCommandOutputWire;
     use super::SubagentStopCommandInput;
     use super::USER_PROMPT_SUBMIT_INPUT_FIXTURE;
     use super::USER_PROMPT_SUBMIT_OUTPUT_FIXTURE;
     use super::UserPromptSubmitCommandInput;
+    use super::UserPromptSubmitCommandOutputWire;
     use super::schema_json;
     use super::write_schema_fixtures;
+    use crate::events::common::SubagentHookContext;
     use pretty_assertions::assert_eq;
+    use schemars::JsonSchema;
     use serde_json::Value;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn expected_fixture(name: &str) -> &'static str {
@@ -866,6 +936,20 @@ mod tests {
         value.replace("\r\n", "\n")
     }
 
+    fn assert_output_hook_event_name_const<T: JsonSchema>(definition: &str, expected: &str) {
+        let schema: Value =
+            serde_json::from_slice(&schema_json::<T>().expect("serialize hook output schema"))
+                .expect("parse hook output schema");
+
+        assert_eq!(
+            schema["definitions"][definition]["properties"]["hookEventName"],
+            json!({
+                "const": expected,
+                "type": "string",
+            })
+        );
+    }
+
     #[test]
     fn generated_hook_schemas_match_fixtures() {
         let temp_dir = TempDir::new().expect("create temp dir");
@@ -900,6 +984,34 @@ mod tests {
             let actual = normalize_newlines(&actual);
             assert_eq!(expected, actual, "fixture should match generated schema");
         }
+    }
+
+    #[test]
+    fn hook_specific_output_event_names_are_event_specific_in_output_schemas() {
+        assert_output_hook_event_name_const::<PermissionRequestCommandOutputWire>(
+            "PermissionRequestHookSpecificOutputWire",
+            "PermissionRequest",
+        );
+        assert_output_hook_event_name_const::<PostToolUseCommandOutputWire>(
+            "PostToolUseHookSpecificOutputWire",
+            "PostToolUse",
+        );
+        assert_output_hook_event_name_const::<PreToolUseCommandOutputWire>(
+            "PreToolUseHookSpecificOutputWire",
+            "PreToolUse",
+        );
+        assert_output_hook_event_name_const::<SessionStartCommandOutputWire>(
+            "SessionStartHookSpecificOutputWire",
+            "SessionStart",
+        );
+        assert_output_hook_event_name_const::<SubagentStartCommandOutputWire>(
+            "SubagentStartHookSpecificOutputWire",
+            "SubagentStart",
+        );
+        assert_output_hook_event_name_const::<UserPromptSubmitCommandOutputWire>(
+            "UserPromptSubmitHookSpecificOutputWire",
+            "UserPromptSubmit",
+        );
     }
 
     #[test]
@@ -967,5 +1079,88 @@ mod tests {
                     .contains(&Value::String("turn_id".to_string()))
             );
         }
+    }
+
+    #[test]
+    fn subagent_context_fields_are_optional_for_hooks_that_run_inside_subagents() {
+        let schemas = [
+            schema_json::<PreToolUseCommandInput>().expect("serialize pre tool use input schema"),
+            schema_json::<PermissionRequestCommandInput>()
+                .expect("serialize permission request input schema"),
+            schema_json::<PostToolUseCommandInput>().expect("serialize post tool use input schema"),
+            schema_json::<PreCompactCommandInput>().expect("serialize pre compact input schema"),
+            schema_json::<PostCompactCommandInput>().expect("serialize post compact input schema"),
+            schema_json::<UserPromptSubmitCommandInput>()
+                .expect("serialize user prompt submit input schema"),
+        ];
+
+        for schema in schemas {
+            let schema: Value = serde_json::from_slice(&schema).expect("parse hook input schema");
+            assert_eq!(schema["properties"]["agent_id"]["type"], "string");
+            assert_eq!(schema["properties"]["agent_type"]["type"], "string");
+            let required = schema["required"]
+                .as_array()
+                .expect("schema required fields");
+            assert!(!required.contains(&Value::String("agent_id".to_string())));
+            assert!(!required.contains(&Value::String("agent_type".to_string())));
+        }
+    }
+
+    #[test]
+    fn subagent_context_fields_serialize_flat_and_omit_when_absent() {
+        let subagent = SubagentCommandInputFields::from(Some(&SubagentHookContext {
+            agent_id: "agent-1".to_string(),
+            agent_type: "worker".to_string(),
+        }));
+        let input = PreToolUseCommandInput {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            agent_id: subagent.agent_id,
+            agent_type: subagent.agent_type,
+            transcript_path: NullableString::from_path(/*path*/ None),
+            cwd: "/tmp".to_string(),
+            hook_event_name: "PreToolUse".to_string(),
+            model: "gpt-test".to_string(),
+            permission_mode: "default".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: json!({ "command": "echo hello" }),
+            tool_use_id: "tool-1".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(input).expect("serialize subagent hook input"),
+            json!({
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "agent_id": "agent-1",
+                "agent_type": "worker",
+                "transcript_path": null,
+                "cwd": "/tmp",
+                "hook_event_name": "PreToolUse",
+                "model": "gpt-test",
+                "permission_mode": "default",
+                "tool_name": "Bash",
+                "tool_input": { "command": "echo hello" },
+                "tool_use_id": "tool-1",
+            })
+        );
+
+        let root_input = PreToolUseCommandInput {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            agent_id: None,
+            agent_type: None,
+            transcript_path: NullableString::from_path(/*path*/ None),
+            cwd: "/tmp".to_string(),
+            hook_event_name: "PreToolUse".to_string(),
+            model: "gpt-test".to_string(),
+            permission_mode: "default".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: json!({ "command": "echo hello" }),
+            tool_use_id: "tool-1".to_string(),
+        };
+        let root_input = serde_json::to_value(root_input).expect("serialize root hook input");
+        assert_eq!(root_input.get("agent_id"), None);
+        assert_eq!(root_input.get("agent_type"), None);
     }
 }

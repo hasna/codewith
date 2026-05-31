@@ -14,6 +14,8 @@ use codex_login::AuthProfileError;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
 use codex_login::ServerOptions;
+use codex_login::delete_auth_profile;
+use codex_login::ensure_auth_profile_storage_dir;
 use codex_login::login_with_access_token;
 use codex_login::login_with_api_key;
 use codex_login::logout_with_revoke;
@@ -114,16 +116,56 @@ fn print_login_server_start(actual_port: u16, auth_url: &str) {
     );
 }
 
-fn validate_profile_or_exit(profile_name: Option<&str>) {
+fn validate_profile_or_exit(profile_name: Option<&str>, auth_profile_name: Option<&str>) {
+    if profile_name.is_some() && auth_profile_name.is_some() {
+        eprintln!("Error: use either --profile or --auth-profile, not both.");
+        std::process::exit(1);
+    }
+
     if let Some(profile_name) = profile_name
         && let Err(err) = codex_login::validate_auth_profile_name(profile_name)
     {
         eprintln!("Error: {err}");
         std::process::exit(1);
     }
+
+    if let Some(auth_profile_name) = auth_profile_name
+        && let Err(err) = codex_login::validate_auth_profile_name(auth_profile_name)
+    {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
 }
 
-fn exit_login_success(config: &Config, profile_name: Option<&str>) -> ! {
+fn login_storage_home_or_exit(config: &Config, auth_profile_name: Option<&str>) -> PathBuf {
+    let Some(auth_profile_name) = auth_profile_name else {
+        return config.codex_home.to_path_buf();
+    };
+
+    auth_profile_storage_home_or_exit(config, auth_profile_name)
+}
+
+fn auth_profile_storage_home_or_exit(config: &Config, auth_profile_name: &str) -> PathBuf {
+    if config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
+        exit_auth_profile_error(AuthProfileError::EphemeralAuthStorage);
+    }
+
+    match ensure_auth_profile_storage_dir(&config.codex_home, auth_profile_name) {
+        Ok(profile_home) => profile_home,
+        Err(err) => exit_auth_profile_error(err),
+    }
+}
+
+fn exit_auth_profile_error(err: AuthProfileError) -> ! {
+    eprintln!("Error: {err}");
+    std::process::exit(1);
+}
+
+fn exit_login_success(
+    config: &Config,
+    profile_name: Option<&str>,
+    auth_profile_name: Option<&str>,
+) -> ! {
     if let Some(profile_name) = profile_name {
         match codex_login::save_current_auth_profile(
             &config.codex_home,
@@ -135,6 +177,8 @@ fn exit_login_success(config: &Config, profile_name: Option<&str>) -> ! {
             }
             Err(err) => exit_profile_save_error(err),
         }
+    } else if let Some(auth_profile_name) = auth_profile_name {
+        eprintln!("Saved auth profile `{auth_profile_name}`");
     } else if let Err(err) = codex_login::clear_active_auth_profile(&config.codex_home) {
         tracing::warn!("failed to clear active auth profile after unprofiled login: {err}");
     }
@@ -169,11 +213,12 @@ pub async fn login_with_chatgpt(
 pub async fn run_login_with_chatgpt(
     cli_config_overrides: CliConfigOverrides,
     profile_name: Option<String>,
+    auth_profile_name: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting browser login flow");
-    validate_profile_or_exit(profile_name.as_deref());
+    validate_profile_or_exit(profile_name.as_deref(), auth_profile_name.as_deref());
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
@@ -181,16 +226,21 @@ pub async fn run_login_with_chatgpt(
     }
 
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
 
     match login_with_chatgpt(
-        config.codex_home.to_path_buf(),
+        login_home,
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
     )
     .await
     {
         Ok(_) => {
-            exit_login_success(&config, profile_name.as_deref());
+            exit_login_success(
+                &config,
+                profile_name.as_deref(),
+                auth_profile_name.as_deref(),
+            );
         }
         Err(e) => {
             eprintln!("Error logging in: {e}");
@@ -203,24 +253,30 @@ pub async fn run_login_with_api_key(
     cli_config_overrides: CliConfigOverrides,
     api_key: String,
     profile_name: Option<String>,
+    auth_profile_name: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting api key login flow");
-    validate_profile_or_exit(profile_name.as_deref());
+    validate_profile_or_exit(profile_name.as_deref(), auth_profile_name.as_deref());
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Chatgpt)) {
         eprintln!("{API_KEY_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
 
+    let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     match login_with_api_key(
-        &config.codex_home,
+        &login_home,
         &api_key,
         config.cli_auth_credentials_store_mode,
     ) {
         Ok(_) => {
-            exit_login_success(&config, profile_name.as_deref());
+            exit_login_success(
+                &config,
+                profile_name.as_deref(),
+                auth_profile_name.as_deref(),
+            );
         }
         Err(e) => {
             eprintln!("Error logging in: {e}");
@@ -233,19 +289,21 @@ pub async fn run_login_with_access_token(
     cli_config_overrides: CliConfigOverrides,
     access_token: String,
     profile_name: Option<String>,
+    auth_profile_name: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting access token login flow");
-    validate_profile_or_exit(profile_name.as_deref());
+    validate_profile_or_exit(profile_name.as_deref(), auth_profile_name.as_deref());
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
 
+    let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     match login_with_access_token(
-        &config.codex_home,
+        &login_home,
         &access_token,
         config.cli_auth_credentials_store_mode,
         Some(&config.chatgpt_base_url),
@@ -253,7 +311,11 @@ pub async fn run_login_with_access_token(
     .await
     {
         Ok(_) => {
-            exit_login_success(&config, profile_name.as_deref());
+            exit_login_success(
+                &config,
+                profile_name.as_deref(),
+                auth_profile_name.as_deref(),
+            );
         }
         Err(e) => {
             eprintln!("Error logging in with access token: {e}");
@@ -309,18 +371,20 @@ pub async fn run_login_with_device_code(
     issuer_base_url: Option<String>,
     client_id: Option<String>,
     profile_name: Option<String>,
+    auth_profile_name: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting device code login flow");
-    validate_profile_or_exit(profile_name.as_deref());
+    validate_profile_or_exit(profile_name.as_deref(), auth_profile_name.as_deref());
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     let mut opts = ServerOptions::new(
-        config.codex_home.to_path_buf(),
+        login_home,
         client_id.unwrap_or(CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
@@ -330,7 +394,11 @@ pub async fn run_login_with_device_code(
     }
     match run_device_code_login(opts).await {
         Ok(()) => {
-            exit_login_success(&config, profile_name.as_deref());
+            exit_login_success(
+                &config,
+                profile_name.as_deref(),
+                auth_profile_name.as_deref(),
+            );
         }
         Err(e) => {
             eprintln!("Error logging in with device code: {e}");
@@ -403,11 +471,16 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     }
 }
 
-pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
+pub async fn run_login_status(
+    cli_config_overrides: CliConfigOverrides,
+    auth_profile_name: Option<String>,
+) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    validate_profile_or_exit(/*profile_name*/ None, auth_profile_name.as_deref());
+    let auth_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
 
     match CodexAuth::from_auth_storage(
-        &config.codex_home,
+        &auth_home,
         config.cli_auth_credentials_store_mode,
         Some(&config.chatgpt_base_url),
     )
@@ -416,7 +489,10 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
         Ok(Some(auth)) => match auth.auth_mode() {
             AuthMode::ApiKey => match auth.get_token() {
                 Ok(api_key) => {
-                    eprintln!("Logged in using an API key - {}", safe_format_key(&api_key));
+                    print_logged_in_status(
+                        auth_profile_name.as_deref(),
+                        &format!("using an API key - {}", safe_format_key(&api_key)),
+                    );
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -425,11 +501,11 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                 }
             },
             AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => {
-                eprintln!("Logged in using ChatGPT");
+                print_logged_in_status(auth_profile_name.as_deref(), "using ChatGPT");
                 std::process::exit(0);
             }
             AuthMode::AgentIdentity => {
-                eprintln!("Logged in using access token");
+                print_logged_in_status(auth_profile_name.as_deref(), "using access token");
                 std::process::exit(0);
             }
         },
@@ -444,8 +520,24 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     }
 }
 
-pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
+fn print_logged_in_status(auth_profile_name: Option<&str>, status: &str) {
+    if let Some(auth_profile_name) = auth_profile_name {
+        eprintln!("Auth profile `{auth_profile_name}` is logged in {status}");
+    } else {
+        eprintln!("Logged in {status}");
+    }
+}
+
+pub async fn run_logout(
+    cli_config_overrides: CliConfigOverrides,
+    auth_profile_name: Option<String>,
+) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    validate_profile_or_exit(/*profile_name*/ None, auth_profile_name.as_deref());
+
+    if let Some(auth_profile_name) = auth_profile_name {
+        run_logout_auth_profile(&config, &auth_profile_name).await;
+    }
 
     match logout_with_revoke(&config.codex_home, config.cli_auth_credentials_store_mode).await {
         Ok(true) => {
@@ -458,6 +550,41 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
         }
         Err(e) => {
             eprintln!("Error logging out: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_logout_auth_profile(config: &Config, auth_profile_name: &str) -> ! {
+    let auth_home = auth_profile_storage_home_or_exit(config, auth_profile_name);
+    let removed_auth =
+        match logout_with_revoke(&auth_home, config.cli_auth_credentials_store_mode).await {
+            Ok(removed_auth) => removed_auth,
+            Err(e) => {
+                eprintln!("Error logging out auth profile `{auth_profile_name}`: {e}");
+                std::process::exit(1);
+            }
+        };
+
+    match delete_auth_profile(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        auth_profile_name,
+    ) {
+        Ok(()) => {
+            eprintln!("Logged out auth profile `{auth_profile_name}`");
+            std::process::exit(0);
+        }
+        Err(AuthProfileError::ProfileNotFound { .. }) if !removed_auth => {
+            eprintln!("Not logged in");
+            std::process::exit(0);
+        }
+        Err(AuthProfileError::ProfileNotFound { .. }) => {
+            eprintln!("Logged out auth profile `{auth_profile_name}`");
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("Error removing auth profile `{auth_profile_name}`: {err}");
             std::process::exit(1);
         }
     }
