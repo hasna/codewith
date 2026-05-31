@@ -13,12 +13,12 @@ The workflows in this directory are split so that pull requests get fast, review
   - `cargo shear`
   - `argument-comment-lint` on Linux, macOS, and Windows
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
-- `open-codex-cli.yml` builds the local-friendly `open-codex` CLI artifact on
+- `iapp-codex-cli.yml` builds the local-friendly `iapp-codex` CLI artifact on
   Linux for pull requests, manual runs, and the `feat/loop-scheduled-tasks`
   feature branch so this fork can be installed without replacing an existing
-  `codex` binary. The artifact uses an `open-codex` wrapper that defaults to
-  `~/.open-codex` for state so fork-only migrations do not mutate the regular
-  `~/.codex` profile.
+  `codex` binary. The artifact uses an `iapp-codex` wrapper that defaults to
+  `~/.hasna/internalapps/codex` for state so internal-app sessions do not mutate
+  the regular `~/.codex` profile.
 
 ## Post-Merge On `main`
 

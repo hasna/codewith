@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_dir() {
+  local source="${BASH_SOURCE[0]}"
+  while [[ -L "${source}" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "${source}")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "${source}")"
+    [[ "${source}" == /* ]] || source="${dir}/${source}"
+  done
+  cd -P "$(dirname "${source}")" >/dev/null 2>&1 && pwd
+}
+
+find_iapp_codex_bin() {
+  local script_dir="$1"
+
+  if [[ -n "${IAPPCODEX_BIN:-}" ]]; then
+    printf '%s\n' "${IAPPCODEX_BIN}"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "${script_dir}/iapp-codex-bin" \
+    "${script_dir}/../codex-rs/target/debug/codex" \
+    "${script_dir}/../codex-rs/target/release/codex"; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+main() {
+  local script_dir
+  script_dir="$(resolve_script_dir)"
+
+  local codex_bin
+  if ! codex_bin="$(find_iapp_codex_bin "${script_dir}")"; then
+    printf 'iapp-codex: unable to find the Codex binary. Set IAPPCODEX_BIN to its path.\n' >&2
+    return 127
+  fi
+
+  if [[ -z "${CODEX_HOME:-}" ]]; then
+    export CODEX_HOME="${IAPPCODEX_HOME:-${HOME}/.hasna/internalapps/codex}"
+  fi
+  mkdir -p -m 700 "${CODEX_HOME}"
+  chmod go-rwx "${CODEX_HOME}" 2>/dev/null || true
+
+  exec "${codex_bin}" "$@"
+}
+
+main "$@"
