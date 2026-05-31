@@ -1,6 +1,13 @@
 use super::*;
+use crate::AuthProfileError;
+use crate::active_auth_profile;
 use crate::auth::storage::FileAuthStorage;
 use crate::auth::storage::get_auth_file;
+use crate::delete_auth_profile;
+use crate::list_auth_profiles;
+use crate::load_auth_profile;
+use crate::save_auth_profile;
+use crate::save_current_auth_profile;
 use crate::token_data::IdTokenInfo;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::account::PlanType as AccountPlanType;
@@ -25,6 +32,16 @@ use wiremock::matchers::path;
 const WORKSPACE_ID_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174000";
 const WORKSPACE_ID_SECOND_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174001";
 const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
+
+fn api_key_auth_dot_json(api_key: &str) -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(ApiAuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+    }
+}
 
 #[tokio::test]
 async fn refresh_without_id_token() {
@@ -277,16 +294,228 @@ async fn loads_api_key_from_auth_json() {
     assert!(auth.get_token_data().is_err());
 }
 
+#[tokio::test]
+async fn auth_manager_with_selected_profile_loads_profile_auth_without_touching_root()
+-> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    assert_eq!(manager.selected_auth_profile(), Some("work"));
+    let auth = manager.auth_cached().expect("profile auth should load");
+    assert_eq!(auth.api_key(), Some("sk-work"));
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth)
+    );
+    assert_eq!(active_auth_profile(dir.path())?, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_managers_with_different_selected_profiles_stay_isolated() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+    let personal_auth = api_key_auth_dot_json("sk-personal");
+    let updated_work_auth = api_key_auth_dot_json("sk-work-updated");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &personal_auth,
+    )?;
+
+    let work_manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+    let personal_manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("personal".to_string()),
+    )
+    .await;
+
+    assert_eq!(
+        work_manager
+            .auth_cached()
+            .expect("work auth should load")
+            .api_key(),
+        Some("sk-work")
+    );
+    assert_eq!(
+        personal_manager
+            .auth_cached()
+            .expect("personal auth should load")
+            .api_key(),
+        Some("sk-personal")
+    );
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth.clone())
+    );
+    assert_eq!(active_auth_profile(dir.path())?, None);
+
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &updated_work_auth,
+    )?;
+    work_manager.reload().await;
+
+    assert_eq!(
+        work_manager
+            .auth_cached()
+            .expect("updated work auth should load")
+            .api_key(),
+        Some("sk-work-updated")
+    );
+    assert_eq!(
+        personal_manager
+            .auth_cached()
+            .expect("personal auth should remain cached")
+            .api_key(),
+        Some("sk-personal")
+    );
+    assert_eq!(
+        load_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "personal")?,
+        personal_auth
+    );
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth)
+    );
+
+    let profiles = list_auth_profiles(dir.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| (profile.name.as_str(), profile.active))
+            .collect::<Vec<_>>(),
+        vec![("personal", false), ("work", false)]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_manager_with_selected_profile_reload_does_not_fall_back_to_root() -> anyhow::Result<()>
+{
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+    let updated_root_auth = api_key_auth_dot_json("sk-root-updated");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    super::save_auth(
+        dir.path(),
+        &updated_root_auth,
+        AuthCredentialsStoreMode::File,
+    )?;
+    delete_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "work")?;
+    assert!(manager.reload().await);
+
+    assert!(manager.auth_cached().is_none());
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(updated_root_auth)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_manager_with_selected_profile_logout_does_not_clear_root_auth_or_active_marker()
+-> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_current_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "active")?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    assert!(manager.logout().await?);
+
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth)
+    );
+    assert_eq!(active_auth_profile(dir.path())?.as_deref(), Some("active"));
+    assert!(matches!(
+        load_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "work"),
+        Err(AuthProfileError::ProfileNotFound { name }) if name == "work"
+    ));
+
+    Ok(())
+}
+
 #[test]
 fn logout_removes_auth_file() -> Result<(), std::io::Error> {
     let dir = tempdir()?;
-    let auth_dot_json = AuthDotJson {
-        auth_mode: Some(ApiAuthMode::ApiKey),
-        openai_api_key: Some("sk-test-key".to_string()),
-        tokens: None,
-        last_refresh: None,
-        agent_identity: None,
-    };
+    let auth_dot_json = api_key_auth_dot_json("sk-test-key");
     super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)?;
     let auth_file = get_auth_file(dir.path());
     assert!(auth_file.exists());

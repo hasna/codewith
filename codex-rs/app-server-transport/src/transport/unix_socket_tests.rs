@@ -3,6 +3,8 @@ use super::CHANNEL_CAPACITY;
 use super::TransportEvent;
 use super::acquire_app_server_startup_lock;
 use super::app_server_control_socket_path;
+use super::app_server_control_socket_path_for_auth_profile;
+use super::app_server_startup_lock_path_for_auth_profile;
 use super::start_control_socket_acceptor;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
@@ -197,6 +199,47 @@ fn absolute_path(path: &str) -> AbsolutePathBuf {
 fn default_control_socket_path() -> AbsolutePathBuf {
     let codex_home = find_codex_home().expect("codex home");
     app_server_control_socket_path(&codex_home).expect("default control socket path")
+}
+
+#[test]
+fn control_socket_path_can_be_scoped_to_auth_profile() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let socket_path =
+        app_server_control_socket_path_for_auth_profile(temp_dir.path(), Some("work"))
+            .expect("profile socket path");
+    let startup_lock_path =
+        app_server_startup_lock_path_for_auth_profile(temp_dir.path(), Some("work"))
+            .expect("profile startup lock path");
+
+    assert_eq!(
+        socket_path.as_path(),
+        temp_dir
+            .path()
+            .join("app-server-control")
+            .join("auth_profiles")
+            .join("work")
+            .join("app-server-control.sock")
+    );
+    assert_eq!(
+        startup_lock_path.as_path(),
+        temp_dir
+            .path()
+            .join("app-server-control")
+            .join("auth_profiles")
+            .join("work")
+            .join("app-server-startup.lock")
+    );
+}
+
+#[test]
+fn control_socket_path_rejects_invalid_auth_profile() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let err = app_server_control_socket_path_for_auth_profile(temp_dir.path(), Some("nested/work"))
+        .expect_err("invalid profile should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 fn test_socket_path(temp_dir: &Path) -> AbsolutePathBuf {

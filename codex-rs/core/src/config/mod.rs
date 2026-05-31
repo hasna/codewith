@@ -69,6 +69,9 @@ use codex_features::NetworkProxyConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
+use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::IAPPCODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
@@ -111,6 +114,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
+use std::env;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -211,6 +215,49 @@ fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
     } else {
         Some(resolved_cwd.join(path))
     }
+}
+
+fn resolve_selected_auth_profile(
+    explicit_profile: Option<String>,
+) -> std::io::Result<Option<String>> {
+    if let Some(profile) = explicit_profile {
+        return validate_selected_auth_profile(profile, "--auth-profile").map(Some);
+    }
+
+    if let Some(profile) = non_empty_env(IAPPCODEX_AUTH_PROFILE_ENV_VAR) {
+        return validate_selected_auth_profile(profile, IAPPCODEX_AUTH_PROFILE_ENV_VAR).map(Some);
+    }
+
+    non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR)
+        .map(|profile| validate_selected_auth_profile(profile, CODEX_AUTH_PROFILE_ENV_VAR))
+        .transpose()
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    let raw = env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn validate_selected_auth_profile(profile: String, source: &str) -> std::io::Result<String> {
+    let trimmed = profile.trim();
+    if trimmed.is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{source} cannot be empty"),
+        ));
+    }
+    validate_auth_profile_name(trimmed).map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("invalid auth profile from {source}: {err}"),
+        )
+    })?;
+    Ok(trimmed.to_string())
 }
 
 fn resolve_cli_auth_credentials_store_mode(
@@ -749,6 +796,9 @@ pub struct Config {
     /// auto: Use the OS-specific keyring service if available, otherwise use a file.
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
 
+    /// Optional named auth profile selected for this runtime session.
+    pub selected_auth_profile: Option<String>,
+
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
@@ -1048,6 +1098,10 @@ impl AuthManagerConfig for Config {
 
     fn cli_auth_credentials_store_mode(&self) -> AuthCredentialsStoreMode {
         self.cli_auth_credentials_store_mode
+    }
+
+    fn selected_auth_profile(&self) -> Option<String> {
+        self.selected_auth_profile.clone()
     }
 
     fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>> {
@@ -2156,6 +2210,7 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     pub ephemeral: Option<bool>,
     pub bypass_hook_trust: Option<bool>,
+    pub auth_profile: Option<String>,
     /// Additional directories that should be treated as writable roots for this session.
     pub additional_writable_roots: Vec<PathBuf>,
     /// Explicit runtime workspace roots for this session. When set, this is
@@ -2508,10 +2563,12 @@ impl Config {
             tools_web_search_request: override_tools_web_search_request,
             ephemeral,
             bypass_hook_trust,
+            auth_profile,
             additional_writable_roots,
             workspace_roots: workspace_roots_override,
         } = overrides;
         let bypass_hook_trust = bypass_hook_trust.unwrap_or_default();
+        let selected_auth_profile = resolve_selected_auth_profile(auth_profile)?;
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -3410,6 +3467,7 @@ impl Config {
                 cfg.cli_auth_credentials_store.unwrap_or_default(),
                 env!("CARGO_PKG_VERSION"),
             ),
+            selected_auth_profile,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.

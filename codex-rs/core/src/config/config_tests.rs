@@ -101,12 +101,48 @@ use pretty_assertions::assert_eq;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::FormElicitationCapability;
 use rmcp::model::UrlElicitationCapability;
+use serial_test::serial;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
 
 fn stdio_mcp(command: &str) -> McpServerConfig {
     McpServerConfig {
@@ -4605,6 +4641,99 @@ async fn config_resolves_explicit_keyring_auth_store_mode() -> std::io::Result<(
             AuthCredentialsStoreMode::Keyring,
             env!("CARGO_PKG_VERSION"),
         ),
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_selected_auth_profile_from_override() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, "from-env");
+    let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some("from-cli".to_string()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.selected_auth_profile.as_deref(), Some("from-cli"));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_selected_auth_profile_from_env() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, "  from-iapp-env  ");
+    let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.selected_auth_profile.as_deref(),
+        Some("from-iapp-env")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_ignores_empty_iapp_auth_profile_env() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, " ");
+    let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.selected_auth_profile.as_deref(),
+        Some("from-codex-env")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some("nested/work".to_string()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("invalid auth profile should fail");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("invalid auth profile"),
+        "unexpected error: {err}"
     );
 
     Ok(())

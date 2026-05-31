@@ -20,6 +20,8 @@ use super::storage::create_auth_storage;
 
 const AUTH_PROFILES_DIR: &str = "auth_profiles";
 const ACTIVE_PROFILE_FILE: &str = ".active";
+pub const IAPPCODEX_AUTH_PROFILE_ENV_VAR: &str = "IAPPCODEX_AUTH_PROFILE";
+pub const CODEX_AUTH_PROFILE_ENV_VAR: &str = "CODEX_AUTH_PROFILE";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthProfile {
@@ -158,6 +160,52 @@ pub fn save_current_auth_profile(
     ))
 }
 
+pub fn save_auth_profile(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    name: &str,
+    auth: &AuthDotJson,
+) -> Result<AuthProfile, AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+
+    save_profile_auth(codex_home, auth_credentials_store_mode, name, auth)?;
+    Ok(profile_from_auth(
+        name.to_string(),
+        auth,
+        /*active*/ false,
+    ))
+}
+
+pub fn load_auth_profile(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    name: &str,
+) -> Result<AuthDotJson, AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+    load_profile_auth(codex_home, auth_credentials_store_mode, name)
+}
+
+pub fn delete_auth_profile(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    name: &str,
+) -> Result<(), AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+
+    let profile_dir = auth_profile_dir(codex_home, name);
+    if !profile_dir.is_dir() {
+        return Err(AuthProfileError::ProfileNotFound {
+            name: name.to_string(),
+        });
+    }
+
+    delete_profile_storage_dir(profile_dir, auth_credentials_store_mode)?;
+    Ok(())
+}
+
 pub fn switch_auth_profile(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -192,18 +240,29 @@ pub fn remove_auth_profile(
         });
     }
 
-    let storage = create_auth_storage(profile_dir.clone(), auth_credentials_store_mode);
-    storage.delete()?;
-    match fs::remove_dir_all(&profile_dir) {
-        Ok(()) => {}
-        Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
+    delete_profile_storage_dir(profile_dir, auth_credentials_store_mode)?;
 
     if active_auth_profile(codex_home).ok().flatten().as_deref() == Some(name) {
         clear_active_auth_profile(codex_home)?;
     }
     Ok(())
+}
+
+pub fn auth_profile_storage_dir(
+    codex_home: &Path,
+    name: &str,
+) -> Result<PathBuf, AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    Ok(auth_profile_dir(codex_home, name))
+}
+
+pub fn ensure_auth_profile_storage_dir(
+    codex_home: &Path,
+    name: &str,
+) -> Result<PathBuf, AuthProfileError> {
+    let profile_dir = auth_profile_storage_dir(codex_home, name)?;
+    create_private_dir_all(&profile_dir)?;
+    Ok(profile_dir)
 }
 
 pub(crate) fn mirror_active_auth_profile(
@@ -289,8 +348,7 @@ fn save_profile_auth(
     name: &str,
     auth: &AuthDotJson,
 ) -> Result<(), AuthProfileError> {
-    let profile_dir = auth_profile_dir(codex_home, name);
-    create_private_dir_all(&profile_dir)?;
+    let profile_dir = ensure_auth_profile_storage_dir(codex_home, name)?;
     let storage = create_auth_storage(profile_dir, auth_credentials_store_mode);
     storage.save(auth)?;
     Ok(())
@@ -311,6 +369,20 @@ fn load_profile_auth(
     storage.load()?.ok_or(AuthProfileError::ProfileNotFound {
         name: name.to_string(),
     })
+}
+
+fn delete_profile_storage_dir(
+    profile_dir: PathBuf,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+) -> Result<(), AuthProfileError> {
+    let storage = create_auth_storage(profile_dir.clone(), auth_credentials_store_mode);
+    storage.delete()?;
+    match fs::remove_dir_all(&profile_dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    Ok(())
 }
 
 fn profile_from_auth(name: String, auth: &AuthDotJson, active: bool) -> AuthProfile {

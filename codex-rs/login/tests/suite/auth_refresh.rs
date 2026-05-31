@@ -9,8 +9,12 @@ use codex_login::AuthDotJson;
 use codex_login::AuthManager;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::RefreshTokenError;
+use codex_login::active_auth_profile;
 use codex_login::load_auth_dot_json;
+use codex_login::load_auth_profile;
 use codex_login::save_auth;
+use codex_login::save_auth_profile;
+use codex_login::save_current_auth_profile;
 use codex_login::token_data::IdTokenInfo;
 use codex_login::token_data::TokenData;
 use codex_protocol::auth::RefreshTokenFailedReason;
@@ -89,6 +93,94 @@ async fn refresh_token_succeeds_updates_storage() -> Result<()> {
         .get_token_data()
         .context("token data should be cached")?;
     assert_eq!(cached, refreshed_tokens);
+
+    server.verify().await;
+    Ok(())
+}
+
+#[serial_test::serial(auth_refresh)]
+#[tokio::test]
+async fn refresh_token_with_selected_profile_updates_profile_not_root() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let endpoint = format!("{}/oauth/token", server.uri());
+    let _env_guard = EnvGuard::set(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, endpoint);
+    let root_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
+        openai_api_key: Some("sk-root".to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+    };
+    save_auth(
+        codex_home.path(),
+        &root_auth,
+        AuthCredentialsStoreMode::File,
+    )?;
+    save_current_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "active")?;
+
+    let initial_last_refresh = Utc::now() - Duration::days(1);
+    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+    let profile_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(initial_tokens.clone()),
+        last_refresh: Some(initial_last_refresh),
+        agent_identity: None,
+    };
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &profile_auth,
+    )?;
+
+    let auth_manager = AuthManager::shared_with_auth_profile(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    auth_manager
+        .refresh_token_from_authority()
+        .await
+        .context("refresh should succeed")?;
+
+    let refreshed_tokens = TokenData {
+        access_token: "new-access-token".to_string(),
+        refresh_token: "new-refresh-token".to_string(),
+        ..initial_tokens
+    };
+    assert_eq!(
+        load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth)
+    );
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("active")
+    );
+    let stored_profile =
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")?;
+    let tokens = stored_profile
+        .tokens
+        .as_ref()
+        .context("profile tokens should exist")?;
+    assert_eq!(tokens, &refreshed_tokens);
 
     server.verify().await;
     Ok(())

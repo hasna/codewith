@@ -74,7 +74,9 @@ use codex_features::Stage;
 use codex_features::is_known_feature_key;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::IAPPCODEX_AUTH_PROFILE_ENV_VAR;
 use codex_login::read_codex_access_token_from_env;
+use codex_login::validate_auth_profile_name;
 use codex_memories_write::clear_memory_roots_contents;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
@@ -409,7 +411,7 @@ struct LoginCommand {
     )]
     api_key: Option<String>,
 
-    #[arg(long = "device-auth")]
+    #[arg(long = "device-auth", visible_alias = "use-device-code")]
     use_device_code: bool,
 
     #[arg(
@@ -418,6 +420,14 @@ struct LoginCommand {
         help = "Save this login as a named authentication profile"
     )]
     profile: Option<String>,
+
+    #[arg(
+        long = "auth-profile",
+        value_name = "NAME",
+        conflicts_with = "profile",
+        help = "Save this login directly to a named authentication profile without changing the active login"
+    )]
+    auth_profile: Option<String>,
 
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
     /// Override the OAuth issuer base URL (advanced)
@@ -442,6 +452,13 @@ enum LoginSubcommand {
 struct LogoutCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
+
+    #[arg(
+        long = "auth-profile",
+        value_name = "NAME",
+        help = "Log out only the named authentication profile"
+    )]
+    auth_profile: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -776,6 +793,17 @@ fn run_execpolicycheck(cmd: ExecPolicyCheckCommand) -> anyhow::Result<()> {
     cmd.run()
 }
 
+fn apply_root_auth_profile_to_app_server_env(auth_profile: Option<&str>) -> anyhow::Result<()> {
+    let Some(auth_profile) = auth_profile else {
+        return Ok(());
+    };
+    validate_auth_profile_name(auth_profile).map_err(|err| anyhow::anyhow!(err))?;
+    unsafe {
+        std::env::set_var(IAPPCODEX_AUTH_PROFILE_ENV_VAR, auth_profile);
+    }
+    Ok(())
+}
+
 async fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Result<()> {
     match cmd.subcommand {
         DebugAppServerSubcommand::SendMessageV2(cmd) => {
@@ -888,6 +916,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let root_remote = remote.remote;
     let root_remote_auth_token_env = remote.remote_auth_token_env;
     let root_strict_config = interactive.strict_config;
+    let root_auth_profile = interactive.auth_profile.clone();
     reject_root_strict_config_for_subcommand(root_strict_config, &subcommand)?;
     if let Some(subcommand) = subcommand.as_ref() {
         profile_v2_for_subcommand(&interactive, subcommand)?;
@@ -1007,6 +1036,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             }
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
+            apply_root_auth_profile_to_app_server_env(root_auth_profile.as_deref())?;
             let AppServerCommand {
                 subcommand,
                 strict_config: app_server_strict_config,
@@ -1203,7 +1233,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         eprintln!("`codex login status` does not accept --profile.");
                         std::process::exit(1);
                     }
-                    run_login_status(login_cli.config_overrides).await;
+                    run_login_status(login_cli.config_overrides, login_cli.auth_profile).await;
                 }
                 None => {
                     if login_cli.with_api_key && login_cli.with_access_token {
@@ -1217,6 +1247,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             login_cli.issuer_base_url,
                             login_cli.client_id,
                             login_cli.profile,
+                            login_cli.auth_profile,
                         )
                         .await;
                     } else if login_cli.api_key.is_some() {
@@ -1230,6 +1261,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             login_cli.config_overrides,
                             api_key,
                             login_cli.profile,
+                            login_cli.auth_profile,
                         )
                         .await;
                     } else if login_cli.with_access_token {
@@ -1238,10 +1270,16 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             login_cli.config_overrides,
                             access_token,
                             login_cli.profile,
+                            login_cli.auth_profile,
                         )
                         .await;
                     } else {
-                        run_login_with_chatgpt(login_cli.config_overrides, login_cli.profile).await;
+                        run_login_with_chatgpt(
+                            login_cli.config_overrides,
+                            login_cli.profile,
+                            login_cli.auth_profile,
+                        )
+                        .await;
                     }
                 }
             }
@@ -1256,7 +1294,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 &mut logout_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            run_logout(logout_cli.config_overrides).await;
+            run_logout(logout_cli.config_overrides, logout_cli.auth_profile).await;
         }
         Some(Subcommand::Profile(mut profile_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -1770,6 +1808,7 @@ async fn run_debug_prompt_input_command(
         show_raw_agent_reasoning: shared.oss.then_some(true),
         ephemeral: Some(true),
         bypass_hook_trust: shared.bypass_hook_trust.then_some(true),
+        auth_profile: shared.auth_profile,
         additional_writable_roots: shared.add_dir,
         ..Default::default()
     };
@@ -2362,6 +2401,55 @@ mod tests {
         assert!(
             MultitoolCli::try_parse_from(["codex", "--profile", "nested/work", "resume"]).is_err()
         );
+    }
+
+    #[test]
+    fn auth_profile_parses_for_interactive_runtime() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work"]).expect("parse");
+
+        assert_eq!(cli.interactive.auth_profile.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn auth_profile_inherits_from_root_into_exec() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work", "exec"])
+            .expect("parse");
+
+        let Some(Subcommand::Exec(mut exec)) = cli.subcommand else {
+            panic!("expected exec subcommand");
+        };
+        exec.shared
+            .inherit_exec_root_options(&cli.interactive.shared);
+
+        assert_eq!(exec.auth_profile.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn auth_profile_parses_before_app_server() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work", "app-server"])
+            .expect("parse");
+
+        assert_eq!(cli.interactive.auth_profile.as_deref(), Some("work"));
+        assert!(matches!(cli.subcommand, Some(Subcommand::AppServer(_))));
+    }
+
+    #[test]
+    fn login_accepts_use_device_code_alias() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "login",
+            "--auth-profile",
+            "work",
+            "--use-device-code",
+        ])
+        .expect("parse");
+
+        let Some(Subcommand::Login(login)) = cli.subcommand else {
+            panic!("expected login subcommand");
+        };
+
+        assert!(login.use_device_code);
+        assert_eq!(login.auth_profile.as_deref(), Some("work"));
     }
 
     #[test]

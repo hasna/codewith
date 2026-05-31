@@ -36,6 +36,29 @@ fn validates_auth_profile_names() {
 }
 
 #[test]
+fn ensure_auth_profile_storage_dir_creates_private_profile_dir() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+
+    let profile_dir = ensure_auth_profile_storage_dir(codex_home.path(), "work")?;
+
+    assert_eq!(
+        profile_dir,
+        codex_home.path().join("auth_profiles").join("work")
+    );
+    assert!(profile_dir.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&profile_dir)?.permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn saves_lists_switches_and_removes_auth_profiles() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let work_auth = auth_with_key("sk-work");
@@ -126,6 +149,79 @@ fn mirror_active_auth_profile_updates_selected_profile() -> anyhow::Result<()> {
     );
     switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")?;
     assert_eq!(active_storage.load()?, Some(refreshed_auth));
+
+    Ok(())
+}
+
+#[test]
+fn profile_scoped_storage_does_not_touch_root_auth_or_active_marker() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let root_auth = auth_with_key("sk-root");
+    let work_auth = auth_with_key("sk-work");
+
+    let active_storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+    );
+    active_storage.save(&root_auth)?;
+
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+
+    assert_eq!(active_storage.load()?, Some(root_auth));
+    assert_eq!(active_auth_profile(codex_home.path())?, None);
+    assert_eq!(
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")?,
+        work_auth
+    );
+
+    Ok(())
+}
+
+#[test]
+fn profile_scoped_delete_only_removes_target_profile() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let root_auth = auth_with_key("sk-root");
+    let work_auth = auth_with_key("sk-work");
+    let personal_auth = auth_with_key("sk-personal");
+
+    let active_storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+    );
+    active_storage.save(&root_auth)?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &personal_auth,
+    )?;
+
+    delete_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")?;
+
+    assert_eq!(active_storage.load()?, Some(root_auth));
+    assert!(matches!(
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work"),
+        Err(AuthProfileError::ProfileNotFound { name }) if name == "work"
+    ));
+    assert_eq!(
+        load_auth_profile(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            "personal"
+        )?,
+        personal_auth
+    );
 
     Ok(())
 }

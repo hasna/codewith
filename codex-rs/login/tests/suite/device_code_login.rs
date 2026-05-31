@@ -5,7 +5,10 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::ServerOptions;
+use codex_login::active_auth_profile;
 use codex_login::auth::load_auth_dot_json;
+use codex_login::auth_profile_storage_dir;
+use codex_login::load_auth_profile;
 use codex_login::run_device_code_login;
 use serde_json::json;
 use std::sync::Arc;
@@ -152,6 +155,60 @@ async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
         .context("auth.json written")?;
     // assert_eq!(auth.openai_api_key.as_deref(), Some("api-key-321"));
     let tokens = auth.tokens.expect("tokens persisted");
+    assert_eq!(tokens.access_token, "access-token-123");
+    assert_eq!(tokens.refresh_token, "refresh-token-123");
+    assert_eq!(tokens.id_token.raw_jwt, jwt);
+    assert_eq!(tokens.account_id.as_deref(), Some(WORKSPACE_ID_ALLOWED));
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_code_login_can_persist_to_auth_profile_without_root_mutation() -> anyhow::Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let codex_home = tempdir().unwrap();
+    let mock_server = MockServer::start().await;
+
+    mock_usercode_success(&mock_server).await;
+
+    mock_poll_token_two_step(
+        &mock_server,
+        Arc::new(AtomicUsize::new(0)),
+        /*first_response_status*/ 404,
+    )
+    .await;
+
+    let jwt = make_jwt(json!({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": WORKSPACE_ID_ALLOWED
+        }
+    }));
+
+    mock_oauth_token_single(&mock_server, jwt.clone()).await;
+
+    let profile_home = auth_profile_storage_dir(codex_home.path(), "work")?;
+    let mut opts = ServerOptions::new(
+        profile_home,
+        "client-id".to_string(),
+        /*forced_chatgpt_workspace_id*/ None,
+        AuthCredentialsStoreMode::File,
+    );
+    opts.issuer = mock_server.uri();
+    opts.open_browser = false;
+
+    run_device_code_login(opts)
+        .await
+        .expect("device code login integration should succeed");
+
+    let root_auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
+        .context("root auth.json should load after profile login")?;
+    assert_eq!(root_auth, None);
+    assert_eq!(active_auth_profile(codex_home.path())?, None);
+
+    let profile_auth = load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")
+        .context("profile auth should load after device code login")?;
+    let tokens = profile_auth.tokens.expect("tokens persisted");
     assert_eq!(tokens.access_token, "access-token-123");
     assert_eq!(tokens.refresh_token, "refresh-token-123");
     assert_eq!(tokens.id_token.raw_jwt, jwt);

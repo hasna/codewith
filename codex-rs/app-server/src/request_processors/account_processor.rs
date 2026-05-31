@@ -248,6 +248,10 @@ impl AccountRequestProcessor {
         )
     }
 
+    fn auth_storage_home(&self) -> Result<PathBuf, JSONRPCErrorError> {
+        account_auth_storage_home(&self.config)
+    }
+
     async fn login_api_key_common(
         &self,
         params: &LoginApiKeyParams,
@@ -273,8 +277,9 @@ impl AccountRequestProcessor {
             }
         }
 
+        let auth_storage_home = self.auth_storage_home()?;
         match login_with_api_key(
-            &self.config.codex_home,
+            &auth_storage_home,
             &params.api_key,
             self.config.cli_auth_credentials_store_mode,
         ) {
@@ -317,11 +322,12 @@ impl AccountRequestProcessor {
             ));
         }
 
+        let auth_storage_home = self.auth_storage_home()?;
         let opts = LoginServerOptions {
             open_browser: false,
             codex_streamlined_login,
             ..LoginServerOptions::new(
-                config.codex_home.to_path_buf(),
+                auth_storage_home,
                 CLIENT_ID.to_string(),
                 config.forced_chatgpt_workspace_id.clone(),
                 config.cli_auth_credentials_store_mode,
@@ -578,8 +584,9 @@ impl AccountRequestProcessor {
             )));
         }
 
+        let auth_storage_home = self.auth_storage_home()?;
         login_with_chatgpt_auth_tokens(
-            &self.config.codex_home,
+            &auth_storage_home,
             &access_token,
             &chatgpt_account_id,
             chatgpt_plan_type.as_deref(),
@@ -950,5 +957,57 @@ impl AccountRequestProcessor {
             .unwrap_or_else(|| snapshots[0].clone());
 
         Ok((primary, rate_limits_by_limit_id))
+    }
+}
+
+fn account_auth_storage_home(config: &Config) -> Result<PathBuf, JSONRPCErrorError> {
+    let Some(auth_profile_name) = config.selected_auth_profile.as_deref() else {
+        return Ok(config.codex_home.to_path_buf());
+    };
+
+    ensure_auth_profile_storage_dir(&config.codex_home, auth_profile_name).map_err(|err| {
+        invalid_request(format!("selected authentication profile is invalid: {err}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account_auth_storage_home;
+    use codex_core::config::Config;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn account_auth_storage_home_defaults_to_root_auth() -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = Config::load_default_with_cli_overrides_for_codex_home(
+            codex_home.path().to_path_buf(),
+            Vec::new(),
+        )
+        .await?;
+
+        let auth_storage_home =
+            account_auth_storage_home(&config).expect("auth storage home should resolve");
+        assert_eq!(auth_storage_home, codex_home.path());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn account_auth_storage_home_uses_selected_auth_profile() -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let mut config = Config::load_default_with_cli_overrides_for_codex_home(
+            codex_home.path().to_path_buf(),
+            Vec::new(),
+        )
+        .await?;
+        config.selected_auth_profile = Some("work".to_string());
+
+        let auth_storage_home =
+            account_auth_storage_home(&config).expect("auth storage home should resolve");
+        assert_eq!(
+            auth_storage_home,
+            codex_home.path().join("auth_profiles").join("work")
+        );
+        Ok(())
     }
 }

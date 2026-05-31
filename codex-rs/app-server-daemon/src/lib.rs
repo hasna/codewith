@@ -16,6 +16,7 @@ pub use backend::BackendKind;
 use backend::BackendPaths;
 use codex_app_server_protocol::RemoteControlConnectionStatus;
 use codex_app_server_transport::app_server_control_socket_path;
+use codex_app_server_transport::selected_auth_profile_from_env;
 use codex_utils_home_dir::find_codex_home;
 use managed_install::managed_codex_bin;
 #[cfg(unix)]
@@ -32,6 +33,7 @@ const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
+const AUTH_PROFILE_STATE_DIR_NAME: &str = "auth_profiles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -262,7 +264,7 @@ impl Daemon {
         let socket_path = app_server_control_socket_path(codex_home.as_path())?
             .as_path()
             .to_path_buf();
-        let state_dir = codex_home.as_path().join(STATE_DIR_NAME);
+        let state_dir = app_server_daemon_state_dir(codex_home.as_path())?;
         Ok(Self {
             socket_path,
             pid_file: state_dir.join(PID_FILE_NAME),
@@ -773,6 +775,26 @@ impl Daemon {
     }
 }
 
+fn app_server_daemon_state_dir(codex_home: &Path) -> Result<PathBuf> {
+    Ok(app_server_daemon_state_dir_for_auth_profile(
+        codex_home,
+        selected_auth_profile_from_env()?.as_deref(),
+    ))
+}
+
+fn app_server_daemon_state_dir_for_auth_profile(
+    codex_home: &Path,
+    auth_profile: Option<&str>,
+) -> PathBuf {
+    let state_dir = codex_home.join(STATE_DIR_NAME);
+    let Some(auth_profile) = auth_profile else {
+        return state_dir;
+    };
+    state_dir
+        .join(AUTH_PROFILE_STATE_DIR_NAME)
+        .join(auth_profile)
+}
+
 fn remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus {
     match mode {
         RemoteControlMode::Enabled => RemoteControlStatus::Enabled,
@@ -851,6 +873,7 @@ mod tests {
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
     use super::UpdaterRefreshMode;
+    use super::app_server_daemon_state_dir_for_auth_profile;
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
@@ -860,6 +883,24 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RemoteControlStatus::AlreadyEnabled).expect("serialize"),
             "\"alreadyEnabled\""
+        );
+    }
+
+    #[test]
+    fn daemon_state_dir_can_be_scoped_to_auth_profile() {
+        let temp_dir = TempDir::new().expect("temp dir");
+
+        assert_eq!(
+            app_server_daemon_state_dir_for_auth_profile(temp_dir.path(), None),
+            temp_dir.path().join("app-server-daemon")
+        );
+        assert_eq!(
+            app_server_daemon_state_dir_for_auth_profile(temp_dir.path(), Some("work")),
+            temp_dir
+                .path()
+                .join("app-server-daemon")
+                .join("auth_profiles")
+                .join("work")
         );
     }
 
