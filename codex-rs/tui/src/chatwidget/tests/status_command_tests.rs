@@ -1,5 +1,11 @@
 use super::*;
 use assert_matches::assert_matches;
+use codex_app_server_protocol::AuthMode;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
+use codex_login::save_auth_profile;
+
+use crate::status::StatusAccountDisplay;
 
 #[tokio::test]
 async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth() {
@@ -73,6 +79,50 @@ async fn status_command_renders_immediately_without_rate_limit_refresh() {
         !std::iter::from_fn(|| rx.try_recv().ok())
             .any(|event| matches!(event, AppEvent::RefreshRateLimits { .. })),
         "non-ChatGPT sessions should not request a rate-limit refresh for /status"
+    );
+}
+
+#[tokio::test]
+async fn status_command_reflects_auth_profile_switch_account_state() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ChatGpt {
+            email: Some("old@example.com".to_string()),
+            plan: Some("Pro".to_string()),
+        }),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+    );
+    save_auth_profile(
+        &chat.config.codex_home,
+        AuthCredentialsStoreMode::File,
+        "work",
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some("work-key".to_string()),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+        },
+    )
+    .expect("save auth profile");
+
+    chat.set_auth_profile(Some("work".to_string()));
+    chat.dispatch_command(SlashCommand::Status);
+
+    let rendered = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected status output, got {other:?}"),
+    };
+    assert!(
+        rendered.contains("API key configured"),
+        "expected /status to use the switched auth profile account state, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("old@example.com"),
+        "expected /status not to show stale account metadata, got: {rendered}"
     );
 }
 

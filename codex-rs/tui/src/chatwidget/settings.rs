@@ -2,7 +2,48 @@
 
 use super::*;
 use crate::app_event::AppEvent;
+use codex_app_server_protocol::AuthMode;
+use codex_login::AuthDotJson;
+use codex_login::load_auth_dot_json;
+use codex_login::load_auth_profile;
 use codex_model_provider_info::ModelProviderInfo;
+
+fn resolved_auth_status_mode(auth: &AuthDotJson) -> AuthMode {
+    if let Some(mode) = auth.auth_mode {
+        return mode;
+    }
+    if auth.openai_api_key.is_some() {
+        AuthMode::ApiKey
+    } else {
+        AuthMode::Chatgpt
+    }
+}
+
+fn status_account_display_from_auth(
+    auth_mode: AuthMode,
+    auth: &AuthDotJson,
+) -> StatusAccountDisplay {
+    match auth_mode {
+        AuthMode::ApiKey => StatusAccountDisplay::ApiKey,
+        AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => {
+            let (email, plan) = auth
+                .tokens
+                .as_ref()
+                .map(|tokens| {
+                    (
+                        tokens.id_token.email.clone(),
+                        tokens.id_token.get_chatgpt_plan_type(),
+                    )
+                })
+                .unwrap_or_default();
+            StatusAccountDisplay::ChatGpt { email, plan }
+        }
+        AuthMode::AgentIdentity => StatusAccountDisplay::ChatGpt {
+            email: None,
+            plan: None,
+        },
+    }
+}
 
 impl ChatWidget {
     /// Set the approval policy in the widget's config copy.
@@ -206,7 +247,75 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_auth_profile(&mut self, auth_profile: Option<String>) {
+        let profile_changed = self.config.selected_auth_profile != auth_profile;
         self.config.selected_auth_profile = auth_profile;
+        if profile_changed {
+            self.sync_auth_profile_status_account_state();
+        } else {
+            self.refresh_status_line();
+        }
+    }
+
+    fn sync_auth_profile_status_account_state(&mut self) {
+        let auth = match self.config.selected_auth_profile.as_deref() {
+            Some(profile) => {
+                match load_auth_profile(
+                    &self.config.codex_home,
+                    self.config.cli_auth_credentials_store_mode,
+                    profile,
+                ) {
+                    Ok(auth) => Some(auth),
+                    Err(err) => {
+                        tracing::warn!(
+                            profile,
+                            error = %err,
+                            "failed to load selected auth profile for status account state"
+                        );
+                        None
+                    }
+                }
+            }
+            None => {
+                match load_auth_dot_json(
+                    &self.config.codex_home,
+                    self.config.cli_auth_credentials_store_mode,
+                ) {
+                    Ok(auth) => auth,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to load default auth state for status account state"
+                        );
+                        None
+                    }
+                }
+            }
+        };
+        let (status_account_display, has_chatgpt_account) = match auth.as_ref() {
+            Some(auth) => {
+                let auth_mode = resolved_auth_status_mode(auth);
+                (
+                    Some(status_account_display_from_auth(auth_mode, auth)),
+                    matches!(
+                        auth_mode,
+                        AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens
+                    ),
+                )
+            }
+            None => (None, false),
+        };
+
+        self.update_account_state(
+            status_account_display,
+            /*plan_type*/ None,
+            has_chatgpt_account,
+        );
+        self.rate_limit_snapshots_by_limit_id.clear();
+        self.refreshing_status_outputs.clear();
+        self.codex_rate_limit_reached_type = None;
+        self.rate_limit_warnings = RateLimitWarningState::default();
+        self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
+        self.last_auth_profile_auto_switch_trigger = None;
         self.refresh_status_line();
     }
 
