@@ -1521,47 +1521,59 @@ async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Resu
     Ok(())
 }
 
-#[tokio::test]
-async fn update_memory_settings_persists_and_updates_widget_config() -> Result<()> {
-    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let codex_home = tempdir()?;
-    app.config.codex_home = codex_home.path().to_path_buf().abs();
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+#[test]
+fn update_memory_settings_persists_and_updates_widget_config() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
-    Box::pin(app.update_memory_settings_with_app_server(
-        &mut app_server,
-        /*use_memories*/ false,
-        /*generate_memories*/ false,
-    ))
-    .await;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
 
-    assert!(!app.config.memories.use_memories);
-    assert!(!app.config.memories.generate_memories);
-    assert!(!app.chat_widget.config_ref().memories.use_memories);
-    assert!(!app.chat_widget.config_ref().memories.generate_memories);
+    runtime.block_on(async {
+        let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
 
-    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
-    let config_value = toml::from_str::<TomlValue>(&config)?;
-    let memories = config_value
-        .as_table()
-        .and_then(|table| table.get("memories"))
-        .and_then(TomlValue::as_table)
-        .expect("memories table should exist");
-    assert_eq!(
-        memories.get("use_memories"),
-        Some(&TomlValue::Boolean(false))
-    );
-    assert_eq!(
-        memories.get("generate_memories"),
-        Some(&TomlValue::Boolean(false))
-    );
-    assert!(
-        !memories.contains_key("disable_on_external_context")
-            && !memories.contains_key("no_memories_if_mcp_or_web_search"),
-        "the TUI menu should not write the external-context memory setting"
-    );
-    app_server.shutdown().await?;
-    Ok(())
+        Box::pin(app.update_memory_settings_with_app_server(
+            &mut app_server,
+            /*use_memories*/ false,
+            /*generate_memories*/ false,
+        ))
+        .await;
+
+        assert!(!app.config.memories.use_memories);
+        assert!(!app.config.memories.generate_memories);
+        assert!(!app.chat_widget.config_ref().memories.use_memories);
+        assert!(!app.chat_widget.config_ref().memories.generate_memories);
+
+        let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+        let config_value = toml::from_str::<TomlValue>(&config)?;
+        let memories = config_value
+            .as_table()
+            .and_then(|table| table.get("memories"))
+            .and_then(TomlValue::as_table)
+            .expect("memories table should exist");
+        assert_eq!(
+            memories.get("use_memories"),
+            Some(&TomlValue::Boolean(false))
+        );
+        assert_eq!(
+            memories.get("generate_memories"),
+            Some(&TomlValue::Boolean(false))
+        );
+        assert!(
+            !memories.contains_key("disable_on_external_context")
+                && !memories.contains_key("no_memories_if_mcp_or_web_search"),
+            "the TUI menu should not write the external-context memory setting"
+        );
+        app_server.shutdown().await?;
+        Ok(())
+    })
 }
 
 #[test]
@@ -3415,9 +3427,18 @@ async fn side_discard_selection_keeps_current_side_thread() {
     );
 }
 
-#[tokio::test]
-async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
-    Box::pin(async {
+#[test]
+fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
         let mut app = make_test_app().await;
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
@@ -3443,12 +3464,20 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         assert!(!app.side_threads.contains_key(&side_thread_id));
         Ok(())
     })
-    .await
 }
 
-#[tokio::test]
-async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Result<()> {
-    Box::pin(async {
+#[test]
+fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
         let mut app = make_test_app().await;
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
@@ -3479,7 +3508,6 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
         assert!(app.agent_navigation.get(&side_thread_id).is_some());
         Ok(())
     })
-    .await
 }
 
 #[tokio::test]
