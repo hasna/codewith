@@ -93,6 +93,8 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
         /*plan_type*/ None,
         /*has_chatgpt_account*/ true,
     );
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 92.0)));
+    drain_insert_history(&mut rx);
     save_auth_profile(
         &chat.config.codex_home,
         AuthCredentialsStoreMode::File,
@@ -123,6 +125,15 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
     assert!(
         !rendered.contains("old@example.com"),
         "expected /status not to show stale account metadata, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("8% left"),
+        "expected /status not to show stale rate-limit metadata, got: {rendered}"
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::RefreshRateLimits { .. })),
+        "API key profiles should not request a ChatGPT rate-limit refresh"
     );
 }
 
