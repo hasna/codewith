@@ -84,7 +84,7 @@ class BuildNpmPackageTest(unittest.TestCase):
             },
         )
 
-    def test_linux_alias_uses_gnu_target_for_local_release(self) -> None:
+    def test_linux_alias_uses_musl_target_for_upstream_release_artifacts(self) -> None:
         self.assertEqual(
             build_npm_package.PACKAGE_EXPANSIONS["codex"],
             ["codex", "codex-linux-arm64"],
@@ -94,7 +94,7 @@ class BuildNpmPackageTest(unittest.TestCase):
             {
                 "npm_name": "@hasnaxyz/iappcodex-linux-arm64",
                 "npm_tag": "linux-arm64",
-                "target_triple": "aarch64-unknown-linux-gnu",
+                "target_triple": "aarch64-unknown-linux-musl",
                 "os": "linux",
                 "cpu": "arm64",
             },
