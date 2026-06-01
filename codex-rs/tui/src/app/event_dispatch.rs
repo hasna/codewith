@@ -948,6 +948,88 @@ impl App {
                 self.sync_active_thread_personality_setting(app_server, personality)
                     .await;
             }
+            AppEvent::UpdateConfigValue {
+                key_path,
+                value,
+                label,
+            } => {
+                let value = if key_path == "check_for_update_on_startup" {
+                    serde_json::json!(false)
+                } else {
+                    value
+                };
+                match crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    vec![crate::config_update::replace_config_value(
+                        key_path.clone(),
+                        value.clone(),
+                    )],
+                )
+                .await
+                {
+                    Ok(_) => {
+                        if let Some(enabled) = value.as_bool() {
+                            match key_path.as_str() {
+                                "auth_profile_auto_switch.enabled" => {
+                                    self.config.auth_profile_auto_switch.enabled = enabled;
+                                }
+                                "auth_profile_auto_switch.on_5h_limit" => {
+                                    self.config.auth_profile_auto_switch.on_5h_limit = enabled;
+                                }
+                                "auth_profile_auto_switch.on_weekly_limit" => {
+                                    self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
+                                }
+                                "check_for_update_on_startup" => {
+                                    self.config.check_for_update_on_startup = false;
+                                }
+                                "disable_paste_burst" => {
+                                    self.config.disable_paste_burst = enabled;
+                                }
+                                "hide_agent_reasoning" => {
+                                    self.config.hide_agent_reasoning = enabled;
+                                }
+                                "show_raw_agent_reasoning" => {
+                                    self.config.show_raw_agent_reasoning = enabled;
+                                }
+                                "include_environment_context" => {
+                                    self.config.include_environment_context = enabled;
+                                }
+                                "include_permissions_instructions" => {
+                                    self.config.include_permissions_instructions = enabled;
+                                }
+                                "include_apps_instructions" => {
+                                    self.config.include_apps_instructions = enabled;
+                                }
+                                "include_collaboration_mode_instructions" => {
+                                    self.config.include_collaboration_mode_instructions = enabled;
+                                }
+                                "skills.include_instructions" => {
+                                    self.config.include_skill_instructions = enabled;
+                                }
+                                "suppress_unstable_features_warning" => {
+                                    self.config.suppress_unstable_features_warning = enabled;
+                                }
+                                "analytics.enabled" => {
+                                    self.config.analytics_enabled = Some(enabled);
+                                }
+                                "feedback.enabled" => {
+                                    self.config.feedback_enabled = enabled;
+                                }
+                                _ => {}
+                            }
+                            self.refresh_status_line();
+                        }
+                        self.chat_widget.apply_config_popup_value(&key_path, &value);
+                        self.chat_widget
+                            .add_info_message(format!("{label} updated"), /*hint*/ None);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, %key_path, "failed to update config value");
+                        self.chat_widget
+                            .add_error_message(format!("Failed to update {label}: {err}"));
+                    }
+                }
+            }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
             }

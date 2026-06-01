@@ -293,6 +293,9 @@ impl ChatWidget {
             SlashCommand::Provider => {
                 self.open_provider_popup();
             }
+            SlashCommand::Config => {
+                self.open_config_popup();
+            }
             SlashCommand::Realtime => {
                 if !self.realtime_conversation_enabled() {
                     return;
@@ -1171,6 +1174,7 @@ impl ChatWidget {
             | SlashCommand::Model
             | SlashCommand::Profile
             | SlashCommand::Provider
+            | SlashCommand::Config
             | SlashCommand::Realtime
             | SlashCommand::Settings
             | SlashCommand::Personality

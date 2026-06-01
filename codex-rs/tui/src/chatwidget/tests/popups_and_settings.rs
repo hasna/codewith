@@ -2354,6 +2354,39 @@ async fn profile_selection_popup_snapshot_and_selection() {
 }
 
 #[tokio::test]
+async fn config_popup_snapshot_and_toggle() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.auth_profile_auto_switch.enabled = false;
+    chat.config.auth_profile_auto_switch.on_5h_limit = true;
+    chat.config.auth_profile_auto_switch.on_weekly_limit = true;
+    chat.config.disable_paste_burst = false;
+    while rx.try_recv().is_ok() {}
+
+    chat.open_config_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_popup", popup);
+    assert!(popup.contains("Update checks"));
+    assert!(popup.contains("iapp-codex"));
+    assert!(popup.contains("Auth profile auto-switch"));
+    assert!(popup.contains("Paste burst detection"));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "auth_profile_auto_switch.enabled"
+            && value == serde_json::json!(true)
+            && label == "Auth profile auto-switch"
+    );
+}
+
+#[tokio::test]
 async fn provider_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());

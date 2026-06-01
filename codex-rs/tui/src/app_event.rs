@@ -702,6 +702,13 @@ pub(crate) enum AppEvent {
     /// Update the current personality in the running app and widget.
     UpdatePersonality(Personality),
 
+    /// Persist a single config value from a generic settings popup.
+    UpdateConfigValue {
+        key_path: String,
+        value: serde_json::Value,
+        label: String,
+    },
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,

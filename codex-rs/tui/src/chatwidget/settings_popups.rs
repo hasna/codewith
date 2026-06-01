@@ -123,6 +123,194 @@ impl ChatWidget {
         });
     }
 
+    pub(crate) fn open_config_popup(&mut self) {
+        let items = vec![
+            SelectionItem {
+                name: "Update checks".to_string(),
+                description: Some(
+                    "Off for this internal app. Updates come from explicit internal releases."
+                        .to_string(),
+                ),
+                selected_description: Some(
+                    "Managed by iapp-codex and cannot be enabled here.".to_string(),
+                ),
+                is_current: true,
+                is_disabled: true,
+                disabled_reason: Some("Managed by iapp-codex.".to_string()),
+                toggle_placeholder: Some("[ ] "),
+                ..Default::default()
+            },
+            config_toggle_item(
+                "Auth profile auto-switch",
+                "Switch to another configured profile after rate limits are exhausted.",
+                "auth_profile_auto_switch.enabled",
+                self.config.auth_profile_auto_switch.enabled,
+                None,
+            ),
+            config_toggle_item(
+                "Switch on 5h limit",
+                "Allow auto-switching when the five-hour limit is exhausted.",
+                "auth_profile_auto_switch.on_5h_limit",
+                self.config.auth_profile_auto_switch.on_5h_limit,
+                None,
+            ),
+            config_toggle_item(
+                "Switch on weekly limit",
+                "Allow auto-switching when the weekly limit is exhausted.",
+                "auth_profile_auto_switch.on_weekly_limit",
+                self.config.auth_profile_auto_switch.on_weekly_limit,
+                None,
+            ),
+            config_toggle_item(
+                "Paste burst detection",
+                "Detect fast pasted input before inserting it into the composer.",
+                "disable_paste_burst",
+                !self.config.disable_paste_burst,
+                Some(Box::new(|enabled| serde_json::json!(!enabled))),
+            ),
+            config_toggle_item(
+                "Hide reasoning summaries",
+                "Hide agent reasoning events from the transcript.",
+                "hide_agent_reasoning",
+                self.config.hide_agent_reasoning,
+                None,
+            ),
+            config_toggle_item(
+                "Show raw reasoning",
+                "Show raw reasoning content when the model emits it.",
+                "show_raw_agent_reasoning",
+                self.config.show_raw_agent_reasoning,
+                None,
+            ),
+            config_toggle_item(
+                "Environment context",
+                "Include the environment_context block in model-visible context.",
+                "include_environment_context",
+                self.config.include_environment_context,
+                None,
+            ),
+            config_toggle_item(
+                "Permission instructions",
+                "Include current sandbox and approval instructions in model-visible context.",
+                "include_permissions_instructions",
+                self.config.include_permissions_instructions,
+                None,
+            ),
+            config_toggle_item(
+                "App instructions",
+                "Include app and tool-surface instructions in model-visible context.",
+                "include_apps_instructions",
+                self.config.include_apps_instructions,
+                None,
+            ),
+            config_toggle_item(
+                "Collaboration instructions",
+                "Include collaboration-mode instructions in model-visible context.",
+                "include_collaboration_mode_instructions",
+                self.config.include_collaboration_mode_instructions,
+                None,
+            ),
+            config_toggle_item(
+                "Skill instructions",
+                "Include installed skill instructions in model-visible context.",
+                "skills.include_instructions",
+                self.config.include_skill_instructions,
+                None,
+            ),
+            config_toggle_item(
+                "Unstable feature warnings",
+                "Show warnings for enabled under-development features.",
+                "suppress_unstable_features_warning",
+                !self.config.suppress_unstable_features_warning,
+                Some(Box::new(|enabled| serde_json::json!(!enabled))),
+            ),
+            config_toggle_item(
+                "Analytics",
+                "Allow analytics across product surfaces on this machine.",
+                "analytics.enabled",
+                self.config.analytics_enabled.unwrap_or(true),
+                None,
+            ),
+            config_toggle_item(
+                "Feedback",
+                "Allow feedback collection from the TUI.",
+                "feedback.enabled",
+                self.config.feedback_enabled,
+                None,
+            ),
+        ];
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Config".bold()));
+        header.push(Line::from(
+            "Toggle common config.toml settings for future turns.".dim(),
+        ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: Box::new(header),
+            footer_hint: Some(Line::from("Press space to toggle; esc to close")),
+            items,
+            is_searchable: true,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn apply_config_popup_value(&mut self, key_path: &str, value: &serde_json::Value) {
+        let Some(enabled) = value.as_bool() else {
+            return;
+        };
+        match key_path {
+            "auth_profile_auto_switch.enabled" => {
+                self.config.auth_profile_auto_switch.enabled = enabled;
+            }
+            "auth_profile_auto_switch.on_5h_limit" => {
+                self.config.auth_profile_auto_switch.on_5h_limit = enabled;
+            }
+            "auth_profile_auto_switch.on_weekly_limit" => {
+                self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
+            }
+            "check_for_update_on_startup" => {
+                self.config.check_for_update_on_startup = false;
+            }
+            "disable_paste_burst" => {
+                self.config.disable_paste_burst = enabled;
+                self.bottom_pane.set_disable_paste_burst(enabled);
+            }
+            "hide_agent_reasoning" => {
+                self.config.hide_agent_reasoning = enabled;
+            }
+            "show_raw_agent_reasoning" => {
+                self.config.show_raw_agent_reasoning = enabled;
+            }
+            "include_environment_context" => {
+                self.config.include_environment_context = enabled;
+            }
+            "include_permissions_instructions" => {
+                self.config.include_permissions_instructions = enabled;
+            }
+            "include_apps_instructions" => {
+                self.config.include_apps_instructions = enabled;
+            }
+            "include_collaboration_mode_instructions" => {
+                self.config.include_collaboration_mode_instructions = enabled;
+            }
+            "skills.include_instructions" => {
+                self.config.include_skill_instructions = enabled;
+            }
+            "suppress_unstable_features_warning" => {
+                self.config.suppress_unstable_features_warning = enabled;
+            }
+            "analytics.enabled" => {
+                self.config.analytics_enabled = Some(enabled);
+            }
+            "feedback.enabled" => {
+                self.config.feedback_enabled = enabled;
+            }
+            _ => {}
+        }
+        self.refresh_status_surfaces();
+    }
+
     #[cfg(not(target_os = "linux"))]
     pub(crate) fn open_realtime_audio_device_selection(&mut self, kind: RealtimeAudioDeviceKind) {
         match list_realtime_audio_device_names(kind) {
@@ -282,5 +470,33 @@ impl ChatWidget {
             Personality::Friendly => "Warm, collaborative, and helpful.",
             Personality::Pragmatic => "Concise, task-focused, and direct.",
         }
+    }
+}
+
+type ConfigToggleValue = Box<dyn Fn(bool) -> serde_json::Value + Send + Sync>;
+
+fn config_toggle_item(
+    label: &'static str,
+    description: &'static str,
+    key_path: &'static str,
+    is_on: bool,
+    value_for_state: Option<ConfigToggleValue>,
+) -> SelectionItem {
+    let value_for_state =
+        value_for_state.unwrap_or_else(|| Box::new(|enabled| serde_json::json!(enabled)));
+    SelectionItem {
+        name: label.to_string(),
+        description: Some(description.to_string()),
+        toggle: Some(SelectionToggle {
+            is_on,
+            action: Box::new(move |enabled, tx| {
+                tx.send(AppEvent::UpdateConfigValue {
+                    key_path: key_path.to_string(),
+                    value: value_for_state(enabled),
+                    label: label.to_string(),
+                });
+            }),
+        }),
+        ..Default::default()
     }
 }

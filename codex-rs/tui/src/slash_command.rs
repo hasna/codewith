@@ -15,6 +15,7 @@ pub enum SlashCommand {
     Model,
     Profile,
     Provider,
+    Config,
     Ide,
     Permissions,
     Keymap,
@@ -113,6 +114,7 @@ impl SlashCommand {
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Profile => "choose the auth profile for this session",
             SlashCommand::Provider => "choose the default model provider",
+            SlashCommand::Config => "configure config.toml interactively",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -197,6 +199,7 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Profile
             | SlashCommand::Provider
+            | SlashCommand::Config
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -306,6 +309,16 @@ mod tests {
             "choose the auth profile for this session"
         );
         assert!(!SlashCommand::Profile.available_during_task());
+    }
+
+    #[test]
+    fn config_command_is_available_as_config() {
+        assert_eq!(SlashCommand::Config.command(), "config");
+        assert_eq!(
+            SlashCommand::Config.description(),
+            "configure config.toml interactively"
+        );
+        assert!(!SlashCommand::Config.available_during_task());
     }
 
     #[test]

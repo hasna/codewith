@@ -1,0 +1,27 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Config
+  Toggle common config.toml settings for future turns.
+
+
+  [ ] Update checks (current) (disabled)  Off for this internal app. Updates come from
+                                          explicit internal releases. (disabled: Managed
+                                          by iapp-codex.)
+› [ ] Auth profile auto-switch            Switch to another configured profile after
+                                          rate limits are exhausted.
+  [*] Switch on 5h limit                  Allow auto-switching when the five-hour limit
+                                          is exhausted.
+  [*] Switch on weekly limit              Allow auto-switching when the weekly limit is
+                                          exhausted.
+  [*] Paste burst detection               Detect fast pasted input before inserting it
+                                          into the composer.
+  [ ] Hide reasoning summaries            Hide agent reasoning events from the
+                                          transcript.
+  [ ] Show raw reasoning                  Show raw reasoning content when the model
+                                          emits it.
+  [*] Environment context                 Include the environment_context block in
+                                          model-visible context.
+
+  Press space to toggle; esc to close

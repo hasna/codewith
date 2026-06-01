@@ -311,6 +311,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_disable_paste_burst(&mut self, disabled: bool) {
+        self.disable_paste_burst = disabled;
+        self.composer.set_disable_paste_burst(disabled);
+        self.request_redraw();
+    }
+
     pub fn set_connectors_snapshot(&mut self, snapshot: Option<ConnectorsSnapshot>) {
         self.composer.set_connector_mentions(snapshot);
         self.request_redraw();
