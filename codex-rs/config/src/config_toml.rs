@@ -459,8 +459,8 @@ pub struct ConfigToml {
     pub project_root_markers: Option<Vec<String>>,
 
     /// When `true`, checks for Codex updates on startup and surfaces update prompts.
-    /// Set to `false` only if your Codex updates are centrally managed.
-    /// Defaults to `true`.
+    /// iapp-codex is updated through explicit upstream merges and internal releases,
+    /// so this defaults to `false`.
     pub check_for_update_on_startup: Option<bool>,
 
     /// When true, disables burst-paste detection for typed input entirely.

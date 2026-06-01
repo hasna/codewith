@@ -1104,8 +1104,8 @@ pub struct Config {
     pub notices: Notice,
 
     /// When `true`, checks for Codex updates on startup and surfaces update prompts.
-    /// Set to `false` only if your Codex updates are centrally managed.
-    /// Defaults to `true`.
+    /// iapp-codex is updated through explicit upstream merges and internal releases,
+    /// so this defaults to `false`.
     pub check_for_update_on_startup: bool,
 
     /// When true, disables burst-paste detection for typed input entirely.
@@ -3354,7 +3354,7 @@ impl Config {
 
         let review_model = override_review_model.or(cfg.review_model);
 
-        let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
+        let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(false);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
 
         let log_dir = cfg

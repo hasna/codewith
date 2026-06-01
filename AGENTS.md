@@ -1,5 +1,11 @@
 # Rust/codex-rs
 
+## iapp-codex Internal Fork
+
+- This repo is the internal `hasnaxyz/iapp-codex` fork. It may intentionally diverge from upstream OpenAI Codex while still regularly merging upstream `main`.
+- Do not re-enable automatic update checks, update notifications, or update prompts. iapp-codex updates through explicit upstream merges and internal `@hasnaxyz/iappcodex` releases.
+- When merging upstream, preserve internal app behavior including the `@hasnaxyz/iappcodex` package, auth profiles, `/profile`, auth-profile auto-switching, and `/config`.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`

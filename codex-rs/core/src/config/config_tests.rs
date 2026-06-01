@@ -4791,6 +4791,22 @@ async fn config_resolves_selected_auth_profile_from_override() -> std::io::Resul
 }
 
 #[tokio::test]
+async fn config_disables_update_checks_by_default_for_internal_app() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.check_for_update_on_startup);
+
+    Ok(())
+}
+
+#[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_resolves_selected_auth_profile_from_env() -> std::io::Result<()> {
     let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, "  from-iapp-env  ");
