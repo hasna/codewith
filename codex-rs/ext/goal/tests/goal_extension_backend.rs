@@ -152,10 +152,59 @@ async fn installed_goal_tools_reject_duplicate_goal_creation() -> anyhow::Result
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+            "cannot create a new goal because this thread already has a goal; set clear_existing_goal to true only when explicitly instructed to replace or start a new goal"
                 .to_string()
         )
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_goal_tools_replace_existing_goal_when_explicit() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    let first = tool_call(
+        "create_goal",
+        "call-create-goal-1",
+        json!({
+            "objective": "first goal",
+            "token_budget": 123,
+        }),
+    );
+    create_tool.handle(first).await?;
+    let first_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("first goal should exist"))?;
+
+    let second = tool_call(
+        "create_goal",
+        "call-create-goal-2",
+        json!({
+            "objective": "second goal",
+            "token_budget": 456,
+            "clear_existing_goal": true,
+        }),
+    );
+    create_tool.handle(second).await?;
+    let replaced_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should exist"))?;
+
+    assert_ne!(first_goal.goal_id, replaced_goal.goal_id);
+    assert_eq!("second goal", replaced_goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, replaced_goal.status);
+    assert_eq!(Some(456), replaced_goal.token_budget);
+    assert_eq!(0, replaced_goal.tokens_used);
+    assert_eq!(0, replaced_goal.time_used_seconds);
     Ok(())
 }
 

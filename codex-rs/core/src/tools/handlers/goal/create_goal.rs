@@ -55,6 +55,7 @@ impl ToolExecutor<ToolInvocation> for CreateGoalHandler {
                 CreateGoalRequest {
                     objective: args.objective,
                     token_budget: args.token_budget,
+                    clear_existing_goal: args.clear_existing_goal,
                 },
             )
             .await
@@ -64,7 +65,7 @@ impl ToolExecutor<ToolInvocation> for CreateGoalHandler {
                     .any(|cause| cause.to_string().contains("already has a goal"))
                 {
                     FunctionCallError::RespondToModel(
-                        "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+                        "cannot create a new goal because this thread already has a goal; set clear_existing_goal to true only when explicitly instructed to replace or start a new goal"
                             .to_string(),
                     )
                 } else {

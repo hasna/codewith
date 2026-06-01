@@ -48,6 +48,8 @@ enum GoalToolKind {
 pub struct CreateGoalRequest {
     pub objective: String,
     pub token_budget: Option<i64>,
+    #[serde(default)]
+    pub clear_existing_goal: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,23 +180,47 @@ impl GoalToolExecutor {
             .map_err(FunctionCallError::RespondToModel)?;
         validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
 
-        let goal = self
-            .state_db
-            .thread_goals()
-            .insert_thread_goal(
-                self.thread_id,
-                request.objective.as_str(),
-                codex_state::ThreadGoalStatus::Active,
-                request.token_budget,
+        if request.clear_existing_goal {
+            self.account_active_goal_progress(
+                codex_state::GoalAccountingMode::ActiveOnly,
+                invocation.call_id.as_str(),
+                BudgetLimitedGoalDisposition::ClearActive,
             )
-            .await
-            .map_err(|err| FunctionCallError::RespondToModel(format!("failed to create goal: {err}")))?
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel(
-                    "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
-                        .to_string(),
+            .await?;
+        }
+        let goal = if request.clear_existing_goal {
+            self.state_db
+                .thread_goals()
+                .replace_thread_goal(
+                    self.thread_id,
+                    request.objective.as_str(),
+                    codex_state::ThreadGoalStatus::Active,
+                    request.token_budget,
                 )
-            })?;
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to create goal: {err}"))
+                })?
+        } else {
+            self.state_db
+                .thread_goals()
+                .insert_thread_goal(
+                    self.thread_id,
+                    request.objective.as_str(),
+                    codex_state::ThreadGoalStatus::Active,
+                    request.token_budget,
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to create goal: {err}"))
+                })?
+                .ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "cannot create a new goal because this thread already has a goal; set clear_existing_goal to true only when explicitly instructed to replace or start a new goal"
+                            .to_string(),
+                    )
+                })?
+        };
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
         let turn_id = self
             .accounting_state

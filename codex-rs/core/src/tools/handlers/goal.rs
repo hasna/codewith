@@ -1,8 +1,9 @@
 //! Built-in model tool handlers for persisted thread goals.
 //!
 //! The public tool contract intentionally splits goal creation from stopped
-//! status updates: `create_goal` starts an active objective, while
-//! `update_goal` can only mark the existing goal complete or blocked.
+//! status updates: `create_goal` starts an active objective and can explicitly
+//! replace an existing goal, while `update_goal` can only mark the existing goal
+//! complete or blocked.
 
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
@@ -25,6 +26,8 @@ pub use update_goal::UpdateGoalHandler;
 struct CreateGoalArgs {
     objective: String,
     token_budget: Option<i64>,
+    #[serde(default)]
+    clear_existing_goal: bool,
 }
 
 #[derive(Debug, Deserialize)]

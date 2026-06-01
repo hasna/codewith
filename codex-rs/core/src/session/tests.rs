@@ -8992,6 +8992,7 @@ async fn create_thread_goal_fills_empty_thread_preview() -> anyhow::Result<()> {
         CreateGoalRequest {
             objective: "Keep improving the benchmark".to_string(),
             token_budget: None,
+            clear_existing_goal: false,
         },
     )
     .await?;
@@ -10084,7 +10085,7 @@ async fn create_goal_tool_rejects_existing_goal() {
     };
     assert_eq!(
         output,
-        "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+        "cannot create a new goal because this thread already has a goal; set clear_existing_goal to true only when explicitly instructed to replace or start a new goal"
     );
 
     let goal = session
@@ -10094,6 +10095,65 @@ async fn create_goal_tool_rejects_existing_goal() {
         .expect("goal should still exist");
     assert_eq!(goal.objective, "Keep the watcher alive");
     assert_eq!(goal.token_budget, Some(123));
+}
+
+#[tokio::test]
+async fn create_goal_tool_can_replace_existing_goal_when_explicit() {
+    let (session, turn_context, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = CreateGoalHandler;
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal-1".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                    "token_budget": 123,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "create-goal-2".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Replace the watcher",
+                    "token_budget": 456,
+                    "clear_existing_goal": true,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("explicit create_goal replacement should succeed");
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.objective, "Replace the watcher");
+    assert_eq!(goal.status, ThreadGoalStatus::Active);
+    assert_eq!(goal.token_budget, Some(456));
+    assert_eq!(goal.tokens_used, 0);
+    assert_eq!(goal.time_used_seconds, 0);
 }
 
 #[tokio::test]

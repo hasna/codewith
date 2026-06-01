@@ -30,7 +30,14 @@ pub fn create_create_goal_tool() -> ToolSpec {
         (
             "objective".to_string(),
             JsonSchema::string(Some(
-                "Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails."
+                "Required. The concrete objective to start pursuing. This starts a new active goal. If a goal already exists, this tool fails unless clear_existing_goal is true."
+                    .to_string(),
+            )),
+        ),
+        (
+            "clear_existing_goal".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. Set to true only when the user or system/developer instructions explicitly tell you to clear, replace, restart, or start a new goal while another goal exists."
                     .to_string(),
             )),
         ),
@@ -47,7 +54,8 @@ pub fn create_create_goal_tool() -> ToolSpec {
         name: CREATE_GOAL_TOOL_NAME.to_string(),
         description: format!(
             r#"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.
-Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use {UPDATE_GOAL_TOOL_NAME} only for status."#
+Set token_budget only when an explicit token budget is requested.
+If a goal already exists, this fails by default. Set clear_existing_goal to true only when the user or system/developer instructions explicitly tell you to clear, replace, restart, or start a new goal. Use {UPDATE_GOAL_TOOL_NAME} only for terminal status."#
         ),
         strict: false,
         defer_loading: None,
@@ -115,6 +123,24 @@ mod tests {
         assert_eq!(
             status.enum_values,
             Some(vec![json!("complete"), json!("blocked")])
+        );
+    }
+
+    #[test]
+    fn create_goal_tool_exposes_explicit_replacement_flag() {
+        let ToolSpec::Function(tool) = create_create_goal_tool() else {
+            panic!("create_goal should be a function tool");
+        };
+
+        assert!(
+            tool.parameters
+                .properties
+                .as_ref()
+                .is_some_and(|properties| properties.contains_key("clear_existing_goal"))
+        );
+        assert_eq!(
+            tool.parameters.required,
+            Some(vec!["objective".to_string()])
         );
     }
 }

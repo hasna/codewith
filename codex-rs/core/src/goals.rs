@@ -55,6 +55,7 @@ pub(crate) struct SetGoalRequest {
 pub(crate) struct CreateGoalRequest {
     pub(crate) objective: String,
     pub(crate) token_budget: Option<i64>,
+    pub(crate) clear_existing_goal: bool,
 }
 
 static CONTINUATION_PROMPT_TEMPLATE: LazyLock<Template> =
@@ -591,33 +592,55 @@ impl Session {
         let CreateGoalRequest {
             objective,
             token_budget,
+            clear_existing_goal,
         } = request;
         validate_goal_budget(token_budget)?;
         let objective = objective.trim();
         validate_thread_goal_objective(objective).map_err(anyhow::Error::msg)?;
 
         let state_db = self.require_state_db_for_thread_goals().await?;
-        self.account_thread_goal_wall_clock_usage(
-            &state_db,
-            codex_state::GoalAccountingMode::ActiveOnly,
-            TerminalMetricEmission::Emit,
-        )
-        .await?;
-        let goal = state_db
-            .thread_goals()
-            .insert_thread_goal(
-                self.conversation_id,
-                objective,
-                codex_state::ThreadGoalStatus::Active,
-                token_budget,
+        if clear_existing_goal {
+            self.account_thread_goal_progress(
+                turn_context,
+                BudgetLimitSteering::Suppressed,
+                TerminalMetricEmission::Emit,
             )
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot create a new goal because thread {} already has a goal",
-                    self.conversation_id
+            .await?;
+        } else {
+            self.account_thread_goal_wall_clock_usage(
+                &state_db,
+                codex_state::GoalAccountingMode::ActiveOnly,
+                TerminalMetricEmission::Emit,
+            )
+            .await?;
+        }
+        let goal = if clear_existing_goal {
+            state_db
+                .thread_goals()
+                .replace_thread_goal(
+                    self.conversation_id,
+                    objective,
+                    codex_state::ThreadGoalStatus::Active,
+                    token_budget,
                 )
-            })?;
+                .await?
+        } else {
+            state_db
+                .thread_goals()
+                .insert_thread_goal(
+                    self.conversation_id,
+                    objective,
+                    codex_state::ThreadGoalStatus::Active,
+                    token_budget,
+                )
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot create a new goal because thread {} already has a goal",
+                        self.conversation_id
+                    )
+                })?
+        };
 
         set_thread_preview_from_goal_objective(
             &state_db,
