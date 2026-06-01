@@ -1,0 +1,6 @@
+[
+  {
+    "text": "open-todos path cleanup 2026-05-28: @hasna/todos global DB/config/model/training paths now canonicalize to ~/.hasna/todos. Removed HOME/global ~/.todos fallback in database/config/model/brains/config CLI paths while preserving project-local .todos/todos.db discovery. Regression coverage added for legacy-only and both-dir HOME scenarios plus CLI config --set. Full bun test and typecheck passed.",
+    "timestamp": "2026-05-28T07:45:52.816Z"
+  }
+]
