@@ -89,6 +89,10 @@ impl Provider {
         is_azure_responses_provider(&self.name, Some(&self.base_url))
     }
 
+    pub fn is_openrouter_endpoint(&self) -> bool {
+        is_openrouter_provider(&self.name, Some(&self.base_url))
+    }
+
     pub fn websocket_url_for_path(&self, path: &str) -> Result<Url, url::ParseError> {
         let mut url = Url::parse(&self.url_for_path(path))?;
 
@@ -101,6 +105,18 @@ impl Provider {
         let _ = url.set_scheme(scheme);
         Ok(url)
     }
+}
+
+pub fn is_openrouter_provider(name: &str, base_url: Option<&str>) -> bool {
+    name.eq_ignore_ascii_case("openrouter")
+        || base_url
+            .map(matches_openrouter_base_url)
+            .unwrap_or_default()
+}
+
+fn matches_openrouter_base_url(base_url: &str) -> bool {
+    let base_url = base_url.to_ascii_lowercase();
+    base_url.contains("openrouter.ai/api/v1")
 }
 
 pub fn is_azure_responses_provider(name: &str, base_url: Option<&str>) -> bool {
@@ -165,5 +181,26 @@ mod tests {
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn detects_openrouter_base_urls() {
+        assert!(is_openrouter_provider(
+            "OpenRouter",
+            Some("https://example.com/v1")
+        ));
+        assert!(is_openrouter_provider(
+            "test",
+            Some("https://openrouter.ai/api/v1")
+        ));
+        assert!(is_openrouter_provider(
+            "test",
+            Some("https://openrouter.ai/api/v1/")
+        ));
+
+        assert!(!is_openrouter_provider(
+            "test",
+            Some("https://example.com/api/v1")
+        ));
     }
 }

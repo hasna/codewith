@@ -107,9 +107,13 @@ struct ResponseCompleted {
 
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedUsage {
+    #[serde(alias = "prompt_tokens")]
     input_tokens: i64,
+    #[serde(alias = "prompt_tokens_details")]
     input_tokens_details: Option<ResponseCompletedInputTokensDetails>,
+    #[serde(alias = "completion_tokens")]
     output_tokens: i64,
+    #[serde(alias = "completion_tokens_details")]
     output_tokens_details: Option<ResponseCompletedOutputTokensDetails>,
     total_tokens: i64,
 }
@@ -134,11 +138,13 @@ impl From<ResponseCompletedUsage> for TokenUsage {
 
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedInputTokensDetails {
+    #[serde(default)]
     cached_tokens: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedOutputTokensDetails {
+    #[serde(default, alias = "thinking_tokens")]
     reasoning_tokens: i64,
 }
 
@@ -149,6 +155,7 @@ pub struct ResponsesStreamEvent {
     headers: Option<Value>,
     metadata: Option<Value>,
     response: Option<Value>,
+    error: Option<Value>,
     item: Option<Value>,
     item_id: Option<String>,
     call_id: Option<String>,
@@ -344,6 +351,13 @@ pub fn process_responses_event(
                 "response.failed event received".into(),
             )));
         }
+        "response.error" | "error" => {
+            let error = event
+                .error
+                .and_then(error_from_value)
+                .unwrap_or(ApiError::Stream(format!("{} event received", event.kind)));
+            return Err(ResponsesEventError::Api(error));
+        }
         "response.incomplete" => {
             let reason = event.response.as_ref().and_then(|response| {
                 response
@@ -394,6 +408,35 @@ pub fn process_responses_event(
     }
 
     Ok(None)
+}
+
+fn error_from_value(value: Value) -> Option<ApiError> {
+    let error = serde_json::from_value::<Error>(value).ok()?;
+    Some(api_error_from_stream_error(error))
+}
+
+fn api_error_from_stream_error(error: Error) -> ApiError {
+    if is_context_window_error(&error) {
+        ApiError::ContextWindowExceeded
+    } else if is_quota_exceeded_error(&error) {
+        ApiError::QuotaExceeded
+    } else if is_usage_not_included(&error) {
+        ApiError::UsageNotIncluded
+    } else if is_cyber_policy_error(&error) {
+        let message = cyber_policy_message(error.message);
+        ApiError::CyberPolicy { message }
+    } else if is_invalid_prompt_error(&error) {
+        let message = error
+            .message
+            .unwrap_or_else(|| "Invalid request.".to_string());
+        ApiError::InvalidRequest { message }
+    } else if is_server_overloaded_error(&error) {
+        ApiError::ServerOverloaded
+    } else {
+        let delay = try_parse_retry_after(&error);
+        let message = error.message.unwrap_or_default();
+        ApiError::Retryable { message, delay }
+    }
 }
 
 pub async fn process_sse(
@@ -858,6 +901,76 @@ mod tests {
                 assert_eq!(*delay, Some(Duration::from_secs_f64(11.054)));
             }
             other => panic!("unexpected second event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_error_event_is_fatal() {
+        let raw_error = r#"{"type":"response.error","error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded. Please try again in 2s."}}"#;
+
+        let sse1 = format!("event: response.error\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+
+        match &events[0] {
+            Err(ApiError::Retryable { message, delay }) => {
+                assert_eq!(message, "Rate limit exceeded. Please try again in 2s.");
+                assert_eq!(*delay, Some(Duration::from_secs_f64(2.0)));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parses_openrouter_usage_aliases() {
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp1",
+                "usage": {
+                    "prompt_tokens": 10339,
+                    "completion_tokens": 60,
+                    "total_tokens": 10399,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 10318,
+                        "cache_write_tokens": 0
+                    },
+                    "completion_tokens_details": {
+                        "thinking_tokens": 7
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let sse1 = format!("event: response.completed\ndata: {completed}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+
+        match &events[0] {
+            Ok(ResponseEvent::Completed {
+                response_id,
+                token_usage: Some(token_usage),
+                end_turn,
+            }) => {
+                assert_eq!(response_id, "resp1");
+                assert_eq!(
+                    *token_usage,
+                    TokenUsage {
+                        input_tokens: 10339,
+                        cached_input_tokens: 10318,
+                        output_tokens: 60,
+                        reasoning_output_tokens: 7,
+                        total_tokens: 10399,
+                    }
+                );
+                assert!(end_turn.is_none());
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
     }
 

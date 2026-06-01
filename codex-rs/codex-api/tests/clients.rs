@@ -140,6 +140,23 @@ fn provider(name: &str) -> Provider {
     }
 }
 
+fn openrouter_provider() -> Provider {
+    Provider {
+        name: "OpenRouter".to_string(),
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        query_params: None,
+        headers: HeaderMap::new(),
+        retry: codex_api::RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            retry_429: false,
+            retry_5xx: false,
+            retry_transport: true,
+        },
+        stream_idle_timeout: Duration::from_millis(10),
+    }
+}
+
 #[derive(Clone)]
 struct FlakyTransport {
     state: Arc<Mutex<i64>>,
@@ -494,6 +511,72 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
         .and_then(|item| item.get("id"))
         .and_then(|id| id.as_str());
     assert_eq!(input_id, Some("msg_1"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn openrouter_requests_include_sticky_session_and_cache_control() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ResponsesClient::new(transport, openrouter_provider(), Arc::new(NoAuth));
+
+    let request = ResponsesApiRequest {
+        model: "anthropic/claude-opus-4.8".into(),
+        instructions: "Say hi".into(),
+        input: Vec::new(),
+        tools: Vec::new(),
+        tool_choice: "auto".into(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: Some("thread_123".into()),
+        text: None,
+        client_metadata: None,
+    };
+
+    let _stream = client
+        .stream_request(
+            request,
+            ResponsesOptions {
+                session_id: Some("sess_123".into()),
+                thread_id: Some("thread_123".into()),
+                compression: Compression::None,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_eq!(requests.len(), 1);
+    let req = &requests[0];
+    assert_eq!(
+        req.headers
+            .get("x-session-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("sess_123")
+    );
+    assert_eq!(
+        req.headers.get("session-id").and_then(|v| v.to_str().ok()),
+        Some("sess_123")
+    );
+
+    let body = req
+        .body
+        .as_ref()
+        .and_then(RequestBody::json)
+        .expect("request body should be json");
+    assert_eq!(
+        body.get("session_id").and_then(|v| v.as_str()),
+        Some("sess_123")
+    );
+    assert_eq!(
+        body.get("cache_control"),
+        Some(&serde_json::json!({ "type": "ephemeral" }))
+    );
 
     Ok(())
 }

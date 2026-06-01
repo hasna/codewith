@@ -98,12 +98,27 @@ struct OpenAiCompatibleModel {
     description: Option<String>,
     context_length: Option<i64>,
     architecture: Option<OpenAiCompatibleArchitecture>,
+    pricing: Option<OpenAiCompatiblePricing>,
+    top_provider: Option<OpenAiCompatibleTopProvider>,
     supported_parameters: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct OpenAiCompatibleArchitecture {
     input_modalities: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatiblePricing {
+    prompt: Option<String>,
+    completion: Option<String>,
+    input_cache_read: Option<String>,
+    input_cache_write: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleTopProvider {
+    context_length: Option<i64>,
 }
 
 fn decode_models_response(body: &[u8]) -> Result<Vec<ModelInfo>, serde_json::Error> {
@@ -126,15 +141,19 @@ impl OpenAiCompatibleModel {
             description,
             context_length,
             architecture,
+            pricing,
+            top_provider,
             supported_parameters,
         } = self;
         let supports_tools = supported_parameters
             .as_ref()
             .is_some_and(|params| params.iter().any(|param| param == "tools"));
+        let provider_context_length = top_provider.and_then(|provider| provider.context_length);
+        let effective_context_length = provider_context_length.or(context_length);
         ModelInfo {
             slug: id.clone(),
             display_name: name.unwrap_or_else(|| id.clone()),
-            description,
+            description: with_pricing_description(description, pricing.as_ref()),
             default_reasoning_level: None,
             supported_reasoning_levels: Vec::new(),
             shell_type: ConfigShellToolType::Default,
@@ -157,7 +176,7 @@ impl OpenAiCompatibleModel {
             truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             supports_parallel_tool_calls: supports_tools,
             supports_image_detail_original: false,
-            context_window: context_length,
+            context_window: effective_context_length,
             max_context_window: context_length,
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
@@ -171,6 +190,71 @@ impl OpenAiCompatibleModel {
             tool_mode: None,
         }
     }
+}
+
+fn with_pricing_description(
+    description: Option<String>,
+    pricing: Option<&OpenAiCompatiblePricing>,
+) -> Option<String> {
+    let Some(pricing) = pricing else {
+        return description;
+    };
+    let Some(pricing_text) = compact_pricing_description(pricing) else {
+        return description;
+    };
+
+    Some(match description {
+        Some(description) if !description.trim().is_empty() => {
+            format!("{description}\n\n{pricing_text}")
+        }
+        _ => pricing_text,
+    })
+}
+
+fn compact_pricing_description(pricing: &OpenAiCompatiblePricing) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(price) = pricing.prompt.as_deref().and_then(price_per_million) {
+        parts.push(format!("input {price}"));
+    }
+    if let Some(price) = pricing.completion.as_deref().and_then(price_per_million) {
+        parts.push(format!("output {price}"));
+    }
+    if let Some(price) = pricing
+        .input_cache_read
+        .as_deref()
+        .and_then(price_per_million)
+    {
+        parts.push(format!("cache read {price}"));
+    }
+    if let Some(price) = pricing
+        .input_cache_write
+        .as_deref()
+        .and_then(price_per_million)
+    {
+        parts.push(format!("cache write {price}"));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("Pricing: {} per 1M tokens.", parts.join(", ")))
+    }
+}
+
+fn price_per_million(price_per_token: &str) -> Option<String> {
+    let amount = price_per_token.parse::<f64>().ok()? * 1_000_000.0;
+    Some(format!("${}", trim_price(amount)))
+}
+
+fn trim_price(amount: f64) -> String {
+    let mut formatted = format!("{amount:.4}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
 }
 
 fn input_modalities_from_openai_compatible(modalities: Vec<String>) -> Vec<InputModality> {
@@ -373,6 +457,15 @@ mod tests {
                         "architecture": {
                             "input_modalities": ["text", "image", "file"]
                         },
+                        "pricing": {
+                            "prompt": "0.0000003",
+                            "completion": "0.0000012",
+                            "input_cache_read": "0.00000006",
+                            "input_cache_write": "0"
+                        },
+                        "top_provider": {
+                            "context_length": 524_288
+                        },
                         "supported_parameters": ["tools", "temperature"]
                     }
                 ]
@@ -387,7 +480,10 @@ mod tests {
             vec![ModelInfo {
                 slug: "openrouter/auto".to_string(),
                 display_name: "OpenRouter Auto".to_string(),
-                description: Some("Routes to a model automatically".to_string()),
+                description: Some(
+                    "Routes to a model automatically\n\nPricing: input $0.3, output $1.2, cache read $0.06, cache write $0 per 1M tokens."
+                        .to_string()
+                ),
                 default_reasoning_level: None,
                 supported_reasoning_levels: Vec::new(),
                 shell_type: ConfigShellToolType::Default,
@@ -410,7 +506,7 @@ mod tests {
                 truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
                 supports_parallel_tool_calls: true,
                 supports_image_detail_original: false,
-                context_window: Some(1_048_576),
+                context_window: Some(524_288),
                 max_context_window: Some(1_048_576),
                 auto_compact_token_limit: None,
                 effective_context_window_percent: 95,

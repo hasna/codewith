@@ -86,10 +86,19 @@ impl<T: HttpTransport> ResponsesClient<T> {
         if request.store && self.session.provider().is_azure_responses_endpoint() {
             attach_item_ids(&mut body, &request.input);
         }
+        if self.session.provider().is_openrouter_endpoint() {
+            configure_openrouter_request(&mut body, &request.model, session_id.as_deref());
+        }
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
             insert_header(&mut headers, "x-client-request-id", thread_id);
+        }
+        if self.session.provider().is_openrouter_endpoint()
+            && let Some(ref session_id) = session_id
+            && session_id.len() <= 256
+        {
+            insert_header(&mut headers, "x-session-id", session_id);
         }
         headers.extend(build_session_headers(session_id, thread_id));
         if let Some(subagent) = subagent_header(&session_source) {
@@ -149,5 +158,17 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.sse_telemetry.clone(),
             turn_state,
         ))
+    }
+}
+
+fn configure_openrouter_request(body: &mut Value, model: &str, session_id: Option<&str>) {
+    if let Some(session_id) = session_id
+        && session_id.len() <= 256
+    {
+        body["session_id"] = Value::String(session_id.to_string());
+    }
+
+    if model.starts_with("anthropic/claude-") {
+        body["cache_control"] = serde_json::json!({ "type": "ephemeral" });
     }
 }
