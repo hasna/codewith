@@ -63,7 +63,7 @@ test("iappcodex shim defaults CODEX_HOME to ~/.hasna/internalapps/codex", () => 
       ...process.env,
       HOME: home,
       USERPROFILE: home,
-      CODEX_HOME: "",
+      CODEX_HOME: regularCodexHome,
       IAPPCODEX_HOME: "",
     },
     encoding: "utf8",
@@ -105,12 +105,14 @@ test("iappcodex shim lets IAPPCODEX_HOME override the default home", () => {
   });
 });
 
-test("iappcodex shim preserves explicit CODEX_HOME over IAPPCODEX_HOME", () => {
+test("iappcodex shim ignores inherited CODEX_HOME and uses IAPPCODEX_HOME", () => {
   const root = stageShim();
   const home = path.join(root, "home");
-  const codexHome = path.join(root, "explicit-codex-home");
+  const codexHome = path.join(home, ".codex");
   const iappHome = path.join(root, "custom-iapp-home");
   mkdirSync(home);
+  mkdirSync(codexHome);
+  writeFileSync(path.join(codexHome, "auth.json"), "{}");
 
   const output = execFileSync(process.execPath, [path.join(root, "bin", "codex.js"), "--version"], {
     env: {
@@ -124,8 +126,9 @@ test("iappcodex shim preserves explicit CODEX_HOME over IAPPCODEX_HOME", () => {
   });
 
   assert.deepEqual(JSON.parse(output), {
-    CODEX_HOME: codexHome,
+    CODEX_HOME: iappHome,
     IAPPCODEX_HOME: iappHome,
     argv: ["--version"],
   });
+  assert.equal(existsSync(path.join(iappHome, "auth.json")), false);
 });

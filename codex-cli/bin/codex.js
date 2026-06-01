@@ -181,7 +181,7 @@ function defaultIappCodexHome() {
 }
 
 function resolveIappCodexHome() {
-  return env.CODEX_HOME || env.IAPPCODEX_HOME || defaultIappCodexHome();
+  return env.IAPPCODEX_HOME || defaultIappCodexHome();
 }
 
 env.CODEX_HOME = resolveIappCodexHome();

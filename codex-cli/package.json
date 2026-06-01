@@ -1,6 +1,6 @@
 {
   "name": "@hasnaxyz/iappcodex",
-  "version": "0.133.1",
+  "version": "0.133.2",
   "description": "Hasna XYZ internal Codex CLI package.",
   "license": "Apache-2.0",
   "bin": {
