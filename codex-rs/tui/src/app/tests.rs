@@ -1577,6 +1577,81 @@ fn update_memory_settings_persists_and_updates_widget_config() -> Result<()> {
 }
 
 #[test]
+fn update_config_value_persists_and_updates_runtime_state() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        app.config.auth_profile_auto_switch.enabled = false;
+        app.chat_widget.apply_config_popup_value(
+            "auth_profile_auto_switch.enabled",
+            &serde_json::json!(false),
+        );
+        let mut app_server = start_config_write_test_app_server(&app).await?;
+
+        app.update_config_value_with_app_server(
+            &mut app_server,
+            "auth_profile_auto_switch.enabled".to_string(),
+            serde_json::json!(true),
+            "Auth profile auto-switch".to_string(),
+        )
+        .await;
+
+        assert!(app.config.auth_profile_auto_switch.enabled);
+        assert!(
+            app.chat_widget
+                .config_ref()
+                .auth_profile_auto_switch
+                .enabled
+        );
+
+        app.config.check_for_update_on_startup = true;
+        app.chat_widget
+            .apply_config_popup_value("check_for_update_on_startup", &serde_json::json!(true));
+        app.update_config_value_with_app_server(
+            &mut app_server,
+            "check_for_update_on_startup".to_string(),
+            serde_json::json!(true),
+            "Update checks".to_string(),
+        )
+        .await;
+
+        assert!(!app.config.check_for_update_on_startup);
+        assert!(!app.chat_widget.config_ref().check_for_update_on_startup);
+
+        let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+        let config_value = toml::from_str::<TomlValue>(&config)?;
+        let config_table = config_value
+            .as_table()
+            .expect("config.toml should be a table");
+        let auth_profile_auto_switch = config_table
+            .get("auth_profile_auto_switch")
+            .and_then(TomlValue::as_table)
+            .expect("auth_profile_auto_switch table should exist");
+        assert_eq!(
+            auth_profile_auto_switch.get("enabled"),
+            Some(&TomlValue::Boolean(true))
+        );
+        assert_eq!(
+            config_table.get("check_for_update_on_startup"),
+            Some(&TomlValue::Boolean(false))
+        );
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
 fn update_memory_settings_updates_current_thread_memory_mode() -> Result<()> {
     const WORKER_THREADS: usize = 1;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
