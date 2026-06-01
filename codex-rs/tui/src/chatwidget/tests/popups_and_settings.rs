@@ -2,11 +2,15 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::chatwidget::connectors::ConnectorsCacheState;
 use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::HookErrorInfo;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Stage;
+use codex_login::AuthDotJson;
+use codex_login::save_auth_profile;
 use codex_model_provider_info::ModelProviderInfo;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -46,6 +50,22 @@ fn provider_picker_preset(
         supported_in_api: true,
         input_modalities: default_input_modalities(),
     }
+}
+
+fn save_popup_auth_profile(chat: &ChatWidget, name: &str) {
+    save_auth_profile(
+        &chat.config.codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some(format!("{name}-key")),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+        },
+    )
+    .expect("save auth profile");
 }
 
 #[tokio::test]
@@ -2304,6 +2324,33 @@ async fn model_selection_popup_snapshot() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("model_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn profile_selection_popup_snapshot_and_selection() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_auth_profile(&chat, "work");
+    save_popup_auth_profile(&chat, "personal");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_selection_popup", popup);
+    assert!(popup.contains("default"));
+    assert!(popup.contains("personal"));
+    assert!(popup.contains("work"));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SwitchAuthProfile { profile, reason })
+            if profile.as_deref() == Some("personal")
+                && reason == crate::app_event::AuthProfileSwitchReason::Manual
+    );
 }
 
 #[tokio::test]

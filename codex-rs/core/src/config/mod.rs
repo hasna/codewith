@@ -37,6 +37,7 @@ use codex_config::permissions_toml::PermissionsToml;
 use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
@@ -184,6 +185,25 @@ impl Default for GhostSnapshotConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthProfileAutoSwitchConfig {
+    pub enabled: bool,
+    pub profiles: Vec<String>,
+    pub on_5h_limit: bool,
+    pub on_weekly_limit: bool,
+}
+
+impl Default for AuthProfileAutoSwitchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profiles: Vec::new(),
+            on_5h_limit: true,
+            on_weekly_limit: true,
+        }
+    }
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -258,6 +278,29 @@ fn validate_selected_auth_profile(profile: String, source: &str) -> std::io::Res
         )
     })?;
     Ok(trimmed.to_string())
+}
+
+fn resolve_auth_profile_auto_switch_config(
+    config: Option<AuthProfileAutoSwitchToml>,
+) -> std::io::Result<AuthProfileAutoSwitchConfig> {
+    let Some(config) = config else {
+        return Ok(AuthProfileAutoSwitchConfig::default());
+    };
+
+    let mut profiles = Vec::with_capacity(config.profiles.len());
+    for profile in config.profiles {
+        profiles.push(validate_selected_auth_profile(
+            profile,
+            "auth_profile_auto_switch.profiles",
+        )?);
+    }
+
+    Ok(AuthProfileAutoSwitchConfig {
+        enabled: config.enabled.unwrap_or(false),
+        profiles,
+        on_5h_limit: config.on_5h_limit.unwrap_or(true),
+        on_weekly_limit: config.on_weekly_limit.unwrap_or(true),
+    })
 }
 
 fn resolve_cli_auth_credentials_store_mode(
@@ -798,6 +841,9 @@ pub struct Config {
 
     /// Optional named auth profile selected for this runtime session.
     pub selected_auth_profile: Option<String>,
+
+    /// Runtime auth-profile failover behavior for exhausted rate-limit windows.
+    pub auth_profile_auto_switch: AuthProfileAutoSwitchConfig,
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
@@ -2581,6 +2627,8 @@ impl Config {
         } = overrides;
         let bypass_hook_trust = bypass_hook_trust.unwrap_or_default();
         let selected_auth_profile = resolve_selected_auth_profile(auth_profile)?;
+        let auth_profile_auto_switch =
+            resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -3436,6 +3484,7 @@ impl Config {
                 env!("CARGO_PKG_VERSION"),
             ),
             selected_auth_profile,
+            auth_profile_auto_switch,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.

@@ -199,6 +199,25 @@ pub struct FeedbackConfigToml {
     pub enabled: Option<bool>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AuthProfileAutoSwitchToml {
+    /// Enables runtime switching to another auth profile when selected rate
+    /// limit windows are fully exhausted.
+    pub enabled: Option<bool>,
+
+    /// Preferred profile order. When empty, saved auth profiles are used in
+    /// sorted profile-name order.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+
+    /// Switch when the 5h Codex window reaches 100%.
+    pub on_5h_limit: Option<bool>,
+
+    /// Switch when the weekly Codex window reaches 100%.
+    pub on_weekly_limit: Option<bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolSuggestDiscoverableType {

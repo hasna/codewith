@@ -6,6 +6,7 @@ use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use app_test_support::write_mock_responses_config_toml;
 use app_test_support::write_models_cache;
+use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -21,13 +22,18 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::test_support::all_model_presets;
+use codex_login::AuthDotJson;
+use codex_login::save_auth;
+use codex_login::save_auth_profile;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -155,6 +161,52 @@ supports_websockets = false
             .iter()
             .any(|body| { body.get("model").and_then(Value::as_str) == Some("mock-model-two") }),
         "future turn did not use updated provider/model: {request_bodies:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_auth_profile_updates_future_turns() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_requiring_openai_auth(codex_home.path(), &server.uri())?;
+    save_api_key_auth(codex_home.path(), "root-key")?;
+    save_api_key_auth_profile(codex_home.path(), "work", "work-key")?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(
+        received_response_bodies(&server).await?.is_empty(),
+        "auth-profile-only update should not start a model request"
+    );
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let authorization_headers = received_response_authorization_headers(&server).await?;
+    assert!(
+        authorization_headers
+            .iter()
+            .any(|header| header == "Bearer work-key"),
+        "future turn did not use selected auth profile: {authorization_headers:#?}"
     );
     Ok(())
 }
@@ -449,6 +501,27 @@ async fn received_response_bodies(server: &wiremock::MockServer) -> Result<Vec<V
     Ok(bodies)
 }
 
+async fn received_response_authorization_headers(
+    server: &wiremock::MockServer,
+) -> Result<Vec<String>> {
+    let requests = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?;
+    let headers = requests
+        .into_iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .filter_map(|request| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        })
+        .collect();
+    Ok(headers)
+}
+
 fn service_tier_model_and_tier_id() -> Result<(String, String)> {
     let model = all_model_presets()
         .iter()
@@ -464,6 +537,51 @@ fn write_mock_provider_models_cache(codex_home: &std::path::Path) -> Result<()> 
     cache["provider_cache_key"] = Value::String("mock_provider".to_string());
     std::fs::write(cache_path, serde_json::to_string_pretty(&cache)?)?;
     Ok(())
+}
+
+fn save_api_key_auth(codex_home: &Path, api_key: &str) -> Result<()> {
+    save_auth(
+        codex_home,
+        &api_key_auth(api_key),
+        AuthCredentialsStoreMode::File,
+    )
+    .context("save root auth")
+}
+
+fn save_api_key_auth_profile(codex_home: &Path, name: &str, api_key: &str) -> Result<()> {
+    save_auth_profile(
+        codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &api_key_auth(api_key),
+    )
+    .context("save auth profile")?;
+    Ok(())
+}
+
+fn api_key_auth(api_key: &str) -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+    }
+}
+
+fn create_config_toml_requiring_openai_auth(
+    codex_home: &std::path::Path,
+    server_uri: &str,
+) -> std::io::Result<()> {
+    write_mock_responses_config_toml(
+        codex_home,
+        server_uri,
+        &BTreeMap::default(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ Some(true),
+        "mock_provider",
+        "compact",
+    )
 }
 
 fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io::Result<()> {

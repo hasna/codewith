@@ -556,6 +556,12 @@ pub enum Op {
         thread_settings: ThreadSettingsOverrides,
     },
 
+    /// Switch the auth profile used by future turns in this thread.
+    AuthProfileSwitch {
+        /// Named auth profile, or `None` to use the default root auth.
+        auth_profile: Option<String>,
+    },
+
     /// Inter-agent communication that should be recorded as assistant history
     /// while still using the normal thread submission lifecycle.
     InterAgentCommunication {
@@ -751,6 +757,7 @@ impl Op {
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::UserInput { .. } => "user_input",
             Self::ThreadSettings { .. } => "thread_settings",
+            Self::AuthProfileSwitch { .. } => "auth_profile_switch",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
             Self::ExecApproval { .. } => "exec_approval",
             Self::PatchApproval { .. } => "patch_approval",

@@ -318,7 +318,7 @@ async fn auth_manager_with_selected_profile_loads_profile_auth_without_touching_
     )
     .await;
 
-    assert_eq!(manager.selected_auth_profile(), Some("work"));
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("work"));
     let auth = manager.auth_cached().expect("profile auth should load");
     assert_eq!(auth.api_key(), Some("sk-work"));
     assert_eq!(
@@ -427,6 +427,87 @@ async fn auth_managers_with_different_selected_profiles_stay_isolated() -> anyho
             .map(|profile| (profile.name.as_str(), profile.active))
             .collect::<Vec<_>>(),
         vec![("personal", false), ("work", false)]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn auth_manager_can_switch_selected_profiles_at_runtime() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("root-key");
+    let work_auth = api_key_auth_dot_json("work-key");
+    let personal_auth = api_key_auth_dot_json("personal-key");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &personal_auth,
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("work"));
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("work auth should load")
+            .api_key(),
+        Some("work-key")
+    );
+
+    assert!(
+        manager
+            .switch_auth_profile(Some("personal".to_string()))
+            .await?
+    );
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("personal"));
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("personal auth should load")
+            .api_key(),
+        Some("personal-key")
+    );
+    assert_eq!(
+        load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)?,
+        Some(root_auth.clone())
+    );
+    assert_eq!(active_auth_profile(dir.path())?, None);
+
+    assert!(manager.switch_auth_profile(None).await?);
+    assert_eq!(manager.selected_auth_profile(), None);
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("root auth should load")
+            .api_key(),
+        Some("root-key")
+    );
+    assert_eq!(
+        load_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "work")?,
+        work_auth
+    );
+    assert_eq!(
+        load_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "personal")?,
+        personal_auth
     );
 
     Ok(())

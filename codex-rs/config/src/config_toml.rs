@@ -11,6 +11,7 @@ use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::AppsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
+use crate::types::AuthProfileAutoSwitchToml;
 use crate::types::FeedbackConfigToml;
 use crate::types::History;
 use crate::types::MarketplaceConfig;
@@ -242,6 +243,10 @@ pub struct ConfigToml {
     /// auto: Use the keyring if available, otherwise use a file.
     #[serde(default)]
     pub cli_auth_credentials_store: Option<AuthCredentialsStoreMode>,
+
+    /// Runtime auth-profile failover behavior for rate-limited sessions.
+    #[serde(default)]
+    pub auth_profile_auto_switch: Option<AuthProfileAutoSwitchToml>,
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]

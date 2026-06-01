@@ -916,6 +916,33 @@ impl App {
                     }
                 }
             }
+            AppEvent::SwitchAuthProfile { profile, reason } => {
+                self.config.selected_auth_profile = profile.clone();
+                self.chat_widget.set_auth_profile(profile.clone());
+                let submitted =
+                    self.chat_widget
+                        .submit_op(AppCommand::override_turn_context_auth_profile(
+                            profile.clone(),
+                        ));
+                if submitted {
+                    let label = profile
+                        .as_deref()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "default".to_string());
+                    let message = match reason {
+                        crate::app_event::AuthProfileSwitchReason::Manual => {
+                            format!("Profile changed to {label} for this session")
+                        }
+                        crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
+                            format!(
+                                "Profile changed to {label} after the {window} limit was exhausted"
+                            )
+                        }
+                    };
+                    self.chat_widget.add_info_message(message, /*hint*/ None);
+                    self.refresh_status_line();
+                }
+            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)

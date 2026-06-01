@@ -287,6 +287,9 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
+            SlashCommand::Profile => {
+                self.open_profile_popup();
+            }
             SlashCommand::Provider => {
                 self.open_provider_popup();
             }
@@ -1166,6 +1169,7 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Profile
             | SlashCommand::Provider
             | SlashCommand::Realtime
             | SlashCommand::Settings

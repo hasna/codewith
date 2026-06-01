@@ -3657,6 +3657,47 @@ fn thread_settings_update_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn thread_settings_update_params_preserve_explicit_auth_profile() {
+    let default_profile: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "authProfile": null
+    }))
+    .expect("params should deserialize");
+    assert_eq!(default_profile.auth_profile, Some(None));
+
+    let serialized_default =
+        serde_json::to_value(&default_profile).expect("params should serialize");
+    assert_eq!(
+        serialized_default.get("authProfile"),
+        Some(&serde_json::Value::Null)
+    );
+
+    let named_profile: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "authProfile": "work"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(named_profile.auth_profile, Some(Some("work".to_string())));
+
+    let serialized_named = serde_json::to_value(&named_profile).expect("params should serialize");
+    assert_eq!(
+        serialized_named
+            .get("authProfile")
+            .and_then(|value| value.as_str()),
+        Some("work")
+    );
+
+    let without_override = ThreadSettingsUpdateParams {
+        thread_id: "thread_123".to_string(),
+        auth_profile: None,
+        ..Default::default()
+    };
+    let serialized_without_override =
+        serde_json::to_value(&without_override).expect("params should serialize");
+    assert_eq!(serialized_without_override.get("authProfile"), None);
+}
+
+#[test]
 fn thread_settings_update_params_round_trip_model_provider() {
     let params: ThreadSettingsUpdateParams = serde_json::from_value(json!({
         "threadId": "thread_123",

@@ -205,6 +205,11 @@ impl ChatWidget {
         self.config.personality = Some(personality);
     }
 
+    pub(crate) fn set_auth_profile(&mut self, auth_profile: Option<String>) {
+        self.config.selected_auth_profile = auth_profile;
+        self.refresh_status_line();
+    }
+
     pub(crate) fn status_account_display(&self) -> Option<&StatusAccountDisplay> {
         self.status_account_display.as_ref()
     }

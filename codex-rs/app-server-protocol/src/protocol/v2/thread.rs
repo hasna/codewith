@@ -246,6 +246,16 @@ pub struct ThreadSettingsUpdateParams {
     #[experimental("thread/settings/update.permissions")]
     #[ts(optional = nullable)]
     pub permissions: Option<String>,
+    /// Override the auth profile for subsequent turns. `null` selects the
+    /// default root auth; omission leaves it unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub auth_profile: Option<Option<String>>,
     /// Override the model for subsequent turns.
     #[ts(optional = nullable)]
     pub model: Option<String>,

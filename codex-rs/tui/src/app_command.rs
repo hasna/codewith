@@ -57,6 +57,7 @@ pub(crate) enum AppCommand {
         approvals_reviewer: Option<ApprovalsReviewer>,
         permission_profile: Option<PermissionProfile>,
         active_permission_profile: Option<ActivePermissionProfile>,
+        auth_profile: Option<Option<String>>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
@@ -169,6 +170,24 @@ impl AppCommand {
         }
     }
 
+    pub(crate) fn override_turn_context_auth_profile(auth_profile: Option<String>) -> Self {
+        Self::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            permission_profile: None,
+            active_permission_profile: None,
+            auth_profile: Some(auth_profile),
+            windows_sandbox_level: None,
+            model: None,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn override_turn_context(
         cwd: Option<PathBuf>,
@@ -190,6 +209,7 @@ impl AppCommand {
             approvals_reviewer,
             permission_profile,
             active_permission_profile,
+            auth_profile: None,
             windows_sandbox_level,
             model,
             effort,

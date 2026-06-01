@@ -69,6 +69,12 @@ pub(crate) enum ThreadGoalSetMode {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuthProfileSwitchReason {
+    Manual,
+    AutoRateLimit { window: String },
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryLookupResponse {
     pub(crate) offset: usize,
@@ -685,6 +691,12 @@ pub(crate) enum AppEvent {
     /// Select the default provider and refresh its model catalog.
     SelectModelProvider {
         provider_id: String,
+    },
+
+    /// Switch the auth profile for the running session.
+    SwitchAuthProfile {
+        profile: Option<String>,
+        reason: AuthProfileSwitchReason,
     },
 
     /// Update the current personality in the running app and widget.

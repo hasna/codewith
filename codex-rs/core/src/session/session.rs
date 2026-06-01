@@ -263,6 +263,21 @@ impl SessionConfiguration {
             next_configuration.provider = provider;
             next_configuration.original_config_do_not_use = Arc::new(config);
         }
+        if let Some(auth_profile) = updates.auth_profile.clone() {
+            if let Some(name) = auth_profile.as_deref() {
+                codex_login::validate_auth_profile_name(name).map_err(|err| {
+                    ConstraintError::InvalidValue {
+                        field_name: "auth_profile",
+                        candidate: name.to_string(),
+                        allowed: err.to_string(),
+                        requirement_source: codex_config::RequirementSource::Unknown,
+                    }
+                })?;
+            }
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            config.selected_auth_profile = auth_profile;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
         }
@@ -448,6 +463,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
+    pub(crate) auth_profile: Option<Option<String>>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) model_provider_id: Option<String>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,

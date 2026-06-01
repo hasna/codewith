@@ -13,6 +13,7 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Profile,
     Provider,
     Ide,
     Permissions,
@@ -110,6 +111,7 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Profile => "choose the auth profile for this session",
             SlashCommand::Provider => "choose the default model provider",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
@@ -193,6 +195,7 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
+            | SlashCommand::Profile
             | SlashCommand::Provider
             | SlashCommand::Personality
             | SlashCommand::Permissions
@@ -293,6 +296,16 @@ mod tests {
     fn provider_command_is_singular() {
         assert_eq!(SlashCommand::Provider.command(), "provider");
         assert!(SlashCommand::from_str("providers").is_err());
+    }
+
+    #[test]
+    fn profile_command_is_available_as_profile() {
+        assert_eq!(SlashCommand::Profile.command(), "profile");
+        assert_eq!(
+            SlashCommand::Profile.description(),
+            "choose the auth profile for this session"
+        );
+        assert!(!SlashCommand::Profile.available_during_task());
     }
 
     #[test]

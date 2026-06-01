@@ -309,6 +309,32 @@
         }
       ]
     },
+    "AuthProfileAutoSwitchToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enables runtime switching to another auth profile when selected rate limit windows are fully exhausted.",
+          "type": "boolean"
+        },
+        "on_5h_limit": {
+          "description": "Switch when the 5h Codex window reaches 100%.",
+          "type": "boolean"
+        },
+        "on_weekly_limit": {
+          "description": "Switch when the weekly Codex window reaches 100%.",
+          "type": "boolean"
+        },
+        "profiles": {
+          "default": [],
+          "description": "Preferred profile order. When empty, saved auth profiles are used in sorted profile-name order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "AutoCompactTokenLimitScope": {
       "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
       "oneOf": [
@@ -4387,6 +4413,15 @@
       ],
       "default": null,
       "description": "Machine-local realtime audio device preferences used by realtime voice."
+    },
+    "auth_profile_auto_switch": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AuthProfileAutoSwitchToml"
+        }
+      ],
+      "default": null,
+      "description": "Runtime auth-profile failover behavior for rate-limited sessions."
     },
     "auto_review": {
       "allOf": [

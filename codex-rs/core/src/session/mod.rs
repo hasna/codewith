@@ -1360,6 +1360,21 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
+        if let Some(auth_profile) = updates.auth_profile.clone()
+            && let Err(err) = self
+                .services
+                .auth_manager
+                .switch_auth_profile(auth_profile)
+                .await
+        {
+            return Err(crate::config::ConstraintError::InvalidValue {
+                field_name: "auth_profile",
+                candidate: err.to_string(),
+                allowed: "existing auth profile or default auth".to_string(),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        }
+
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (
             previous_config,

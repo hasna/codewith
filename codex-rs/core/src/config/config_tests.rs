@@ -35,6 +35,7 @@ use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::profile_toml::ConfigProfile;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
+use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::BundledSkillsConfig;
 use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
@@ -4854,6 +4855,72 @@ async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
         err.to_string().contains("invalid auth profile"),
+        "unexpected error: {err}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_auth_profile_auto_switch() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            auth_profile_auto_switch: Some(AuthProfileAutoSwitchToml {
+                enabled: Some(true),
+                profiles: vec!["work".to_string(), "personal".to_string()],
+                on_5h_limit: Some(true),
+                on_weekly_limit: Some(false),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.auth_profile_auto_switch.enabled);
+    assert_eq!(
+        config.auth_profile_auto_switch.profiles,
+        vec!["work".to_string(), "personal".to_string()]
+    );
+    assert!(config.auth_profile_auto_switch.on_5h_limit);
+    assert!(!config.auth_profile_auto_switch.on_weekly_limit);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_rejects_invalid_auth_profile_auto_switch_profile() -> std::io::Result<()> {
+    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            auth_profile_auto_switch: Some(AuthProfileAutoSwitchToml {
+                enabled: Some(true),
+                profiles: vec!["nested/work".to_string()],
+                on_5h_limit: None,
+                on_weekly_limit: None,
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("invalid auth profile should fail");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string()
+            .contains("auth_profile_auto_switch.profiles"),
         "unexpected error: {err}"
     );
 

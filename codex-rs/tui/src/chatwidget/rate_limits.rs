@@ -2,6 +2,9 @@
 
 use super::*;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
+use codex_app_server_protocol::RateLimitWindow;
+use codex_login::AuthProfile;
+use codex_login::list_auth_profiles;
 
 pub(super) const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
 pub(super) const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
@@ -9,6 +12,8 @@ pub(super) const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const PRIMARY_LIMIT_FALLBACK_LABEL: &str = "usage";
 const SECONDARY_LIMIT_FALLBACK_LABEL: &str = "secondary usage";
+const FIVE_HOUR_LIMIT_LABEL: &str = "5h";
+const WEEKLY_LIMIT_LABEL: &str = "weekly";
 
 #[derive(Default)]
 pub(super) struct RateLimitWarningState {
@@ -71,6 +76,101 @@ impl RateLimitWarningState {
 
         warnings
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthProfileAutoSwitchWindow {
+    label: String,
+    resets_at: Option<i64>,
+}
+
+fn exhausted_auto_switch_window(
+    snapshot: &RateLimitSnapshot,
+    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
+    is_codex_limit: bool,
+) -> Option<AuthProfileAutoSwitchWindow> {
+    if !is_codex_limit || !config.enabled {
+        return None;
+    }
+
+    [snapshot.secondary.as_ref(), snapshot.primary.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|window| exhausted_auto_switch_window_for_limit(window, config))
+}
+
+fn exhausted_auto_switch_window_for_limit(
+    window: &RateLimitWindow,
+    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
+) -> Option<AuthProfileAutoSwitchWindow> {
+    if window.used_percent < 100 {
+        return None;
+    }
+    let label = get_limits_duration(window.window_duration_mins?)?;
+    let enabled = match label.as_str() {
+        FIVE_HOUR_LIMIT_LABEL => config.on_5h_limit,
+        WEEKLY_LIMIT_LABEL => config.on_weekly_limit,
+        _ => false,
+    };
+    enabled.then_some(AuthProfileAutoSwitchWindow {
+        label,
+        resets_at: window.resets_at,
+    })
+}
+
+fn auto_switch_trigger_key(limit_id: &str, window: &AuthProfileAutoSwitchWindow) -> String {
+    let resets_at = window
+        .resets_at
+        .map(|reset| reset.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("{limit_id}:{}:{resets_at}", window.label)
+}
+
+fn next_auth_profile_for_auto_switch(
+    current: Option<&str>,
+    configured_profiles: &[String],
+    saved_profiles: &[AuthProfile],
+) -> Option<String> {
+    let saved_names = saved_profiles
+        .iter()
+        .map(|profile| profile.name.as_str())
+        .collect::<HashSet<_>>();
+    let ordered = if configured_profiles.is_empty() {
+        saved_profiles
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        configured_profiles
+            .iter()
+            .filter(|profile| saved_names.contains(profile.as_str()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let ordered = dedupe_profile_names(ordered);
+    if ordered.is_empty() {
+        return None;
+    }
+
+    let start = current
+        .and_then(|current| ordered.iter().position(|profile| profile == current))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    ordered
+        .iter()
+        .cycle()
+        .skip(start)
+        .take(ordered.len())
+        .find(|profile| current != Some(profile.as_str()))
+        .cloned()
+}
+
+fn dedupe_profile_names(profiles: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    profiles
+        .into_iter()
+        .filter(|profile| seen.insert(profile.clone()))
+        .collect()
 }
 
 pub(crate) fn limit_label_for_window(window_minutes: Option<i64>, is_secondary: bool) -> String {
@@ -234,6 +334,8 @@ impl ChatWidget {
                 self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
             }
 
+            self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
+
             let display =
                 rate_limit_snapshot_display_for_limit(&snapshot, limit_label, Local::now());
             self.rate_limit_snapshots_by_limit_id
@@ -250,6 +352,56 @@ impl ChatWidget {
             self.codex_rate_limit_reached_type = None;
         }
         self.refresh_status_line();
+    }
+
+    fn maybe_auto_switch_auth_profile_for_rate_limit(
+        &mut self,
+        limit_id: &str,
+        snapshot: &RateLimitSnapshot,
+    ) {
+        let Some(window) = exhausted_auto_switch_window(
+            snapshot,
+            &self.config.auth_profile_auto_switch,
+            limit_id.eq_ignore_ascii_case("codex"),
+        ) else {
+            return;
+        };
+        let trigger_key = auto_switch_trigger_key(limit_id, &window);
+        if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
+            return;
+        }
+
+        let profiles = match list_auth_profiles(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+        ) {
+            Ok(profiles) => profiles,
+            Err(err) => {
+                self.add_error_message(format!("Failed to load auth profiles: {err}"));
+                return;
+            }
+        };
+        let Some(next_profile) = next_auth_profile_for_auto_switch(
+            self.config.selected_auth_profile.as_deref(),
+            &self.config.auth_profile_auto_switch.profiles,
+            &profiles,
+        ) else {
+            self.add_info_message(
+                "Auth profile auto-switch is enabled, but no alternate profile is available."
+                    .to_string(),
+                /*hint*/ None,
+            );
+            self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
+            return;
+        };
+
+        self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
+        self.app_event_tx.send(AppEvent::SwitchAuthProfile {
+            profile: Some(next_profile),
+            reason: crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                window: window.label,
+            },
+        });
     }
 
     pub(super) fn stop_rate_limit_poller(&mut self) {}

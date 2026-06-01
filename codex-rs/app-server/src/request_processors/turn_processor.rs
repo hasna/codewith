@@ -672,6 +672,7 @@ impl TurnRequestProcessor {
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let auth_profile = params.auth_profile;
         let thread_settings = self
             .build_thread_settings_overrides(
                 thread.as_ref(),
@@ -702,6 +703,15 @@ impl TurnRequestProcessor {
             )
             .await
             .map_err(|err| internal_error(format!("failed to update thread settings: {err}")))?;
+        }
+        if let Some(auth_profile) = auth_profile {
+            self.submit_core_op(
+                request_id,
+                thread.as_ref(),
+                Op::AuthProfileSwitch { auth_profile },
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to switch auth profile: {err}")))?;
         }
 
         Ok(ThreadSettingsUpdateResponse {})

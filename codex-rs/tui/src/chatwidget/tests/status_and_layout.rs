@@ -2,6 +2,11 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::RateLimitWindow;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
+use codex_login::save_auth_profile;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -11,6 +16,42 @@ fn enable_test_ambient_pet(chat: &mut ChatWidget) {
         crate::pets::ImageProtocol::Kitty,
     ));
     chat.install_test_ambient_pet_for_tests(/*animations_enabled*/ false);
+}
+
+fn save_test_auth_profile(chat: &ChatWidget, name: &str) {
+    save_auth_profile(
+        &chat.config.codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some(format!("{name}-key")),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+        },
+    )
+    .expect("save auth profile");
+}
+
+fn rate_limit_snapshot_for_window(
+    used_percent: i32,
+    window_duration_mins: i64,
+    resets_at: i64,
+) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent,
+            window_duration_mins: Some(window_duration_mins),
+            resets_at: Some(resets_at),
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }
 }
 
 /// Receiving a token usage update without usage clears the context indicator.
@@ -1185,6 +1226,54 @@ async fn missing_rate_limit_reached_type_does_not_prompt_or_refresh() {
     let popup = render_bottom_popup(&chat, /*width*/ 90);
     assert!(!popup.contains("workspace owner"));
     assert_no_owner_nudge_or_rate_limit_refresh(&mut rx);
+}
+
+#[tokio::test]
+async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, reason }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "5h".to_string()
+                }
+            );
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn exhausted_daily_limit_does_not_auto_switch_auth_profile() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 1440, /*resets_at*/ 123,
+    )));
+
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "daily limits should not trigger auth profile auto-switch"
+    );
 }
 
 #[tokio::test]

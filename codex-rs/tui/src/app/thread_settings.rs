@@ -135,6 +135,7 @@ impl App {
             approvals_reviewer,
             permission_profile: _,
             active_permission_profile,
+            auth_profile,
             windows_sandbox_level: _,
             model,
             effort,
@@ -155,6 +156,7 @@ impl App {
             permissions: active_permission_profile
                 .as_ref()
                 .map(|profile| profile.id.clone()),
+            auth_profile: auth_profile.clone(),
             model: model.clone(),
             effort: effort.unwrap_or_default(),
             summary: *summary,
@@ -232,6 +234,7 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.approvals_reviewer.is_some()
         || params.sandbox_policy.is_some()
         || params.permissions.is_some()
+        || params.auth_profile.is_some()
         || params.model.is_some()
         || params.model_provider.is_some()
         || params.service_tier.is_some()

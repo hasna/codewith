@@ -117,6 +117,25 @@ pub async fn update_thread_settings(
     sess.send_event_raw(Event { id: sub_id, msg }).await;
 }
 
+pub async fn update_auth_profile(
+    sess: &Arc<Session>,
+    sub_id: String,
+    auth_profile: Option<String>,
+) {
+    let updates = SessionSettingsUpdate {
+        auth_profile: Some(auth_profile),
+        ..Default::default()
+    };
+    let msg = match sess.update_settings(updates).await {
+        Ok(()) => thread_settings_applied_event(sess).await,
+        Err(err) => EventMsg::Error(ErrorEvent {
+            message: format!("invalid auth profile override: {err}"),
+            codex_error_info: Some(CodexErrorInfo::BadRequest),
+        }),
+    };
+    sess.send_event_raw(Event { id: sub_id, msg }).await;
+}
+
 async fn thread_settings_update(
     sess: &Session,
     thread_settings: ThreadSettingsOverrides,
@@ -795,6 +814,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::ThreadSettings { thread_settings } => {
                     update_thread_settings(&sess, sub.id.clone(), thread_settings).await;
+                    false
+                }
+                Op::AuthProfileSwitch { auth_profile } => {
+                    update_auth_profile(&sess, sub.id.clone(), auth_profile).await;
                     false
                 }
                 Op::InterAgentCommunication { communication } => {
