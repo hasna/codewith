@@ -296,10 +296,7 @@ impl ChatWidget {
                 let auth_mode = resolved_auth_status_mode(auth);
                 (
                     Some(status_account_display_from_auth(auth_mode, auth)),
-                    matches!(
-                        auth_mode,
-                        AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens
-                    ),
+                    matches!(auth_mode, AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens),
                 )
             }
             None => (None, false),
