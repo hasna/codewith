@@ -160,7 +160,7 @@ jobs:
         include:
           - name: Linux
             runner: ubuntu-24.04
-            timeout_minutes: 30
+            timeout_minutes: 60
           # macOS Bazel argument-comment-lint is disabled in keyless Codewith
           # CI because the hermetic Apple CLTools SDK archive currently returns
           # HTTP 403 from GitHub-hosted macOS runners. Cargo macOS jobs still
@@ -168,7 +168,7 @@ jobs:
           # argument-comment-lint check active.
           - name: Windows
             runner: windows-x64
-            timeout_minutes: 30
+            timeout_minutes: 60
             runs_on: windows-latest
     steps:
       - name: Check whether argument comment lint should run
