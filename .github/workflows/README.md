@@ -11,7 +11,7 @@ The workflows in this directory are split so that pull requests get fast, review
 - `rust-ci.yml` keeps the Cargo-native PR checks intentionally small:
   - `cargo fmt --check`
   - `cargo shear`
-  - `argument-comment-lint` on Linux, macOS, and Windows
+  - `argument-comment-lint` on Linux and Windows
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
 - `codewith-cli.yml` builds the local-friendly `codewith` CLI artifact on
   Linux for pull requests, manual runs, and the `feat/loop-scheduled-tasks`
@@ -30,7 +30,7 @@ The workflows in this directory are split so that pull requests get fast, review
   - the full Cargo `nextest` matrix via per-platform archive-backed shards
   - Windows ARM64 nextest archives cross-compiled on Windows x64, then replayed on native Windows ARM64 shards
   - release-profile Cargo builds
-  - cross-platform `argument-comment-lint`
+  - `argument-comment-lint` on Linux and Windows
   - Linux remote-env tests
 
 ## Rule Of Thumb
