@@ -32,6 +32,9 @@ jobs:
       - name: Test npm package staging metadata
         run: python3 -m unittest codex-cli/scripts/test_build_npm_package.py
 
+      - name: Test Bazel CI local fallback
+        run: python3 .github/scripts/test_run_bazel_ci.py
+
       - name: Setup pnpm
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
