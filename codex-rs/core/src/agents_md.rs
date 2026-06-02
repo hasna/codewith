@@ -1,6 +1,7 @@
 //! CODEWITH.md discovery and user instruction assembly.
 //!
-//! Project-level documentation is primarily stored in files named `CODEWITH.md`.
+//! Project-level documentation is primarily stored in `.codewith/CODEWITH.md`,
+//! with root-level `CODEWITH.md` and legacy `AGENTS.md` files read as fallbacks.
 //! Additional fallback filenames can be configured via `project_doc_fallback_filenames`.
 //! We include the concatenation of all files found along the path from the
 //! project root to the current working directory as follows:
@@ -10,9 +11,9 @@
 //!     When `project_root_markers` is unset, the default marker list is used
 //!     (`.git`). If no marker is found, only the current working directory is
 //!     considered. An empty marker list disables parent traversal.
-//! 2.  Collect every `CODEWITH.md` found from the project root down to the
-//!     current working directory (inclusive) and concatenate their contents in
-//!     that order.
+//! 2.  Collect every project instruction document found from the project root
+//!     down to the current working directory (inclusive) and concatenate their
+//!     contents in that order.
 //! 3.  We do **not** walk past the project root.
 
 use crate::config::Config;
@@ -38,6 +39,10 @@ pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "CODEWITH.md";
 /// Preferred local override for Codewith project instructions.
 pub const LOCAL_AGENTS_MD_FILENAME: &str = "CODEWITH.override.md";
+/// Default repository-relative path scanned for Codewith project instructions.
+pub const DEFAULT_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.md";
+/// Preferred repository-relative local override path for Codewith project instructions.
+pub const LOCAL_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.override.md";
 /// Legacy Codex project instructions filename, read as a fallback.
 const LEGACY_DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 /// Legacy Codex local override filename, read as a fallback.
@@ -343,7 +348,9 @@ impl<'a> AgentsMdManager<'a> {
 
     fn candidate_filenames(&self) -> Vec<&str> {
         let mut names: Vec<&str> =
-            Vec::with_capacity(2 + self.config.project_doc_fallback_filenames.len());
+            Vec::with_capacity(6 + self.config.project_doc_fallback_filenames.len());
+        names.push(LOCAL_PROJECT_AGENTS_MD_PATH);
+        names.push(DEFAULT_PROJECT_AGENTS_MD_PATH);
         names.push(LOCAL_AGENTS_MD_FILENAME);
         names.push(DEFAULT_AGENTS_MD_FILENAME);
         names.push(LEGACY_LOCAL_AGENTS_MD_FILENAME);

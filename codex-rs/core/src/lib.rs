@@ -127,6 +127,7 @@ pub type CodexConversation = CodexThread;
 pub(crate) mod agents_md;
 pub use agents_md::AgentsMdManager;
 pub use agents_md::DEFAULT_AGENTS_MD_FILENAME;
+pub use agents_md::DEFAULT_PROJECT_AGENTS_MD_PATH;
 pub use agents_md::LOCAL_AGENTS_MD_FILENAME;
 mod rollout;
 pub(crate) mod safety;

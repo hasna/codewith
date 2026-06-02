@@ -1,8 +1,8 @@
-//! Registry of model providers supported by Codex.
+//! Registry of model providers supported by Codewith.
 //!
 //! Providers can be defined in two places:
-//!   1. Built-in defaults compiled into the binary so Codex works out-of-the-box.
-//!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
+//!   1. Built-in defaults compiled into the binary so Codewith works out-of-the-box.
+//!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
 //! The built-in picker surface is intentionally small: OpenAI plus OpenRouter.

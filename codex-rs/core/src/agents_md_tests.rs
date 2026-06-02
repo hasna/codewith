@@ -11,6 +11,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+fn write_doc(root: &Path, relative_path: &str, contents: &str) {
+    let path = root.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, contents).unwrap();
+}
+
 async fn get_user_instructions(config: &Config) -> Option<String> {
     let mut warnings = Vec::new();
     AgentsMdManager::new(config)
@@ -392,6 +400,42 @@ async fn agents_local_md_preferred() {
         discovery[0].file_name().unwrap().to_string_lossy(),
         LOCAL_AGENTS_MD_FILENAME
     );
+}
+
+#[tokio::test]
+async fn project_codewith_dir_doc_is_preferred_over_root_codewith_md() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(tmp.path(), DEFAULT_AGENTS_MD_FILENAME, "root");
+    write_doc(tmp.path(), DEFAULT_PROJECT_AGENTS_MD_PATH, "project");
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("project doc expected");
+    assert_eq!(res, "project");
+
+    let discovery = agents_md_paths(&cfg).await.expect("discover paths");
+    assert_eq!(discovery.len(), 1);
+    assert!(discovery[0].ends_with(Path::new(DEFAULT_PROJECT_AGENTS_MD_PATH)));
+}
+
+#[tokio::test]
+async fn project_codewith_dir_override_is_preferred() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(tmp.path(), DEFAULT_PROJECT_AGENTS_MD_PATH, "versioned");
+    write_doc(tmp.path(), LOCAL_PROJECT_AGENTS_MD_PATH, "local");
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("local project doc expected");
+    assert_eq!(res, "local");
+
+    let discovery = agents_md_paths(&cfg).await.expect("discover paths");
+    assert_eq!(discovery.len(), 1);
+    assert!(discovery[0].ends_with(Path::new(LOCAL_PROJECT_AGENTS_MD_PATH)));
 }
 
 /// When AGENTS.md is absent but a configured fallback exists, the fallback is used.

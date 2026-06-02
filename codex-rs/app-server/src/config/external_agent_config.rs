@@ -38,6 +38,8 @@ const EXTERNAL_AGENT_DIR: &str = ".claude";
 const EXTERNAL_AGENT_CONFIG_MD: &str = "CLAUDE.md";
 const EXTERNAL_OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
 const EXTERNAL_OFFICIAL_MARKETPLACE_SOURCE: &str = "anthropics/claude-plugins-official";
+const CODEWITH_CONFIG_MD: &str = "CODEWITH.md";
+const PROJECT_CODEWITH_CONFIG_MD: &str = ".codewith/CODEWITH.md";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalAgentConfigDetectOptions {
@@ -474,8 +476,8 @@ impl ExternalAgentConfigService {
             is_non_empty_text_file(&path)?.then_some(path)
         };
         let target_agents_md = repo_root.map_or_else(
-            || self.codex_home.join("CODEWITH.md"),
-            |repo_root| repo_root.join("CODEWITH.md"),
+            || self.codex_home.join(CODEWITH_CONFIG_MD),
+            repo_agents_md_target,
         );
         if let Some(source_agents_md) = source_agents_md
             && is_missing_or_empty_text_file(&target_agents_md)?
@@ -970,13 +972,13 @@ impl ExternalAgentConfigService {
             let Some(source_agents_md) = find_repo_agents_md_source(&repo_root)? else {
                 return Ok(());
             };
-            (source_agents_md, repo_root.join("CODEWITH.md"))
+            (source_agents_md, repo_agents_md_target(&repo_root))
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(());
         } else {
             (
                 self.external_agent_home.join(EXTERNAL_AGENT_CONFIG_MD),
-                self.codex_home.join("CODEWITH.md"),
+                self.codex_home.join(CODEWITH_CONFIG_MD),
             )
         };
         if !is_non_empty_text_file(&source_agents_md)?
@@ -992,6 +994,10 @@ impl ExternalAgentConfigService {
 
         rewrite_and_copy_text_file(&source_agents_md, &target_agents_md)
     }
+}
+
+fn repo_agents_md_target(repo_root: &Path) -> PathBuf {
+    repo_root.join(PROJECT_CODEWITH_CONFIG_MD)
 }
 
 fn default_external_agent_home() -> PathBuf {
@@ -1390,7 +1396,7 @@ fn rewrite_external_agent_terms(content: &str) -> String {
     let mut rewritten = replace_case_insensitive_with_boundaries(
         content,
         &EXTERNAL_AGENT_CONFIG_MD.to_ascii_lowercase(),
-        "CODEWITH.md",
+        PROJECT_CODEWITH_CONFIG_MD,
     );
     for from in [
         "claude code",

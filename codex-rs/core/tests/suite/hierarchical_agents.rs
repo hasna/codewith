@@ -7,7 +7,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 
 const HIERARCHICAL_AGENTS_SNIPPET: &str =
-    "Files called AGENTS.md commonly appear in many places inside a container";
+    "Codewith project instruction files commonly appear in many places inside a container";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hierarchical_agents_appends_to_project_doc_in_user_instructions() {

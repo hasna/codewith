@@ -186,6 +186,7 @@ fn title_case(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::legacy_core::DEFAULT_AGENTS_MD_FILENAME;
+    use crate::legacy_core::DEFAULT_PROJECT_AGENTS_MD_PATH;
     use crate::legacy_core::LOCAL_AGENTS_MD_FILENAME;
     use crate::legacy_core::config::ConfigBuilder;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -254,7 +255,7 @@ mod tests {
         let codex_home = TempDir::new().expect("temp codex home");
         let cwd = TempDir::new().expect("temp cwd");
         let global_agents_path = codex_home.path().join(DEFAULT_AGENTS_MD_FILENAME);
-        let project_agents_path = cwd.path().join(DEFAULT_AGENTS_MD_FILENAME);
+        let project_agents_path = cwd.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH);
         let config = test_config(&codex_home, &cwd).await;
 
         let summary = compose_agents_summary(
@@ -270,7 +271,7 @@ mod tests {
             Some(format_directory_display(&global_agents_path, /*max_width*/ None).as_str())
         );
         let project_path = paths.next().expect("project agents path");
-        assert!(project_path.ends_with(DEFAULT_AGENTS_MD_FILENAME));
+        assert!(project_path.ends_with(DEFAULT_PROJECT_AGENTS_MD_PATH));
         assert_eq!(paths.next(), None);
     }
 }

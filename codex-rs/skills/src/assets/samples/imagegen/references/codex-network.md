@@ -1,11 +1,11 @@
-# Codex network approvals / sandbox notes
+# Codewith network approvals / sandbox notes
 
 This file is for the fallback CLI mode only. Read it when the user explicitly asks to use `scripts/image_gen.py` / CLI / API / model controls, or after the user explicitly confirms that a transparent-output request should use the `gpt-image-1.5` true-transparency fallback path.
 
 This guidance is intentionally isolated from `SKILL.md` because it can vary by environment and may become stale. Prefer the defaults in your environment when in doubt.
 
 ## Why am I asked to approve image generation calls?
-The fallback CLI uses the OpenAI Image API, so it needs outbound network access. In many Codex setups, network access is disabled by default and/or the approval policy requires confirmation before networked commands run.
+The fallback CLI uses the OpenAI Image API, so it needs outbound network access. In many Codewith setups, network access is disabled by default and/or the approval policy requires confirmation before networked commands run.
 
 ## Important note about approvals vs network
 - `--ask-for-approval never` suppresses approval prompts.
@@ -17,7 +17,7 @@ If you trust the repo and want fewer prompts, use a configuration or profile tha
 - enables network for the sandbox mode you plan to use
 - sets an approval policy that matches your risk tolerance
 
-Example `~/.codex/config.toml` pattern:
+Example `~/.codewith/config.toml` pattern:
 
 ```toml
 approval_policy = "on-request"

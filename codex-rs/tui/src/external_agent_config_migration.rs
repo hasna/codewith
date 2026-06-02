@@ -843,7 +843,7 @@ mod tests {
                 description: format!(
                     "Migrate {} to {}",
                     sample_project_path("CLAUDE.md"),
-                    sample_project_path("CODEWITH.md")
+                    sample_project_path(".codewith/CODEWITH.md")
                 ),
                 cwd: Some(project_root),
                 details: None,

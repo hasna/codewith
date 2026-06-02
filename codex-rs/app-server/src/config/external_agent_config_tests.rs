@@ -181,7 +181,7 @@ async fn detect_repo_lists_agents_md_for_each_cwd() {
             description: format!(
                 "Migrate {} to {}",
                 repo_root.join(EXTERNAL_AGENT_CONFIG_MD).display(),
-                repo_root.join("CODEWITH.md").display(),
+                repo_agents_md_target(&repo_root).display(),
             ),
             cwd: Some(repo_root.clone()),
             details: None,
@@ -191,7 +191,7 @@ async fn detect_repo_lists_agents_md_for_each_cwd() {
             description: format!(
                 "Migrate {} to {}",
                 repo_root.join(EXTERNAL_AGENT_CONFIG_MD).display(),
-                repo_root.join("CODEWITH.md").display(),
+                repo_agents_md_target(&repo_root).display(),
             ),
             cwd: Some(repo_root),
             details: None,
@@ -283,7 +283,7 @@ async fn detect_repo_still_reports_non_plugin_items_when_home_config_is_invalid(
                         .join(EXTERNAL_AGENT_DIR)
                         .join(EXTERNAL_AGENT_CONFIG_MD)
                         .display(),
-                    repo_root.join("CODEWITH.md").display(),
+                    repo_agents_md_target(&repo_root).display(),
                 ),
                 cwd: Some(repo_root),
                 details: None,
@@ -1016,11 +1016,10 @@ async fn import_repo_agents_md_rewrites_terms_and_skips_non_empty_targets() {
         "new source",
     )
     .expect("write source");
-    fs::write(
-        repo_with_existing_target.join("CODEWITH.md"),
-        "keep existing target",
-    )
-    .expect("write target");
+    let existing_target = repo_agents_md_target(&repo_with_existing_target);
+    fs::create_dir_all(existing_target.parent().expect("target parent"))
+        .expect("create target parent");
+    fs::write(&existing_target, "keep existing target").expect("write target");
 
     service_for_paths(
         root.path().join(EXTERNAL_AGENT_DIR),
@@ -1044,12 +1043,11 @@ async fn import_repo_agents_md_rewrites_terms_and_skips_non_empty_targets() {
     .expect("import");
 
     assert_eq!(
-        fs::read_to_string(repo_root.join("CODEWITH.md")).expect("read target"),
-        "Codewith\nCodewith\nCodewith\nSee CODEWITH.md\n"
+        fs::read_to_string(repo_agents_md_target(&repo_root)).expect("read target"),
+        "Codewith\nCodewith\nCodewith\nSee .codewith/CODEWITH.md\n"
     );
     assert_eq!(
-        fs::read_to_string(repo_with_existing_target.join("CODEWITH.md"))
-            .expect("read existing target"),
+        fs::read_to_string(existing_target).expect("read existing target"),
         "keep existing target"
     );
 }
@@ -1064,7 +1062,9 @@ async fn import_repo_agents_md_overwrites_empty_targets() {
         format!("{SOURCE_EXTERNAL_AGENT_DISPLAY_NAME} code guidance"),
     )
     .expect("write source");
-    fs::write(repo_root.join("CODEWITH.md"), " \n\t").expect("write empty target");
+    let target = repo_agents_md_target(&repo_root);
+    fs::create_dir_all(target.parent().expect("target parent")).expect("create target parent");
+    fs::write(&target, " \n\t").expect("write empty target");
 
     service_for_paths(
         root.path().join(EXTERNAL_AGENT_DIR),
@@ -1080,7 +1080,7 @@ async fn import_repo_agents_md_overwrites_empty_targets() {
     .expect("import");
 
     assert_eq!(
-        fs::read_to_string(repo_root.join("CODEWITH.md")).expect("read target"),
+        fs::read_to_string(target).expect("read target"),
         "Codewith guidance"
     );
 }
@@ -1121,7 +1121,7 @@ async fn detect_repo_prefers_non_empty_external_agent_agents_source() {
                     .join(EXTERNAL_AGENT_DIR)
                     .join(EXTERNAL_AGENT_CONFIG_MD)
                     .display(),
-                repo_root.join("CODEWITH.md").display(),
+                repo_agents_md_target(&repo_root).display(),
             ),
             cwd: Some(repo_root),
             details: None,
@@ -1373,7 +1373,7 @@ async fn import_repo_uses_non_empty_external_agent_agents_source() {
     .expect("import");
 
     assert_eq!(
-        fs::read_to_string(repo_root.join("CODEWITH.md")).expect("read target"),
+        fs::read_to_string(repo_agents_md_target(&repo_root)).expect("read target"),
         "Codewith guidance"
     );
 }

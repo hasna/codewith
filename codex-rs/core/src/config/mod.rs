@@ -937,7 +937,7 @@ pub struct Config {
     pub memories: MemoriesConfig,
 
     /// Directory containing all Codewith state (defaults to `~/.codewith` but can be
-    /// overridden by the `CODEX_HOME` environment variable).
+    /// overridden by `CODEWITH_HOME`, with `CODEX_HOME` kept as a compatibility fallback).
     pub codex_home: AbsolutePathBuf,
 
     /// Directory where Codewith stores the SQLite state DB.

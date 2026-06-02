@@ -258,10 +258,10 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
-                let init_target = self.config.cwd.join(DEFAULT_AGENTS_MD_FILENAME);
+                let init_target = self.config.cwd.join(DEFAULT_PROJECT_AGENTS_MD_PATH);
                 if init_target.exists() {
                     let message = format!(
-                        "{DEFAULT_AGENTS_MD_FILENAME} already exists here. Skipping /init to avoid overwriting it."
+                        "{DEFAULT_PROJECT_AGENTS_MD_PATH} already exists here. Skipping /init to avoid overwriting it."
                     );
                     self.add_info_message(message, /*hint*/ None);
                     return;

@@ -170,7 +170,7 @@ pub(crate) fn new_session_info(
             Line::from(vec![
                 "  ".into(),
                 "/init".into(),
-                " - create a CODEWITH.md file with instructions for Codewith".dim(),
+                " - create .codewith/CODEWITH.md with instructions for Codewith".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),

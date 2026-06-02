@@ -71,6 +71,7 @@ pub use crate::remote::RemoteAppServerEndpoint;
 /// while legacy startup/config paths are migrated to RPCs.
 pub mod legacy_core {
     pub use codex_core::DEFAULT_AGENTS_MD_FILENAME;
+    pub use codex_core::DEFAULT_PROJECT_AGENTS_MD_PATH;
     pub use codex_core::LOCAL_AGENTS_MD_FILENAME;
     pub use codex_core::McpManager;
     pub use codex_core::check_execpolicy_for_warnings;

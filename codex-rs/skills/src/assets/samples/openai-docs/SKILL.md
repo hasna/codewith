@@ -85,11 +85,11 @@ For unresolved product terminology, answer from the manual plus the allowed offi
 
 ### Surface Map
 
-When Codex nouns or durable-instruction surfaces overlap, recommend the smallest surface that matches the scope:
+When Codewith nouns or durable-instruction surfaces overlap, recommend the smallest surface that matches the scope:
 
 - Prompt or thread context -> one-off task constraints.
 - `AGENTS.md` -> durable repo conventions, commands, verification steps, and review expectations; closer nested files apply under their subtree.
-- Project `.codex/config.toml` -> trusted-repo Codex settings such as sandbox, MCP, hooks, model, or reasoning defaults.
+- Project `.codewith/config.toml` -> trusted-repo Codewith settings such as sandbox, MCP, hooks, model, or reasoning defaults.
 - Global config or global guidance -> personal defaults across repos.
 - Skill -> reusable task workflow with references or scripts.
 - Plugin -> installable bundle with skills plus commands, tools, MCP config, hooks, assets, apps, or marketplace metadata.

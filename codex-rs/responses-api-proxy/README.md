@@ -11,7 +11,7 @@ echo $OPENAI_API_KEY | ./target/debug/codex-responses-api-proxy \
     --dump-dir /tmp/proxy
 
 
-# Add this to ~/.codex/config.toml:
+# Add this to ~/.codewith/config.toml:
 
 [model_providers.codex-responses-api-proxy]
 name = 'codex-responses-api-proxy'
@@ -40,12 +40,12 @@ A privileged user (i.e., `root` or a user with `sudo`) who has access to `OPENAI
 printenv OPENAI_API_KEY | env -u OPENAI_API_KEY codex-responses-api-proxy --http-shutdown --server-info /tmp/server-info.json
 ```
 
-A non-privileged user would then run Codex as follows, specifying the `model_provider` dynamically:
+A non-privileged user would then run Codewith as follows, specifying the `model_provider` dynamically:
 
 ```shell
 PROXY_PORT=$(jq .port /tmp/server-info.json)
 PROXY_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
-codex exec -c "model_providers.openai-proxy={ name = 'OpenAI Proxy', base_url = '${PROXY_BASE_URL}/v1', wire_api='responses' }" \
+codewith exec -c "model_providers.openai-proxy={ name = 'OpenAI Proxy', base_url = '${PROXY_BASE_URL}/v1', wire_api='responses' }" \
     -c model_provider="openai-proxy" \
     'Your prompt here'
 ```
@@ -77,7 +77,7 @@ codex-responses-api-proxy [--port <PORT>] [--server-info <FILE>] [--http-shutdow
 - `--http-shutdown`: If set, enables `GET /shutdown` to exit the process with code `0`.
 - `--upstream-url <URL>`: Absolute URL to forward requests to. Defaults to `https://api.openai.com/v1/responses`.
 - `--dump-dir <DIR>`: If set, writes one request JSON file and one response JSON file per accepted proxy call under this directory. Filenames use a shared sequence/timestamp prefix so each pair is easy to correlate.
-- Authentication is fixed to `Authorization: Bearer <key>` to match the Codex CLI expectations.
+- Authentication is fixed to `Authorization: Bearer <key>` to match Codewith expectations.
 
 For Azure, for example (ensure your deployment accepts `Authorization: Bearer <key>`):
 

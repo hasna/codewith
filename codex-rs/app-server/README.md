@@ -82,17 +82,17 @@ Use the thread APIs to create, list, or archive conversations. Drive a conversat
 
 ## Initialization
 
-Clients must send a single `initialize` request per transport connection before invoking any other method on that connection, then acknowledge with an `initialized` notification. The server returns the user agent string it will present to upstream services, `codexHome` for the server's Codex home directory, and `platformFamily` and `platformOs` strings describing the app-server runtime target; subsequent requests issued before initialization receive a `"Not initialized"` error, and repeated `initialize` calls on the same connection receive an `"Already initialized"` error.
+Clients must send a single `initialize` request per transport connection before invoking any other method on that connection, then acknowledge with an `initialized` notification. The server returns the user agent string it will present to upstream services, `codexHome` for the server's Codewith home directory, and `platformFamily` and `platformOs` strings describing the app-server runtime target; subsequent requests issued before initialization receive a `"Not initialized"` error, and repeated `initialize` calls on the same connection receive an `"Already initialized"` error.
 
 `initialize.params.capabilities` also supports per-connection notification opt-out via `optOutNotificationMethods`, which is a list of exact method names to suppress for that connection. Matching is exact (no wildcards/prefixes). Unknown method names are accepted and ignored.
 
 Applications building on top of `codewith app-server` should identify themselves via the `clientInfo` parameter.
 
-**Important**: `clientInfo.name` is used to identify the client for the OpenAI Compliance Logs Platform. If
-you are developing a new Codex integration that is intended for enterprise use, please contact us to get it
-added to a known clients list. For more context: https://chatgpt.com/admin/api-reference#tag/Logs:-Codex
+**Important**: `clientInfo.name` is used to identify the client for compliance logs. If
+you are developing a new Codewith integration that is intended for enterprise use, please contact Hasna to get it
+added to a known clients list.
 
-Example (from OpenAI's official VSCode extension):
+Example:
 
 ```json
 {
@@ -100,8 +100,8 @@ Example (from OpenAI's official VSCode extension):
   "id": 0,
   "params": {
     "clientInfo": {
-      "name": "codex_vscode",
-      "title": "Codex VS Code Extension",
+      "name": "codewith_vscode",
+      "title": "Codewith VS Code Extension",
       "version": "0.1.0"
     }
   }
@@ -1735,7 +1735,7 @@ For unmanaged hooks, `currentHash` and `trustStatus` describe whether the curren
     "data": [{
       "cwd": "/Users/me/project",
       "hooks": [{
-        "key": "/Users/me/.codex/config.toml:pre_tool_use:0:0",
+        "key": "/Users/me/.codewith/config.toml:pre_tool_use:0:0",
         "eventName": "pre_tool_use",
         "handlerType": "command",
         "isManaged": false,
@@ -1743,7 +1743,7 @@ For unmanaged hooks, `currentHash` and `trustStatus` describe whether the curren
         "command": "python3 /Users/me/hook.py",
         "timeoutSec": 5,
         "statusMessage": "running hook",
-        "sourcePath": "/Users/me/.codex/config.toml",
+        "sourcePath": "/Users/me/.codewith/config.toml",
         "source": "user",
         "pluginId": null,
         "displayOrder": 0,
@@ -1768,7 +1768,7 @@ To disable a non-managed hook, upsert a state entry at `hooks.state` with `confi
     "edits": [{
       "keyPath": "hooks.state",
       "value": {
-        "/Users/me/.codex/config.toml:pre_tool_use:0:0": {
+        "/Users/me/.codewith/config.toml:pre_tool_use:0:0": {
           "enabled": false
         }
       },

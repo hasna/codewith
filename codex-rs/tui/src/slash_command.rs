@@ -86,7 +86,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
-            SlashCommand::Init => "create a CODEWITH.md file with instructions for Codewith",
+            SlashCommand::Init => "create .codewith/CODEWITH.md with instructions for Codewith",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
