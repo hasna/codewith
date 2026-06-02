@@ -48,7 +48,7 @@ jobs:
             - For agent-area issues, prefer the most specific applicable label. Use "agent" only as a fallback for agent-related issues that do not fit a more specific agent-area label. Prefer "app-server" over "session" or "config" when the issue is about app-server protocol, API, RPC, schema, launch, or bridge behavior. Use "memory" for agentic memory storage/retrieval and "performance" for high process memory utilization or memory leaks.
             1. windows-os — Bugs or friction specific to Windows environments (always when PowerShell is mentioned, path handling, copy/paste, OS-specific auth or tooling failures).
             2. mcp — Topics involving Model Context Protocol servers/clients.
-            3. mcp-server — Problems related to the codex mcp-server command, where codex runs as an MCP server.
+            3. mcp-server — Problems related to the codewith mcp-server command, where codewith runs as an MCP server.
             4. azure — Problems or requests tied to Azure OpenAI deployments.
             5. model-behavior — Undesirable LLM behavior: forgetting goals, refusing work, hallucinating environment details, quota misreports, or other reasoning/performance anomalies.
             6. code-review — Issues related to the code review feature or functionality.

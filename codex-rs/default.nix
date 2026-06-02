@@ -48,9 +48,9 @@ rustPlatform.buildRustPackage (_: {
   };
 
   meta = with lib; {
-    description = "OpenAI Codex command‑line interface rust implementation";
+    description = "Hasna Codewith command-line interface Rust implementation";
     license = licenses.asl20;
-    homepage = "https://github.com/openai/codex";
-    mainProgram = "codex";
+    homepage = "https://github.com/hasna/codewith";
+    mainProgram = "codewith";
   };
 })

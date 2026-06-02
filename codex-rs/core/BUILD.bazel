@@ -36,6 +36,7 @@ codex_rust_crate(
         # TODO(aibrahim): Update the tests so that `just bazel-remote-test`
         # succeeds without this workaround.
         "//:AGENTS.md",
+        "//:CODEWITH.md",
     ],
     test_shard_counts = {
         "core-all-test": 16,

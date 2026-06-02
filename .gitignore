@@ -33,6 +33,7 @@ result
 CLAUDE.md
 .claude/
 AGENTS.override.md
+CODEWITH.override.md
 
 # caches
 .cache/

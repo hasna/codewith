@@ -1,6 +1,6 @@
 # codex-app-server
 
-`codex app-server` is the interface Codex uses to power rich interfaces such as the [Codex VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
+`codewith app-server` is the interface Codewith uses to power rich interfaces such as the [Codewith VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@
 
 ## Protocol
 
-Similar to [MCP](https://modelcontextprotocol.io/), `codex app-server` supports bidirectional communication using JSON-RPC 2.0 messages (with the `"jsonrpc":"2.0"` header omitted on the wire).
+Similar to [MCP](https://modelcontextprotocol.io/), `codewith app-server` supports bidirectional communication using JSON-RPC 2.0 messages (with the `"jsonrpc":"2.0"` header omitted on the wire).
 
 Supported transports:
 
@@ -36,7 +36,7 @@ When running with `--listen ws://IP:PORT`, the same listener also serves basic H
 
 Websocket transport is currently experimental and unsupported. Do not rely on it for production workloads.
 
-The unix socket transport is intended for local app-server control-plane clients. `codex app-server proxy`
+The unix socket transport is intended for local app-server control-plane clients. `codewith app-server proxy`
 opens exactly one raw stream connection to `$CODEX_HOME/app-server-control/app-server-control.sock`
 by default, or to `--sock PATH` when provided, and proxies bytes between that socket and stdin/stdout.
 The proxied stream carries the websocket HTTP Upgrade handshake followed by websocket frames.
@@ -54,11 +54,11 @@ Backpressure behavior:
 
 ## Message Schema
 
-Currently, you can dump a TypeScript version of the schema using `codex app-server generate-ts`, or a JSON Schema bundle via `codex app-server generate-json-schema`. Each output is specific to the version of Codex you used to run the command, so the generated artifacts are guaranteed to match that version.
+Currently, you can dump a TypeScript version of the schema using `codewith app-server generate-ts`, or a JSON Schema bundle via `codewith app-server generate-json-schema`. Each output is specific to the version of Codewith you used to run the command, so the generated artifacts are guaranteed to match that version.
 
 ```
-codex app-server generate-ts --out DIR
-codex app-server generate-json-schema --out DIR
+codewith app-server generate-ts --out DIR
+codewith app-server generate-json-schema --out DIR
 ```
 
 ## Core Primitives
@@ -86,7 +86,7 @@ Clients must send a single `initialize` request per transport connection before 
 
 `initialize.params.capabilities` also supports per-connection notification opt-out via `optOutNotificationMethods`, which is a list of exact method names to suppress for that connection. Matching is exact (no wildcards/prefixes). Unknown method names are accepted and ignored.
 
-Applications building on top of `codex app-server` should identify themselves via the `clientInfo` parameter.
+Applications building on top of `codewith app-server` should identify themselves via the `clientInfo` parameter.
 
 **Important**: `clientInfo.name` is used to identify the client for the OpenAI Compliance Logs Platform. If
 you are developing a new Codex integration that is intended for enterprise use, please contact us to get it
@@ -646,7 +646,7 @@ Schedules support three shapes:
 - `{ "type": "interval", "amount": 5, "unit": "minutes" }` runs every N minutes, hours, or days.
 - `{ "type": "cron", "expression": "0 9 * * 1-5" }` uses a five-field numeric cron expression in the provided `timezone`.
 
-Set `promptSource` to `"inline"` to store and send `prompt` directly. Set it to `"default"` to resolve the prompt at execution time from `.codex/loop.md` in the thread cwd, then `$CODEX_HOME/loop.md`; the stored `prompt` field is only the display label in that mode.
+Set `promptSource` to `"inline"` to store and send `prompt` directly. Set it to `"default"` to resolve the prompt at execution time from `.codewith/loop.md` in the thread cwd, then `$CODEWITH_HOME/loop.md`; the stored `prompt` field is only the display label in that mode.
 
 ```json
 { "method": "thread/schedule/create", "id": 31, "params": {
@@ -2010,16 +2010,16 @@ Some app-server methods and fields are intentionally gated behind an experimenta
 
 ### Generating stable vs experimental client schemas
 
-`codex app-server` schema generation defaults to the stable API surface (experimental fields and methods filtered out). Pass `--experimental` to include experimental methods/fields in generated TypeScript or JSON schema:
+`codewith app-server` schema generation defaults to the stable API surface (experimental fields and methods filtered out). Pass `--experimental` to include experimental methods/fields in generated TypeScript or JSON schema:
 
 ```bash
 # Stable-only output (default)
-codex app-server generate-ts --out DIR
-codex app-server generate-json-schema --out DIR
+codewith app-server generate-ts --out DIR
+codewith app-server generate-json-schema --out DIR
 
 # Include experimental API surface
-codex app-server generate-ts --out DIR --experimental
-codex app-server generate-json-schema --out DIR --experimental
+codewith app-server generate-ts --out DIR --experimental
+codewith app-server generate-json-schema --out DIR --experimental
 ```
 
 ### How clients opt in at runtime
