@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -112,6 +113,56 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "cpu": "arm64",
             },
         )
+
+    def test_responses_api_proxy_package_stages_public_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_dir = Path(temp_dir)
+
+            build_npm_package.stage_sources(
+                staging_dir,
+                "1.2.3",
+                "codex-responses-api-proxy",
+            )
+
+            package_json = read_package_json(staging_dir)
+
+        self.assertEqual(package_json["name"], "@hasna/codewith-responses-api-proxy")
+        self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["publishConfig"],
+            {
+                "registry": "https://registry.npmjs.org",
+                "access": "public",
+            },
+        )
+
+    def test_sdk_package_stages_public_metadata(self) -> None:
+        def fake_stage_sdk_sources(staging_dir: Path) -> None:
+            (staging_dir / "dist").mkdir()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_dir = Path(temp_dir)
+
+            with mock.patch.object(
+                build_npm_package,
+                "stage_codex_sdk_sources",
+                fake_stage_sdk_sources,
+            ):
+                build_npm_package.stage_sources(staging_dir, "1.2.3", "codex-sdk")
+
+            package_json = read_package_json(staging_dir)
+
+        self.assertEqual(package_json["name"], "@hasna/codewith-sdk")
+        self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["publishConfig"],
+            {
+                "registry": "https://registry.npmjs.org",
+                "access": "public",
+            },
+        )
+        self.assertEqual(package_json["dependencies"]["@hasna/codewith"], "1.2.3")
+        self.assertNotIn("prepare", package_json["scripts"])
 
 
 def read_package_json(staging_dir: Path) -> dict:

@@ -1,20 +1,24 @@
 {
-  "name": "@openai/codex-sdk",
+  "name": "@hasna/codewith-sdk",
   "version": "0.0.0-dev",
-  "description": "TypeScript SDK for Codex APIs.",
+  "description": "TypeScript SDK for Codewith APIs.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/hasna/codewith.git",
     "directory": "sdk/typescript"
   },
   "keywords": [
-    "openai",
-    "codex",
+    "hasna",
+    "codewith",
     "sdk",
     "typescript",
     "api"
   ],
   "license": "Apache-2.0",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=18"

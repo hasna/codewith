@@ -301,9 +301,10 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             package_json = json.load(fh)
         package_json["version"] = version
 
+    package_json["publishConfig"] = CODEX_PUBLISH_CONFIG
+
     if package == "codex":
         package_json["files"] = ["bin/codex.js"]
-        package_json["publishConfig"] = CODEX_PUBLISH_CONFIG
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: version
             for platform_package in PACKAGE_EXPANSIONS["codex"]
