@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      codex_output: ${{ steps.codex.outputs.final-message }}
+      codewith_output: ${{ steps.codex.outputs.final-message }}
     steps:
       - id: codex
         uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02 # v1.7
@@ -54,7 +54,7 @@ jobs:
             6. code-review — Issues related to the code review feature or functionality.
             7. safety-check - Issues related to cyber risk detection or trusted access verification.
             8. auth - Problems related to authentication, login, or access tokens.
-            9. exec - Problems related to the "codex exec" command or functionality.
+            9. exec - Problems related to the "codewith exec" command or functionality.
             10. hooks - Problems related to event hooks
             11. context - Problems related to compaction, context windows, or available context reporting.
             12. skills - Problems related to skills or plugins
@@ -70,7 +70,7 @@ jobs:
             22. config - Issues involving config.toml, config keys, config key merging, config updates, profiles, hooks config, project config, agent role TOMLs, instruction/personality config, and config schema behavior.
             23. plan - Issues involving plan mode, planning workflows, or plan-specific tools/behavior.
             24. computer-use - Issues involving agentic computer use or SkyComputerUseService.
-            25. browser - Issues involving agentic browser use, IAB, or the built-in browser within the Codex app.
+            25. browser - Issues involving agentic browser use, IAB, or the built-in browser within the Codewith app.
             26. memory - Issues involving agentic memory storage and retrieval.
             27. imagen - Issues involving image generation.
             28. remote - Issues involving remote access, remote control, or SSH.
@@ -117,7 +117,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
-      CODEWITH_OUTPUT: ${{ needs.gather-labels.outputs.codex_output }}
+      CODEWITH_OUTPUT: ${{ needs.gather-labels.outputs.codewith_output }}
     steps:
       - name: Apply labels
         run: |
@@ -134,7 +134,7 @@ jobs:
 
           labels=$(printf '%s' "$json" | jq -r '.labels[] | tostring')
           if [ -z "$labels" ]; then
-            echo "Codex returned an empty array. Nothing to do."
+            echo "Codewith returned an empty array. Nothing to do."
             exit 0
           fi
 

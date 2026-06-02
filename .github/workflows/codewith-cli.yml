@@ -56,7 +56,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
 
-      - name: Build codex CLI
+      - name: Build Codewith native CLI
         shell: bash
         run: |
           set -euo pipefail

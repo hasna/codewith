@@ -16,9 +16,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      codex_output: ${{ steps.codex-all.outputs.final-message }}
+      codewith_output: ${{ steps.codex-all.outputs.final-message }}
     steps:
-      - name: Prepare Codex inputs
+      - name: Prepare Codewith inputs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -26,8 +26,8 @@ jobs:
         run: |
           set -eo pipefail
 
-          CURRENT_ISSUE_FILE=codex-current-issue.json
-          EXISTING_ALL_FILE=codex-existing-issues-all.json
+          CURRENT_ISSUE_FILE=codewith-current-issue.json
+          EXISTING_ALL_FILE=codewith-existing-issues-all.json
 
           gh issue list --repo "$REPO" \
             --json number,title,body,createdAt,updatedAt,state,labels \
@@ -68,8 +68,8 @@ jobs:
             You are an assistant that triages new GitHub issues by identifying potential duplicates.
 
             You will receive the following JSON files located in the current working directory:
-            - `codex-current-issue.json`: JSON object describing the newly created issue (fields: number, title, body).
-            - `codex-existing-issues-all.json`: JSON array of recent issues with states, timestamps, and labels.
+            - `codewith-current-issue.json`: JSON object describing the newly created issue (fields: number, title, body).
+            - `codewith-existing-issues-all.json`: JSON array of recent issues with states, timestamps, and labels.
 
             Instructions:
             - Compare the current issue against the existing issues to find up to five that appear to describe the same underlying problem or request.
@@ -111,7 +111,7 @@ jobs:
       - id: normalize-all
         name: Normalize pass 1 output
         env:
-          CODEWITH_OUTPUT: ${{ needs.gather-duplicates-all.outputs.codex_output }}
+          CODEWITH_OUTPUT: ${{ needs.gather-duplicates-all.outputs.codewith_output }}
           CURRENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -eo pipefail
@@ -154,7 +154,7 @@ jobs:
 
   gather-duplicates-open:
     name: Identify potential duplicates (open issues fallback)
-    # Pass 1 Codex execution drops sudo on its runner, so run the fallback in a fresh job.
+    # Pass 1 Codewith execution drops sudo on its runner, so run the fallback in a fresh job.
     needs: normalize-duplicates-all
     if: ${{ needs.normalize-duplicates-all.result == 'success' && needs.normalize-duplicates-all.outputs.has_matches != 'true' }}
     runs-on: ubuntu-latest
@@ -162,9 +162,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      codex_output: ${{ steps.codex-open.outputs.final-message }}
+      codewith_output: ${{ steps.codex-open.outputs.final-message }}
     steps:
-      - name: Prepare Codex inputs
+      - name: Prepare Codewith inputs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -172,8 +172,8 @@ jobs:
         run: |
           set -eo pipefail
 
-          CURRENT_ISSUE_FILE=codex-current-issue.json
-          EXISTING_OPEN_FILE=codex-existing-issues-open.json
+          CURRENT_ISSUE_FILE=codewith-current-issue.json
+          EXISTING_OPEN_FILE=codewith-existing-issues-open.json
 
           gh issue list --repo "$REPO" \
             --json number,title,body,createdAt,updatedAt,state,labels \
@@ -214,8 +214,8 @@ jobs:
             This is a fallback pass because a broad search did not find convincing matches.
 
             You will receive the following JSON files located in the current working directory:
-            - `codex-current-issue.json`: JSON object describing the newly created issue (fields: number, title, body).
-            - `codex-existing-issues-open.json`: JSON array of open issues only.
+            - `codewith-current-issue.json`: JSON object describing the newly created issue (fields: number, title, body).
+            - `codewith-existing-issues-open.json`: JSON array of open issues only.
 
             Instructions:
             - Search only these active unresolved issues for duplicates of the current issue.
@@ -255,7 +255,7 @@ jobs:
       - id: normalize-open
         name: Normalize pass 2 output
         env:
-          CODEWITH_OUTPUT: ${{ needs.gather-duplicates-open.outputs.codex_output }}
+          CODEWITH_OUTPUT: ${{ needs.gather-duplicates-open.outputs.codewith_output }}
           CURRENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -eo pipefail
@@ -306,7 +306,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      codex_output: ${{ steps.select-final.outputs.codex_output }}
+      codewith_output: ${{ steps.select-final.outputs.codewith_output }}
     steps:
       - id: select-final
         name: Select final duplicate set
@@ -347,7 +347,7 @@ jobs:
           echo "Final reason: $(jq -r '.reason' <<< "$final_json")"
 
           {
-            echo "codex_output<<EOF"
+            echo "codewith_output<<EOF"
             echo "$final_json"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -364,7 +364,7 @@ jobs:
       - name: Comment on issue
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
-          CODEWITH_OUTPUT: ${{ needs.select-final.outputs.codex_output }}
+          CODEWITH_OUTPUT: ${{ needs.select-final.outputs.codewith_output }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -373,7 +373,7 @@ jobs:
             try {
               parsed = JSON.parse(raw);
             } catch (error) {
-              core.info(`Codex output was not valid JSON. Raw output: ${raw}`);
+              core.info(`Codewith output was not valid JSON. Raw output: ${raw}`);
               core.info(`Parse error: ${error.message}`);
               return;
             }
