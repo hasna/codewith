@@ -43,7 +43,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundle: primary
             binaries: "codex codex-responses-api-proxy"
-            runs_on: blacksmith-16vcpu-windows-2025
+            runs_on: windows-latest
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: primary
@@ -53,7 +53,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundle: helpers
             binaries: "codex-windows-sandbox-setup codex-command-runner"
-            runs_on: blacksmith-16vcpu-windows-2025
+            runs_on: windows-latest
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: helpers
@@ -63,7 +63,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundle: app-server
             binaries: "codex-app-server"
-            runs_on: blacksmith-16vcpu-windows-2025
+            runs_on: windows-latest
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: app-server
@@ -145,10 +145,10 @@ jobs:
         include:
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
-            runs_on: blacksmith-16vcpu-windows-2025
+            runs_on: windows-latest
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
-            runs_on: blacksmith-16vcpu-windows-2025
+            runs_on: windows-latest
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
