@@ -166,6 +166,7 @@ async fn uses_cache_when_version_matches() -> Result<()> {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(client_version_to_whole()),
+                provider_cache_key: Some("openai".to_string()),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -213,6 +214,7 @@ async fn refreshes_when_cache_version_missing() -> Result<()> {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: None,
+                provider_cache_key: Some("openai".to_string()),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -261,6 +263,7 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(format!("{client_version}-diff")),
+                provider_cache_key: Some("openai".to_string()),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -323,6 +326,8 @@ struct ModelsCache {
     etag: Option<String>,
     #[serde(default)]
     client_version: Option<String>,
+    #[serde(default)]
+    provider_cache_key: Option<String>,
     models: Vec<ModelInfo>,
 }
 
