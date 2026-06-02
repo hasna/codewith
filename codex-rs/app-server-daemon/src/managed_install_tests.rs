@@ -4,16 +4,16 @@ use super::executable_identity_from_bytes;
 use super::parse_codex_version;
 
 #[test]
-fn parses_codex_cli_version_output() {
+fn parses_codewith_cli_version_output() {
     assert_eq!(
-        parse_codex_version("codex 1.2.3\n").expect("version"),
+        parse_codex_version("codewith 1.2.3\n").expect("version"),
         "1.2.3"
     );
 }
 
 #[test]
-fn rejects_malformed_codex_cli_version_output() {
-    assert!(parse_codex_version("codex\n").is_err());
+fn rejects_malformed_codewith_cli_version_output() {
+    assert!(parse_codex_version("codewith\n").is_err());
 }
 
 #[test]

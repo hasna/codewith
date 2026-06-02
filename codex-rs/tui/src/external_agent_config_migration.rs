@@ -824,7 +824,7 @@ mod tests {
             ExternalAgentConfigMigrationItem {
                 item_type: ExternalAgentConfigMigrationItemType::Config,
                 description:
-                    "Migrate /Users/alex/.claude/settings.json into /Users/alex/.codex/config.toml"
+                    "Migrate /Users/alex/.claude/settings.json into /Users/alex/.codewith/config.toml"
                         .to_string(),
                 cwd: None,
                 details: None,
@@ -843,7 +843,7 @@ mod tests {
                 description: format!(
                     "Migrate {} to {}",
                     sample_project_path("CLAUDE.md"),
-                    sample_project_path("AGENTS.md")
+                    sample_project_path("CODEWITH.md")
                 ),
                 cwd: Some(project_root),
                 details: None,

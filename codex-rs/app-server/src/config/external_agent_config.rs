@@ -271,7 +271,7 @@ impl ExternalAgentConfigService {
         let settings = effective_external_settings(&source_settings)?;
         let target_config = repo_root.map_or_else(
             || self.codex_home.join("config.toml"),
-            |repo_root| repo_root.join(".codex").join("config.toml"),
+            |repo_root| repo_root.join(".codewith").join("config.toml"),
         );
         if let Some(settings) = settings.as_ref() {
             let migrated = build_config_from_external(settings)?;
@@ -359,7 +359,7 @@ impl ExternalAgentConfigService {
         );
         let target_hooks = repo_root.map_or_else(
             || self.codex_home.join("hooks.json"),
-            |repo_root| repo_root.join(".codex").join("hooks.json"),
+            |repo_root| repo_root.join(".codewith").join("hooks.json"),
         );
         let hook_event_names =
             hook_migration_event_names(source_external_agent_dir.as_path(), &target_hooks)?;
@@ -442,7 +442,7 @@ impl ExternalAgentConfigService {
         let source_subagents = source_external_agent_dir.join("agents");
         let target_subagents = repo_root.map_or_else(
             || self.codex_home.join("agents"),
-            |repo_root| repo_root.join(".codex").join("agents"),
+            |repo_root| repo_root.join(".codewith").join("agents"),
         );
         let subagents_count = count_missing_subagents(&source_subagents, &target_subagents)?;
         if subagents_count > 0 {
@@ -474,8 +474,8 @@ impl ExternalAgentConfigService {
             is_non_empty_text_file(&path)?.then_some(path)
         };
         let target_agents_md = repo_root.map_or_else(
-            || self.codex_home.join("AGENTS.md"),
-            |repo_root| repo_root.join("AGENTS.md"),
+            || self.codex_home.join("CODEWITH.md"),
+            |repo_root| repo_root.join("CODEWITH.md"),
         );
         if let Some(source_agents_md) = source_agents_md
             && is_missing_or_empty_text_file(&target_agents_md)?
@@ -775,7 +775,7 @@ impl ExternalAgentConfigService {
         let (source_settings, target_config) = if let Some(repo_root) = repo_root.as_ref() {
             (
                 repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
-                repo_root.join(".codex").join("config.toml"),
+                repo_root.join(".codewith").join("config.toml"),
             )
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(());
@@ -824,7 +824,7 @@ impl ExternalAgentConfigService {
         let (source_settings, target_config) = if let Some(repo_root) = repo_root.as_ref() {
             (
                 repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
-                repo_root.join(".codex").join("config.toml"),
+                repo_root.join(".codewith").join("config.toml"),
             )
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(());
@@ -873,7 +873,7 @@ impl ExternalAgentConfigService {
         let (source_agents, target_agents) = if let Some(repo_root) = find_repo_root(cwd)? {
             (
                 repo_root.join(EXTERNAL_AGENT_DIR).join("agents"),
-                repo_root.join(".codex").join("agents"),
+                repo_root.join(".codewith").join("agents"),
             )
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(0);
@@ -892,7 +892,7 @@ impl ExternalAgentConfigService {
             if let Some(repo_root) = find_repo_root(cwd)? {
                 (
                     repo_root.join(EXTERNAL_AGENT_DIR),
-                    repo_root.join(".codex").join("hooks.json"),
+                    repo_root.join(".codewith").join("hooks.json"),
                 )
             } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
                 return Ok(());
@@ -970,13 +970,13 @@ impl ExternalAgentConfigService {
             let Some(source_agents_md) = find_repo_agents_md_source(&repo_root)? else {
                 return Ok(());
             };
-            (source_agents_md, repo_root.join("AGENTS.md"))
+            (source_agents_md, repo_root.join("CODEWITH.md"))
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(());
         } else {
             (
                 self.external_agent_home.join(EXTERNAL_AGENT_CONFIG_MD),
-                self.codex_home.join("AGENTS.md"),
+                self.codex_home.join("CODEWITH.md"),
             )
         };
         if !is_non_empty_text_file(&source_agents_md)?
@@ -986,7 +986,7 @@ impl ExternalAgentConfigService {
         }
 
         let Some(target_parent) = target_agents_md.parent() else {
-            return Err(invalid_data_error("AGENTS.md target path has no parent"));
+            return Err(invalid_data_error("CODEWITH.md target path has no parent"));
         };
         fs::create_dir_all(target_parent)?;
 
@@ -1390,7 +1390,7 @@ fn rewrite_external_agent_terms(content: &str) -> String {
     let mut rewritten = replace_case_insensitive_with_boundaries(
         content,
         &EXTERNAL_AGENT_CONFIG_MD.to_ascii_lowercase(),
-        "AGENTS.md",
+        "CODEWITH.md",
     );
     for from in [
         "claude code",
@@ -1399,7 +1399,7 @@ fn rewrite_external_agent_terms(content: &str) -> String {
         "claudecode",
         "claude",
     ] {
-        rewritten = replace_case_insensitive_with_boundaries(&rewritten, from, "Codex");
+        rewritten = replace_case_insensitive_with_boundaries(&rewritten, from, "Codewith");
     }
     rewritten
 }

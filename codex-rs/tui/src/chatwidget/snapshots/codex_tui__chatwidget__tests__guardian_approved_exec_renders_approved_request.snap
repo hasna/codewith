@@ -7,8 +7,8 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 
 
-✔ Auto-reviewer approved codex to run rm -f /tmp/guardian-approved.sqlite this
-  time
+✔ Auto-reviewer approved Codewith to run rm -f /tmp/guardian-approved.sqlite
+  this time
 
 
 › Ask Codewith to do anything

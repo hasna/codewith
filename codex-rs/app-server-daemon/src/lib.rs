@@ -245,7 +245,7 @@ fn ensure_supported_platform() -> Result<()> {
 #[cfg(not(unix))]
 fn ensure_supported_platform() -> Result<()> {
     Err(anyhow!(
-        "codex app-server daemon lifecycle is only supported on Unix platforms"
+        "codewith app-server daemon lifecycle is only supported on Unix platforms"
     ))
 }
 
@@ -337,7 +337,7 @@ impl Daemon {
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by codewith app-server daemon"
             ));
         }
 
@@ -391,7 +391,7 @@ impl Daemon {
             }
         } else if client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by codewith app-server daemon"
             ));
         } else {
             RestartIfRunningOutcome::NotRunning
@@ -420,7 +420,7 @@ impl Daemon {
 
         if client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by codewith app-server daemon"
             ));
         }
 
@@ -535,7 +535,7 @@ impl Daemon {
 
         if backend.is_none() && client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by codewith app-server daemon"
             ));
         }
 
@@ -583,7 +583,7 @@ impl Daemon {
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by codewith app-server daemon"
             ));
         }
         settings.save(&self.settings_file).await?;
@@ -660,10 +660,10 @@ impl Daemon {
 
         let managed_codex_path = self.managed_codex_bin.display();
         Err(anyhow!(
-            "managed standalone Codex install not found at {managed_codex_path}\n\n\
-             This command requires the standalone install managed by the Codex installer, because \
+            "managed standalone Codewith install not found at {managed_codex_path}\n\n\
+             This command requires the standalone install managed by the Codewith installer, because \
              the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Install it with:\n  curl -fsSL https://raw.githubusercontent.com/hasna/codewith/main/scripts/install/install.sh | sh\n\n\
              Then rerun the command you just tried."
         ))
     }
@@ -976,7 +976,7 @@ mod tests {
             status: LifecycleStatus::AlreadyRunning,
             backend: Some(BackendKind::Pid),
             pid: None,
-            managed_codex_path: "codex".into(),
+            managed_codex_path: "codewith".into(),
             managed_codex_version: Some("1.2.3".to_string()),
             socket_path: "codex.sock".into(),
             cli_version: Some("1.2.3".to_string()),
@@ -989,7 +989,7 @@ mod tests {
             serde_json::json!({
                 "status": "alreadyRunning",
                 "backend": "pid",
-                "managedCodexPath": "codex",
+                "managedCodexPath": "codewith",
                 "managedCodexVersion": "1.2.3",
                 "socketPath": "codex.sock",
                 "cliVersion": "1.2.3",
@@ -1006,7 +1006,7 @@ mod tests {
             backend: BackendKind::Pid,
             auto_update_enabled: true,
             remote_control_enabled: true,
-            managed_codex_path: "codex".into(),
+            managed_codex_path: "codewith".into(),
             managed_codex_version: Some("1.2.3".to_string()),
             socket_path: "codex.sock".into(),
             cli_version: "1.2.3".to_string(),
@@ -1021,7 +1021,7 @@ mod tests {
                 "backend": "pid",
                 "autoUpdateEnabled": true,
                 "remoteControlEnabled": true,
-                "managedCodexPath": "codex",
+                "managedCodexPath": "codewith",
                 "managedCodexVersion": "1.2.3",
                 "socketPath": "codex.sock",
                 "cliVersion": "1.2.3",
@@ -1043,7 +1043,7 @@ mod tests {
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),
             operation_lock_file: temp_dir.path().join("daemon.lock"),
             settings_file: temp_dir.path().join("settings.json"),
-            managed_codex_bin: temp_dir.path().join("missing-codex"),
+            managed_codex_bin: temp_dir.path().join("missing-codewith"),
         };
         let stderr_log = daemon.pid_file.with_extension("stderr.log");
         tokio::fs::write(&stderr_log, "unexpected argument")

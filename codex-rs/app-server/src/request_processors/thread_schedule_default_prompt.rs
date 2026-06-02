@@ -27,7 +27,7 @@ pub(super) async fn resolve_default_loop_prompt(
     cwd: &Path,
     codex_home: &Path,
 ) -> anyhow::Result<ResolvedDefaultLoopPrompt> {
-    let project_prompt = cwd.join(".codex").join("loop.md");
+    let project_prompt = cwd.join(".codewith").join("loop.md");
     let user_prompt = codex_home.join("loop.md");
     for path in [&project_prompt, &user_prompt] {
         match read_default_loop_prompt(path).await? {
@@ -36,7 +36,7 @@ pub(super) async fn resolve_default_loop_prompt(
         }
     }
     anyhow::bail!(
-        "No default loop prompt found. Create .codex/loop.md or ~/.codex/loop.md, or pass an inline prompt."
+        "No default loop prompt found. Create .codewith/loop.md or ~/.codewith/loop.md, or pass an inline prompt."
     );
 }
 
@@ -86,7 +86,7 @@ mod tests {
         fs::write(codex_home.path().join("loop.md"), "user prompt")
             .await
             .expect("write user prompt");
-        let project_codex = workspace.path().join(".codex");
+        let project_codex = workspace.path().join(".codewith");
         fs::create_dir_all(&project_codex)
             .await
             .expect("create project prompt dir");
@@ -129,7 +129,7 @@ mod tests {
             .await
             .expect_err("missing prompt should fail");
 
-        assert!(err.to_string().contains(".codex/loop.md"));
-        assert!(err.to_string().contains("~/.codex/loop.md"));
+        assert!(err.to_string().contains(".codewith/loop.md"));
+        assert!(err.to_string().contains("~/.codewith/loop.md"));
     }
 }

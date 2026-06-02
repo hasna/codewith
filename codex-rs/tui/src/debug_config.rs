@@ -574,9 +574,9 @@ mod tests {
     #[test]
     fn debug_config_output_lists_all_layers_including_disabled() {
         let system_file = if cfg!(windows) {
-            absolute_path("C:\\etc\\codex\\config.toml")
+            absolute_path("C:\\ProgramData\\Hasna\\Codewith\\config.toml")
         } else {
-            absolute_path("/etc/codex/config.toml")
+            absolute_path("/etc/codewith/config.toml")
         };
         let project_folder = if cfg!(windows) {
             absolute_path("C:\\repo\\.codex")
@@ -615,9 +615,9 @@ mod tests {
     #[test]
     fn debug_config_output_lists_requirement_sources() {
         let requirements_file = if cfg!(windows) {
-            absolute_path("C:\\ProgramData\\OpenAI\\Codex\\requirements.toml")
+            absolute_path("C:\\ProgramData\\Hasna\\Codewith\\requirements.toml")
         } else {
-            absolute_path("/etc/codex/requirements.toml")
+            absolute_path("/etc/codewith/requirements.toml")
         };
         let denied_path = if cfg!(windows) {
             absolute_path("C:\\Users\\alice\\.gitconfig")

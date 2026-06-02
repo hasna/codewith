@@ -2,11 +2,11 @@
 source: cli/src/doctor/output.rs
 expression: "render_human_report(&sample_report(), detailed_no_color_unicode_options())"
 ---
-Codex Doctor v0.0.0
+Codewith Doctor v0.0.0
 
 Notes
    ⚠ terminal     narrow terminal
-   ✗ auth         token expired - Run `codex login`.
+   ✗ auth         token expired - Run `codewith login`.
 ─────────────────────────────────────────────────────────────
 
 Environment
@@ -29,7 +29,7 @@ Environment
   ✓ state        state paths inspectable
 
 Configuration
-  ✗ auth         token expired — Run `codex login`.
+  ✗ auth         token expired — Run `codewith login`.
       OPENAI_API_KEY           present
 
 Updates

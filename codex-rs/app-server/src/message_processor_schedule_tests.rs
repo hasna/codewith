@@ -795,7 +795,7 @@ fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Re
         let mut harness = ScheduleHarness::new().await?;
         let thread = harness.start_materialized_thread().await;
         let thread_id = thread.thread.id.clone();
-        let project_codex = harness.workspace.path().join(".codex");
+        let project_codex = harness.workspace.path().join(".codewith");
         tokio::fs::create_dir_all(&project_codex).await?;
         tokio::fs::write(project_codex.join("loop.md"), "Project default prompt v1").await?;
 

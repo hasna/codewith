@@ -21,12 +21,14 @@ use crate::protocol::WritableRoot;
 
 const PROTECTED_METADATA_GIT_PATH_NAME: &str = ".git";
 const PROTECTED_METADATA_AGENTS_PATH_NAME: &str = ".agents";
+const PROTECTED_METADATA_CODEWITH_PATH_NAME: &str = ".codewith";
 const PROTECTED_METADATA_CODEX_PATH_NAME: &str = ".codex";
 
 /// Top-level workspace metadata paths that stay protected under writable roots.
 pub const PROTECTED_METADATA_PATH_NAMES: &[&str] = &[
     PROTECTED_METADATA_GIT_PATH_NAME,
     PROTECTED_METADATA_AGENTS_PATH_NAME,
+    PROTECTED_METADATA_CODEWITH_PATH_NAME,
     PROTECTED_METADATA_CODEX_PATH_NAME,
 ];
 
@@ -39,6 +41,7 @@ pub fn is_protected_metadata_name(name: &OsStr) -> bool {
 
 pub fn is_protected_metadata_directory_name(name: &OsStr) -> bool {
     name == OsStr::new(PROTECTED_METADATA_AGENTS_PATH_NAME)
+        || name == OsStr::new(PROTECTED_METADATA_CODEWITH_PATH_NAME)
         || name == OsStr::new(PROTECTED_METADATA_CODEX_PATH_NAME)
 }
 
@@ -562,6 +565,10 @@ impl FileSystemSandboxPolicy {
 
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".git");
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".agents");
+        append_default_read_only_project_root_subpath_if_no_explicit_rule(
+            &mut entries,
+            ".codewith",
+        );
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".codex");
         for writable_root in writable_roots {
             for protected_path in default_read_only_subpaths_for_writable_root(
@@ -1566,8 +1573,15 @@ pub(crate) fn default_read_only_subpaths_for_writable_root(
         subpaths.push(top_level_agents);
     }
 
-    // Keep top-level project metadata under .codex read-only to the agent by
-    // default. For the workspace root itself, protect it even before the
+    // Keep top-level Codewith project metadata read-only to the agent by
+    // default. Retain .codex as a legacy protected path while older projects
+    // migrate.
+    let top_level_codewith = writable_root.join(PROTECTED_METADATA_CODEWITH_PATH_NAME);
+    if protect_missing_dot_codex || top_level_codewith.as_path().is_dir() {
+        subpaths.push(top_level_codewith);
+    }
+
+    // For the workspace root itself, protect legacy .codex even before the
     // directory exists so first-time creation still goes through the
     // protected-path approval flow.
     let top_level_codex = writable_root.join(PROTECTED_METADATA_CODEX_PATH_NAME);
@@ -1921,6 +1935,7 @@ mod tests {
             cwd.path().canonicalize().expect("canonicalize cwd"),
         )
         .expect("absolute canonical root");
+        let expected_dot_codewith = expected_root.join(".codewith");
         let expected_dot_codex = expected_root.join(".codex");
 
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -1933,6 +1948,11 @@ mod tests {
         let writable_roots = policy.get_writable_roots_with_cwd(cwd.path());
         assert_eq!(writable_roots.len(), 1);
         assert_eq!(writable_roots[0].root, expected_root);
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_dot_codewith)
+        );
         assert!(
             writable_roots[0]
                 .read_only_subpaths
@@ -1978,6 +1998,12 @@ mod tests {
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Special {
+                        value: FileSystemSpecialPath::project_roots(Some(".codewith".into())),
+                    },
+                    access: FileSystemAccessMode::Read,
+                },
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Special {
                         value: FileSystemSpecialPath::project_roots(Some(".codex".into())),
                     },
                     access: FileSystemAccessMode::Read,
@@ -2015,12 +2041,19 @@ mod tests {
             cwd.path().canonicalize().expect("canonicalize cwd"),
         )
         .expect("absolute canonical root");
+        let explicit_dot_codewith = expected_root.join(".codewith");
         let explicit_dot_codex = expected_root.join(".codex");
 
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: explicit_dot_codewith.clone(),
                 },
                 access: FileSystemAccessMode::Write,
             },
@@ -2040,8 +2073,20 @@ mod tests {
         assert!(
             !workspace_root
                 .protected_metadata_names
+                .contains(&".codewith".to_string()),
+            "explicit .codewith rule should remove the metadata-name protection"
+        );
+        assert!(
+            !workspace_root
+                .protected_metadata_names
                 .contains(&".codex".to_string()),
             "explicit .codex rule should remove the metadata-name protection"
+        );
+        assert!(
+            !workspace_root
+                .read_only_subpaths
+                .contains(&explicit_dot_codewith),
+            "explicit .codewith rule should win over the default protected carveout"
         );
         assert!(
             !workspace_root
@@ -2049,6 +2094,10 @@ mod tests {
                 .contains(&explicit_dot_codex),
             "explicit .codex rule should win over the default protected carveout"
         );
+        assert!(policy.can_write_path_with_cwd(
+            explicit_dot_codewith.join("config.toml").as_path(),
+            cwd.path()
+        ));
         assert!(
             policy.can_write_path_with_cwd(
                 explicit_dot_codex.join("config.toml").as_path(),
@@ -2062,6 +2111,7 @@ mod tests {
         let cwd = TempDir::new().expect("tempdir");
         let dot_git_config = cwd.path().join(".git").join("config");
         let dot_agents_config = cwd.path().join(".agents").join("config");
+        let dot_codewith_config = cwd.path().join(".codewith").join("config.toml");
         let dot_codex_config = cwd.path().join(".codex").join("config.toml");
         let root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
         let file_system_policy =
@@ -2072,6 +2122,7 @@ mod tests {
 
         assert!(!file_system_policy.can_write_path_with_cwd(&dot_git_config, cwd.path()));
         assert!(!file_system_policy.can_write_path_with_cwd(&dot_agents_config, cwd.path()));
+        assert!(!file_system_policy.can_write_path_with_cwd(&dot_codewith_config, cwd.path()));
         assert!(!file_system_policy.can_write_path_with_cwd(&dot_codex_config, cwd.path()));
 
         let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd.path());
@@ -2081,11 +2132,13 @@ mod tests {
             vec![
                 ".git".to_string(),
                 ".agents".to_string(),
+                ".codewith".to_string(),
                 ".codex".to_string(),
             ]
         );
         assert!(!writable_roots[0].is_path_writable(&dot_git_config));
         assert!(!writable_roots[0].is_path_writable(&dot_agents_config));
+        assert!(!writable_roots[0].is_path_writable(&dot_codewith_config));
         assert!(!writable_roots[0].is_path_writable(&dot_codex_config));
     }
 
