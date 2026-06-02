@@ -944,6 +944,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_preserves_large_strings() {
+        let service = CodeModeService::new();
+
+        let response = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"text("x".repeat(50000));"#.to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            },
+        )
+        .await;
+
+        assert_eq!(
+            response,
+            RuntimeResponse::Result {
+                cell_id: cell_id("1"),
+                content_items: vec![FunctionCallOutputContentItem::InputText {
+                    text: "x".repeat(50_000),
+                }],
+                error_text: None,
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn stored_values_are_shared_between_cells_but_not_sessions() {
         let first_session = CodeModeService::new();
         let second_session = CodeModeService::new();

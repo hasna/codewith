@@ -18,13 +18,13 @@ pub(super) fn serialize_output_text(
         || value.is_big_int()
         || value.is_string()
     {
-        return Ok(value.to_rust_string_lossy(scope));
+        return Ok(v8_value_to_rust_string_lossy(scope, value));
     }
 
     let tc = std::pin::pin!(v8::TryCatch::new(scope));
     let mut tc = tc.init();
     if let Some(stringified) = v8::json::stringify(&tc, value) {
-        return Ok(stringified.to_rust_string_lossy(&tc));
+        return Ok(v8_string_to_rust_string_lossy(&mut tc, stringified));
     }
     if tc.has_caught() {
         return Err(tc
@@ -32,7 +32,7 @@ pub(super) fn serialize_output_text(
             .map(|exception| value_to_error_text(&mut tc, exception))
             .unwrap_or_else(|| "unknown code mode exception".to_string()));
     }
-    Ok(value.to_rust_string_lossy(&tc))
+    Ok(v8_value_to_rust_string_lossy(&mut tc, value))
 }
 
 pub(super) fn normalize_output_image(
@@ -177,6 +177,30 @@ fn parse_image_detail_value<'s>(
     }
 }
 
+fn v8_value_to_rust_string_lossy(
+    scope: &mut v8::PinScope<'_, '_>,
+    value: v8::Local<'_, v8::Value>,
+) -> String {
+    value.to_string(scope).map_or_else(String::new, |value| {
+        v8_string_to_rust_string_lossy(scope, value)
+    })
+}
+
+fn v8_string_to_rust_string_lossy(
+    scope: &mut v8::PinScope<'_, '_>,
+    value: v8::Local<'_, v8::String>,
+) -> String {
+    let mut buffer = vec![0_u8; value.utf8_length(scope)];
+    let written = value.write_utf8_v2(
+        scope,
+        &mut buffer,
+        v8::WriteFlags::kReplaceInvalidUtf8,
+        None,
+    );
+    buffer.truncate(written);
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
 pub(super) fn v8_value_to_json(
     scope: &mut v8::PinScope<'_, '_>,
     value: v8::Local<'_, v8::Value>,
@@ -192,7 +216,7 @@ pub(super) fn v8_value_to_json(
         }
         return Ok(None);
     };
-    serde_json::from_str(&stringified.to_rust_string_lossy(&tc))
+    serde_json::from_str(&v8_string_to_rust_string_lossy(&mut tc, stringified))
         .map(Some)
         .map_err(|err| format!("failed to serialize JavaScript value: {err}"))
 }
@@ -216,9 +240,9 @@ pub(super) fn value_to_error_text(
         && let Some(stack) = object.get(scope, key.into())
         && stack.is_string()
     {
-        return stack.to_rust_string_lossy(scope);
+        return v8_value_to_rust_string_lossy(scope, stack);
     }
-    value.to_rust_string_lossy(scope)
+    v8_value_to_rust_string_lossy(scope, value)
 }
 
 pub(super) fn throw_type_error(scope: &mut v8::PinScope<'_, '_>, message: &str) {
