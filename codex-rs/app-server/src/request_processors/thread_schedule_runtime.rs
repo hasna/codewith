@@ -425,7 +425,7 @@ fn scheduled_loop_tick_prompt(prompt: &str) -> String {
         "\
 You are running one scheduled /loop tick.
 
-Execute only the loop prompt below for this single tick. Do not wait, sleep, start a timer, or schedule the next tick; Codex already manages the loop cadence. If the loop prompt mentions a cadence like \"every minute\", treat that as the cadence that triggered this tick, not as an instruction to implement the cadence yourself.
+Execute only the loop prompt below for this single tick. Produce exactly one response for this tick, then stop. Do not wait, sleep, start a timer, or schedule the next tick; Codex already manages the loop cadence. If the loop prompt mentions a cadence like \"every minute\", treat that as the cadence that triggered this tick, not as an instruction to implement the cadence yourself.
 
 Loop prompt:
 {prompt}"
@@ -757,6 +757,7 @@ mod tests {
         let prompt = scheduled_loop_tick_prompt("ask me a funny question every minute");
 
         assert!(prompt.contains("one scheduled /loop tick"));
+        assert!(prompt.contains("Produce exactly one response for this tick, then stop."));
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));

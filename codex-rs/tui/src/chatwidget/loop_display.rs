@@ -16,6 +16,16 @@ impl ChatWidget {
         self.add_plain_history_lines(loop_summary_lines(&schedules));
     }
 
+    pub(crate) fn show_loop_scheduled(&mut self, schedule: ThreadSchedule) {
+        let schedule_id = schedule.schedule_id.clone();
+        self.announced_loop_schedule_ids.insert(schedule_id.clone());
+        self.show_loop_summary(vec![schedule]);
+        self.add_info_message(
+            "Loop scheduled".to_string(),
+            Some(loop_scheduled_action_hint(&schedule_id)),
+        );
+    }
+
     pub(crate) fn show_loop_manager(
         &mut self,
         thread_id: ThreadId,
@@ -63,10 +73,21 @@ impl ChatWidget {
                 "Loop expired".to_string(),
                 Some(format!("{} expired.", loop_schedule_summary(&schedule))),
             );
+        } else if should_announce_created_schedule(&schedule)
+            && self
+                .announced_loop_schedule_ids
+                .insert(schedule.schedule_id.clone())
+        {
+            self.show_loop_summary(vec![schedule.clone()]);
+            self.add_info_message(
+                "Loop scheduled".to_string(),
+                Some(loop_scheduled_action_hint(&schedule.schedule_id)),
+            );
         }
     }
 
     pub(crate) fn on_thread_schedule_deleted(&mut self, thread_id: &str, schedule_id: &str) {
+        self.announced_loop_schedule_ids.remove(schedule_id);
         if self
             .thread_id
             .is_some_and(|active_thread_id| active_thread_id.to_string() == thread_id)
@@ -93,6 +114,19 @@ impl ChatWidget {
             | ThreadScheduleRunStatus::Completed => {}
         }
     }
+}
+
+fn should_announce_created_schedule(schedule: &ThreadSchedule) -> bool {
+    matches!(schedule.status, ThreadScheduleStatus::Active)
+        && schedule.created_at == schedule.updated_at
+        && schedule.last_run_at.is_none()
+        && schedule.lease_expires_at.is_none()
+}
+
+fn loop_scheduled_action_hint(schedule_id: &str) -> String {
+    format!(
+        "Use /loop pause {schedule_id}, /loop run-now {schedule_id}, or /loop delete {schedule_id}."
+    )
 }
 
 fn loop_manager_params(

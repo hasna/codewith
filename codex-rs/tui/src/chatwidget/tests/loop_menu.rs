@@ -66,3 +66,37 @@ async fn loop_actions_popup_snapshot() {
         render_bottom_popup(&chat, /*width*/ 100)
     );
 }
+
+#[tokio::test]
+async fn schedule_created_notification_announces_loop_once() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let mut schedule = test_schedule("sch_active", ThreadScheduleStatus::Active);
+    schedule.thread_id = thread_id.to_string();
+    schedule.next_run_at = Some(1_700_000_060);
+    schedule.updated_at = schedule.created_at;
+
+    chat.on_thread_schedule_updated(schedule.clone());
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Loop scheduled"),
+        "expected scheduled notification acknowledgement, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("/loop pause sch_active"),
+        "expected loop action hint, got: {rendered}"
+    );
+
+    chat.on_thread_schedule_updated(schedule);
+
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "follow-up updates for the same schedule should not duplicate the acknowledgement"
+    );
+}

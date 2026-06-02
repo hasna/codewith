@@ -852,6 +852,7 @@ fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Re
         assert!(
             response_request_bodies.iter().any(|body| body
                 .contains("You are running one scheduled /loop tick")
+                && body.contains("Produce exactly one response for this tick, then stop.")
                 && body.contains("Do not wait, sleep, start a timer")),
             "scheduled prompt should tell the model this is one loop tick: {response_request_bodies:#?}"
         );
@@ -938,6 +939,7 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
         assert!(
             response_request_bodies.iter().any(|body| body
                 .contains("You are running one scheduled /loop tick")
+                && body.contains("Produce exactly one response for this tick, then stop.")
                 && body.contains("summarize the latest test status")),
             "scheduled prompt should be wrapped as one loop tick: {response_request_bodies:#?}"
         );

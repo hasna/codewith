@@ -114,14 +114,7 @@ impl App {
 
         match result {
             Ok(response) => {
-                let schedule_id = response.schedule.schedule_id.clone();
-                self.chat_widget.show_loop_summary(vec![response.schedule]);
-                self.chat_widget.add_info_message(
-                    "Loop scheduled".to_string(),
-                    Some(format!(
-                        "Use /loop pause {schedule_id}, /loop run-now {schedule_id}, or /loop delete {schedule_id}."
-                    )),
-                );
+                self.chat_widget.show_loop_scheduled(response.schedule);
             }
             Err(err) => self
                 .chat_widget

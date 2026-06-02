@@ -1061,6 +1061,29 @@ mod tests {
             after_complete.last_run_at
         );
         assert_eq!(0, after_complete.failure_count);
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_due_thread_schedule(
+                    next_run_at - chrono::Duration::seconds(1),
+                    "lease-too-early",
+                    Duration::from_secs(300),
+                )
+                .await
+                .expect("claim should not fail")
+                .is_none(),
+            "completed schedule should not be claimed before its next_run_at"
+        );
+        let next_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(next_run_at, "lease-next", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim at next_run_at");
+        assert_eq!(
+            completed_schedule.schedule_id,
+            next_claim.schedule.schedule_id
+        );
 
         let failed_schedule =
             create_interval_schedule(&runtime, thread_id, "failed task", Some(now)).await;
