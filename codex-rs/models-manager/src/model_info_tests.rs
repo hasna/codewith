@@ -44,10 +44,12 @@ fn bundled_catalog_instructions_do_not_claim_gpt_5_base() {
 
     for model in response.models {
         assert!(!model.base_instructions.contains("based on GPT-5"));
+        assert!(!model.base_instructions.contains("You are Codex"));
         if let Some(messages) = model.model_messages
             && let Some(template) = messages.instructions_template
         {
             assert!(!template.contains("based on GPT-5"));
+            assert!(!template.contains("You are Codex"));
         }
     }
 }
