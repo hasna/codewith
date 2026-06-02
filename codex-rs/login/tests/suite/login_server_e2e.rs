@@ -343,8 +343,8 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
     assert!(resp.status().is_success());
     let body = resp.text().await?;
     assert!(
-        body.contains("You do not have access to Codex"),
-        "error body should clearly explain the Codex access denial"
+        body.contains("You do not have access to Codewith"),
+        "error body should clearly explain the Codewith access denial"
     );
     assert!(
         body.contains("Contact your workspace administrator"),
@@ -419,7 +419,7 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         "generic oauth denial should preserve the oauth error details"
     );
     assert!(
-        body.contains("Return to Codex to retry"),
+        body.contains("Return to Codewith to retry"),
         "generic oauth denial should keep the generic help text"
     );
     assert!(
@@ -431,11 +431,11 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         "generic oauth denial should include the oauth error description"
     );
     assert!(
-        !body.contains("You do not have access to Codex"),
+        !body.contains("You do not have access to Codewith"),
         "generic oauth denial should not show the entitlement-specific title"
     );
     assert!(
-        !body.contains("get access to Codex"),
+        !body.contains("get access to Codewith"),
         "generic oauth denial should not show the entitlement-specific admin guidance"
     );
 

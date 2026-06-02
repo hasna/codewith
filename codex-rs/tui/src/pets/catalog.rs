@@ -1,4 +1,4 @@
-//! Built-in pet catalog ported from the Codex App avatar catalog.
+//! Built-in pet catalog ported from the Codewith avatar catalog.
 
 pub(super) const DEFAULT_FRAME_WIDTH: u32 = 192;
 pub(super) const DEFAULT_FRAME_HEIGHT: u32 = 208;

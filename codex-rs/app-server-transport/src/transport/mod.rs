@@ -7,8 +7,8 @@ use crate::outgoing_message::QueuedOutgoingMessage;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_core::config::find_codex_home;
+use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
-use codex_login::IAPPCODEX_AUTH_PROFILE_ENV_VAR;
 use codex_login::validate_auth_profile_name;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::io::Error;
@@ -85,7 +85,7 @@ pub fn app_server_startup_lock_path_for_auth_profile(
 }
 
 pub fn selected_auth_profile_from_env() -> std::io::Result<Option<String>> {
-    for env_var in [IAPPCODEX_AUTH_PROFILE_ENV_VAR, CODEX_AUTH_PROFILE_ENV_VAR] {
+    for env_var in [CODEWITH_AUTH_PROFILE_ENV_VAR, CODEX_AUTH_PROFILE_ENV_VAR] {
         let Ok(raw_profile) = std::env::var(env_var) else {
             continue;
         };

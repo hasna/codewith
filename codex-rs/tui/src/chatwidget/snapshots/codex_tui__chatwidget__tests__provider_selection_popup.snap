@@ -5,7 +5,7 @@ expression: popup
   Select Provider
   Switch chat provider and model.
 
-› 1. OpenAI (current)  Uses Codex or OpenAI login
+› 1. OpenAI (current)  Uses Codewith or OpenAI login
   2. OpenRouter        openrouter
 
   Press enter to confirm or esc to go back

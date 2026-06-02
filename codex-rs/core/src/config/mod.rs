@@ -70,8 +70,8 @@ use codex_features::NetworkProxyConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
+use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
-use codex_login::IAPPCODEX_AUTH_PROFILE_ENV_VAR;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
 use codex_memories_read::memory_root;
@@ -282,8 +282,8 @@ fn resolve_selected_auth_profile(
         return validate_selected_auth_profile(profile, "--auth-profile").map(Some);
     }
 
-    if let Some(profile) = non_empty_env(IAPPCODEX_AUTH_PROFILE_ENV_VAR) {
-        return validate_selected_auth_profile(profile, IAPPCODEX_AUTH_PROFILE_ENV_VAR).map(Some);
+    if let Some(profile) = non_empty_env(CODEWITH_AUTH_PROFILE_ENV_VAR) {
+        return validate_selected_auth_profile(profile, CODEWITH_AUTH_PROFILE_ENV_VAR).map(Some);
     }
 
     non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR)
@@ -736,7 +736,7 @@ pub struct Config {
     /// Defaults to `false`.
     pub show_raw_agent_reasoning: bool,
 
-    /// User-provided instructions from AGENTS.md.
+    /// User-provided instructions from project instruction files.
     pub user_instructions: Option<String>,
 
     /// Base instructions override.
@@ -776,7 +776,7 @@ pub struct Config {
     /// appends one extra argument containing a JSON payload describing the
     /// event.
     ///
-    /// Example `~/.codex/config.toml` snippet:
+    /// Example `~/.codewith/config.toml` snippet:
     ///
     /// ```toml
     /// notify = ["notify-send", "Codex"]
@@ -872,7 +872,7 @@ pub struct Config {
     pub workspace_roots_explicit: bool,
 
     /// Preferred store for CLI auth credentials.
-    /// file (default): Use a file in the Codex home directory.
+    /// file (default): Use a file in the Codewith home directory.
     /// keyring: Use an OS-specific keyring service.
     /// auto: Use the OS-specific keyring service if available, otherwise use a file.
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -883,15 +883,15 @@ pub struct Config {
     /// Runtime auth-profile failover behavior for exhausted rate-limit windows.
     pub auth_profile_auto_switch: AuthProfileAutoSwitchConfig,
 
-    /// Definition for MCP servers that Codex can reach out to for tool calls.
+    /// Definition for MCP servers that Codewith can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
-    ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
-    ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
-    /// file: CODEX_HOME/.credentials.json
-    ///       This file will be readable to Codex and other applications running as the same user.
+    ///          Credentials stored in the keyring will only be readable by Codewith unless the user explicitly grants access via OS-level keyring access.
+    ///          https://github.com/hasna/codewith/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
+    /// file: CODEWITH_HOME/.credentials.json
+    ///       This file will be readable to Codewith and other applications running as the same user.
     /// auto (default): keyring if available, otherwise file.
     pub mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode,
 
@@ -910,7 +910,7 @@ pub struct Config {
     /// Combined provider map (defaults plus user-defined providers).
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
-    /// Maximum number of bytes to include from an AGENTS.md project doc file.
+    /// Maximum number of bytes to include from a project instruction file.
     pub project_doc_max_bytes: usize,
 
     /// Additional filenames to try when looking for project-level docs.
@@ -936,17 +936,17 @@ pub struct Config {
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
 
-    /// Directory containing all Codex state (defaults to `~/.codex` but can be
+    /// Directory containing all Codewith state (defaults to `~/.codewith` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
 
-    /// Directory where Codex stores the SQLite state DB.
+    /// Directory where Codewith stores the SQLite state DB.
     pub sqlite_home: PathBuf,
 
-    /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
+    /// Directory where Codewith writes log files (defaults to the Codewith home directory's `log` folder).
     pub log_dir: PathBuf,
 
-    /// Directory where Codex writes effective session config lock files.
+    /// Directory where Codewith writes effective session config lock files.
     pub config_lock_export_dir: Option<AbsolutePathBuf>,
 
     /// Whether config lock replay ignores Codex version drift between the
@@ -960,7 +960,7 @@ pub struct Config {
     /// Effective config lock used for strict replay validation.
     pub config_lock_toml: Option<Arc<ConfigLockfileToml>>,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+    /// Settings that govern if and what will be written to `~/.codewith/history.jsonl`.
     pub history: History,
 
     /// When true, session is not persisted on disk. Default to `false`
@@ -1103,8 +1103,8 @@ pub struct Config {
     /// Collection of various notices we show the user
     pub notices: Notice,
 
-    /// When `true`, checks for Codex updates on startup and surfaces update prompts.
-    /// iapp-codex is updated through explicit upstream merges and internal releases,
+    /// When `true`, checks for Codewith updates on startup and surfaces update prompts.
+    /// Codewith is updated through explicit upstream merges and releases,
     /// so this defaults to `false`.
     pub check_for_update_on_startup: bool,
 
@@ -1113,11 +1113,11 @@ pub struct Config {
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
 
-    /// When `false`, disables analytics across Codex product surfaces in this machine.
+    /// When `false`, disables analytics across Codewith product surfaces in this machine.
     /// Voluntarily left as Optional because the default value might depend on the client.
     pub analytics_enabled: Option<bool>,
 
-    /// When `false`, disables feedback collection across Codex product surfaces.
+    /// When `false`, disables feedback collection across Codewith product surfaces.
     /// Defaults to `true`.
     pub feedback_enabled: bool,
 
@@ -1612,7 +1612,7 @@ impl Config {
     }
     /// This is a secondary way of creating [Config], which is appropriate when
     /// the harness is meant to be used with a specific configuration that
-    /// ignores user settings. For example, the `codex exec` subcommand is
+    /// ignores user settings. For example, the `codewith exec` subcommand is
     /// designed to use [AskForApproval::Never] exclusively.
     ///
     /// Further, [ConfigOverrides] contains some options that are not supported
@@ -2006,7 +2006,7 @@ pub(crate) fn set_project_trust_level_inner(
     Ok(())
 }
 
-/// Patch `CODEX_HOME/config.toml` project state to set trust level.
+/// Patch the Codewith home `config.toml` project state to set trust level.
 /// Use with caution.
 pub fn set_project_trust_level(
     codex_home: &Path,
@@ -3979,13 +3979,13 @@ fn normalize_guardian_policy_config(value: Option<&str>) -> Option<String> {
     })
 }
 
-/// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// Returns the path to the Codewith configuration directory, which can be
+/// specified by the `CODEWITH_HOME` environment variable. If not set, defaults
+/// to `~/.codewith`.
 ///
-/// - If `CODEX_HOME` is set, the value must exist and be a directory. The
+/// - If `CODEWITH_HOME` is set, the value must exist and be a directory. The
 ///   value will be canonicalized and this function will Err otherwise.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
+/// - If `CODEWITH_HOME` is not set, this function does not verify that the
 ///   directory exists.
 pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     codex_utils_home_dir::find_codex_home()

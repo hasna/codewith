@@ -80,7 +80,9 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Select Personality".bold()));
-        header.push(Line::from("Choose a communication style for Codex.".dim()));
+        header.push(Line::from(
+            "Choose a communication style for Codewith.".dim(),
+        ));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
@@ -116,7 +118,7 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some("Settings".to_string()),
-            subtitle: Some("Configure settings for Codex.".to_string()),
+            subtitle: Some("Configure settings for Codewith.".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -132,11 +134,11 @@ impl ChatWidget {
                         .to_string(),
                 ),
                 selected_description: Some(
-                    "Managed by iapp-codex and cannot be enabled here.".to_string(),
+                    "Managed by Codewith and cannot be enabled here.".to_string(),
                 ),
                 is_current: true,
                 is_disabled: true,
-                disabled_reason: Some("Managed by iapp-codex.".to_string()),
+                disabled_reason: Some("Managed by Codewith.".to_string()),
                 toggle_placeholder: Some("[ ] "),
                 ..Default::default()
             },

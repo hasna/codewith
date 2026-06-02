@@ -12,17 +12,17 @@ resolve_script_dir() {
   cd -P "$(dirname "${source}")" >/dev/null 2>&1 && pwd
 }
 
-find_iapp_codex_bin() {
+find_codewith_bin() {
   local script_dir="$1"
 
-  if [[ -n "${IAPPCODEX_BIN:-}" ]]; then
-    printf '%s\n' "${IAPPCODEX_BIN}"
+  if [[ -n "${CODEWITH_BIN:-}" ]]; then
+    printf '%s\n' "${CODEWITH_BIN}"
     return 0
   fi
 
   local candidate
   for candidate in \
-    "${script_dir}/iapp-codex-bin" \
+    "${script_dir}/codewith-bin" \
     "${script_dir}/../codex-rs/target/debug/codex" \
     "${script_dir}/../codex-rs/target/release/codex"; do
     if [[ -x "${candidate}" ]]; then
@@ -38,19 +38,22 @@ main() {
   local script_dir
   script_dir="$(resolve_script_dir)"
 
-  local codex_bin
-  if ! codex_bin="$(find_iapp_codex_bin "${script_dir}")"; then
-    printf 'iapp-codex: unable to find the Codex binary. Set IAPPCODEX_BIN to its path.\n' >&2
+  local codewith_bin
+  if ! codewith_bin="$(find_codewith_bin "${script_dir}")"; then
+    printf 'codewith: unable to find the Codewith binary. Set CODEWITH_BIN to its path.\n' >&2
     return 127
   fi
 
-  if [[ -z "${CODEX_HOME:-}" ]]; then
-    export CODEX_HOME="${IAPPCODEX_HOME:-${HOME}/.hasna/internalapps/codex}"
+  if [[ -n "${CODEWITH_HOME:-}" ]]; then
+    export CODEX_HOME="${CODEWITH_HOME}"
+  else
+    export CODEX_HOME="${CODEX_HOME:-${HOME}/.codewith}"
+    export CODEWITH_HOME="${CODEX_HOME}"
   fi
   mkdir -p -m 700 "${CODEX_HOME}"
   chmod go-rwx "${CODEX_HOME}" 2>/dev/null || true
 
-  exec "${codex_bin}" "$@"
+  exec "${codewith_bin}" "$@"
 }
 
 main "$@"

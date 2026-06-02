@@ -1,4 +1,4 @@
-//! Captures how this Codex process was launched.
+//! Captures how this Codewith process was launched.
 //!
 //! Runtime diagnostics answer provenance questions that are hard to infer from
 //! user reports: which binary is running, which install channel it resembles,

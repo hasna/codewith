@@ -1,10 +1,10 @@
 # Rust/codex-rs
 
-## iapp-codex Internal Fork
+## Codewith Fork
 
-- This repo is the internal `hasnaxyz/iapp-codex` fork. It may intentionally diverge from upstream OpenAI Codex while still regularly merging upstream `main`.
-- Do not re-enable automatic update checks, update notifications, or update prompts. iapp-codex updates through explicit upstream merges and internal `@hasnaxyz/iappcodex` releases.
-- When merging upstream, preserve internal app behavior including the `@hasnaxyz/iappcodex` package, auth profiles, `/profile`, auth-profile auto-switching, and `/config`.
+- This repo carries the Codewith product fork. It may intentionally diverge from the upstream Codex project while still regularly merging upstream `main`.
+- Do not re-enable automatic update checks, update notifications, or update prompts. Codewith updates through explicit upstream merges and `@hasna/codewith` releases.
+- When merging upstream, preserve Codewith behavior including the `@hasna/codewith` package, auth profiles, `/profile`, auth-profile auto-switching, `/config`, `.codewith`, and `CODEWITH.md`.
 
 In the codex-rs folder where the rust code lives:
 

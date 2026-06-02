@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @hasnaxyz/iappcodex npm module."""
+"""Stage and optionally package the @hasna/codewith npm module."""
 
 import argparse
 import json
@@ -15,52 +15,52 @@ CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
-CODEX_NPM_NAME = "@hasnaxyz/iappcodex"
+CODEX_NPM_NAME = "@hasna/codewith"
 CODEX_PUBLISH_CONFIG = {
     "registry": "https://registry.npmjs.org",
-    "access": "restricted",
+    "access": "public",
 }
 CODEX_PACKAGE_COMPONENT = "codex-package"
 
 # `npm_name` is the platform package consumed by `bin/codex.js`.
 CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
-        "npm_name": "@hasnaxyz/iappcodex-linux-x64",
+        "npm_name": "@hasna/codewith-linux-x64",
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-musl",
         "os": "linux",
         "cpu": "x64",
     },
     "codex-linux-arm64": {
-        "npm_name": "@hasnaxyz/iappcodex-linux-arm64",
+        "npm_name": "@hasna/codewith-linux-arm64",
         "npm_tag": "linux-arm64",
         "target_triple": "aarch64-unknown-linux-musl",
         "os": "linux",
         "cpu": "arm64",
     },
     "codex-darwin-x64": {
-        "npm_name": "@hasnaxyz/iappcodex-darwin-x64",
+        "npm_name": "@hasna/codewith-darwin-x64",
         "npm_tag": "darwin-x64",
         "target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "x64",
     },
     "codex-darwin-arm64": {
-        "npm_name": "@hasnaxyz/iappcodex-darwin-arm64",
+        "npm_name": "@hasna/codewith-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
     "codex-win32-x64": {
-        "npm_name": "@hasnaxyz/iappcodex-win32-x64",
+        "npm_name": "@hasna/codewith-win32-x64",
         "npm_tag": "win32-x64",
         "target_triple": "x86_64-pc-windows-msvc",
         "os": "win32",
         "cpu": "x64",
     },
     "codex-win32-arm64": {
-        "npm_name": "@hasnaxyz/iappcodex-win32-arm64",
+        "npm_name": "@hasna/codewith-win32-arm64",
         "npm_tag": "win32-arm64",
         "target_triple": "aarch64-pc-windows-msvc",
         "os": "win32",
@@ -69,7 +69,15 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
 }
 
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
-    "codex": ["codex", "codex-linux-arm64"],
+    "codex": [
+        "codex",
+        "codex-linux-x64",
+        "codex-linux-arm64",
+        "codex-darwin-x64",
+        "codex-darwin-arm64",
+        "codex-win32-x64",
+        "codex-win32-arm64",
+    ],
 }
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
@@ -92,7 +100,7 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build or stage the Codex CLI npm package.")
+    parser = argparse.ArgumentParser(description="Build or stage the Codewith npm package.")
     parser.add_argument(
         "--package",
         choices=PACKAGE_CHOICES,

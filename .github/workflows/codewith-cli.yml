@@ -1,4 +1,4 @@
-name: iapp-codex-cli
+name: codewith-cli
 
 on:
   push:
@@ -6,19 +6,19 @@ on:
       - "feat/loop-scheduled-tasks"
     paths:
       - "codex-rs/**"
-      - ".github/workflows/iapp-codex-cli.yml"
-      - "scripts/iapp-codex"
+      - ".github/workflows/codewith-cli.yml"
+      - "scripts/codewith"
       - "justfile"
   pull_request:
     paths:
       - "codex-rs/**"
-      - ".github/workflows/iapp-codex-cli.yml"
-      - "scripts/iapp-codex"
+      - ".github/workflows/codewith-cli.yml"
+      - "scripts/codewith"
       - "justfile"
   workflow_dispatch:
     inputs:
       profile:
-        description: "Cargo profile to build for the downloadable iapp-codex artifact."
+        description: "Cargo profile to build for the downloadable Codewith artifact."
         type: choice
         required: true
         default: release
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   build-linux:
-    name: Build iapp-codex Linux CLI
+    name: Build Codewith Linux CLI
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
@@ -67,7 +67,7 @@ jobs:
           fi
           cargo "${cargo_args[@]}"
 
-      - name: Stage iapp-codex artifact
+      - name: Stage Codewith artifact
         id: stage
         shell: bash
         run: |
@@ -78,19 +78,19 @@ jobs:
             profile_dir=release
           fi
 
-          stage_dir="dist/iapp-codex-linux-x86_64-${BUILD_PROFILE}"
-          archive="dist/iapp-codex-linux-x86_64-${BUILD_PROFILE}.tar.gz"
+          stage_dir="dist/codewith-linux-x86_64-${BUILD_PROFILE}"
+          archive="dist/codewith-linux-x86_64-${BUILD_PROFILE}.tar.gz"
           rm -rf "${stage_dir}" "${archive}"
           mkdir -p "${stage_dir}"
-          install -m 0755 "../scripts/iapp-codex" "${stage_dir}/iapp-codex"
-          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/iapp-codex-bin"
-          "${stage_dir}/iapp-codex" --version
-          tar -C "${stage_dir}" -czf "${archive}" iapp-codex iapp-codex-bin
+          install -m 0755 "../scripts/codewith" "${stage_dir}/codewith"
+          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/codewith-bin"
+          "${stage_dir}/codewith" --version
+          tar -C "${stage_dir}" -czf "${archive}" codewith codewith-bin
 
           echo "archive=codex-rs/${archive}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload iapp-codex artifact
+      - name: Upload Codewith artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: iapp-codex-linux-x86_64-${{ env.BUILD_PROFILE }}
+          name: codewith-linux-x86_64-${{ env.BUILD_PROFILE }}
           path: ${{ steps.stage.outputs.archive }}

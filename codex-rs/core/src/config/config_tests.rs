@@ -4771,7 +4771,7 @@ async fn config_resolves_explicit_keyring_auth_store_mode() -> std::io::Result<(
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_resolves_selected_auth_profile_from_override() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, "from-env");
+    let _codewith_guard = EnvVarGuard::set(CODEWITH_AUTH_PROFILE_ENV_VAR, "from-env");
     let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
     let codex_home = TempDir::new()?;
 
@@ -4809,7 +4809,7 @@ async fn config_disables_update_checks_by_default_for_internal_app() -> std::io:
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_resolves_selected_auth_profile_from_env() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, "  from-iapp-env  ");
+    let _codewith_guard = EnvVarGuard::set(CODEWITH_AUTH_PROFILE_ENV_VAR, "  from-codewith-env  ");
     let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
     let codex_home = TempDir::new()?;
 
@@ -4822,7 +4822,7 @@ async fn config_resolves_selected_auth_profile_from_env() -> std::io::Result<()>
 
     assert_eq!(
         config.selected_auth_profile.as_deref(),
-        Some("from-iapp-env")
+        Some("from-codewith-env")
     );
 
     Ok(())
@@ -4830,8 +4830,8 @@ async fn config_resolves_selected_auth_profile_from_env() -> std::io::Result<()>
 
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
-async fn config_ignores_empty_iapp_auth_profile_env() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::set(IAPPCODEX_AUTH_PROFILE_ENV_VAR, " ");
+async fn config_ignores_empty_codewith_auth_profile_env() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::set(CODEWITH_AUTH_PROFILE_ENV_VAR, " ");
     let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
     let codex_home = TempDir::new()?;
 
@@ -4853,7 +4853,7 @@ async fn config_ignores_empty_iapp_auth_profile_env() -> std::io::Result<()> {
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
     let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
     let codex_home = TempDir::new()?;
 
@@ -4880,7 +4880,7 @@ async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_resolves_auth_profile_auto_switch() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
     let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
     let codex_home = TempDir::new()?;
 
@@ -4913,7 +4913,7 @@ async fn config_resolves_auth_profile_auto_switch() -> std::io::Result<()> {
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_rejects_invalid_auth_profile_auto_switch_profile() -> std::io::Result<()> {
-    let _iapp_guard = EnvVarGuard::remove(IAPPCODEX_AUTH_PROFILE_ENV_VAR);
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
     let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
     let codex_home = TempDir::new()?;
 

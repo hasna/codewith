@@ -8,7 +8,7 @@ expression: popup
 
   [ ] Update checks (current) (disabled)  Off for this internal app. Updates come from
                                           explicit internal releases. (disabled: Managed
-                                          by iapp-codex.)
+                                          by Codewith.)
 › [ ] Auth profile auto-switch            Switch to another configured profile after
                                           rate limits are exhausted.
   [*] Switch on 5h limit                  Allow auto-switching when the five-hour limit

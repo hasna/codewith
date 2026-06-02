@@ -15,8 +15,8 @@ This downloads the required native package archive artifacts, hydrates `vendor/`
 each package, and writes tarballs to `dist/npm/`.
 
 When `--package codex` is provided, the staging helper builds the lightweight
-`@hasnaxyz/iappcodex` meta package plus the configured Linux arm64 native
-`@hasnaxyz/iappcodex-linux-arm64` package.
+`@hasna/codewith` meta package plus the configured Linux arm64 native
+`@hasna/codewith-linux-arm64` package.
 
 Direct `build_npm_package.py` invocations are still useful for package-specific
 debugging, but native packages expect `--vendor-src` to point at a prehydrated

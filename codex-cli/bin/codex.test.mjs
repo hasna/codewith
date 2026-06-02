@@ -31,7 +31,7 @@ function writeFakeNativeBinary(root) {
       "const fs = await import('node:fs');",
       "console.log(JSON.stringify({",
       "  CODEX_HOME: process.env.CODEX_HOME,",
-      "  IAPPCODEX_HOME: process.env.IAPPCODEX_HOME,",
+      "  CODEWITH_HOME: process.env.CODEWITH_HOME,",
       "  argv: process.argv.slice(2),",
       "}));",
       "",
@@ -41,7 +41,7 @@ function writeFakeNativeBinary(root) {
 }
 
 function stageShim() {
-  const root = mkdtempSync(path.join(tmpdir(), "iappcodex-shim-"));
+  const root = mkdtempSync(path.join(tmpdir(), "codewith-shim-"));
   const binDir = path.join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   copyFileSync(new URL("./codex.js", import.meta.url), path.join(binDir, "codex.js"));
@@ -49,11 +49,11 @@ function stageShim() {
   return root;
 }
 
-test("iappcodex shim defaults CODEX_HOME to ~/.hasna/internalapps/codex", () => {
+test("codewith shim defaults CODEX_HOME to ~/.codewith", () => {
   const root = stageShim();
   const home = path.join(root, "home");
   const regularCodexHome = path.join(home, ".codex");
-  const iappCodexHome = path.join(home, ".hasna", "internalapps", "codex");
+  const codewithHome = path.join(home, ".codewith");
   mkdirSync(home);
   mkdirSync(regularCodexHome);
   writeFileSync(path.join(regularCodexHome, "auth.json"), "{}");
@@ -64,27 +64,27 @@ test("iappcodex shim defaults CODEX_HOME to ~/.hasna/internalapps/codex", () => 
       HOME: home,
       USERPROFILE: home,
       CODEX_HOME: regularCodexHome,
-      IAPPCODEX_HOME: "",
+      CODEWITH_HOME: "",
     },
     encoding: "utf8",
   });
 
   assert.deepEqual(JSON.parse(output), {
-    CODEX_HOME: iappCodexHome,
-    IAPPCODEX_HOME: "",
+    CODEX_HOME: codewithHome,
+    CODEWITH_HOME: codewithHome,
     argv: ["login", "status"],
   });
-  assert.equal(existsSync(iappCodexHome), true);
-  assert.equal(existsSync(path.join(iappCodexHome, "auth.json")), false);
+  assert.equal(existsSync(codewithHome), true);
+  assert.equal(existsSync(path.join(codewithHome, "auth.json")), false);
   if (process.platform !== "win32") {
-    assert.equal(statSync(iappCodexHome).mode & 0o777, 0o700);
+    assert.equal(statSync(codewithHome).mode & 0o777, 0o700);
   }
 });
 
-test("iappcodex shim lets IAPPCODEX_HOME override the default home", () => {
+test("codewith shim lets CODEWITH_HOME override the default home", () => {
   const root = stageShim();
   const home = path.join(root, "home");
-  const iappHome = path.join(root, "custom-iapp-home");
+  const codewithHome = path.join(root, "custom-codewith-home");
   mkdirSync(home);
 
   const output = execFileSync(process.execPath, [path.join(root, "bin", "codex.js"), "exec"], {
@@ -93,23 +93,23 @@ test("iappcodex shim lets IAPPCODEX_HOME override the default home", () => {
       HOME: home,
       USERPROFILE: home,
       CODEX_HOME: "",
-      IAPPCODEX_HOME: iappHome,
+      CODEWITH_HOME: codewithHome,
     },
     encoding: "utf8",
   });
 
   assert.deepEqual(JSON.parse(output), {
-    CODEX_HOME: iappHome,
-    IAPPCODEX_HOME: iappHome,
+    CODEX_HOME: codewithHome,
+    CODEWITH_HOME: codewithHome,
     argv: ["exec"],
   });
 });
 
-test("iappcodex shim ignores inherited CODEX_HOME and uses IAPPCODEX_HOME", () => {
+test("codewith shim ignores inherited CODEX_HOME and uses CODEWITH_HOME", () => {
   const root = stageShim();
   const home = path.join(root, "home");
   const codexHome = path.join(home, ".codex");
-  const iappHome = path.join(root, "custom-iapp-home");
+  const codewithHome = path.join(root, "custom-codewith-home");
   mkdirSync(home);
   mkdirSync(codexHome);
   writeFileSync(path.join(codexHome, "auth.json"), "{}");
@@ -120,15 +120,15 @@ test("iappcodex shim ignores inherited CODEX_HOME and uses IAPPCODEX_HOME", () =
       HOME: home,
       USERPROFILE: home,
       CODEX_HOME: codexHome,
-      IAPPCODEX_HOME: iappHome,
+      CODEWITH_HOME: codewithHome,
     },
     encoding: "utf8",
   });
 
   assert.deepEqual(JSON.parse(output), {
-    CODEX_HOME: iappHome,
-    IAPPCODEX_HOME: iappHome,
+    CODEX_HOME: codewithHome,
+    CODEWITH_HOME: codewithHome,
     argv: ["--version"],
   });
-  assert.equal(existsSync(path.join(iappHome, "auth.json")), false);
+  assert.equal(existsSync(path.join(codewithHome, "auth.json")), false);
 });

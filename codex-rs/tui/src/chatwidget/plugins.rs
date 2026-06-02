@@ -1493,16 +1493,16 @@ impl ChatWidget {
             .count();
         tabs.push(SelectionTab {
             id: OPENAI_CURATED_TAB_ID.to_string(),
-            label: "OpenAI Curated".to_string(),
+            label: "Hasna Curated".to_string(),
             header: plugins_header(
-                "OpenAI Curated marketplace.".to_string(),
-                format!("Installed {curated_installed} of {curated_total} OpenAI Curated plugins."),
+                "Hasna Curated marketplace.".to_string(),
+                format!("Installed {curated_installed} of {curated_total} Hasna Curated plugins."),
             ),
             items: self.plugin_selection_items(
                 curated_entries,
                 /*include_marketplace_names*/ false,
-                "No OpenAI Curated plugins available",
-                "No OpenAI Curated plugins available.",
+                "No Hasna Curated plugins available",
+                "No Hasna Curated plugins available.",
             ),
         });
 

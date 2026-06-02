@@ -1231,12 +1231,12 @@ async fn plugins_popup_openai_curated_tab_omits_marketplace_in_rows() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert!(
-        popup.contains("OpenAI Curated marketplace."),
-        "expected OpenAI Curated tab header, got:\n{popup}"
+        popup.contains("Hasna Curated marketplace."),
+        "expected Hasna Curated tab header, got:\n{popup}"
     );
     assert!(
         popup.contains("Calendar") && !popup.contains("Repo Plugin"),
-        "expected OpenAI Curated tab to show only official marketplace plugins, got:\n{popup}"
+        "expected Hasna Curated tab to show only official marketplace plugins, got:\n{popup}"
     );
     assert!(
         !popup.contains("ChatGPT Marketplace ·"),
@@ -2368,7 +2368,7 @@ async fn config_popup_snapshot_and_toggle() {
     let popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_popup", popup);
     assert!(popup.contains("Update checks"));
-    assert!(popup.contains("iapp-codex"));
+    assert!(popup.contains("Codewith"));
     assert!(popup.contains("Auth profile auto-switch"));
     assert!(popup.contains("Paste burst detection"));
 

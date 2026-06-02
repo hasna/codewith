@@ -38,7 +38,7 @@ If you are invited by a Codex team member to contribute a PR, here is the recomm
 
 1. **Start with an issue.** Open a new one or comment on an existing discussion so we can agree on the solution before code is written.
 2. **Add or update tests.** A bug fix should generally come with test coverage that fails before your change and passes afterwards. 100% coverage is not required, but aim for meaningful assertions.
-3. **Document behavior.** If your change affects user-facing behavior, update the README, inline help (`codex --help`), or relevant example projects.
+3. **Document behavior.** If your change affects user-facing behavior, update the README, inline help (`codewith --help`), or relevant example projects.
 4. **Keep commits atomic.** Each commit should compile and the tests should pass. This makes reviews and potential rollbacks easier.
 
 ### Model metadata updates
@@ -75,7 +75,7 @@ When a change updates model catalogs or model metadata (`/models` payloads, pres
 
 If you run into problems setting up the project, would like feedback on an idea, or just want to say _hi_ - please open a Discussion topic or jump into the relevant issue. We are happy to help.
 
-Together we can make Codex CLI an incredible tool. **Happy hacking!** :rocket:
+Together we can make Codewith an incredible tool. **Happy hacking!** :rocket:
 
 ### Contributor license agreement (CLA)
 

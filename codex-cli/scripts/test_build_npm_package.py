@@ -18,7 +18,7 @@ PACKAGE_MANAGER = (
 
 
 class BuildNpmPackageTest(unittest.TestCase):
-    def test_codex_package_stages_private_iappcodex_metadata(self) -> None:
+    def test_codex_package_stages_public_codewith_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             staging_dir = Path(temp_dir)
 
@@ -29,31 +29,36 @@ class BuildNpmPackageTest(unittest.TestCase):
         self.assertEqual(
             package_json,
             {
-                "name": "@hasnaxyz/iappcodex",
+                "name": "@hasna/codewith",
                 "version": "1.2.3",
-                "description": "Hasna XYZ internal Codex CLI package.",
+                "description": "Codewith command-line coding agent from Hasna.",
                 "license": "Apache-2.0",
-                "bin": {"iappcodex": "bin/codex.js"},
+                "bin": {"codewith": "bin/codex.js"},
                 "type": "module",
                 "engines": {"node": ">=16"},
                 "publishConfig": {
                     "registry": "https://registry.npmjs.org",
-                    "access": "restricted",
+                    "access": "public",
                 },
                 "files": ["bin/codex.js"],
                 "repository": {
                     "type": "git",
-                    "url": "git+https://github.com/hasnaxyz/iapp-codex.git",
+                    "url": "git+https://github.com/hasna/codewith.git",
                     "directory": "codex-cli",
                 },
                 "packageManager": PACKAGE_MANAGER,
                 "optionalDependencies": {
-                    "@hasnaxyz/iappcodex-linux-arm64": "1.2.3"
+                    "@hasna/codewith-linux-x64": "1.2.3",
+                    "@hasna/codewith-linux-arm64": "1.2.3",
+                    "@hasna/codewith-darwin-x64": "1.2.3",
+                    "@hasna/codewith-darwin-arm64": "1.2.3",
+                    "@hasna/codewith-win32-x64": "1.2.3",
+                    "@hasna/codewith-win32-arm64": "1.2.3",
                 },
             },
         )
 
-    def test_linux_arm64_package_stages_private_native_metadata(self) -> None:
+    def test_linux_arm64_package_stages_public_native_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             staging_dir = Path(temp_dir)
 
@@ -64,7 +69,7 @@ class BuildNpmPackageTest(unittest.TestCase):
         self.assertEqual(
             package_json,
             {
-                "name": "@hasnaxyz/iappcodex-linux-arm64",
+                "name": "@hasna/codewith-linux-arm64",
                 "version": "1.2.3",
                 "license": "Apache-2.0",
                 "os": ["linux"],
@@ -72,11 +77,11 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "files": ["vendor"],
                 "publishConfig": {
                     "registry": "https://registry.npmjs.org",
-                    "access": "restricted",
+                    "access": "public",
                 },
                 "repository": {
                     "type": "git",
-                    "url": "git+https://github.com/hasnaxyz/iapp-codex.git",
+                    "url": "git+https://github.com/hasna/codewith.git",
                     "directory": "codex-cli",
                 },
                 "engines": {"node": ">=16"},
@@ -87,12 +92,20 @@ class BuildNpmPackageTest(unittest.TestCase):
     def test_linux_alias_uses_musl_target_for_upstream_release_artifacts(self) -> None:
         self.assertEqual(
             build_npm_package.PACKAGE_EXPANSIONS["codex"],
-            ["codex", "codex-linux-arm64"],
+            [
+                "codex",
+                "codex-linux-x64",
+                "codex-linux-arm64",
+                "codex-darwin-x64",
+                "codex-darwin-arm64",
+                "codex-win32-x64",
+                "codex-win32-arm64",
+            ],
         )
         self.assertEqual(
             build_npm_package.CODEX_PLATFORM_PACKAGES["codex-linux-arm64"],
             {
-                "npm_name": "@hasnaxyz/iappcodex-linux-arm64",
+                "npm_name": "@hasna/codewith-linux-arm64",
                 "npm_tag": "linux-arm64",
                 "target_triple": "aarch64-unknown-linux-musl",
                 "os": "linux",

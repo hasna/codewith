@@ -5,7 +5,7 @@ expression: model_migration_copy_to_plain_text(&copy)
 ---
 Introducing GPT-5.4
 
-Codex just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.
+Codewith just got an upgrade with GPT-5.4, our most capable model for professional work. It outperforms prior models while being more token efficient, with notable improvements on long-running tasks, tool calling, computer use, and frontend development.
 
 Learn more: https://openai.com/index/introducing-gpt-5-4
 

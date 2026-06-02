@@ -1,6 +1,6 @@
-//! AGENTS.md discovery and user instruction assembly.
+//! CODEWITH.md discovery and user instruction assembly.
 //!
-//! Project-level documentation is primarily stored in files named `AGENTS.md`.
+//! Project-level documentation is primarily stored in files named `CODEWITH.md`.
 //! Additional fallback filenames can be configured via `project_doc_fallback_filenames`.
 //! We include the concatenation of all files found along the path from the
 //! project root to the current working directory as follows:
@@ -10,7 +10,7 @@
 //!     When `project_root_markers` is unset, the default marker list is used
 //!     (`.git`). If no marker is found, only the current working directory is
 //!     considered. An empty marker list disables parent traversal.
-//! 2.  Collect every `AGENTS.md` found from the project root down to the
+//! 2.  Collect every `CODEWITH.md` found from the project root down to the
 //!     current working directory (inclusive) and concatenate their contents in
 //!     that order.
 //! 3.  We do **not** walk past the project root.
@@ -34,16 +34,20 @@ use tracing::error;
 pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
     include_str!("../hierarchical_agents_message.md");
 
-/// Default filename scanned for AGENTS.md instructions.
-pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
-/// Preferred local override for AGENTS.md instructions.
-pub const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
+/// Default filename scanned for Codewith project instructions.
+pub const DEFAULT_AGENTS_MD_FILENAME: &str = "CODEWITH.md";
+/// Preferred local override for Codewith project instructions.
+pub const LOCAL_AGENTS_MD_FILENAME: &str = "CODEWITH.override.md";
+/// Legacy Codex project instructions filename, read as a fallback.
+const LEGACY_DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
+/// Legacy Codex local override filename, read as a fallback.
+const LEGACY_LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
 
-/// When both `Config::instructions` and AGENTS.md docs are present, they will
+/// When both `Config::instructions` and project docs are present, they will
 /// be concatenated with the following separator.
 const AGENTS_MD_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
 
-/// Resolves AGENTS.md files into model-visible user instructions and source
+/// Resolves project docs into model-visible user instructions and source
 /// paths.
 pub struct AgentsMdManager<'a> {
     config: &'a Config,
@@ -65,7 +69,12 @@ impl<'a> AgentsMdManager<'a> {
         startup_warnings: &mut Vec<String>,
     ) -> Option<LoadedAgentsMd> {
         let base = codex_dir?;
-        for candidate in [LOCAL_AGENTS_MD_FILENAME, DEFAULT_AGENTS_MD_FILENAME] {
+        for candidate in [
+            LOCAL_AGENTS_MD_FILENAME,
+            DEFAULT_AGENTS_MD_FILENAME,
+            LEGACY_LOCAL_AGENTS_MD_FILENAME,
+            LEGACY_DEFAULT_AGENTS_MD_FILENAME,
+        ] {
             let path = base.join(candidate);
             let data = match fs.read_file(&path, /*sandbox*/ None).await {
                 Ok(data) => data,
@@ -73,7 +82,7 @@ impl<'a> AgentsMdManager<'a> {
                 Err(err) if err.kind() == io::ErrorKind::IsADirectory => continue,
                 Err(err) => {
                     startup_warnings.push(format!(
-                        "Failed to read global AGENTS.md instructions from `{}`: {err}",
+                        "Failed to read global project instructions from `{}`: {err}",
                         path.display()
                     ));
                     continue;
@@ -92,7 +101,7 @@ impl<'a> AgentsMdManager<'a> {
         None
     }
 
-    /// Combines configured user instructions and AGENTS.md content into a
+    /// Combines configured user instructions and project-doc content into a
     /// single model-visible instruction string.
     pub(crate) async fn user_instructions(
         &self,
@@ -126,7 +135,7 @@ impl<'a> AgentsMdManager<'a> {
             }
             Ok(None) => {}
             Err(e) => {
-                error!("error trying to find AGENTS.md docs: {e:#}");
+                error!("error trying to find project instruction docs: {e:#}");
             }
         };
 
@@ -158,13 +167,13 @@ impl<'a> AgentsMdManager<'a> {
         match self.agents_md_paths(fs).await {
             Ok(agents_md_paths) => paths.extend(agents_md_paths),
             Err(err) => {
-                tracing::warn!(error = %err, "failed to discover AGENTS.md docs for instruction sources");
+                tracing::warn!(error = %err, "failed to discover project instruction docs for instruction sources");
             }
         }
         paths
     }
 
-    /// Attempt to locate and load AGENTS.md documentation.
+    /// Attempt to locate and load project instruction documentation.
     ///
     /// On success returns `Ok(Some(contents))` where `contents` is the
     /// concatenation of all discovered docs. If no documentation file is found
@@ -235,7 +244,7 @@ impl<'a> AgentsMdManager<'a> {
         }
     }
 
-    /// Discover the list of AGENTS.md files using the same search rules as
+    /// Discover the list of project instruction files using the same search rules as
     /// `read_agents_md`, but return the file paths instead of concatenated
     /// contents. The list is ordered from project root to the current working
     /// directory (inclusive). Symlinks are allowed. When `project_doc_max_bytes`
@@ -337,6 +346,8 @@ impl<'a> AgentsMdManager<'a> {
             Vec::with_capacity(2 + self.config.project_doc_fallback_filenames.len());
         names.push(LOCAL_AGENTS_MD_FILENAME);
         names.push(DEFAULT_AGENTS_MD_FILENAME);
+        names.push(LEGACY_LOCAL_AGENTS_MD_FILENAME);
+        names.push(LEGACY_DEFAULT_AGENTS_MD_FILENAME);
         for candidate in &self.config.project_doc_fallback_filenames {
             let candidate = candidate.as_str();
             if candidate.is_empty() {
@@ -358,7 +369,7 @@ fn warn_invalid_utf8(
 ) {
     if let Err(err) = std::str::from_utf8(data) {
         startup_warnings.push(format!(
-            "{source} AGENTS.md instructions from `{}` contain invalid UTF-8: {err}. Invalid byte sequences were replaced.",
+            "{source} project instructions from `{}` contain invalid UTF-8: {err}. Invalid byte sequences were replaced.",
             path.display()
         ));
     }

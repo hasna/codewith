@@ -87,7 +87,7 @@ impl ChatWidget {
             .into_iter()
             .map(|(provider_id, display_name, requires_openai_auth)| {
                 let auth_label = if requires_openai_auth {
-                    "Uses Codex or OpenAI login"
+                    "Uses Codewith or OpenAI login"
                 } else {
                     "Uses a provider API key"
                 };

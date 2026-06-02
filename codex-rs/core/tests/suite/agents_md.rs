@@ -23,7 +23,7 @@ async fn agents_instructions(mut builder: TestCodexBuilder) -> Result<String> {
     request
         .message_input_texts("user")
         .into_iter()
-        .find(|text| text.starts_with("# AGENTS.md instructions for "))
+        .find(|text| text.starts_with("# CODEWITH.md instructions for "))
         .ok_or_else(|| anyhow::anyhow!("instructions message not found"))
 }
 

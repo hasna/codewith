@@ -386,7 +386,7 @@ async fn build_remote_installed_plugin_marketplaces_from_cache_uses_remote_metad
         .expect("remote installed cache should be present");
     assert_eq!(marketplaces.len(), 1);
     assert_eq!(marketplaces[0].name, "openai-curated-remote");
-    assert_eq!(marketplaces[0].display_name, "OpenAI Curated Remote");
+    assert_eq!(marketplaces[0].display_name, "Hasna Curated Remote");
     assert_eq!(marketplaces[0].plugins.len(), 1);
     let plugin = &marketplaces[0].plugins[0];
     assert_eq!(plugin.id, "linear@openai-curated-remote");

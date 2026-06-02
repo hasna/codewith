@@ -459,7 +459,8 @@ mod job {
             return false;
         };
 
-        matches_marked_fragment(text, "# AGENTS.md instructions for ", "</INSTRUCTIONS>")
+        matches_marked_fragment(text, "# CODEWITH.md instructions for ", "</INSTRUCTIONS>")
+            || matches_marked_fragment(text, "# AGENTS.md instructions for ", "</INSTRUCTIONS>")
             || matches_marked_fragment(text, "<skill>", "</skill>")
     }
 
@@ -482,6 +483,10 @@ mod job {
         #[test]
         fn classifies_memory_excluded_fragments() {
             let cases = [
+                (
+                    "# CODEWITH.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
+                    true,
+                ),
                 (
                     "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
                     true,

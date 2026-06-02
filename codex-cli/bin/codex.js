@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified entry point for the Codex CLI.
+// Unified entry point for the Codewith CLI.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, chmodSync } from "fs";
@@ -14,12 +14,12 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-musl": "@hasnaxyz/iappcodex-linux-x64",
-  "aarch64-unknown-linux-musl": "@hasnaxyz/iappcodex-linux-arm64",
-  "x86_64-apple-darwin": "@hasnaxyz/iappcodex-darwin-x64",
-  "aarch64-apple-darwin": "@hasnaxyz/iappcodex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@hasnaxyz/iappcodex-win32-x64",
-  "aarch64-pc-windows-msvc": "@hasnaxyz/iappcodex-win32-arm64",
+  "x86_64-unknown-linux-musl": "@hasna/codewith-linux-x64",
+  "aarch64-unknown-linux-musl": "@hasna/codewith-linux-arm64",
+  "x86_64-apple-darwin": "@hasna/codewith-darwin-x64",
+  "aarch64-apple-darwin": "@hasna/codewith-darwin-arm64",
+  "x86_64-pc-windows-msvc": "@hasna/codewith-win32-x64",
+  "aarch64-pc-windows-msvc": "@hasna/codewith-win32-arm64",
 };
 
 const { platform, arch } = process;
@@ -118,10 +118,10 @@ if (!nativePackage) {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
-      ? "bun install -g @hasnaxyz/iappcodex@latest"
-      : "npm install -g @hasnaxyz/iappcodex@latest";
+      ? "bun install -g @hasna/codewith@latest"
+      : "npm install -g @hasna/codewith@latest";
   throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+    `Missing optional dependency ${platformPackage}. Reinstall Codewith: ${updateCommand}`,
   );
 }
 
@@ -144,8 +144,8 @@ function getUpdatedPath(newDirs) {
 }
 
 /**
- * Use heuristics to detect the package manager that was used to install Codex
- * in order to give the user a hint about how to update it.
+ * Use heuristics to detect the package manager that was used to install
+ * Codewith in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {
   const userAgent = process.env.npm_config_user_agent || "";
@@ -175,16 +175,17 @@ if (existsSync(pathDir)) {
 const updatedPath = getUpdatedPath(additionalDirs);
 
 const env = { ...process.env, PATH: updatedPath };
-function defaultIappCodexHome() {
+function defaultCodewithHome() {
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
-  return path.join(home, ".hasna", "internalapps", "codex");
+  return path.join(home, ".codewith");
 }
 
-function resolveIappCodexHome() {
-  return env.IAPPCODEX_HOME || defaultIappCodexHome();
+function resolveCodewithHome() {
+  return env.CODEWITH_HOME || defaultCodewithHome();
 }
 
-env.CODEX_HOME = resolveIappCodexHome();
+env.CODEX_HOME = resolveCodewithHome();
+env.CODEWITH_HOME = env.CODEX_HOME;
 mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") {
   chmodSync(env.CODEX_HOME, 0o700);

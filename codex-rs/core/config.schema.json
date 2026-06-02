@@ -766,7 +766,7 @@
               "$ref": "#/definitions/AbsolutePathBuf"
             }
           ],
-          "description": "Directory where Codex writes effective session config lock files."
+          "description": "Directory where Codewith writes effective session config lock files."
         },
         "load_path": {
           "allOf": [
@@ -993,7 +993,7 @@
     },
     "History": {
       "additionalProperties": false,
-      "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`.",
+      "description": "Settings that govern if and what will be written to `~/.codewith/history.jsonl`.",
       "properties": {
         "max_bytes": {
           "default": null,
@@ -4353,7 +4353,7 @@
       "type": "object"
     }
   },
-  "description": "Base config deserialized from ~/.codex/config.toml.",
+  "description": "Base config deserialized from ~/.codewith/config.toml.",
   "properties": {
     "agents": {
       "allOf": [
@@ -4374,7 +4374,7 @@
           "$ref": "#/definitions/AnalyticsConfigToml"
         }
       ],
-      "description": "When `false`, disables analytics across Codex product surfaces in this machine. Defaults to `true`."
+      "description": "When `false`, disables analytics across Codewith product surfaces in this machine. Defaults to `true`."
     },
     "approval_policy": {
       "allOf": [
@@ -4443,7 +4443,7 @@
       "type": "string"
     },
     "check_for_update_on_startup": {
-      "description": "When `true`, checks for Codex updates on startup and surfaces update prompts. iapp-codex is updated through explicit upstream merges and internal releases, so this defaults to `false`.",
+      "description": "When `true`, checks for Codewith updates on startup and surfaces update prompts. Codewith is updated through explicit upstream merges and releases, so this defaults to `false`.",
       "type": "boolean"
     },
     "cli_auth_credentials_store": {
@@ -4453,7 +4453,7 @@
         }
       ],
       "default": null,
-      "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
+      "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codewith home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
@@ -4802,7 +4802,7 @@
           "$ref": "#/definitions/FeedbackConfigToml"
         }
       ],
-      "description": "When `false`, disables feedback collection across Codex product surfaces. Defaults to `true`."
+      "description": "When `false`, disables feedback collection across Codewith product surfaces. Defaults to `true`."
     },
     "file_opener": {
       "allOf": [
@@ -4854,7 +4854,7 @@
         "max_bytes": null,
         "persistence": "save-all"
       },
-      "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`."
+      "description": "Settings that govern if and what will be written to `~/.codewith/history.jsonl`."
     },
     "hooks": {
       "allOf": [
@@ -4890,7 +4890,7 @@
           "$ref": "#/definitions/AbsolutePathBuf"
         }
       ],
-      "description": "Directory where Codex writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to `$CODEX_HOME/log`."
+      "description": "Directory where Codewith writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to the Codewith home directory's `log` folder."
     },
     "marketplaces": {
       "additionalProperties": {
@@ -4917,7 +4917,7 @@
         }
       ],
       "default": null,
-      "description": "Preferred backend for storing MCP OAuth credentials. keyring: Use an OS-specific keyring service. https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2 file: Use a file in the Codex home directory. auto (default): Use the OS-specific keyring service if available, otherwise use a file."
+      "description": "Preferred backend for storing MCP OAuth credentials. keyring: Use an OS-specific keyring service. https://github.com/hasna/codewith/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2 file: Use a file in the Codewith home directory. auto (default): Use the OS-specific keyring service if available, otherwise use a file."
     },
     "mcp_servers": {
       "additionalProperties": {
@@ -5077,7 +5077,7 @@
     },
     "project_doc_fallback_filenames": {
       "default": [],
-      "description": "Ordered list of fallback filenames to look for when AGENTS.md is missing.",
+      "description": "Ordered list of fallback filenames to look for when default project instructions are missing.",
       "items": {
         "type": "string"
       },
@@ -5085,14 +5085,14 @@
     },
     "project_doc_max_bytes": {
       "default": 32768,
-      "description": "Maximum number of bytes to include from an AGENTS.md project doc file.",
+      "description": "Maximum number of bytes to include from a project instruction file.",
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
     },
     "project_root_markers": {
       "default": null,
-      "description": "Markers used to detect the project root when searching parent directories for `.codex` folders. Defaults to [\".git\"] when unset.",
+      "description": "Markers used to detect the project root when searching parent directories for `.codewith` folders. Defaults to [\".git\"] when unset.",
       "items": {
         "type": "string"
       },
@@ -5170,7 +5170,7 @@
           "$ref": "#/definitions/AbsolutePathBuf"
         }
       ],
-      "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
+      "description": "Directory where Codewith stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses the Codewith home directory."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

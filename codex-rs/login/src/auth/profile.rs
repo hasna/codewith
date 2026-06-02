@@ -20,7 +20,7 @@ use super::storage::create_auth_storage;
 
 const AUTH_PROFILES_DIR: &str = "auth_profiles";
 const ACTIVE_PROFILE_FILE: &str = ".active";
-pub const IAPPCODEX_AUTH_PROFILE_ENV_VAR: &str = "IAPPCODEX_AUTH_PROFILE";
+pub const CODEWITH_AUTH_PROFILE_ENV_VAR: &str = "CODEWITH_AUTH_PROFILE";
 pub const CODEX_AUTH_PROFILE_ENV_VAR: &str = "CODEX_AUTH_PROFILE";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub enum AuthProfileError {
     #[error("auth profile `{name}` does not exist")]
     ProfileNotFound { name: String },
 
-    #[error("not logged in; run `codex login` first")]
+    #[error("not logged in; run `codewith login` first")]
     NoActiveAuth,
 
     #[error("auth profiles require persistent auth storage; ephemeral auth cannot be profiled")]

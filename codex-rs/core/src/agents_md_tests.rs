@@ -29,7 +29,7 @@ fn assert_invalid_utf8_warning(warnings: &[String], source: &str, path: &Path) {
     assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
     let warning = &warnings[0];
     assert!(
-        warning.contains(&format!("{source} AGENTS.md instructions"))
+        warning.contains(&format!("{source} project instructions"))
             && warning.contains(&path_display)
             && warning.contains("invalid UTF-8")
             && warning.contains("Invalid byte sequences were replaced."),
@@ -415,7 +415,7 @@ async fn uses_configured_fallback_when_agents_missing() {
     assert_eq!(res, "example instructions");
 }
 
-/// AGENTS.md remains preferred when both AGENTS.md and fallbacks are present.
+/// Legacy AGENTS.md remains preferred over configured fallback filenames.
 #[tokio::test]
 async fn agents_md_preferred_over_fallbacks() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -432,7 +432,7 @@ async fn agents_md_preferred_over_fallbacks() {
 
     let res = get_user_instructions(&cfg)
         .await
-        .expect("AGENTS.md should win");
+        .expect("legacy AGENTS.md should win");
 
     assert_eq!(res, "primary");
 
@@ -443,7 +443,7 @@ async fn agents_md_preferred_over_fallbacks() {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .eq(DEFAULT_AGENTS_MD_FILENAME)
+            .eq(LEGACY_DEFAULT_AGENTS_MD_FILENAME)
     );
 }
 
