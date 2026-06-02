@@ -1,17 +1,17 @@
 # Security Policy
 
-Thank you for helping us keep Codex secure!
+Thank you for helping us keep Codewith secure!
 
 ## Reporting Security Issues
 
-The security is essential to OpenAI's mission. We appreciate the work of security researchers acting in good faith to identify and responsibly report potential vulnerabilities, helping us maintain strong privacy and security standards for our users and technology.
+Security is essential to Hasna's work. We appreciate the work of security researchers acting in good faith to identify and responsibly report potential vulnerabilities, helping us maintain strong privacy and security standards for our users and technology.
 
-Our security program is managed through Bugcrowd, and we ask that any validated vulnerabilities be reported via the [Bugcrowd program](https://bugcrowd.com/engagements/openai).
+Please report potential vulnerabilities through the [Codewith GitHub Security Advisory form](https://github.com/hasna/codewith/security/advisories/new).
 
 ## Vulnerability Disclosure Program
 
-Our Vulnerability Program Guidelines are defined on our [Bugcrowd program page](https://bugcrowd.com/engagements/openai).
+Use the advisory form for vulnerability details, reproduction steps, impact, and any proposed remediation.
 
-## How to operate CODEX safely
+## How to operate Codewith safely
 
-For details on Codex security boundaries, including sandboxing, approvals, and network controls, see [Agent approvals & security](https://developers.openai.com/codex/agent-approvals-security).
+For details on Codewith security boundaries, including sandboxing, approvals, and network controls, see the repository documentation and local configuration reference.

@@ -2,33 +2,33 @@
 
 **External contributions are by invitation only**
 
-At this time, the Codex team does not accept unsolicited code contributions.
+At this time, the Codewith team does not accept unsolicited code contributions.
 
-If you would like to propose a new feature or a change in behavior, please open an issue describing the proposal or upvote an existing enhancement request. We prioritize new features based on community feedback, alignment with our roadmap, and consistency across all Codex surfaces (CLI, IDE extensions, web, etc.).
+If you would like to propose a new feature or a change in behavior, please open an issue describing the proposal or upvote an existing enhancement request. We prioritize new features based on community feedback, alignment with our roadmap, and consistency across all Codewith surfaces (CLI, IDE extensions, web, etc.).
 
 If you encounter a bug, please open a bug report or verify that an existing report already covers the issue. If you would like to help, we encourage you to contribute by sharing analysis, reproduction details, root-cause hypotheses, or a high-level outline of a potential fix directly in the issue thread.
 
-The Codex team may invite an external contributor to submit a pull request when:
+The Codewith team may invite an external contributor to submit a pull request when:
 
 - the problem is well understood,
 - the proposed approach aligns with the team’s intended solution, and
 - the issue is deemed high-impact and high-priority.
 
-Pull requests that have not been explicitly invited by a member of the Codex team will be closed without review.
+Pull requests that have not been explicitly invited by a member of the Codewith team will be closed without review.
 
 **Why we do not generally accept external code contributions**
 
-In the past, the Codex team accepted external pull requests for bug fixes. While we appreciated the effort and engagement from the community, this model did not scale well.
+In the past, the Codewith team accepted external pull requests for bug fixes. While we appreciated the effort and engagement from the community, this model did not scale well.
 
-Many contributions were made without full visibility into the architectural context, system-level constraints, or near-term roadmap considerations that guide Codex development. Others focused on issues that were low priority or affected a very small subset of users. Reviewing and iterating on these PRs often took more time than implementing the fix directly, and diverted attention from higher-priority work.
+Many contributions were made without full visibility into the architectural context, system-level constraints, or near-term roadmap considerations that guide Codewith development. Others focused on issues that were low priority or affected a very small subset of users. Reviewing and iterating on these PRs often took more time than implementing the fix directly, and diverted attention from higher-priority work.
 
-The most valuable contributions consistently came from community members who demonstrated deep understanding of a problem domain. That expertise is most helpful when shared early -- through detailed bug reports, analysis, and design discussion in issues. Identifying the right solution is typically the hard part; implementing it is comparatively straightforward with the help of Codex itself.
+The most valuable contributions consistently came from community members who demonstrated deep understanding of a problem domain. That expertise is most helpful when shared early -- through detailed bug reports, analysis, and design discussion in issues. Identifying the right solution is typically the hard part; implementing it is comparatively straightforward with the help of Codewith itself.
 
 For these reasons, we focus external contributions on discussion, analysis, and feedback, and reserve code changes for cases where a targeted invitation makes sense.
 
 ### Development workflow
 
-If you are invited by a Codex team member to contribute a PR, here is the recommended development workflow.
+If you are invited by a Codewith team member to contribute a PR, here is the recommended development workflow.
 
 - Create a _topic branch_ from `main` - e.g. `feat/interactive-prompt`.
 - Keep your changes focused. Multiple unrelated fixes should be opened as separate PRs.
@@ -94,4 +94,4 @@ No special Git commands, email attachments, or commit footers required.
 
 ### Security & responsible AI
 
-Have you discovered a vulnerability or have concerns about model output? Please e-mail **security@openai.com** and we will respond promptly.
+Have you discovered a vulnerability or have concerns about model output? Please use the [Codewith GitHub Security Advisory form](https://github.com/hasna/codewith/security/advisories/new) and we will respond promptly.

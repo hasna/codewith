@@ -1,4 +1,4 @@
-# codex-app-server
+# Codewith app-server
 
 `codewith app-server` is the interface Codewith uses to power rich interfaces such as the [Codewith VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
 
@@ -63,9 +63,9 @@ codewith app-server generate-json-schema --out DIR
 
 ## Core Primitives
 
-The API exposes three top level primitives representing an interaction between a user and Codex:
+The API exposes three top level primitives representing an interaction between a user and Codewith:
 
-- **Thread**: A conversation between a user and the Codex agent. Each thread contains multiple turns.
+- **Thread**: A conversation between a user and the Codewith agent. Each thread contains multiple turns.
 - **Turn**: One turn of the conversation, typically starting with a user message and finishing with an agent message. Each turn contains multiple items.
 - **Item**: Represents user inputs and agent outputs as part of the turn, persisted and used as the context for future conversations. Example items include user message, agent reasoning, agent message, shell command, file edit, etc.
 
@@ -165,7 +165,7 @@ Example with notification opt-out:
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
 - `thread/rollback` — drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
-- `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; relative paths resolve against the effective turn cwd. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
+- `turn/start` — add user input to a thread and begin Codewith generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; relative paths resolve against the effective turn cwd. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
 - `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
@@ -173,7 +173,7 @@ Example with notification opt-out:
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
 - `thread/realtime/appendText` — append text input to the active realtime session (experimental); returns `{}`.
 - `thread/realtime/stop` — stop the active realtime session for the thread (experimental); returns `{}`.
-- `review/start` — kick off Codex’s automated reviewer for a thread; responds like `turn/start` and emits `item/started`/`item/completed` notifications with `enteredReviewMode` and `exitedReviewMode` items, plus a final assistant `agentMessage` containing the review.
+- `review/start` — kick off Codewith's automated reviewer for a thread; responds like `turn/start` and emits `item/started`/`item/completed` notifications with `enteredReviewMode` and `exitedReviewMode` items, plus a final assistant `agentMessage` containing the review.
 - `command/exec` — run a single command under the server sandbox without starting a thread/turn (handy for utilities and validation).
 - `command/exec/write` — write base64-decoded stdin bytes to a running `command/exec` session or close stdin; returns `{}`.
 - `command/exec/resize` — resize a running PTY-backed `command/exec` session by `processId`; returns `{}`.
@@ -285,7 +285,7 @@ Pass a provider id to `model/list` when the client wants to browse or switch def
 
 ### Example: Start or resume a thread
 
-Start a fresh thread when you need a new Codex conversation.
+Start a fresh thread when you need a new Codewith conversation.
 
 ```json
 { "method": "thread/start", "id": 10, "params": {
@@ -774,7 +774,7 @@ If the thread does not already have an active turn, the server starts a standalo
 
 ### Example: Start a turn (send user input)
 
-Turns attach user input (text or images) to a thread and trigger Codex generation. The `input` field is a list of discriminated unions:
+Turns attach user input (text or images) to a thread and trigger Codewith generation. The `input` field is a list of discriminated unions:
 
 - `{"type":"text","text":"Explain this diff"}`
 - `{"type":"image","url":"https://…png"}`

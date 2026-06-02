@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Post-install configuration for the Codex devcontainer."""
+"""Post-install configuration for the Codewith devcontainer."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def fix_directory_ownership() -> None:
     gid = os.getgid()
 
     paths = [
-        Path.home() / ".codex",
+        Path.home() / ".codewith",
         Path.home() / ".config" / "gh",
         Path.home() / ".cargo",
         Path.home() / ".rustup",
@@ -59,8 +59,8 @@ def setup_git_config() -> None:
     gitignore_global = home / ".gitignore_global"
 
     gitignore_global.write_text(
-        """# Codex
-.codex/
+        """# Codewith
+.codewith/
 
 # Rust
 /target/
@@ -101,11 +101,23 @@ __pycache__/
     )
 
 
+def install_codewith_wrapper() -> None:
+    local_bin = Path.home() / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+
+    wrapper = Path("/workspace/scripts/codewith")
+    link_path = local_bin / "codewith"
+    if link_path.exists() or link_path.is_symlink():
+        link_path.unlink()
+    link_path.symlink_to(wrapper)
+
+
 def main() -> None:
     print("[post_install] configuring devcontainer...", file=sys.stderr)
     ensure_history_files()
     fix_directory_ownership()
     setup_git_config()
+    install_codewith_wrapper()
     print("[post_install] complete", file=sys.stderr)
 
 

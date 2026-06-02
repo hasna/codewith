@@ -1,4 +1,4 @@
-## Codex open source fund
+## Codewith open source fund
 
 We're excited to launch a **$1 million initiative** supporting open source projects that use Codewith and other OpenAI models.
 

@@ -1,14 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
-  "name": "Codex (Secure)",
+  "name": "Codewith (Secure)",
   "build": {
     "dockerfile": "Dockerfile.secure",
     "context": "..",
     "args": {
       "TZ": "${localEnv:TZ:UTC}",
       "NODE_MAJOR": "22",
-      "RUST_TOOLCHAIN": "1.95.0",
-      "CODEX_NPM_VERSION": "0.121.0"
+      "RUST_TOOLCHAIN": "1.95.0"
     }
   },
   "runArgs": [
@@ -28,20 +27,21 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
   "mounts": [
-    "source=codex-commandhistory-${devcontainerId},target=/commandhistory,type=volume",
-    "source=codex-home-${devcontainerId},target=/home/vscode/.codex,type=volume",
-    "source=codex-gh-${devcontainerId},target=/home/vscode/.config/gh,type=volume",
-    "source=codex-cargo-registry-${devcontainerId},target=/home/vscode/.cargo/registry,type=volume",
-    "source=codex-cargo-git-${devcontainerId},target=/home/vscode/.cargo/git,type=volume",
-    "source=codex-rustup-${devcontainerId},target=/home/vscode/.rustup,type=volume",
+    "source=codewith-commandhistory-${devcontainerId},target=/commandhistory,type=volume",
+    "source=codewith-home-${devcontainerId},target=/home/vscode/.codewith,type=volume",
+    "source=codewith-gh-${devcontainerId},target=/home/vscode/.config/gh,type=volume",
+    "source=codewith-cargo-registry-${devcontainerId},target=/home/vscode/.cargo/registry,type=volume",
+    "source=codewith-cargo-git-${devcontainerId},target=/home/vscode/.cargo/git,type=volume",
+    "source=codewith-rustup-${devcontainerId},target=/home/vscode/.rustup,type=volume",
     "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly"
   ],
   "containerEnv": {
     "RUST_BACKTRACE": "1",
+    "CODEWITH_UNSAFE_ALLOW_NO_SANDBOX": "1",
     "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1",
-    "CODEX_ENABLE_FIREWALL": "1",
-    "CODEX_INCLUDE_GITHUB_META_RANGES": "1",
-    "OPENAI_ALLOWED_DOMAINS": "api.openai.com auth.openai.com github.com api.github.com codeload.github.com raw.githubusercontent.com objects.githubusercontent.com crates.io index.crates.io static.crates.io static.rust-lang.org registry.npmjs.org pypi.org files.pythonhosted.org",
+    "CODEWITH_ENABLE_FIREWALL": "1",
+    "CODEWITH_INCLUDE_GITHUB_META_RANGES": "1",
+    "CODEWITH_ALLOWED_DOMAINS": "api.openai.com auth.openai.com github.com api.github.com codeload.github.com raw.githubusercontent.com objects.githubusercontent.com crates.io index.crates.io static.crates.io static.rust-lang.org registry.npmjs.org pypi.org files.pythonhosted.org",
     "CARGO_TARGET_DIR": "/workspace/.cache/cargo-target",
     "GIT_CONFIG_GLOBAL": "/home/vscode/.gitconfig.local",
     "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
@@ -51,7 +51,7 @@
   "remoteEnv": {
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"
   },
-  "postCreateCommand": "python3 /opt/post_install.py",
+  "postCreateCommand": "python3 /opt/post_install.py && cd /workspace/codex-rs && cargo build -p codex-cli",
   "postStartCommand": "bash /opt/post_start.sh",
   "waitFor": "postStartCommand",
   "customizations": {
