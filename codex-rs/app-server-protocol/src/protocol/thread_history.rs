@@ -7,6 +7,8 @@ use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
+use crate::protocol::v2::CommandAction;
+use crate::protocol::v2::CommandExecutionSource;
 use crate::protocol::v2::CommandExecutionStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
@@ -22,7 +24,12 @@ use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
 use codex_protocol::items::parse_hook_prompt_message;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::LocalShellAction;
+use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ShellCommandToolCallParams;
 use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
@@ -54,12 +61,15 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
+use codex_shell_command::parse_command::parse_command;
+use codex_shell_command::parse_command::shlex_join;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::warn;
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::protocol::v2::CommandAction;
 #[cfg(test)]
 use crate::protocol::v2::FileUpdateChange;
 #[cfg(test)]
@@ -221,6 +231,7 @@ impl ThreadHistoryBuilder {
             EventMsg::TurnAborted(payload) => self.handle_turn_aborted(payload),
             EventMsg::TurnStarted(payload) => self.handle_turn_started(payload),
             EventMsg::TurnComplete(payload) => self.handle_turn_complete(payload),
+            EventMsg::RawResponseItem(payload) => self.handle_response_item(&payload.item),
             _ => {}
         }
     }
@@ -236,30 +247,59 @@ impl ThreadHistoryBuilder {
         }
     }
 
-    fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
-        let codex_protocol::models::ResponseItem::Message {
-            role, content, id, ..
-        } = item
-        else {
-            return;
-        };
+    fn handle_response_item(&mut self, item: &ResponseItem) {
+        match item {
+            ResponseItem::Message {
+                role, content, id, ..
+            } => {
+                if role != "user" {
+                    return;
+                }
 
-        if role != "user" {
-            return;
+                let Some(hook_prompt) = parse_hook_prompt_message(id.as_ref(), content) else {
+                    return;
+                };
+
+                self.ensure_turn().items.push(ThreadItem::HookPrompt {
+                    id: hook_prompt.id,
+                    fragments: hook_prompt
+                        .fragments
+                        .into_iter()
+                        .map(crate::protocol::v2::HookPromptFragment::from)
+                        .collect(),
+                });
+            }
+            ResponseItem::FunctionCall {
+                name,
+                namespace,
+                arguments,
+                call_id,
+                ..
+            } => {
+                if let Some(item) =
+                    command_execution_from_function_call(namespace, name, arguments, call_id)
+                {
+                    self.insert_raw_command_execution_in_current_turn(item);
+                }
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                self.complete_raw_command_execution(call_id, output);
+            }
+            ResponseItem::LocalShellCall {
+                id,
+                call_id,
+                status,
+                action,
+                ..
+            } => {
+                let Some(call_id) = call_id.as_deref().or(id.as_deref()) else {
+                    return;
+                };
+                let item = command_execution_from_local_shell_call(call_id, status, action);
+                self.insert_raw_command_execution_in_current_turn(item);
+            }
+            _ => {}
         }
-
-        let Some(hook_prompt) = parse_hook_prompt_message(id.as_ref(), content) else {
-            return;
-        };
-
-        self.ensure_turn().items.push(ThreadItem::HookPrompt {
-            id: hook_prompt.id,
-            fragments: hook_prompt
-                .fragments
-                .into_iter()
-                .map(crate::protocol::v2::HookPromptFragment::from)
-                .collect(),
-        });
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -1063,6 +1103,35 @@ impl ThreadHistoryBuilder {
         upsert_turn_item(&mut turn.items, item);
     }
 
+    fn insert_raw_command_execution_in_current_turn(&mut self, item: ThreadItem) {
+        let turn = self.ensure_turn();
+        if !turn
+            .items
+            .iter()
+            .any(|existing_item| existing_item.id() == item.id())
+        {
+            turn.items.push(item);
+        }
+    }
+
+    fn complete_raw_command_execution(
+        &mut self,
+        call_id: &str,
+        output: &FunctionCallOutputPayload,
+    ) {
+        if let Some(turn) = self.current_turn.as_mut()
+            && complete_command_execution_item(&mut turn.items, call_id, output)
+        {
+            return;
+        }
+
+        for turn in self.turns.iter_mut().rev() {
+            if complete_command_execution_item(&mut turn.items, call_id, output) {
+                return;
+            }
+        }
+    }
+
     fn next_item_id(&mut self) -> String {
         let id = format!("item-{}", self.next_item_index);
         self.next_item_index += 1;
@@ -1137,6 +1206,230 @@ fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) {
         return;
     }
     items.push(item);
+}
+
+fn complete_command_execution_item(
+    items: &mut [ThreadItem],
+    call_id: &str,
+    output: &FunctionCallOutputPayload,
+) -> bool {
+    for item in items {
+        if let ThreadItem::CommandExecution {
+            id,
+            status,
+            aggregated_output,
+            ..
+        } = item
+            && id == call_id
+        {
+            if matches!(status, CommandExecutionStatus::InProgress) {
+                *status = if output.success == Some(false) {
+                    CommandExecutionStatus::Failed
+                } else {
+                    CommandExecutionStatus::Completed
+                };
+            }
+            if aggregated_output.is_none() {
+                *aggregated_output = output.body.to_text().filter(|text| !text.is_empty());
+            }
+            return true;
+        }
+    }
+
+    false
+}
+
+fn command_execution_from_function_call(
+    namespace: &Option<String>,
+    name: &str,
+    arguments: &str,
+    call_id: &str,
+) -> Option<ThreadItem> {
+    if namespace.is_some() {
+        return None;
+    }
+
+    match name {
+        "shell_command" => {
+            let params = serde_json::from_str::<ShellCommandToolCallParams>(arguments).ok()?;
+            let cwd = cwd_from_raw_workdir(params.workdir.as_deref());
+            Some(command_execution_from_shell_command(
+                call_id,
+                params.command,
+                cwd,
+                CommandExecutionStatus::InProgress,
+            ))
+        }
+        "exec_command" => {
+            let params =
+                serde_json::from_str::<RawExecCommandFunctionCallParams>(arguments).ok()?;
+            let command = params.cmd.or(params.command)?;
+            let workdir = params.workdir.or(params.cwd);
+            let cwd = cwd_from_raw_workdir(workdir.as_deref());
+            Some(command_execution_from_raw_command(
+                call_id,
+                command,
+                cwd,
+                CommandExecutionStatus::InProgress,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn command_execution_from_local_shell_call(
+    call_id: &str,
+    status: &LocalShellStatus,
+    action: &LocalShellAction,
+) -> ThreadItem {
+    match action {
+        LocalShellAction::Exec(action) => {
+            let cwd = cwd_from_raw_workdir(action.working_directory.as_deref());
+            command_execution_from_argv(
+                call_id,
+                action.command.clone(),
+                cwd,
+                match status {
+                    LocalShellStatus::Completed => CommandExecutionStatus::Completed,
+                    LocalShellStatus::InProgress | LocalShellStatus::Incomplete => {
+                        CommandExecutionStatus::InProgress
+                    }
+                },
+            )
+        }
+    }
+}
+
+fn command_execution_from_raw_command(
+    call_id: &str,
+    command: RawCommandValue,
+    cwd: AbsolutePathBuf,
+    status: CommandExecutionStatus,
+) -> ThreadItem {
+    match command {
+        RawCommandValue::String(command) => {
+            command_execution_from_shell_command(call_id, command, cwd, status)
+        }
+        RawCommandValue::Argv(command) => {
+            command_execution_from_argv(call_id, command, cwd, status)
+        }
+    }
+}
+
+fn command_execution_from_shell_command(
+    call_id: &str,
+    command: String,
+    cwd: AbsolutePathBuf,
+    status: CommandExecutionStatus,
+) -> ThreadItem {
+    let command_actions = command_actions_from_shell_command(&command, &cwd);
+    ThreadItem::CommandExecution {
+        id: call_id.to_string(),
+        command,
+        cwd,
+        process_id: None,
+        source: CommandExecutionSource::Agent,
+        status,
+        command_actions,
+        aggregated_output: None,
+        exit_code: None,
+        duration_ms: None,
+    }
+}
+
+fn command_execution_from_argv(
+    call_id: &str,
+    command: Vec<String>,
+    cwd: AbsolutePathBuf,
+    status: CommandExecutionStatus,
+) -> ThreadItem {
+    let command_display = shlex_join(&command);
+    let command_actions = command_actions_from_argv(&command, &cwd);
+    ThreadItem::CommandExecution {
+        id: call_id.to_string(),
+        command: command_display,
+        cwd,
+        process_id: None,
+        source: CommandExecutionSource::Agent,
+        status,
+        command_actions,
+        aggregated_output: None,
+        exit_code: None,
+        duration_ms: None,
+    }
+}
+
+fn command_actions_from_shell_command(command: &str, cwd: &AbsolutePathBuf) -> Vec<CommandAction> {
+    let shell_command = vec!["bash".to_string(), "-lc".to_string(), command.to_string()];
+    command_actions_from_parsed(parse_command(&shell_command), cwd, command.to_string())
+}
+
+fn command_actions_from_argv(command: &[String], cwd: &AbsolutePathBuf) -> Vec<CommandAction> {
+    command_actions_from_parsed(parse_command(command), cwd, shlex_join(command))
+}
+
+fn command_actions_from_parsed(
+    parsed: Vec<codex_protocol::parse_command::ParsedCommand>,
+    cwd: &AbsolutePathBuf,
+    fallback_command: String,
+) -> Vec<CommandAction> {
+    let command_actions = parsed
+        .into_iter()
+        .map(|parsed| CommandAction::from_core_with_cwd(parsed, cwd))
+        .collect::<Vec<_>>();
+
+    if command_actions.is_empty() {
+        vec![CommandAction::Unknown {
+            command: fallback_command,
+        }]
+    } else {
+        command_actions
+    }
+}
+
+fn cwd_from_raw_workdir(workdir: Option<&str>) -> AbsolutePathBuf {
+    let fallback = current_dir_or_root();
+    let Some(workdir) = workdir.filter(|workdir| !workdir.trim().is_empty()) else {
+        return fallback;
+    };
+
+    let path = PathBuf::from(workdir);
+    if path.is_absolute() {
+        AbsolutePathBuf::from_absolute_path(path).unwrap_or(fallback)
+    } else {
+        AbsolutePathBuf::resolve_path_against_base(path, fallback.as_path())
+    }
+}
+
+fn current_dir_or_root() -> AbsolutePathBuf {
+    AbsolutePathBuf::current_dir().unwrap_or_else(|_| {
+        let root = if cfg!(windows) {
+            PathBuf::from(r"C:\")
+        } else {
+            PathBuf::from("/")
+        };
+        AbsolutePathBuf::from_absolute_path(&root)
+            .unwrap_or_else(|_| AbsolutePathBuf::resolve_path_against_base(".", root))
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct RawExecCommandFunctionCallParams {
+    #[serde(default)]
+    cmd: Option<RawCommandValue>,
+    #[serde(default)]
+    command: Option<RawCommandValue>,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawCommandValue {
+    String(String),
+    Argv(Vec<String>),
 }
 
 struct PendingTurn {
@@ -1215,8 +1508,13 @@ mod tests {
     use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
     use codex_protocol::items::build_hook_prompt_message;
     use codex_protocol::mcp::CallToolResult;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ImageDetail;
+    use codex_protocol::models::LocalShellAction;
+    use codex_protocol::models::LocalShellExecAction;
+    use codex_protocol::models::LocalShellStatus;
     use codex_protocol::models::MessagePhase as CoreMessagePhase;
+    use codex_protocol::models::ResponseItem;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::parse_command::ParsedCommand;
     use codex_protocol::protocol::AgentMessageEvent;
@@ -1232,6 +1530,7 @@ mod tests {
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::PatchApplyBeginEvent;
+    use codex_protocol::protocol::RawResponseItemEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
@@ -2067,6 +2366,228 @@ mod tests {
                 }),
                 duration_ms: Some(8),
             }
+        );
+    }
+
+    #[test]
+    fn reconstructs_command_execution_from_raw_function_call_response_items() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "run a command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+                id: Some("fc-1".into()),
+                name: "exec_command".into(),
+                namespace: None,
+                arguments: serde_json::json!({
+                    "cmd": "echo hello",
+                    "workdir": test_path_buf("/tmp"),
+                })
+                .to_string(),
+                call_id: "exec-1".into(),
+            }),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                call_id: "exec-1".into(),
+                output: FunctionCallOutputPayload::from_text("hello\n".into()),
+            }),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".into(),
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![
+                ThreadItem::UserMessage {
+                    id: "item-1".into(),
+                    client_id: None,
+                    content: vec![UserInput::Text {
+                        text: "run a command".into(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+                ThreadItem::CommandExecution {
+                    id: "exec-1".into(),
+                    command: "echo hello".into(),
+                    cwd: test_path_buf("/tmp").abs(),
+                    process_id: None,
+                    source: CommandExecutionSource::Agent,
+                    status: CommandExecutionStatus::Completed,
+                    command_actions: vec![CommandAction::Unknown {
+                        command: "echo hello".into(),
+                    }],
+                    aggregated_output: Some("hello\n".into()),
+                    exit_code: None,
+                    duration_ms: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reconstructs_local_shell_call_from_legacy_id_when_call_id_absent() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::ResponseItem(ResponseItem::LocalShellCall {
+                id: Some("legacy-shell-1".into()),
+                call_id: None,
+                status: LocalShellStatus::Completed,
+                action: LocalShellAction::Exec(LocalShellExecAction {
+                    command: vec!["echo".into(), "hello".into()],
+                    timeout_ms: None,
+                    working_directory: Some("/tmp".into()),
+                    env: None,
+                    user: None,
+                }),
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::CommandExecution {
+                id: "legacy-shell-1".into(),
+                command: "echo hello".into(),
+                cwd: test_path_buf("/tmp").abs(),
+                process_id: None,
+                source: CommandExecutionSource::Agent,
+                status: CommandExecutionStatus::Completed,
+                command_actions: vec![CommandAction::Unknown {
+                    command: "echo hello".into(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn raw_response_item_events_do_not_duplicate_explicit_command_events() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "run a command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: ResponseItem::FunctionCall {
+                    id: Some("fc-1".into()),
+                    name: "exec_command".into(),
+                    namespace: None,
+                    arguments: serde_json::json!({
+                        "cmd": "echo hello",
+                        "workdir": test_path_buf("/tmp"),
+                    })
+                    .to_string(),
+                    call_id: "exec-1".into(),
+                },
+            }),
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "exec-1".into(),
+                process_id: Some("pid-1".into()),
+                turn_id: "turn-1".into(),
+                completed_at_ms: 0,
+                command: vec!["echo".into(), "hello".into()],
+                cwd: test_path_buf("/tmp").abs(),
+                parsed_cmd: vec![ParsedCommand::Unknown {
+                    cmd: "echo hello".into(),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                aggregated_output: "explicit output\n".into(),
+                exit_code: 0,
+                duration: Duration::from_millis(12),
+                formatted_output: String::new(),
+                status: CoreExecCommandStatus::Completed,
+            }),
+            EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: ResponseItem::FunctionCallOutput {
+                    call_id: "exec-1".into(),
+                    output: FunctionCallOutputPayload::from_text("raw output\n".into()),
+                },
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".into(),
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![
+                ThreadItem::UserMessage {
+                    id: "item-1".into(),
+                    client_id: None,
+                    content: vec![UserInput::Text {
+                        text: "run a command".into(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+                ThreadItem::CommandExecution {
+                    id: "exec-1".into(),
+                    command: "echo hello".into(),
+                    cwd: test_path_buf("/tmp").abs(),
+                    process_id: Some("pid-1".into()),
+                    source: CommandExecutionSource::Agent,
+                    status: CommandExecutionStatus::Completed,
+                    command_actions: vec![CommandAction::Unknown {
+                        command: "echo hello".into(),
+                    }],
+                    aggregated_output: Some("explicit output\n".into()),
+                    exit_code: Some(0),
+                    duration_ms: Some(12),
+                },
+            ]
         );
     }
 
