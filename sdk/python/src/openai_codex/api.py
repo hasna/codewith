@@ -102,7 +102,7 @@ class Codex:
         self._client.close()
 
     def login_api_key(self, api_key: str) -> None:
-        """Authenticate Codex with an API key."""
+        """Authenticate Codewith with an API key."""
         self._client.account_login_start(
             LoginAccountParams(
                 root=ApiKeyLoginAccountParams(
@@ -121,11 +121,11 @@ class Codex:
         return start_device_code_login(self._client)
 
     def account(self, *, refresh_token: bool = False) -> GetAccountResponse:
-        """Read the current Codex account state."""
+        """Read the current Codewith account state."""
         return self._client.account_read(GetAccountParams(refresh_token=refresh_token))
 
     def logout(self) -> None:
-        """Clear the current Codex account session."""
+        """Clear the current Codewith account session."""
         self._client.account_logout()
 
     # BEGIN GENERATED: Codex.flat_methods
@@ -337,7 +337,7 @@ class AsyncCodex:
         self._initialized = False
 
     async def login_api_key(self, api_key: str) -> None:
-        """Authenticate Codex with an API key."""
+        """Authenticate Codewith with an API key."""
         await self._ensure_initialized()
         await self._client.account_login_start(
             LoginAccountParams(
@@ -359,12 +359,12 @@ class AsyncCodex:
         return await async_start_device_code_login(self)
 
     async def account(self, *, refresh_token: bool = False) -> GetAccountResponse:
-        """Read the current Codex account state."""
+        """Read the current Codewith account state."""
         await self._ensure_initialized()
         return await self._client.account_read(GetAccountParams(refresh_token=refresh_token))
 
     async def logout(self) -> None:
-        """Clear the current Codex account session."""
+        """Clear the current Codewith account session."""
         await self._ensure_initialized()
         await self._client.account_logout()
 

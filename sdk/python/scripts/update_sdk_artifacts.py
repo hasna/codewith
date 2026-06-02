@@ -122,7 +122,7 @@ def pinned_runtime_codex_path() -> Path:
 
     codex_path = bundled_codex_path()
     if not codex_path.exists():
-        raise RuntimeError(f"Pinned Codex runtime binary not found at {codex_path}.")
+        raise RuntimeError(f"Pinned Codewith runtime binary not found at {codex_path}.")
     return codex_path
 
 

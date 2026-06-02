@@ -22,7 +22,7 @@ Install the published beta:
 python -m pip install openai-codex
 ```
 
-The SDK installs its pinned `openai-codex-cli-bin` runtime dependency.
+The SDK installs its pinned `openai-codex-cli-bin` Codewith runtime dependency.
 The pinned runtime version comes from the SDK package dependency.
 
 ## Run From A Checkout

@@ -30,7 +30,7 @@ pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
         ApprovalPreset {
             id: "read-only",
             label: "Read Only",
-            description: "Codex can read files in the current workspace. Approval is required to edit files or access the internet.",
+            description: "Codewith can read files in the current workspace. Approval is required to edit files or access the internet.",
             approval: AskForApproval::OnRequest,
             active_permission_profile: ActivePermissionProfile::new(
                 BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
@@ -40,7 +40,7 @@ pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
         ApprovalPreset {
             id: "auto",
             label: "Default",
-            description: "Codex can read and edit files in the current workspace, and run commands. Approval is required to access the internet or edit other files. (Identical to Agent mode)",
+            description: "Codewith can read and edit files in the current workspace, and run commands. Approval is required to access the internet or edit other files. (Identical to Agent mode)",
             approval: AskForApproval::OnRequest,
             active_permission_profile: ActivePermissionProfile::new(
                 BUILT_IN_PERMISSION_PROFILE_WORKSPACE,

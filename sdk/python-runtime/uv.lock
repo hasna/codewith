@@ -8,5 +8,5 @@ exclude-newer-span = "P7D"
 
 [[package]]
 name = "openai-codex-cli-bin"
-version = "0.0.0.dev0"
+version = "0.1.0"
 source = { editable = "." }

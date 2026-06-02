@@ -1,12 +1,13 @@
 {
   "name": "@hasna/codewith-responses-api-proxy",
-  "version": "0.0.0-dev",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"
   },
   "bin": {
+    "codewith-responses-api-proxy": "bin/codex-responses-api-proxy.js",
     "codex-responses-api-proxy": "bin/codex-responses-api-proxy.js"
   },
   "type": "module",

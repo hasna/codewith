@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build-python-sdk:
-    if: github.repository == 'openai/codex'
+    if: github.repository == 'hasna/codewith'
     name: build-python-sdk
     runs-on: ubuntu-latest
     permissions:
@@ -41,7 +41,7 @@ jobs:
             -e HOME=/tmp/codex-python-sdk-home \
             -e UV_LINK_MODE=copy \
             -e SDK_VERSION="${sdk_version}" \
-            -e SDK_STAGE_DIR="${RUNNER_TEMP}/openai-codex" \
+            -e SDK_STAGE_DIR="${RUNNER_TEMP}/codewith-python-sdk" \
             -e SDK_DIST_DIR="${GITHUB_WORKSPACE}/dist/python-sdk" \
             -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
             -v "${RUNNER_TEMP}:${RUNNER_TEMP}" \

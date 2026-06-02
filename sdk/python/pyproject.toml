@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openai-codex"
-version = "0.0.0-dev"
-description = "Python SDK for Codex"
+version = "0.1.0"
+description = "Python SDK for Codewith"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-authors = [{ name = "OpenAI" }]
+authors = [{ name = "Hasna" }]
 keywords = ["codex", "sdk", "llm", "ai", "agents"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -19,10 +19,10 @@ classifiers = [
 dependencies = ["pydantic>=2.12", "openai-codex-cli-bin==0.132.0"]
 
 [project.urls]
-Homepage = "https://github.com/openai/codex"
-Repository = "https://github.com/openai/codex"
-Issues = "https://github.com/openai/codex/issues"
-Documentation = "https://github.com/openai/codex/tree/main/sdk/python/docs"
+Homepage = "https://github.com/hasna/codewith"
+Repository = "https://github.com/hasna/codewith"
+Issues = "https://github.com/hasna/codewith/issues"
+Documentation = "https://github.com/hasna/codewith/tree/main/sdk/python/docs"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "datamodel-code-generator==0.31.2", "ruff>=0.15.8"]

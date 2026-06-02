@@ -249,7 +249,7 @@ def test_source_sdk_template_pins_published_runtime() -> None:
         "runtime_pin": script.pinned_runtime_version(),
         "dependencies": pyproject["project"]["dependencies"],
     } == {
-        "sdk_template_version": "0.0.0-dev",
+        "sdk_template_version": "0.1.0",
         "runtime_pin": "0.132.0",
         "dependencies": [
             "pydantic>=2.12",
@@ -269,13 +269,13 @@ def test_source_sdk_package_declares_beta_documentation_and_release_files() -> N
         "license": pyproject["project"]["license"],
         "documentation": pyproject["project"]["urls"]["Documentation"],
         "sdist_include": pyproject["tool"]["hatch"]["build"]["targets"]["sdist"]["include"],
-        "readme_is_beta": "# OpenAI Codex Python SDK (Beta)" in readme,
+        "readme_is_beta": "# Codewith Python SDK (Beta)" in readme,
         "local_license_file": (ROOT / "LICENSE").exists(),
     } == {
-        "description": "Python SDK for Codex",
+        "description": "Python SDK for Codewith",
         "is_beta": True,
         "license": "Apache-2.0",
-        "documentation": "https://github.com/openai/codex/tree/main/sdk/python/docs",
+        "documentation": "https://github.com/hasna/codewith/tree/main/sdk/python/docs",
         "sdist_include": [
             "src/openai_codex/**",
             "README.md",
@@ -327,7 +327,7 @@ def test_runtime_setup_reads_independent_runtime_pin_and_release_tags() -> None:
         "release_tag": runtime_setup._release_tag("0.116.0a1"),
     } == {
         "package_name": "openai-codex-cli-bin",
-        "sdk_template_version": "0.0.0-dev",
+        "sdk_template_version": "0.1.0",
         "runtime_pin": "0.132.0",
         "normalized_release_version": "0.116.0a1",
         "release_tag": "rust-v0.116.0-alpha.1",

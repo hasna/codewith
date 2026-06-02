@@ -1188,7 +1188,7 @@ async fn workspace_owner_limit_states_render_state_specific_messages() {
         (
             RateLimitReachedType::WorkspaceOwnerUsageLimitReached,
             RateLimitErrorKind::UsageLimit,
-            "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex.",
+            "Usage limit reached. You've reached your usage limit. Increase your limits to continue using Codewith.",
         ),
     ];
 

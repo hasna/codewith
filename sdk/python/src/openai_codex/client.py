@@ -93,7 +93,7 @@ def _installed_codex_path() -> Path:
         from codex_cli_bin import bundled_codex_path
     except ImportError as exc:
         raise FileNotFoundError(
-            "Unable to locate the pinned Codex runtime. Install the published SDK build "
+            "Unable to locate the pinned Codewith runtime. Install the published SDK build "
             f"with its {RUNTIME_PKG_NAME} dependency, or set CodexConfig.codex_bin "
             "explicitly."
         ) from exc
@@ -172,10 +172,10 @@ def _resolve_codex_bin(config: "CodexConfig") -> Path:
 
 @dataclass(slots=True)
 class CodexConfig:
-    """Configuration for launching and identifying the local Codex runtime.
+    """Configuration for launching and identifying the local Codewith runtime.
 
     Most callers can use ``Codex()`` without configuration. Set ``codex_bin``
-    only when intentionally using a specific local Codex executable.
+    only when intentionally using a specific local Codewith executable.
     """
 
     codex_bin: str | None = None
@@ -184,13 +184,13 @@ class CodexConfig:
     cwd: str | None = None
     env: dict[str, str] | None = None
     client_name: str = "codex_python_sdk"
-    client_title: str = "Codex Python SDK"
+    client_title: str = "Codewith Python SDK"
     client_version: str = SDK_VERSION
     experimental_api: bool = True
 
 
 class CodexClient:
-    """Synchronous typed JSON-RPC client for `codex app-server` over stdio."""
+    """Synchronous typed JSON-RPC client for `codewith app-server` over stdio."""
 
     def __init__(
         self,
