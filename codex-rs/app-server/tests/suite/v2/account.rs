@@ -7,7 +7,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::ChatGptIdTokenClaims;
 use app_test_support::encode_id_token;
 use app_test_support::write_chatgpt_auth;
-use app_test_support::write_models_cache;
+use app_test_support::write_mock_provider_models_cache;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_app_server_protocol::Account;
@@ -259,7 +259,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let access_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
@@ -333,7 +333,7 @@ async fn account_read_refresh_token_is_noop_in_external_mode() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let access_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
@@ -438,7 +438,7 @@ async fn external_auth_refreshes_on_unauthorized() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let success_sse = responses::sse(vec![
         responses::ev_response_created("resp-turn"),
@@ -559,7 +559,7 @@ async fn external_auth_refresh_error_fails_turn() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let unauthorized = ResponseTemplate::new(401).set_body_json(json!({
         "error": { "message": "unauthorized" }
@@ -676,7 +676,7 @@ async fn external_auth_refresh_mismatched_workspace_fails_turn() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let unauthorized = ResponseTemplate::new(401).set_body_json(json!({
         "error": { "message": "unauthorized" }
@@ -798,7 +798,7 @@ async fn external_auth_refresh_invalid_access_token_fails_turn() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     let unauthorized = ResponseTemplate::new(401).set_body_json(json!({
         "error": { "message": "unauthorized" }
@@ -1019,7 +1019,7 @@ async fn login_account_chatgpt_device_code_returns_error_when_disabled() -> Resu
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
     mock_device_code_usercode_failure(&mock_server, /*status*/ 404).await;
 
     let issuer = mock_server.uri();
@@ -1075,7 +1075,7 @@ async fn login_account_chatgpt_device_code_succeeds_and_notifies() -> Result<()>
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     mock_device_code_usercode(&mock_server, /*interval_seconds*/ 0).await;
     mock_device_code_token_success(&mock_server).await;
@@ -1159,7 +1159,7 @@ async fn login_account_chatgpt_device_code_failure_notifies_without_account_upda
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     mock_device_code_usercode(&mock_server, /*interval_seconds*/ 0).await;
     mock_device_code_token_failure(&mock_server, /*status*/ 500).await;
@@ -1234,7 +1234,7 @@ async fn login_account_chatgpt_device_code_can_be_cancelled() -> Result<()> {
             ..Default::default()
         },
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
 
     mock_device_code_usercode(&mock_server, /*interval_seconds*/ 1).await;
     mock_device_code_token_failure(&mock_server, /*status*/ 404).await;

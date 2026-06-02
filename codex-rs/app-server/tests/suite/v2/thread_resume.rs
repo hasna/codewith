@@ -13,6 +13,7 @@ use app_test_support::rollout_path;
 use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use app_test_support::write_mock_provider_models_cache;
 use chrono::Utc;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
@@ -104,7 +105,9 @@ use super::analytics::wait_for_analytics_payload;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const CODEX_5_2_INSTRUCTIONS_TEMPLATE_DEFAULT: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const CODEWITH_SELECTED_MODEL_HEADER: &str =
+    "You are Codewith, a coding agent running on the selected model.";
+const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 
 fn normalized_existing_path(path: impl AsRef<Path>) -> Result<PathBuf> {
     Ok(AbsolutePathBuf::from_absolute_path(path.as_ref().canonicalize()?)?.into_path_buf())
@@ -3499,8 +3502,12 @@ async fn thread_resume_accepts_personality_override() -> Result<()> {
     );
     let instructions_text = request.instructions_text();
     assert!(
-        instructions_text.contains(CODEX_5_2_INSTRUCTIONS_TEMPLATE_DEFAULT),
-        "expected default base instructions from history, got {instructions_text:?}"
+        instructions_text.contains(CODEWITH_SELECTED_MODEL_HEADER),
+        "expected Codewith base instructions from history, got {instructions_text:?}"
+    );
+    assert!(
+        instructions_text.contains(LOCAL_PRAGMATIC_TEMPLATE),
+        "expected default pragmatic personality from history, got {instructions_text:?}"
     );
 
     Ok(())
@@ -3530,7 +3537,8 @@ request_max_retries = 0
 stream_max_retries = 0
 "#
         ),
-    )
+    )?;
+    write_mock_provider_models_cache(codex_home)
 }
 
 fn create_config_toml_with_chatgpt_base_url(

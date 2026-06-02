@@ -5,6 +5,7 @@ use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::format_with_current_shell_display;
 use app_test_support::to_response;
+use app_test_support::write_mock_provider_models_cache;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
@@ -526,5 +527,6 @@ request_max_retries = 0
 stream_max_retries = 0
 "#
         ),
-    )
+    )?;
+    write_mock_provider_models_cache(codex_home)
 }

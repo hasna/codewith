@@ -4,8 +4,8 @@ use app_test_support::McpProcess;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
+use app_test_support::write_mock_provider_models_cache;
 use app_test_support::write_mock_responses_config_toml;
-use app_test_support::write_models_cache;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCNotification;
@@ -528,15 +528,6 @@ fn service_tier_model_and_tier_id() -> Result<(String, String)> {
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
         .context("bundled model catalog should include a picker model with service tiers")?;
     Ok((model.id.clone(), model.service_tiers[0].id.clone()))
-}
-
-fn write_mock_provider_models_cache(codex_home: &std::path::Path) -> Result<()> {
-    write_models_cache(codex_home)?;
-    let cache_path = codex_home.join("models_cache.json");
-    let mut cache: Value = serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
-    cache["provider_cache_key"] = Value::String("mock_provider".to_string());
-    std::fs::write(cache_path, serde_json::to_string_pretty(&cache)?)?;
-    Ok(())
 }
 
 fn save_api_key_auth(codex_home: &Path, api_key: &str) -> Result<()> {

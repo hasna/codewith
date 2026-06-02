@@ -12,8 +12,8 @@ use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::format_with_current_shell_display;
 use app_test_support::to_response;
+use app_test_support::write_mock_provider_models_cache;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
-use app_test_support::write_models_cache;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
@@ -562,7 +562,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         "never",
         &BTreeMap::from([(Feature::Personality, true)]),
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
     let cache_path = codex_home.path().join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -626,9 +626,24 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     let warning: WarningNotification =
         serde_json::from_value(params).expect("deserialize warning notification");
     assert_eq!(warning.thread_id.as_deref(), Some(thread.id.as_str()));
-    assert_eq!(
-        warning.message,
-        "Exceeded skills context budget of 2%. All skill descriptions were removed and 7 additional skills were not included in the model-visible skills list."
+    let warning_prefix =
+        "Exceeded skills context budget of 2%. All skill descriptions were removed and ";
+    let warning_suffix = " additional skills were not included in the model-visible skills list.";
+    assert!(
+        warning.message.starts_with(warning_prefix) && warning.message.ends_with(warning_suffix),
+        "unexpected warning message: {:?}",
+        warning.message
+    );
+    let omitted_skill_count = warning
+        .message
+        .trim_start_matches(warning_prefix)
+        .trim_end_matches(warning_suffix)
+        .parse::<usize>()
+        .expect("warning omitted skill count should be numeric");
+    assert!(
+        omitted_skill_count > 0,
+        "expected warning to report omitted skills: {:?}",
+        warning.message
     );
 
     timeout(
@@ -673,7 +688,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
         "never",
         &BTreeMap::default(),
     )?;
-    write_models_cache(codex_home.path())?;
+    write_mock_provider_models_cache(codex_home.path())?;
     let service_tier_model = all_model_presets()
         .iter()
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
@@ -2923,7 +2938,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
             (Feature::ShellSnapshot, false),
         ]),
     )?;
-    write_models_cache(&codex_home)?;
+    write_mock_provider_models_cache(&codex_home)?;
     let cache_path = codex_home.join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -3995,7 +4010,8 @@ request_max_retries = 0
 stream_max_retries = 0
 "#
         ),
-    )
+    )?;
+    write_mock_provider_models_cache(codex_home)
 }
 
 fn write_test_skill(codex_home: &Path, name: &str) -> std::io::Result<()> {

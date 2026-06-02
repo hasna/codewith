@@ -1,6 +1,7 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
 use app_test_support::to_response;
+use app_test_support::write_mock_provider_models_cache;
 use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -474,5 +475,6 @@ request_max_retries = 0
 stream_max_retries = 0
 "#
         ),
-    )
+    )?;
+    write_mock_provider_models_cache(codex_home)
 }
