@@ -1183,7 +1183,7 @@ async fn workspace_owner_limit_states_render_state_specific_messages() {
         (
             RateLimitReachedType::WorkspaceOwnerCreditsDepleted,
             RateLimitErrorKind::Generic,
-            "You're out of credits. Your workspace is out of credits. Add credits to continue using Codex.",
+            "You're out of credits. Your workspace is out of credits. Add credits to continue using Codewith.",
         ),
         (
             RateLimitReachedType::WorkspaceOwnerUsageLimitReached,
