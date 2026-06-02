@@ -113,6 +113,14 @@ jobs:
             echo "::warning title=Deprecated sign_macos input ignored::Use release_mode=build_unsigned or release_mode=promote_signed instead."
           fi
 
+          if [[ "${RELEASE_MODE}" == "build_unsigned" && "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
+                          | sed -E 's/version *= *"([^"]+)".*/\1/')"
+            echo "✅  Manual unsigned artifact build from ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}' (Cargo.toml ${cargo_ver})"
+            echo "::endgroup::"
+            exit 0
+          fi
+
           # 1. Must be a tag and match the regex
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
             || { echo "❌  Not a tag push"; exit 1; }
@@ -846,6 +854,7 @@ jobs:
       ${{
         always() &&
         needs.tag-check.result == 'success' &&
+        github.ref_type == 'tag' &&
         (
           (
             github.event_name == 'workflow_dispatch' &&
