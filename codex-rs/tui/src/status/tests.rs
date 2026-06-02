@@ -133,9 +133,27 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version_placeholder = "v<VERSION>";
     lines
         .into_iter()
-        .map(|line| {
+        .map(|mut line| {
+            if let Some(version_pos) = line.find(&version) {
+                let old_len = version.len();
+                line.replace_range(version_pos..version_pos + old_len, version_placeholder);
+                if let Some(pipe_idx) = line.rfind('│') {
+                    if version_placeholder.len() > old_len {
+                        let extra_width = version_placeholder.len() - old_len;
+                        let padding_start = line[..pipe_idx].trim_end_matches(' ').len();
+                        let removable_padding = pipe_idx.saturating_sub(padding_start);
+                        let remove_width = extra_width.min(removable_padding);
+                        line.replace_range(pipe_idx - remove_width..pipe_idx, "");
+                    } else if old_len > version_placeholder.len() {
+                        let extra_width = old_len - version_placeholder.len();
+                        line.insert_str(pipe_idx, &" ".repeat(extra_width));
+                    }
+                }
+            }
             if let (Some(dir_pos), Some(pipe_idx)) = (line.find("Directory: "), line.rfind('│')) {
                 let prefix = &line[..dir_pos + "Directory: ".len()];
                 let suffix = &line[pipe_idx..];

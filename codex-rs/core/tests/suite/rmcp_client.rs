@@ -310,9 +310,16 @@ fn stdio_transport_with_cwd(
 fn insert_mcp_server(
     config: &mut Config,
     server_name: &str,
-    transport: McpServerTransportConfig,
+    mut transport: McpServerTransportConfig,
     options: TestMcpServerOptions,
 ) {
+    if options.environment_id != codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
+        && let McpServerTransportConfig::Stdio { cwd, .. } = &mut transport
+        && cwd.is_none()
+    {
+        *cwd = Some(config.cwd.to_path_buf());
+    }
+
     let mut servers = config.mcp_servers.get().clone();
     servers.insert(
         server_name.to_string(),
@@ -2269,15 +2276,12 @@ async fn start_remote_streamable_http_test_server(
     let remote_bind_addr =
         wait_for_remote_bound_addr(container_name, &bound_addr_file, Duration::from_secs(5))
             .await?;
-    let container_ip = remote_container_ip(container_name)?;
-    let server_url = format!("http://{}:{}/mcp", container_ip, remote_bind_addr.port());
-    // The orchestrator can see the Docker container IP, but the behavior under
-    // test is whether the remote-side MCP client can reach it. Probe through
-    // remote HTTP before handing the URL to the Codex fixture.
+    let server_url = format!("http://127.0.0.1:{}/mcp", remote_bind_addr.port());
+    // The behavior under test is whether the remote-side MCP client can reach
+    // the server process running in the same remote container. Use remote
+    // loopback so the exec-server network guard sees a local request instead of
+    // a Docker bridge address from the host-side orchestrator.
     wait_for_remote_streamable_http_server(&server_url, Duration::from_secs(5)).await?;
-    if expected_token.is_some() {
-        wait_for_streamable_http_metadata(&server_url, Duration::from_secs(5)).await?;
-    }
 
     Ok(StreamableHttpTestServer {
         server_url,
@@ -2321,38 +2325,6 @@ async fn wait_for_remote_bound_addr(
             ));
         }
         sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Reads the container IP that the host-side test process can use.
-fn remote_container_ip(container_name: &str) -> anyhow::Result<String> {
-    let output = StdCommand::new("docker")
-        .args([
-            "inspect",
-            "-f",
-            "{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}",
-            container_name,
-        ])
-        .output()
-        .context("inspect remote MCP test container IP")?;
-    ensure!(
-        output.status.success(),
-        "docker inspect remote MCP test container IP failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout).trim(),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let inspect_output =
-        String::from_utf8(output.stdout).context("remote MCP test container IP must be utf-8")?;
-    let ip = inspect_output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_string();
-    if ip.is_empty() {
-        Ok("127.0.0.1".to_string())
-    } else {
-        Ok(ip)
     }
 }
 
@@ -2453,50 +2425,6 @@ async fn wait_for_remote_streamable_http_server(
                         "timed out waiting for remote streamable HTTP server metadata at {metadata_url}: {error}"
                     ));
                 }
-            }
-        }
-
-        sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Waits for OAuth metadata from the host-side test process.
-async fn wait_for_streamable_http_metadata(
-    server_url: &str,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let metadata_url = streamable_http_metadata_url(server_url);
-    let client = Client::builder().no_proxy().build()?;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(anyhow::anyhow!(
-                "timed out waiting for streamable HTTP server metadata at {metadata_url}: deadline reached"
-            ));
-        }
-
-        match tokio::time::timeout(remaining, client.get(&metadata_url).send()).await {
-            Ok(Ok(response)) if response.status() == StatusCode::OK => return Ok(()),
-            Ok(Ok(response)) => {
-                if Instant::now() >= deadline {
-                    return Err(anyhow::anyhow!(
-                        "timed out waiting for streamable HTTP server metadata at {metadata_url}: HTTP {}",
-                        response.status()
-                    ));
-                }
-            }
-            Ok(Err(error)) => {
-                if Instant::now() >= deadline {
-                    return Err(anyhow::anyhow!(
-                        "timed out waiting for streamable HTTP server metadata at {metadata_url}: {error}"
-                    ));
-                }
-            }
-            Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "timed out waiting for streamable HTTP server metadata at {metadata_url}: request timed out"
-                ));
             }
         }
 
