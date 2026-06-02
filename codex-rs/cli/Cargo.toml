@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [[bin]]
 name = "codex"
-path = "src/bin/codex.rs"
+path = "src/main.rs"
+test = false
 
 [lib]
 name = "codex_cli"
