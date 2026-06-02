@@ -249,8 +249,9 @@ fn explicit_unreadable_paths_are_excluded_from_full_disk_read_and_write_access()
         writable_definitions,
         vec![
             "-DWRITABLE_ROOT_0=/".to_string(),
-            "-DWRITABLE_ROOT_0_EXCLUDED_0=/.codex".to_string(),
-            format!("-DWRITABLE_ROOT_0_EXCLUDED_1={}", unreadable_root.display()),
+            "-DWRITABLE_ROOT_0_EXCLUDED_0=/.codewith".to_string(),
+            "-DWRITABLE_ROOT_0_EXCLUDED_1=/.codex".to_string(),
+            format!("-DWRITABLE_ROOT_0_EXCLUDED_2={}", unreadable_root.display()),
         ],
         "unexpected write carveout parameters in args: {args:#?}"
     );
@@ -920,18 +921,25 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
             "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".codex")
+                .join(".codewith")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".git")
+                .join(".codex")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
+            cwd.canonicalize()
+                .expect("canonicalize cwd")
+                .join(".git")
+                .display()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
                 .join(".agents")
@@ -1305,7 +1313,7 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         "missing {expected_dot_git}: {args:#?}"
     );
     let expected_dot_codex = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
+        "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
         dot_codex_canonical.to_string_lossy()
     );
     assert!(

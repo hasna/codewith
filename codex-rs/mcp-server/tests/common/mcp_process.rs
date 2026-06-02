@@ -165,9 +165,9 @@ impl McpProcess {
                     },
                 },
                 "serverInfo": {
-                    "name": "codex-mcp-server",
-                    "title": "Codex",
-                    "version": "0.0.0",
+                    "name": "codewith-mcp-server",
+                    "title": "Codewith",
+                    "version": build_version,
                     "user_agent": user_agent
                 },
                 "protocolVersion": ProtocolVersion::V_2025_03_26
