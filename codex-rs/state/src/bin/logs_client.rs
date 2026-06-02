@@ -1,3 +1,4 @@
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,13 +14,13 @@ use owo_colors::OwoColorize;
 
 #[derive(Debug, Parser)]
 #[command(name = "codex-state-logs")]
-#[command(about = "Tail Codex logs from the dedicated logs SQLite DB with simple filters")]
+#[command(about = "Tail Codewith logs from the dedicated logs SQLite DB with simple filters")]
 struct Args {
-    /// Path to CODEX_HOME. Defaults to $CODEX_HOME or ~/.codex.
-    #[arg(long, env = "CODEX_HOME")]
+    /// Path to Codewith home. Defaults to $CODEWITH_HOME, $CODEX_HOME, or ~/.codewith.
+    #[arg(long = "codewith-home", alias = "codex-home", env = "CODEWITH_HOME")]
     codex_home: Option<PathBuf>,
 
-    /// Direct path to the logs SQLite database. Overrides --codex-home.
+    /// Direct path to the logs SQLite database. Overrides --codewith-home.
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -140,10 +141,16 @@ fn resolve_db_path(args: &Args) -> anyhow::Result<PathBuf> {
 }
 
 fn default_codex_home() -> PathBuf {
-    if let Some(home) = home_dir() {
-        return home.join(".codex");
+    if let Some(home) = env::var_os("CODEWITH_HOME") {
+        return PathBuf::from(home);
     }
-    PathBuf::from(".codex")
+    if let Some(home) = env::var_os("CODEX_HOME") {
+        return PathBuf::from(home);
+    }
+    if let Some(home) = home_dir() {
+        return home.join(".codewith");
+    }
+    PathBuf::from(".codewith")
 }
 
 fn build_filter(args: &Args) -> anyhow::Result<LogFilter> {
@@ -381,6 +388,42 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = env::var_os(key);
+            unsafe {
+                env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(previous) => env::set_var(self.key, previous),
+                    None => env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     #[test]
     fn log_level_threshold_includes_more_severe_levels() {
         assert_eq!(
@@ -412,5 +455,23 @@ mod tests {
             .expect("parse uppercase log level");
 
         assert_eq!(args.level, Some(LogLevelThreshold::Warn));
+    }
+
+    #[test]
+    fn default_home_prefers_codewith_home() {
+        let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+        let _codewith_home = EnvGuard::set("CODEWITH_HOME", "/tmp/codewith-home");
+        let _codex_home = EnvGuard::set("CODEX_HOME", "/tmp/codex-home");
+
+        assert_eq!(default_codex_home(), PathBuf::from("/tmp/codewith-home"));
+    }
+
+    #[test]
+    fn default_home_falls_back_to_compat_codex_home() {
+        let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+        let _codewith_home = EnvGuard::remove("CODEWITH_HOME");
+        let _codex_home = EnvGuard::set("CODEX_HOME", "/tmp/codex-home");
+
+        assert_eq!(default_codex_home(), PathBuf::from("/tmp/codex-home"));
     }
 }

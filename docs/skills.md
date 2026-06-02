@@ -1,3 +1,3 @@
 # Skills
 
-For information about skills, refer to [this documentation](https://developers.openai.com/codex/skills).
+For information about Codewith skills, see the [upstream compatibility reference](https://developers.openai.com/codex/skills).

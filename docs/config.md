@@ -1,10 +1,10 @@
 # Configuration
 
-For basic configuration instructions, see [this documentation](https://developers.openai.com/codex/config-basic).
+For basic Codewith configuration instructions, see the [upstream compatibility reference](https://developers.openai.com/codex/config-basic).
 
-For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced).
+For advanced Codewith configuration instructions, see the [upstream compatibility reference](https://developers.openai.com/codex/config-advanced).
 
-For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
+For the full configuration reference, see the [upstream compatibility reference](https://developers.openai.com/codex/config-reference).
 
 ## Lifecycle hooks
 

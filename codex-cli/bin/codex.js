@@ -181,7 +181,7 @@ function defaultCodewithHome() {
 }
 
 function resolveCodewithHome() {
-  return env.CODEWITH_HOME || defaultCodewithHome();
+  return env.CODEWITH_HOME || env.CODEX_HOME || defaultCodewithHome();
 }
 
 env.CODEX_HOME = resolveCodewithHome();

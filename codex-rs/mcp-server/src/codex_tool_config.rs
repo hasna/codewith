@@ -23,7 +23,7 @@ use std::sync::Arc;
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct CodexToolCallParam {
-    /// The *initial user prompt* to start the Codex conversation.
+    /// The *initial user prompt* to start the Codewith conversation.
     pub prompt: String,
 
     /// Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex').
@@ -45,7 +45,7 @@ pub struct CodexToolCallParam {
     pub sandbox: Option<CodexToolCallSandboxMode>,
 
     /// Individual config settings that will override what is in
-    /// CODEX_HOME/config.toml.
+    /// CODEWITH_HOME/config.toml.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<HashMap<String, serde_json::Value>>,
 
@@ -104,7 +104,7 @@ impl From<CodexToolCallSandboxMode> for SandboxMode {
     }
 }
 
-/// Builds a `Tool` definition (JSON schema etc.) for the Codex tool-call.
+/// Builds a `Tool` definition (JSON schema etc.) for the Codewith tool-call.
 pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
@@ -114,14 +114,14 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
         .into_generator()
         .into_root_schema_for::<CodexToolCallParam>();
 
-    let input_schema = create_tool_input_schema(schema, "Codex tool schema should serialize");
+    let input_schema = create_tool_input_schema(schema, "Codewith tool schema should serialize");
 
     Tool::new(
-        "codex",
-        "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
+        "codewith",
+        "Run a Codewith session. Accepts configuration parameters matching the Codewith Config struct.",
         input_schema,
     )
-    .with_title("Codex")
+    .with_title("Codewith")
     .with_raw_output_schema(codex_tool_output_schema())
 }
 
@@ -141,7 +141,7 @@ fn codex_tool_output_schema() -> Arc<JsonObject> {
 }
 
 impl CodexToolCallParam {
-    /// Returns the initial user prompt to start the Codex conversation and the
+    /// Returns the initial user prompt to start the Codewith conversation and the
     /// effective Config object generated from the supplied parameters.
     pub async fn into_config(
         self,
@@ -197,13 +197,13 @@ pub struct CodexToolCallReplyParam {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     conversation_id: Option<String>,
 
-    /// The thread id for this Codex session.
+    /// The thread id for this Codewith session.
     /// This field is required, but we keep it optional here for backward
     /// compatibility for clients that still use conversationId.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thread_id: Option<String>,
 
-    /// The *next user prompt* to continue the Codex conversation.
+    /// The *next user prompt* to continue the Codewith conversation.
     pub prompt: String,
 }
 
@@ -233,14 +233,14 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
         .into_generator()
         .into_root_schema_for::<CodexToolCallReplyParam>();
 
-    let input_schema = create_tool_input_schema(schema, "Codex reply tool schema should serialize");
+    let input_schema = create_tool_input_schema(schema, "Codewith reply tool schema should serialize");
 
     Tool::new(
-        "codex-reply",
-        "Continue a Codex conversation by providing the thread id and prompt.",
+        "codewith-reply",
+        "Continue a Codewith conversation by providing the thread id and prompt.",
         input_schema,
     )
-    .with_title("Codex Reply")
+    .with_title("Codewith Reply")
     .with_raw_output_schema(codex_tool_output_schema())
 }
 
@@ -296,7 +296,7 @@ mod tests {
         let tool = create_tool_for_codex_tool_call_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
         let expected_tool_json = serde_json::json!({
-          "description": "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
+          "description": "Run a Codewith session. Accepts configuration parameters matching the Codewith Config struct.",
           "inputSchema": {
             "additionalProperties": false,
             "properties": {
@@ -320,7 +320,7 @@ mod tests {
               },
               "config": {
                 "additionalProperties": true,
-                "description": "Individual config settings that will override what is in CODEX_HOME/config.toml.",
+                "description": "Individual config settings that will override what is in CODEWITH_HOME/config.toml.",
                 "type": "object"
               },
               "cwd": {
@@ -336,7 +336,7 @@ mod tests {
                 "type": "string"
               },
               "prompt": {
-                "description": "The *initial user prompt* to start the Codex conversation.",
+                "description": "The *initial user prompt* to start the Codewith conversation.",
                 "type": "string"
               },
               "sandbox": {
@@ -354,7 +354,7 @@ mod tests {
             ],
             "type": "object"
           },
-          "name": "codex",
+          "name": "codewith",
           "outputSchema": {
             "properties": {
               "content": {
@@ -370,7 +370,7 @@ mod tests {
             ],
             "type": "object"
           },
-          "title": "Codex"
+          "title": "Codewith"
         });
         assert_eq!(expected_tool_json, tool_json);
     }
@@ -394,7 +394,7 @@ mod tests {
         let tool = create_tool_for_codex_tool_call_reply_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
         let expected_tool_json = serde_json::json!({
-          "description": "Continue a Codex conversation by providing the thread id and prompt.",
+          "description": "Continue a Codewith conversation by providing the thread id and prompt.",
           "inputSchema": {
             "properties": {
               "conversationId": {
@@ -402,11 +402,11 @@ mod tests {
                 "type": "string"
               },
               "prompt": {
-                "description": "The *next user prompt* to continue the Codex conversation.",
+                "description": "The *next user prompt* to continue the Codewith conversation.",
                 "type": "string"
               },
               "threadId": {
-                "description": "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
+                "description": "The thread id for this Codewith session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
                 "type": "string"
               }
             },
@@ -415,7 +415,7 @@ mod tests {
             ],
             "type": "object",
           },
-          "name": "codex-reply",
+          "name": "codewith-reply",
           "outputSchema": {
             "properties": {
               "content": {
@@ -431,7 +431,7 @@ mod tests {
             ],
             "type": "object"
           },
-          "title": "Codex Reply",
+          "title": "Codewith Reply",
         });
         assert_eq!(expected_tool_json, tool_json);
     }

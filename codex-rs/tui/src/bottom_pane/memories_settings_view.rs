@@ -30,7 +30,7 @@ use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::measure_rows_height;
 use super::selection_popup_common::render_rows;
 
-const MEMORIES_DOC_URL: &str = "https://developers.openai.com/codex/memories";
+const MEMORIES_DOC_URL: &str = "https://github.com/hasna/codewith/blob/main/docs/config.md";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MemoriesSetting {
@@ -116,7 +116,7 @@ impl MemoriesSettingsView {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Memories".bold()));
         header.push(Line::from(
-            "Choose how Codex uses and creates memories. Changes are saved to config.toml".dim(),
+            "Choose how Codewith uses and creates memories. Changes are saved to config.toml".dim(),
         ));
         header
     }
@@ -125,7 +125,7 @@ impl MemoriesSettingsView {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Reset all memories?".bold()));
         header.push(Line::from(
-            "This clears local memory files and rollout summaries for the current Codex home."
+            "This clears local memory files and rollout summaries for the current Codewith home."
                 .dim(),
         ));
         header

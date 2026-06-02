@@ -753,7 +753,7 @@ fn event_description(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "When the user submits a prompt",
         HookEventName::SubagentStart => "When a subagent is created",
         HookEventName::SubagentStop => "Right before a subagent ends its turn",
-        HookEventName::Stop => "Right before Codex ends its turn",
+        HookEventName::Stop => "Right before Codewith ends its turn",
     }
 }
 
@@ -905,6 +905,14 @@ mod tests {
             .join("\n")
     }
 
+    fn render_trimmed_lines(view: &HooksBrowserView, width: u16) -> String {
+        render_lines(view, width)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn render_buffer(view: &HooksBrowserView, width: u16) -> Buffer {
         let height = view.desired_height(width);
         let area = Rect::new(0, 0, width, height);
@@ -992,7 +1000,10 @@ mod tests {
     #[test]
     fn renders_event_browser() {
         let view = view();
-        assert_snapshot!("hooks_browser_events", render_lines(&view, /*width*/ 112));
+        assert_snapshot!(
+            "hooks_browser_events",
+            render_trimmed_lines(&view, /*width*/ 112)
+        );
     }
 
     #[test]
@@ -1038,7 +1049,7 @@ mod tests {
 
         assert_snapshot!(
             "hooks_browser_events_with_review_column",
-            render_lines(&view, /*width*/ 112)
+            render_trimmed_lines(&view, /*width*/ 112)
         );
         assert_eq!(
             view.event_table_lines()[1].spans[3].style.fg,
@@ -1067,7 +1078,7 @@ mod tests {
 
         assert_snapshot!(
             "hooks_browser_events_with_issues",
-            render_lines(&view, /*width*/ 112)
+            render_trimmed_lines(&view, /*width*/ 112)
         );
     }
 

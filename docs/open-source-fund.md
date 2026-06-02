@@ -1,8 +1,5 @@
 ## Codewith open source fund
 
-We're excited to launch a **$1 million initiative** supporting open source projects that use Codewith and other OpenAI models.
+Codewith does not currently run a separate open source fund.
 
-- Grants are awarded up to **$25,000** API credits.
-- Applications are reviewed **on a rolling basis**.
-
-**Interested? [Apply here](https://openai.com/form/codex-open-source-fund/).**
+This page is retained to avoid broken documentation links while the public Codewith docs are being consolidated.

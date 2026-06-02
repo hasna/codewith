@@ -63,7 +63,7 @@ test("codewith shim defaults CODEX_HOME to ~/.codewith", () => {
       ...process.env,
       HOME: home,
       USERPROFILE: home,
-      CODEX_HOME: regularCodexHome,
+      CODEX_HOME: "",
       CODEWITH_HOME: "",
     },
     encoding: "utf8",
@@ -79,6 +79,30 @@ test("codewith shim defaults CODEX_HOME to ~/.codewith", () => {
   if (process.platform !== "win32") {
     assert.equal(statSync(codewithHome).mode & 0o777, 0o700);
   }
+});
+
+test("codewith shim honors CODEX_HOME as a compatibility fallback", () => {
+  const root = stageShim();
+  const home = path.join(root, "home");
+  const legacyConfiguredHome = path.join(root, "legacy-configured-home");
+  mkdirSync(home);
+
+  const output = execFileSync(process.execPath, [path.join(root, "bin", "codex.js"), "exec"], {
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: legacyConfiguredHome,
+      CODEWITH_HOME: "",
+    },
+    encoding: "utf8",
+  });
+
+  assert.deepEqual(JSON.parse(output), {
+    CODEX_HOME: legacyConfiguredHome,
+    CODEWITH_HOME: legacyConfiguredHome,
+    argv: ["exec"],
+  });
 });
 
 test("codewith shim lets CODEWITH_HOME override the default home", () => {
@@ -105,7 +129,7 @@ test("codewith shim lets CODEWITH_HOME override the default home", () => {
   });
 });
 
-test("codewith shim ignores inherited CODEX_HOME and uses CODEWITH_HOME", () => {
+test("codewith shim lets CODEWITH_HOME override CODEX_HOME", () => {
   const root = stageShim();
   const home = path.join(root, "home");
   const codexHome = path.join(home, ".codex");

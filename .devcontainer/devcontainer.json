@@ -1,5 +1,5 @@
 {
-  "name": "Codex",
+  "name": "Codewith",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",

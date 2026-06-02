@@ -550,7 +550,7 @@ impl AuthModeWidget {
             "".into(),
             "  Before you start:".into(),
             "".into(),
-            "  Decide how much autonomy you want to grant Codex".into(),
+            "  Decide how much autonomy you want to grant Codewith".into(),
             Line::from(vec![
                 "  For more details see the ".into(),
                 crate::terminal_hyperlinks::osc8_hyperlink(
