@@ -6,7 +6,7 @@ inputs:
     required: true
   binaries:
     description: Space-delimited binary basenames to sign and notarize.
-    default: "codex codex-responses-api-proxy"
+    default: "codewith codex-responses-api-proxy"
   sign-binaries:
     description: Whether to sign and notarize the macOS binaries.
     required: false

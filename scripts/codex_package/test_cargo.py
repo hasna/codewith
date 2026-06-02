@@ -66,6 +66,19 @@ class SourceBinariesForTargetTest(unittest.TestCase):
             ["codex-command-runner", "codex-windows-sandbox-setup"],
         )
 
+    def test_primary_package_builds_codewith_entrypoint(self) -> None:
+        self.assertEqual(
+            source_binaries_for_target(
+                TARGET_SPECS["x86_64-unknown-linux-musl"],
+                PACKAGE_VARIANTS["codex"],
+                build_entrypoint=True,
+                build_bwrap=False,
+                build_codex_command_runner=False,
+                build_codex_windows_sandbox_setup=False,
+            ),
+            ["codewith"],
+        )
+
     def test_build_uses_prebuilt_windows_helpers_without_running_cargo(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

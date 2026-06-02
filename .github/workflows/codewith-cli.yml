@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          cargo_args=(build --locked -p codex-cli --bin codex)
+          cargo_args=(build --locked -p codex-cli --bin codewith)
           if [[ "${BUILD_PROFILE}" == "release" ]]; then
             cargo_args+=(--release)
           fi
@@ -83,7 +83,7 @@ jobs:
           rm -rf "${stage_dir}" "${archive}"
           mkdir -p "${stage_dir}"
           install -m 0755 "../scripts/codewith" "${stage_dir}/codewith"
-          install -m 0755 "target/${profile_dir}/codex" "${stage_dir}/codewith-bin"
+          install -m 0755 "target/${profile_dir}/codewith" "${stage_dir}/codewith-bin"
           "${stage_dir}/codewith" --version
           tar -C "${stage_dir}" -czf "${archive}" codewith codewith-bin
 

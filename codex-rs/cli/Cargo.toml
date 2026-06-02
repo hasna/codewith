@@ -6,8 +6,12 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "codex"
+name = "codewith"
 path = "src/main.rs"
+
+[[bin]]
+name = "codex"
+path = "src/bin/codex.rs"
 
 [lib]
 name = "codex_cli"

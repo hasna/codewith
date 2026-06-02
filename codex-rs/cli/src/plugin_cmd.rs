@@ -19,7 +19,7 @@ use codex_utils_cli::CliConfigOverrides;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::marketplace_cmd::MarketplaceCli;
+use super::marketplace_cmd::MarketplaceCli;
 
 const OPENAI_BUNDLED_ALPHA_MARKETPLACE_NAME: &str = "openai-bundled-alpha";
 const OPENAI_PRIMARY_RUNTIME_MARKETPLACE_NAME: &str = "openai-primary-runtime";

@@ -4,8 +4,9 @@ import { Codex } from "../src/codex";
 import type { CodexConfigObject } from "../src/codexOptions";
 
 export const codexExecPath =
+  process.env.CODEWITH_EXEC_PATH ??
   process.env.CODEX_EXEC_PATH ??
-  path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codex");
+  path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codewith");
 
 type CreateTestClientOptions = {
   apiKey?: string;

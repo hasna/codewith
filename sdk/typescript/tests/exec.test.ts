@@ -151,13 +151,30 @@ describe("CodexExec", () => {
     const vendorRoot = mkdtempSync(path.join(tmpdir(), "codex-sdk-vendor-"));
     const packageRoot = path.join(vendorRoot, "x86_64-unknown-linux-musl");
     const binDir = path.join(packageRoot, "bin");
+    const pathDir = path.join(packageRoot, "codewith-path");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(pathDir, { recursive: true });
+    writeFileSync(path.join(packageRoot, "codex-package.json"), "{}");
+    writeFileSync(path.join(binDir, "codewith"), "");
+
+    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codewith", "codex")).toEqual({
+      executablePath: path.join(binDir, "codewith"),
+      pathDirs: [pathDir],
+    });
+  });
+
+  it("resolves legacy codex binary in the package layout", async () => {
+    const { resolveNativePackage } = await import("../src/exec");
+    const vendorRoot = mkdtempSync(path.join(tmpdir(), "codex-sdk-vendor-"));
+    const packageRoot = path.join(vendorRoot, "x86_64-unknown-linux-musl");
+    const binDir = path.join(packageRoot, "bin");
     const pathDir = path.join(packageRoot, "codex-path");
     mkdirSync(binDir, { recursive: true });
     mkdirSync(pathDir, { recursive: true });
     writeFileSync(path.join(packageRoot, "codex-package.json"), "{}");
     writeFileSync(path.join(binDir, "codex"), "");
 
-    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codex")).toEqual({
+    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codewith", "codex")).toEqual({
       executablePath: path.join(binDir, "codex"),
       pathDirs: [pathDir],
     });
@@ -173,7 +190,7 @@ describe("CodexExec", () => {
     mkdirSync(pathDir, { recursive: true });
     writeFileSync(path.join(binDir, "codex"), "");
 
-    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codex")).toEqual({
+    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codewith", "codex")).toEqual({
       executablePath: path.join(binDir, "codex"),
       pathDirs: [pathDir],
     });

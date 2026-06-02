@@ -307,8 +307,7 @@ mod tests {
 
     #[test]
     fn extract_prompt_request_returns_text_after_last_delimiter() {
-        let message =
-            "# Context\n## My request for Codewith:\nFirst\n## My request for Codewith:\n  Second\n";
+        let message = "# Context\n## My request for Codewith:\nFirst\n## My request for Codewith:\n  Second\n";
 
         assert_eq!(
             extract_prompt_request_with_offset(message),

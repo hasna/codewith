@@ -20,8 +20,8 @@ function currentTargetTriple() {
   return target;
 }
 
-function writeFakeNativeBinary(root) {
-  const binaryName = process.platform === "win32" ? "codex.exe" : "codex";
+function writeFakeNativeBinary(root, binaryStem = "codewith") {
+  const binaryName = process.platform === "win32" ? `${binaryStem}.exe` : binaryStem;
   const binaryPath = path.join(root, "vendor", currentTargetTriple(), "bin", binaryName);
   mkdirSync(path.dirname(binaryPath), { recursive: true });
   writeFileSync(
@@ -40,12 +40,12 @@ function writeFakeNativeBinary(root) {
   chmodSync(binaryPath, 0o755);
 }
 
-function stageShim() {
+function stageShim(binaryStem = "codewith") {
   const root = mkdtempSync(path.join(tmpdir(), "codewith-shim-"));
   const binDir = path.join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   copyFileSync(new URL("./codex.js", import.meta.url), path.join(binDir, "codex.js"));
-  writeFakeNativeBinary(root);
+  writeFakeNativeBinary(root, binaryStem);
   return root;
 }
 
@@ -155,4 +155,27 @@ test("codewith shim lets CODEWITH_HOME override CODEX_HOME", () => {
     argv: ["--version"],
   });
   assert.equal(existsSync(path.join(codewithHome, "auth.json")), false);
+});
+
+test("codewith shim supports legacy codex native binary packages", () => {
+  const root = stageShim("codex");
+  const home = path.join(root, "home");
+  mkdirSync(home);
+
+  const output = execFileSync(process.execPath, [path.join(root, "bin", "codex.js"), "--version"], {
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: "",
+      CODEWITH_HOME: "",
+    },
+    encoding: "utf8",
+  });
+
+  assert.deepEqual(JSON.parse(output), {
+    CODEX_HOME: path.join(home, ".codewith"),
+    CODEWITH_HOME: path.join(home, ".codewith"),
+    argv: ["--version"],
+  });
 });

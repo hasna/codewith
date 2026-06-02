@@ -53,7 +53,7 @@ MACOS_WEBRTC_RUSTC_LINK_FLAGS = select({
     "//conditions:default": [],
 })
 
-def multiplatform_binaries(name, platforms = PLATFORMS):
+def multiplatform_binaries(name, platforms = PLATFORMS, release_group_name = "release_binaries"):
     for platform in platforms:
         platform_data(
             name = name + "_" + platform,
@@ -63,7 +63,7 @@ def multiplatform_binaries(name, platforms = PLATFORMS):
         )
 
     native.filegroup(
-        name = "release_binaries",
+        name = release_group_name,
         srcs = [name + "_" + platform for platform in platforms],
         tags = ["manual"],
     )

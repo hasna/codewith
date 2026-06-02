@@ -76,20 +76,32 @@ if (!platformPackage) {
   throw new Error(`Unsupported target triple: ${targetTriple}`);
 }
 
-const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
+const codewithBinaryName = process.platform === "win32" ? "codewith.exe" : "codewith";
+const legacyCodexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
 const packageBinaryPath = (vendorRoot) =>
-  path.join(vendorRoot, targetTriple, "bin", codexBinaryName);
+  path.join(vendorRoot, targetTriple, "bin", codewithBinaryName);
+const legacyPackageBinaryPath = (vendorRoot) =>
+  path.join(vendorRoot, targetTriple, "bin", legacyCodexBinaryName);
 const legacyBinaryPath = (vendorRoot) =>
-  path.join(vendorRoot, targetTriple, "codex", codexBinaryName);
+  path.join(vendorRoot, targetTriple, "codex", legacyCodexBinaryName);
 
 function resolveNativePackage(vendorRoot) {
   const packageRoot = path.join(vendorRoot, targetTriple);
+  const pathDir = resolvePathDir(packageRoot);
   const binaryPath = packageBinaryPath(vendorRoot);
   if (existsSync(binaryPath)) {
     return {
       binaryPath,
-      pathDir: path.join(packageRoot, "codex-path"),
+      pathDir,
+    };
+  }
+
+  const legacyPackagePath = legacyPackageBinaryPath(vendorRoot);
+  if (existsSync(legacyPackagePath)) {
+    return {
+      binaryPath: legacyPackagePath,
+      pathDir,
     };
   }
 
@@ -102,6 +114,20 @@ function resolveNativePackage(vendorRoot) {
   }
 
   return null;
+}
+
+function resolvePathDir(packageRoot) {
+  const codewithPathDir = path.join(packageRoot, "codewith-path");
+  if (existsSync(codewithPathDir)) {
+    return codewithPathDir;
+  }
+
+  const codexPathDir = path.join(packageRoot, "codex-path");
+  if (existsSync(codexPathDir)) {
+    return codexPathDir;
+  }
+
+  return path.join(packageRoot, "codex-path");
 }
 
 let nativePackage;

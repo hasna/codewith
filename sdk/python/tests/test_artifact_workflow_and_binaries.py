@@ -40,12 +40,12 @@ def _load_runtime_setup_module():
 
 def _write_fake_codex_package(package_dir: Path, script) -> Path:
     (package_dir / "bin").mkdir(parents=True)
-    (package_dir / "codex-resources").mkdir()
-    (package_dir / "codex-path").mkdir()
+    (package_dir / "codewith-resources").mkdir()
+    (package_dir / "codewith-path").mkdir()
     (package_dir / "codex-package.json").write_text('{"variant":"codex"}\n')
-    (package_dir / "bin" / script.runtime_binary_name()).write_text("fake codex\n")
-    (package_dir / "codex-resources" / "bwrap").write_text("fake bwrap\n")
-    (package_dir / "codex-path" / "rg").write_text("fake rg\n")
+    (package_dir / "bin" / script.runtime_binary_name()).write_text("fake codewith\n")
+    (package_dir / "codewith-resources" / "bwrap").write_text("fake bwrap\n")
+    (package_dir / "codewith-path" / "rg").write_text("fake rg\n")
     return package_dir
 
 
@@ -406,8 +406,8 @@ def test_runtime_package_is_wheel_only_and_builds_platform_specific_wheels() -> 
         "include": [
             "src/codex_cli_bin/codex-package.json",
             "src/codex_cli_bin/bin/**",
-            "src/codex_cli_bin/codex-resources/**",
-            "src/codex_cli_bin/codex-path/**",
+            "src/codex_cli_bin/codewith-resources/**",
+            "src/codex_cli_bin/codewith-path/**",
         ],
         "hooks": {"custom": {}},
     }
@@ -438,11 +438,11 @@ def test_stage_runtime_release_copies_package_layout_and_sets_version(
     assert {
         "metadata": (package_root / "codex-package.json").read_text(),
         "codex": (package_root / "bin" / script.runtime_binary_name()).read_text(),
-        "bwrap": (package_root / "codex-resources" / "bwrap").read_text(),
-        "rg": (package_root / "codex-path" / "rg").read_text(),
+        "bwrap": (package_root / "codewith-resources" / "bwrap").read_text(),
+        "rg": (package_root / "codewith-path" / "rg").read_text(),
     } == {
         "metadata": '{"variant":"codex"}\n',
-        "codex": "fake codex\n",
+        "codex": "fake codewith\n",
         "bwrap": "fake bwrap\n",
         "rg": "fake rg\n",
     }
@@ -476,7 +476,7 @@ def test_stage_runtime_release_replaces_existing_staging_dir(tmp_path: Path) -> 
     assert staged == staging_dir
     assert not old_file.exists()
     package_root = script.staged_runtime_package_root(staged)
-    assert (package_root / "bin" / script.runtime_binary_name()).read_text() == "fake codex\n"
+    assert (package_root / "bin" / script.runtime_binary_name()).read_text() == "fake codewith\n"
 
 
 def test_stage_runtime_release_can_pin_wheel_platform_tag(tmp_path: Path) -> None:
@@ -521,8 +521,8 @@ def test_runtime_package_layout_is_included_by_wheel_config(
     assert pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["include"] == [
         "src/codex_cli_bin/codex-package.json",
         "src/codex_cli_bin/bin/**",
-        "src/codex_cli_bin/codex-resources/**",
-        "src/codex_cli_bin/codex-path/**",
+        "src/codex_cli_bin/codewith-resources/**",
+        "src/codex_cli_bin/codewith-path/**",
     ]
 
 

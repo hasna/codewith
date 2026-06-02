@@ -159,7 +159,7 @@ jobs:
             target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "codewith codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
@@ -171,7 +171,7 @@ jobs:
             target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "codewith codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: x86_64-apple-darwin
@@ -184,7 +184,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             bundle: primary
             artifact_name: x86_64-unknown-linux-musl
-            binaries: "codex codex-responses-api-proxy bwrap"
+            binaries: "codewith codex-responses-api-proxy bwrap"
             build_dmg: "false"
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
@@ -196,7 +196,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             bundle: primary
             artifact_name: aarch64-unknown-linux-musl
-            binaries: "codex codex-responses-api-proxy bwrap"
+            binaries: "codewith codex-responses-api-proxy bwrap"
             build_dmg: "false"
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
@@ -389,7 +389,7 @@ jobs:
           release_dir="target/${target}/release"
           dmg_root="${RUNNER_TEMP}/codex-dmg-root"
           volname="Codewith (${target})"
-          dmg_path="${release_dir}/codex-${target}.dmg"
+          dmg_path="${release_dir}/codewith-${target}.dmg"
 
           # The previous "MacOS code signing (binaries)" step signs + notarizes the
           # built artifacts in `${release_dir}`. This step packages *those same*
@@ -448,18 +448,18 @@ jobs:
           done
 
           if [[ "${{ matrix.target }}" == *linux* && "${{ matrix.bundle }}" == "primary" ]]; then
-            bundle_root="${RUNNER_TEMP}/codex-${{ matrix.target }}-bundle"
+            bundle_root="${RUNNER_TEMP}/codewith-${{ matrix.target }}-bundle"
             rm -rf "$bundle_root"
-            mkdir -p "$bundle_root/codex-resources"
-            cp "$dest/codex-${{ matrix.target }}" "$bundle_root/codex"
-            cp "$dest/bwrap-${{ matrix.target }}" "$bundle_root/codex-resources/bwrap"
-            chmod 0755 "$bundle_root/codex" "$bundle_root/codex-resources/bwrap"
-            tar -C "$bundle_root" -cf - codex codex-resources/bwrap |
-              zstd -T0 -19 -o "$dest/codex-${{ matrix.target }}-bundle.tar.zst"
+            mkdir -p "$bundle_root/codewith-resources"
+            cp "$dest/codewith-${{ matrix.target }}" "$bundle_root/codewith"
+            cp "$dest/bwrap-${{ matrix.target }}" "$bundle_root/codewith-resources/bwrap"
+            chmod 0755 "$bundle_root/codewith" "$bundle_root/codewith-resources/bwrap"
+            tar -C "$bundle_root" -cf - codewith codewith-resources/bwrap |
+              zstd -T0 -19 -o "$dest/codewith-${{ matrix.target }}-bundle.tar.zst"
           fi
 
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
-            cp target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg "$dest/codex-${{ matrix.target }}.dmg"
+            cp target/${{ matrix.target }}/release/codewith-${{ matrix.target }}.dmg "$dest/codewith-${{ matrix.target }}.dmg"
           fi
 
       - name: Build Codex package archive
@@ -592,7 +592,7 @@ jobs:
           - target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "codewith codex-responses-api-proxy"
             build_dmg: "false"
           - target: aarch64-apple-darwin
             bundle: app-server
@@ -602,7 +602,7 @@ jobs:
           - target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "codewith codex-responses-api-proxy"
             build_dmg: "false"
           - target: x86_64-apple-darwin
             bundle: app-server

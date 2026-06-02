@@ -550,9 +550,9 @@ function Test-PackageContentsAreComplete {
 
     $expectedFiles = @(
         "codex-package.json",
-        "codex-path\rg.exe",
-        "codex-resources\codex-command-runner.exe",
-        "codex-resources\codex-windows-sandbox-setup.exe"
+        "codewith-path\rg.exe",
+        "codewith-resources\codex-command-runner.exe",
+        "codewith-resources\codex-windows-sandbox-setup.exe"
     )
     foreach ($name in $expectedFiles) {
         if (-not (Test-Path -LiteralPath (Join-Path $PackageDir $name) -PathType Leaf)) {
@@ -574,9 +574,9 @@ function Test-LegacyPlatformNpmContentsAreComplete {
     }
 
     $expectedFiles = @(
-        "codex-resources\codex-command-runner.exe",
-        "codex-resources\codex-windows-sandbox-setup.exe",
-        "codex-resources\rg.exe"
+        "codewith-resources\codex-command-runner.exe",
+        "codewith-resources\codex-windows-sandbox-setup.exe",
+        "codewith-resources\rg.exe"
     )
     foreach ($name in $expectedFiles) {
         if (-not (Test-Path -LiteralPath (Join-Path $PackageDir $name) -PathType Leaf)) {
@@ -844,13 +844,34 @@ try {
                 tar -xzf $archivePath -C $extractDir
 
                 $vendorRoot = Join-Path $extractDir "package/vendor/$target"
-                $resourcesDir = Join-Path $stagingDir "codex-resources"
+                $resourcesDir = Join-Path $stagingDir "codewith-resources"
                 New-Item -ItemType Directory -Force -Path $resourcesDir | Out-Null
-                $copyMap = @{
-                    "codex/codewith.exe" = "codewith.exe"
-                    "codex/codewith-command-runner.exe" = "codex-resources\codex-command-runner.exe"
-                    "codex/codewith-windows-sandbox-setup.exe" = "codex-resources\codex-windows-sandbox-setup.exe"
-                    "path/rg.exe" = "codex-resources\rg.exe"
+                if (Test-Path -LiteralPath (Join-Path $vendorRoot "bin/codewith.exe") -PathType Leaf) {
+                    $copyMap = @{
+                        "bin/codewith.exe" = "codewith.exe"
+                        "codewith-resources/codex-command-runner.exe" = "codewith-resources\codex-command-runner.exe"
+                        "codewith-resources/codex-windows-sandbox-setup.exe" = "codewith-resources\codex-windows-sandbox-setup.exe"
+                        "codewith-path/rg.exe" = "codewith-resources\rg.exe"
+                    }
+                } elseif (Test-Path -LiteralPath (Join-Path $vendorRoot "bin/codex.exe") -PathType Leaf) {
+                    $copyMap = @{
+                        "bin/codex.exe" = "codewith.exe"
+                        "codex-resources/codex-command-runner.exe" = "codewith-resources\codex-command-runner.exe"
+                        "codex-resources/codex-windows-sandbox-setup.exe" = "codewith-resources\codex-windows-sandbox-setup.exe"
+                        "codex-path/rg.exe" = "codewith-resources\rg.exe"
+                    }
+                } else {
+                    $legacyEntrypoint = if (Test-Path -LiteralPath (Join-Path $vendorRoot "codewith/codewith.exe") -PathType Leaf) {
+                        "codewith/codewith.exe"
+                    } else {
+                        "codex/codex.exe"
+                    }
+                    $copyMap = @{
+                        $legacyEntrypoint = "codewith.exe"
+                        "codex/codex-command-runner.exe" = "codewith-resources\codex-command-runner.exe"
+                        "codex/codex-windows-sandbox-setup.exe" = "codewith-resources\codex-windows-sandbox-setup.exe"
+                        "path/rg.exe" = "codewith-resources\rg.exe"
+                    }
                 }
 
                 foreach ($relativeSource in $copyMap.Keys) {

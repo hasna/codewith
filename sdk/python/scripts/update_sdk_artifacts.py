@@ -50,7 +50,7 @@ def _is_windows() -> bool:
 
 
 def runtime_binary_name() -> str:
-    return "codex.exe" if _is_windows() else "codex"
+    return "codewith.exe" if _is_windows() else "codewith"
 
 
 def staged_runtime_package_root(root: Path) -> Path:
@@ -270,7 +270,7 @@ def _validate_codex_package_layout(package_dir: Path, package_archive: Path) -> 
     missing_entries = []
     if not (package_dir / CODEX_PACKAGE_METADATA).is_file():
         missing_entries.append(CODEX_PACKAGE_METADATA)
-    for entry in ("bin", "codex-resources", "codex-path"):
+    for entry in ("bin", "codewith-resources", "codewith-path"):
         if not (package_dir / entry).is_dir():
             missing_entries.append(entry)
     package_binary = package_dir / "bin" / runtime_binary_name()

@@ -1,4 +1,4 @@
-"""Command-line interface for building Codex package directories."""
+"""Command-line interface for building Codewith package directories."""
 
 import argparse
 import tempfile
@@ -21,7 +21,7 @@ from .version import read_workspace_version
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a canonical Codex package directory and optional archive.",
+        description="Build a canonical Codewith package directory and optional archive.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -174,9 +174,9 @@ def main() -> int:
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()
         write_archive(package_dir, archive_path, force=args.force)
-        print(f"Built Codex package archive at {archive_path}")
+        print(f"Built Codewith package archive at {archive_path}")
 
-    print(f"Built Codex package directory at {package_dir}")
+    print(f"Built Codewith package directory at {package_dir}")
     return 0
 
 

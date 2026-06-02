@@ -1,4 +1,4 @@
-"""Codex-built V8 artifact overrides for package Cargo builds."""
+"""Codewith V8 artifact overrides for package Cargo builds."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def fetch_codex_v8_artifacts(
     cache_root: Path | None = None,
 ) -> RustyV8ArtifactPair:
     if spec.is_windows:
-        raise RuntimeError(f"No Codex-built V8 release artifacts for target: {spec.target}")
+        raise RuntimeError(f"No Codewith V8 release artifacts for target: {spec.target}")
 
     version = version or resolved_v8_crate_version()
     release_url = (
@@ -146,7 +146,7 @@ def ensure_valid_artifact(artifact: Path, checksum: str, url: str) -> None:
         return
 
     artifact.unlink(missing_ok=True)
-    raise RuntimeError(f"Codex-built V8 artifact {artifact} failed checksum validation.")
+    raise RuntimeError(f"Codewith V8 artifact {artifact} failed checksum validation.")
 
 
 def has_checksum(path: Path, expected: str) -> bool:

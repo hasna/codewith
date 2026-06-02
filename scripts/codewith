@@ -23,6 +23,8 @@ find_codewith_bin() {
   local candidate
   for candidate in \
     "${script_dir}/codewith-bin" \
+    "${script_dir}/../codex-rs/target/debug/codewith" \
+    "${script_dir}/../codex-rs/target/release/codewith" \
     "${script_dir}/../codex-rs/target/debug/codex" \
     "${script_dir}/../codex-rs/target/release/codex"; do
     if [[ -x "${candidate}" ]]; then

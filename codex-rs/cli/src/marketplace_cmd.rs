@@ -14,7 +14,7 @@ use codex_core_plugins::marketplace_remove::remove_marketplace;
 use codex_utils_cli::CliConfigOverrides;
 use std::collections::HashSet;
 
-use crate::plugin_cmd::configured_marketplace_snapshot_issues;
+use super::plugin_cmd::configured_marketplace_snapshot_issues;
 
 #[derive(Debug, Parser)]
 #[command(bin_name = "codewith plugin marketplace")]
@@ -168,7 +168,7 @@ async fn run_list(overrides: Vec<(String, toml::Value)>) -> Result<()> {
         .collect::<HashSet<_>>();
     for error in &marketplace_listing.errors {
         if issue_paths.insert(error.path.to_path_buf()) {
-            load_issues.push(crate::plugin_cmd::ConfiguredMarketplaceSnapshotIssue {
+            load_issues.push(super::plugin_cmd::ConfiguredMarketplaceSnapshotIssue {
                 marketplace_name: error.path.display().to_string(),
                 path: error.path.to_path_buf(),
                 message: error.message.clone(),

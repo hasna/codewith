@@ -64,7 +64,8 @@ impl KeymapDebugView {
         let mut lines = vec![
             Line::from("Keypress Inspector".bold()),
             Line::from(
-                "Press any key to see what Codewith receives. Esc is inspected; Ctrl+C closes.".dim(),
+                "Press any key to see what Codewith receives. Esc is inspected; Ctrl+C closes."
+                    .dim(),
             ),
         ];
         let hint = if self.should_show_delayed_hint(now) {

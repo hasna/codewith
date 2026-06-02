@@ -20,7 +20,7 @@ pub(crate) fn confirm_repair(startup_error: &LocalStateDbStartupError) -> std::i
     eprintln!("Codewith couldn't start because its local database appears to be damaged.");
     eprintln!("Codewith can try a safe repair by backing up those files and rebuilding them.");
     print_technical_details(startup_error);
-    crate::confirm("Repair Codewith local data now? [y/N]: ")
+    super::confirm("Repair Codewith local data now? [y/N]: ")
 }
 
 pub(crate) async fn repair_files(

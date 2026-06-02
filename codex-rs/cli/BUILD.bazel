@@ -7,5 +7,10 @@ codex_rust_crate(
 )
 
 multiplatform_binaries(
+    name = "codewith",
+)
+
+multiplatform_binaries(
     name = "codex",
+    release_group_name = "codex_release_binaries",
 )

@@ -398,8 +398,14 @@ function findCodexPath(): CodexPathResolution {
     );
   }
 
-  const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
-  const nativePackage = resolveNativePackage(vendorRoot, targetTriple, codexBinaryName);
+  const codewithBinaryName = process.platform === "win32" ? "codewith.exe" : "codewith";
+  const legacyCodexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
+  const nativePackage = resolveNativePackage(
+    vendorRoot,
+    targetTriple,
+    codewithBinaryName,
+    legacyCodexBinaryName,
+  );
   if (!nativePackage) {
     throw new Error(
       `Unable to locate Codewith CLI binaries for ${targetTriple}. Ensure ${CODEX_NPM_NAME} is installed with optional dependencies.`,
@@ -412,18 +418,32 @@ function findCodexPath(): CodexPathResolution {
 export function resolveNativePackage(
   vendorRoot: string,
   targetTriple: string,
-  codexBinaryName: string,
+  codewithBinaryName: string,
+  legacyCodexBinaryName = codewithBinaryName,
 ): CodexPathResolution | null {
   const packageRoot = path.join(vendorRoot, targetTriple);
-  const packageBinaryPath = path.join(packageRoot, "bin", codexBinaryName);
+  const packagePathDirs = existingDirs(
+    path.join(packageRoot, "codewith-path"),
+    path.join(packageRoot, "codex-path"),
+  );
+
+  const packageBinaryPath = path.join(packageRoot, "bin", codewithBinaryName);
   if (isFile(packageBinaryPath) && isFile(path.join(packageRoot, "codex-package.json"))) {
     return {
       executablePath: packageBinaryPath,
-      pathDirs: existingDirs(path.join(packageRoot, "codex-path")),
+      pathDirs: packagePathDirs,
     };
   }
 
-  const legacyBinaryPath = path.join(packageRoot, "codex", codexBinaryName);
+  const legacyPackageBinaryPath = path.join(packageRoot, "bin", legacyCodexBinaryName);
+  if (isFile(legacyPackageBinaryPath) && isFile(path.join(packageRoot, "codex-package.json"))) {
+    return {
+      executablePath: legacyPackageBinaryPath,
+      pathDirs: packagePathDirs,
+    };
+  }
+
+  const legacyBinaryPath = path.join(packageRoot, "codex", legacyCodexBinaryName);
   if (isFile(legacyBinaryPath)) {
     return {
       executablePath: legacyBinaryPath,

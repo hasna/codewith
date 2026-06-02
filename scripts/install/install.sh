@@ -705,13 +705,33 @@ install_legacy_platform_npm_release() {
   mkdir -p "$stage_release/codewith-resources" "$extract_dir"
   tar -xzf "$archive_path" -C "$extract_dir"
 
-  cp "$vendor_root/codewith/codewith" "$stage_release/codewith"
-  cp "$vendor_root/path/rg" "$stage_release/codewith-resources/rg"
-  chmod 0755 "$stage_release/codewith" "$stage_release/codewith-resources/rg"
-  if [ -f "$vendor_root/codewith-resources/bwrap" ]; then
-    cp "$vendor_root/codewith-resources/bwrap" "$stage_release/codewith-resources/bwrap"
-    chmod 0755 "$stage_release/codewith-resources/bwrap"
+  if [ -x "$vendor_root/bin/codewith" ]; then
+    cp "$vendor_root/bin/codewith" "$stage_release/codewith"
+    cp "$vendor_root/codewith-path/rg" "$stage_release/codewith-resources/rg"
+    if [ -f "$vendor_root/codewith-resources/bwrap" ]; then
+      cp "$vendor_root/codewith-resources/bwrap" "$stage_release/codewith-resources/bwrap"
+    fi
+  elif [ -x "$vendor_root/bin/codex" ]; then
+    cp "$vendor_root/bin/codex" "$stage_release/codewith"
+    cp "$vendor_root/codex-path/rg" "$stage_release/codewith-resources/rg"
+    if [ -f "$vendor_root/codex-resources/bwrap" ]; then
+      cp "$vendor_root/codex-resources/bwrap" "$stage_release/codewith-resources/bwrap"
+    fi
+  else
+    if [ -x "$vendor_root/codewith/codewith" ]; then
+      cp "$vendor_root/codewith/codewith" "$stage_release/codewith"
+    else
+      cp "$vendor_root/codex/codex" "$stage_release/codewith"
+    fi
+    cp "$vendor_root/path/rg" "$stage_release/codewith-resources/rg"
+    if [ -f "$vendor_root/codewith-resources/bwrap" ]; then
+      cp "$vendor_root/codewith-resources/bwrap" "$stage_release/codewith-resources/bwrap"
+    elif [ -f "$vendor_root/codex-resources/bwrap" ]; then
+      cp "$vendor_root/codex-resources/bwrap" "$stage_release/codewith-resources/bwrap"
+    fi
   fi
+  chmod 0755 "$stage_release/codewith" "$stage_release/codewith-resources/rg"
+  [ ! -f "$stage_release/codewith-resources/bwrap" ] || chmod 0755 "$stage_release/codewith-resources/bwrap"
 
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
     rm -rf "$release_dir"
@@ -731,7 +751,7 @@ release_dir_is_complete() {
 
   case "$layout" in
     package)
-      [ -f "$release_dir/codewith-package.json" ] &&
+      [ -f "$release_dir/codex-package.json" ] &&
         [ -x "$release_dir/bin/codewith" ] &&
         [ -x "$release_dir/codewith" ] &&
         [ -x "$release_dir/codewith-path/rg" ] ||

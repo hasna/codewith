@@ -1,4 +1,4 @@
-"""Canonical Codex package directory layout."""
+"""Canonical Codewith package directory layout."""
 
 import json
 import shutil
@@ -37,8 +37,8 @@ def build_package_dir(
     inputs: PackageInputs,
 ) -> None:
     bin_dir = package_dir / "bin"
-    resources_dir = package_dir / "codex-resources"
-    path_dir = package_dir / "codex-path"
+    resources_dir = package_dir / "codewith-resources"
+    path_dir = package_dir / "codewith-path"
     bin_dir.mkdir()
     resources_dir.mkdir()
     path_dir.mkdir()
@@ -81,8 +81,8 @@ def build_package_dir(
         "target": spec.target,
         "variant": variant.name,
         "entrypoint": f"bin/{entrypoint_name}",
-        "resourcesDir": "codex-resources",
-        "pathDir": "codex-path",
+        "resourcesDir": "codewith-resources",
+        "pathDir": "codewith-path",
     }
     write_json(package_dir / "codex-package.json", metadata)
 
@@ -96,8 +96,8 @@ def validate_package_dir(
 ) -> None:
     required_dirs = [
         Path("bin"),
-        Path("codex-resources"),
-        Path("codex-path"),
+        Path("codewith-resources"),
+        Path("codewith-path"),
     ]
     for relative_dir in required_dirs:
         path = package_dir / relative_dir
@@ -116,8 +116,8 @@ def validate_package_dir(
         "target": spec.target,
         "variant": variant.name,
         "entrypoint": f"bin/{variant.entrypoint_name(spec)}",
-        "resourcesDir": "codex-resources",
-        "pathDir": "codex-path",
+        "resourcesDir": "codewith-resources",
+        "pathDir": "codewith-path",
     }
     for key, expected in expected_metadata.items():
         actual = metadata.get(key)
@@ -128,24 +128,24 @@ def validate_package_dir(
 
     required_files = [
         Path("bin") / variant.entrypoint_name(spec),
-        Path("codex-path") / spec.rg_name,
+        Path("codewith-path") / spec.rg_name,
     ]
     executable_files = list(required_files)
 
     if include_zsh:
-        zsh_path = Path("codex-resources") / ZSH_RESOURCE_PATH
+        zsh_path = Path("codewith-resources") / ZSH_RESOURCE_PATH
         required_files.append(zsh_path)
         executable_files.append(zsh_path)
 
     if spec.is_linux:
-        required_files.append(Path("codex-resources") / "bwrap")
-        executable_files.append(Path("codex-resources") / "bwrap")
+        required_files.append(Path("codewith-resources") / "bwrap")
+        executable_files.append(Path("codewith-resources") / "bwrap")
 
     if spec.is_windows:
         required_files.extend(
             [
-                Path("codex-resources") / "codex-command-runner.exe",
-                Path("codex-resources") / "codex-windows-sandbox-setup.exe",
+                Path("codewith-resources") / "codex-command-runner.exe",
+                Path("codewith-resources") / "codex-windows-sandbox-setup.exe",
             ]
         )
 
