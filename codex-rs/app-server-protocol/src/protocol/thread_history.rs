@@ -2475,7 +2475,7 @@ mod tests {
             vec![ThreadItem::CommandExecution {
                 id: "legacy-shell-1".into(),
                 command: "echo hello".into(),
-                cwd: test_path_buf("/tmp").abs(),
+                cwd: cwd_from_raw_workdir(Some("/tmp")),
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
