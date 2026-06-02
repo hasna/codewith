@@ -250,6 +250,47 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn build_api_turns_filters_reconstructed_command_executions() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(
+                codex_protocol::protocol::UserMessageEvent {
+                    client_id: None,
+                    message: "run a command".to_string(),
+                    images: None,
+                    image_details: Vec::new(),
+                    local_images: Vec::new(),
+                    local_image_details: Vec::new(),
+                    text_elements: Vec::new(),
+                },
+            )),
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::FunctionCall {
+                id: None,
+                name: "exec_command".to_string(),
+                namespace: None,
+                arguments: serde_json::json!({ "cmd": "echo hi" }).to_string(),
+                call_id: "call-1".to_string(),
+            }),
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
+                    "hi\n".to_string(),
+                ),
+            }),
+        ];
+
+        let turns = build_api_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert!(
+            turns[0]
+                .items
+                .iter()
+                .all(|item| !matches!(item, ThreadItem::CommandExecution { .. })),
+            "history APIs should not include command execution items"
+        );
+    }
+
+    #[test]
     fn validate_dynamic_tools_rejects_empty_namespace() {
         let tools = vec![ApiDynamicToolSpec {
             namespace: Some("".to_string()),

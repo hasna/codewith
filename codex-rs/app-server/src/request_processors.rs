@@ -585,5 +585,14 @@ pub(crate) fn build_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<T
             builder.handle_rollout_item(item);
         }
     }
-    builder.finish()
+    let mut turns = builder.finish();
+    strip_command_execution_items(&mut turns);
+    turns
+}
+
+fn strip_command_execution_items(turns: &mut [Turn]) {
+    for turn in turns {
+        turn.items
+            .retain(|item| !matches!(item, ThreadItem::CommandExecution { .. }));
+    }
 }
