@@ -9,8 +9,6 @@ use codex_core::config::Config;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
-use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
-use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -37,7 +35,6 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
-use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -98,6 +95,34 @@ fn extract_running_cell_id(text: &str) -> String {
         .and_then(|rest| rest.split('\n').next())
         .expect("running header should contain a cell ID")
         .to_string()
+}
+
+fn repeated_output_body(output: &str) -> &str {
+    output
+        .strip_prefix("Total output lines: 1\n\n")
+        .unwrap_or(output)
+}
+
+fn assert_repeated_output_window(output: &str, ch: char, min_retained_chars: usize) {
+    let body = repeated_output_body(output);
+    assert!(
+        body.starts_with(ch) && body.ends_with(ch),
+        "output should preserve repeated {ch:?} prefix and suffix: {output}"
+    );
+    let retained_chars = body.chars().filter(|actual| *actual == ch).count();
+    assert!(
+        retained_chars >= min_retained_chars,
+        "expected at least {min_retained_chars} retained {ch:?} characters, got {retained_chars}"
+    );
+}
+
+fn assert_repeated_output_truncated_with_marker(output: &str, ch: char) {
+    let body = repeated_output_body(output);
+    assert!(
+        body.contains("tokens truncated") || body.contains("chars truncated"),
+        "output should include a truncation marker: {output}"
+    );
+    assert_repeated_output_window(output, ch, 1_000);
 }
 
 fn wait_for_file_source(path: &Path) -> Result<String> {
@@ -809,12 +834,13 @@ text(result.output);
     )
     .await?;
 
-    assert_eq!(
+    assert_repeated_output_window(
         text_item(
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
+            /*index*/ 1,
         ),
-        "x".repeat(50_000)
+        'x',
+        100,
     );
 
     Ok(())
@@ -839,16 +865,12 @@ text(result.output);
     )
     .await?;
 
-    assert_eq!(
+    assert_repeated_output_truncated_with_marker(
         text_item(
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
+            /*index*/ 1,
         ),
-        format!(
-            "Total output lines: 1\n\n{}…2500 tokens truncated…{}",
-            "A".repeat(40_000),
-            "A".repeat(40_000)
-        )
+        'A',
     );
 
     Ok(())
@@ -876,12 +898,13 @@ text(result.output);
     )
     .await?;
 
-    assert_eq!(
+    assert_repeated_output_window(
         text_item(
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
+            /*index*/ 1,
         ),
-        "x".repeat(50_000)
+        'x',
+        100,
     );
 
     Ok(())
@@ -905,12 +928,13 @@ text(result.output);
     )
     .await?;
 
-    assert_eq!(
+    assert_repeated_output_window(
         text_item(
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
+            /*index*/ 1,
         ),
-        "x".repeat(50_000)
+        'x',
+        100,
     );
 
     Ok(())
@@ -937,12 +961,13 @@ text(result.output);
     )
     .await?;
 
-    assert_eq!(
+    assert_repeated_output_window(
         text_item(
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
+            /*index*/ 1,
         ),
-        "x".repeat(50_000)
+        'x',
+        100,
     );
 
     Ok(())
@@ -3006,7 +3031,7 @@ text(JSON.stringify(tool));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
+async fn code_mode_omits_hidden_dynamic_tools_from_runtime() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -3041,12 +3066,17 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
 
     let code = r#"
 const tool = ALL_TOOLS.find(({ name }) => name === "codex_app_hidden_dynamic_tool");
-const out = await tools.codex_app_hidden_dynamic_tool({ city: "Paris" });
+let error = null;
+try {
+  await tools.codex_app_hidden_dynamic_tool({ city: "Paris" });
+} catch (caught) {
+  error = String(caught);
+}
 text(
   JSON.stringify({
-    name: tool?.name ?? null,
-    description: tool?.description ?? null,
-    out,
+    listed: tool !== undefined,
+    callable: typeof tools.codex_app_hidden_dynamic_tool === "function",
+    error,
   })
 );
 "#;
@@ -3102,33 +3132,8 @@ text(
         })
         .await?;
 
-    let turn_id = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
-        _ => None,
-    })
-    .await;
-    let request = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
-        _ => None,
-    })
-    .await;
-    assert_eq!(request.namespace.as_deref(), Some("codex_app"));
-    assert_eq!(request.tool, "hidden_dynamic_tool");
-    assert_eq!(request.arguments, serde_json::json!({ "city": "Paris" }));
-    test.codex
-        .submit(Op::DynamicToolResponse {
-            id: request.call_id,
-            response: DynamicToolResponse {
-                content_items: vec![DynamicToolCallOutputContentItem::InputText {
-                    text: "hidden-ok".to_string(),
-                }],
-                success: true,
-            },
-        })
-        .await?;
-    wait_for_event(&test.codex, |event| match event {
-        EventMsg::TurnComplete(event) => event.turn_id == turn_id,
-        _ => false,
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
 
@@ -3137,30 +3142,20 @@ text(
     assert_ne!(
         success,
         Some(false),
-        "exec hidden dynamic tool call failed unexpectedly: {output}"
+        "exec hidden dynamic tool runtime lookup failed unexpectedly: {output}"
     );
 
     let parsed: Value = serde_json::from_str(
         &custom_tool_output_last_non_empty_text(&req, "call-1")
-            .expect("exec hidden dynamic tool lookup should emit JSON"),
+            .expect("exec hidden dynamic tool runtime lookup should emit JSON"),
     )?;
-    assert_eq!(
-        parsed.get("name"),
-        Some(&Value::String("codex_app_hidden_dynamic_tool".to_string()))
-    );
-    assert_eq!(
-        parsed.get("out"),
-        Some(&Value::String("hidden-ok".to_string()))
-    );
+    assert_eq!(parsed["listed"], false);
+    assert_eq!(parsed["callable"], false);
     assert!(
-        parsed
-            .get("description")
-            .and_then(Value::as_str)
-            .is_some_and(|description| {
-                description.contains("A hidden dynamic tool.")
-                    && description.contains("declare const tools:")
-                    && description.contains("codex_app_hidden_dynamic_tool(args:")
-            })
+        parsed["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("is not a function")),
+        "hidden dynamic tool call should fail before dynamic-tool dispatch: {parsed:?}"
     );
 
     Ok(())
