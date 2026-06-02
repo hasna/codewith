@@ -215,6 +215,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         workspace_roots: vec![cwd],
         workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+        selected_auth_profile: None,
+        auth_profile_auto_switch: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::File,
         mcp_oauth_callback_port: None,
