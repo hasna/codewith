@@ -74,7 +74,6 @@ async fn schedule_created_notification_announces_loop_once() {
     chat.thread_id = Some(thread_id);
     let mut schedule = test_schedule("sch_active", ThreadScheduleStatus::Active);
     schedule.thread_id = thread_id.to_string();
-    schedule.next_run_at = Some(1_700_000_060);
     schedule.updated_at = schedule.created_at;
 
     chat.on_thread_schedule_updated(schedule.clone());
@@ -83,14 +82,19 @@ async fn schedule_created_notification_announces_loop_once() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        rendered.contains("Loop scheduled"),
-        "expected scheduled notification acknowledgement, got: {rendered}"
-    );
-    assert!(
-        rendered.contains("/loop pause sch_active"),
-        "expected loop action hint, got: {rendered}"
+        .join("");
+    insta::assert_snapshot!(
+        rendered,
+        @r###"
+Loops
+• sch_active active every 5 minutes
+  Prompt: check whether CI is green and write the next action
+  Next: not scheduled  Timezone: UTC
+
+Commands: /loop edit <id>, /loop pause <id>, /loop resume <id>, /loop run-now <id>, /loop delete <id>
+
+• Loop scheduled Use /loop pause sch_active, /loop run-now sch_active, or /loop delete sch_active.
+"###
     );
 
     chat.on_thread_schedule_updated(schedule);
