@@ -1464,7 +1464,6 @@ jobs:
     permissions: {}
     environment:
       name: dev-website-vercel-deploy
-      deployment: false
 
     steps:
       - name: Trigger developers.openai.com deploy
