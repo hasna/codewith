@@ -824,6 +824,9 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed' }}
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
+    permissions:
+      contents: read
+      id-token: write
     with:
       release_lto: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'fat' }}
     secrets:
