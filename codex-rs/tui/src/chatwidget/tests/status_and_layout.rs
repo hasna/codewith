@@ -226,6 +226,23 @@ async fn raw_output_status_line_value_only_shows_when_enabled() {
 }
 
 #[tokio::test]
+async fn auth_profile_status_line_value_uses_selected_profile() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::AuthProfile),
+        None
+    );
+
+    chat.config.selected_auth_profile = Some("work".to_string());
+
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::AuthProfile),
+        Some("work".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_branch_changes_render_no_changes() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_git_summary = Some(StatusLineGitSummary {

@@ -589,6 +589,7 @@ impl ChatWidget {
             StatusLineItem::Status => Some(self.run_state_status_text()),
             StatusLineItem::Permissions => Some(permissions_display(&self.config)),
             StatusLineItem::ApprovalMode => Some(approval_mode_display(&self.config)),
+            StatusLineItem::AuthProfile => self.config.selected_auth_profile.clone(),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.blended_total();
@@ -680,6 +681,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::BranchChanges => StatusLineItem::BranchChanges,
             StatusSurfacePreviewItem::Permissions => StatusLineItem::Permissions,
             StatusSurfacePreviewItem::ApprovalMode => StatusLineItem::ApprovalMode,
+            StatusSurfacePreviewItem::AuthProfile => StatusLineItem::AuthProfile,
             StatusSurfacePreviewItem::ContextRemaining => StatusLineItem::ContextRemaining,
             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,

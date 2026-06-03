@@ -91,6 +91,9 @@ pub(crate) enum StatusLineItem {
     #[strum(to_string = "approval-mode", serialize = "approval")]
     ApprovalMode,
 
+    /// Selected authentication profile.
+    AuthProfile,
+
     /// Percentage of context window remaining.
     ContextRemaining,
 
@@ -156,6 +159,7 @@ impl StatusLineItem {
             StatusLineItem::Status => "Compact session run-state text (Ready, Working, Thinking)",
             StatusLineItem::Permissions => "Active permission profile or sandbox mode",
             StatusLineItem::ApprovalMode => "Active command approval mode",
+            StatusLineItem::AuthProfile => "Selected authentication profile",
             StatusLineItem::ContextRemaining => {
                 "Percentage of context window remaining (omitted when unknown)"
             }
@@ -199,6 +203,7 @@ impl StatusLineItem {
             StatusLineItem::Status => StatusSurfacePreviewItem::Status,
             StatusLineItem::Permissions => StatusSurfacePreviewItem::Permissions,
             StatusLineItem::ApprovalMode => StatusSurfacePreviewItem::ApprovalMode,
+            StatusLineItem::AuthProfile => StatusSurfacePreviewItem::AuthProfile,
             StatusLineItem::ContextRemaining => StatusSurfacePreviewItem::ContextRemaining,
             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
