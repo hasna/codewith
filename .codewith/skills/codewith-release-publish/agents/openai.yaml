@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewith Release Publish"
+  short_description: "Package, publish, and locally verify Codewith npm releases."
+  default_prompt: "Publish the current Codewith release to npm, update the local install, and verify it works."
