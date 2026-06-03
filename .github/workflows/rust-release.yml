@@ -859,25 +859,25 @@ jobs:
     if: >-
       ${{
         always() &&
-        needs.tag-check.result == 'success' &&
+        needs['tag-check'].result == 'success' &&
         github.ref_type == 'tag' &&
         (
           (
             github.event_name == 'workflow_dispatch' &&
             inputs.release_mode == 'promote_signed' &&
-            needs.stage-signed-macos.result == 'success' &&
+            needs['stage-signed-macos'].result == 'success' &&
             needs.build.result == 'skipped' &&
-            needs.build-windows.result == 'skipped' &&
-            needs.argument-comment-lint-release-assets.result == 'skipped' &&
-            needs.zsh-release-assets.result == 'skipped'
+            needs['build-windows'].result == 'skipped' &&
+            needs['argument-comment-lint-release-assets'].result == 'skipped' &&
+            needs['zsh-release-assets'].result == 'skipped'
           ) ||
           (
             (github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed') &&
             needs.build.result == 'success' &&
-            needs.stage-signed-macos.result == 'skipped' &&
-            needs.build-windows.result == 'success' &&
-            needs.argument-comment-lint-release-assets.result == 'success' &&
-            needs.zsh-release-assets.result == 'success'
+            needs['stage-signed-macos'].result == 'skipped' &&
+            needs['build-windows'].result == 'success' &&
+            needs['argument-comment-lint-release-assets'].result == 'success' &&
+            needs['zsh-release-assets'].result == 'success'
           )
         )
       }}
