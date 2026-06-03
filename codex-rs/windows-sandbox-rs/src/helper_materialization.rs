@@ -17,7 +17,8 @@ use crate::sandbox_bin_dir;
 
 const DEV_BUILD_VERSION_SENTINEL: &str = "0.0.0";
 pub(crate) const BIN_DIRNAME: &str = "bin";
-pub(crate) const RESOURCES_DIRNAME: &str = "codex-resources";
+pub(crate) const RESOURCES_DIRNAME: &str = "codewith-resources";
+pub(crate) const LEGACY_RESOURCES_DIRNAME: &str = "codex-resources";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum HelperExecutable {
@@ -197,14 +198,21 @@ pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Op
     if dir.file_name() == Some(OsStr::new(BIN_DIRNAME))
         && let Some(package_dir) = dir.parent()
     {
-        let package_resource_candidate = package_dir.join(RESOURCES_DIRNAME).join(file_name);
-        if package_resource_candidate.is_file() {
-            return Some(package_resource_candidate);
+        for resources_dirname in [RESOURCES_DIRNAME, LEGACY_RESOURCES_DIRNAME] {
+            let package_resource_candidate = package_dir.join(resources_dirname).join(file_name);
+            if package_resource_candidate.is_file() {
+                return Some(package_resource_candidate);
+            }
         }
     }
 
-    let resource_candidate = dir.join(RESOURCES_DIRNAME).join(file_name);
-    resource_candidate.is_file().then_some(resource_candidate)
+    for resources_dirname in [RESOURCES_DIRNAME, LEGACY_RESOURCES_DIRNAME] {
+        let resource_candidate = dir.join(resources_dirname).join(file_name);
+        if resource_candidate.is_file() {
+            return Some(resource_candidate);
+        }
+    }
+    None
 }
 
 fn helper_destination_for_source(

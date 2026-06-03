@@ -1,5 +1,5 @@
 # sandbox_smoketests.py
-# Run a suite of smoke tests against the Windows sandbox via the Codex CLI
+# Run a suite of smoke tests against the Windows sandbox via the Codewith CLI
 # Requires: Python 3.8+ on Windows. No pip requirements.
 
 import os
@@ -15,35 +15,36 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 def _resolve_codex_cmd() -> List[str]:
-    """Resolve the Codex CLI to invoke `codex sandbox windows`.
+    """Resolve the Codewith CLI to invoke `codewith sandbox windows`.
 
-    Prefer local builds (debug first), then fall back to PATH.
-    Returns the argv prefix to run Codex.
+    Prefer local builds (debug first), then fall back to PATH. The legacy
+    `codex` binary name is also accepted for backward compatibility.
+    Returns the argv prefix to run Codewith.
     """
     root = Path(__file__).parent
     ws_root = root.parent
     cargo_target = os.environ.get("CARGO_TARGET_DIR")
 
-    candidates = [
-        ws_root / "target" / "debug" / "codex.exe",
-        ws_root / "target" / "release" / "codex.exe",
-    ]
+    bin_dirs = [ws_root / "target" / "debug", ws_root / "target" / "release"]
     if cargo_target:
         cargo_base = Path(cargo_target)
-        candidates.extend([
-            cargo_base / "debug" / "codex.exe",
-            cargo_base / "release" / "codex.exe",
-        ])
+        bin_dirs.extend([cargo_base / "debug", cargo_base / "release"])
+
+    candidates = []
+    for bin_dir in bin_dirs:
+        candidates.append(bin_dir / "codewith.exe")
+        candidates.append(bin_dir / "codex.exe")
 
     for candidate in candidates:
         if candidate.exists():
             return [str(candidate)]
 
-    if shutil.which("codex"):
-        return ["codex"]
+    for name in ("codewith", "codex"):
+        if shutil.which(name):
+            return [name]
 
     raise FileNotFoundError(
-        "Codex CLI not found. Build it first, e.g.\n"
+        "Codewith CLI not found. Build it first, e.g.\n"
         "  cargo build -p codex-cli --release\n"
         "or for debug:\n"
         "  cargo build -p codex-cli\n"

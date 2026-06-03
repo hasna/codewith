@@ -127,7 +127,7 @@ function resolvePathDir(packageRoot) {
     return codexPathDir;
   }
 
-  return path.join(packageRoot, "codex-path");
+  return codewithPathDir;
 }
 
 let nativePackage;

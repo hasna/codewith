@@ -7,9 +7,11 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 const BIN_DIRNAME: &str = "bin";
 const PACKAGE_METADATA_FILENAME: &str = "codex-package.json";
-const PATH_DIRNAME: &str = "codex-path";
+const PATH_DIRNAME: &str = "codewith-path";
+const LEGACY_PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
-const RESOURCES_DIRNAME: &str = "codex-resources";
+const RESOURCES_DIRNAME: &str = "codewith-resources";
+const LEGACY_RESOURCES_DIRNAME: &str = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
 const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
@@ -24,7 +26,7 @@ pub enum StandalonePlatform {
 pub struct CodexPackageLayout {
     /// The package root that contains the metadata file and layout directories.
     pub package_dir: AbsolutePathBuf,
-    /// Directory containing the Codex entrypoint executable.
+    /// Directory containing the Codewith entrypoint executable.
     pub bin_dir: AbsolutePathBuf,
     /// Directory containing managed helper binaries and data files, when present.
     pub resources_dir: Option<AbsolutePathBuf>,
@@ -41,27 +43,28 @@ pub struct InstallContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallMethod {
     Standalone {
-        /// The managed standalone release directory. Legacy installs use paths
-        /// such as
-        /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
+        /// The managed standalone release directory. Installs use paths such as
+        /// `~/.codewith/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`
+        /// (legacy installs use `~/.codex/...`).
         /// Package-layout installs use the package root that contains `bin/`,
-        /// `codex-resources/`, and `codex-path/`.
+        /// `codewith-resources/`, and `codewith-path/` (legacy installs may use
+        /// `codex-resources/` and `codex-path/`).
         release_dir: AbsolutePathBuf,
         /// The bundled resource directory for managed dependencies.
         resources_dir: Option<AbsolutePathBuf>,
         /// The platform of the standalone release, either `Unix` or `Windows`.
         platform: StandalonePlatform,
     },
-    /// A Codex binary launched through the npm-managed `codex.js` shim.
+    /// A Codewith binary launched through the npm-managed `codex.js` shim.
     Npm,
-    /// A Codex binary launched through the bun-managed `codex.js` shim.
+    /// A Codewith binary launched through the bun-managed `codex.js` shim.
     Bun,
-    /// A Codex binary that appears to come from a Homebrew install prefix.
+    /// A Codewith binary that appears to come from a Homebrew install prefix.
     Brew,
     /// Any other execution environment.
     ///
-    /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
-    /// internal launchers, and tests that execute Codex from an arbitrary path.
+    /// This commonly covers `cargo run`, app-bundled Codewith binaries, custom
+    /// internal launchers, and tests that execute Codewith from an arbitrary path.
     Other,
 }
 
@@ -195,12 +198,28 @@ impl CodexPackageLayout {
         }
 
         Some(Self {
-            resources_dir: existing_dir(package_dir.join(RESOURCES_DIRNAME)),
-            path_dir: existing_dir(package_dir.join(PATH_DIRNAME)),
+            resources_dir: existing_resources_dir(&package_dir),
+            path_dir: existing_path_dir(&package_dir),
             package_dir,
             bin_dir,
         })
     }
+}
+
+/// Resolve the resources directory inside a package root, preferring the
+/// `codewith-resources` layout and falling back to the legacy
+/// `codex-resources` directory for older installs.
+fn existing_resources_dir(package_dir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    existing_dir(package_dir.join(RESOURCES_DIRNAME))
+        .or_else(|| existing_dir(package_dir.join(LEGACY_RESOURCES_DIRNAME)))
+}
+
+/// Resolve the PATH directory inside a package root, preferring the
+/// `codewith-path` layout and falling back to the legacy `codex-path`
+/// directory for older installs.
+fn existing_path_dir(package_dir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    existing_dir(package_dir.join(PATH_DIRNAME))
+        .or_else(|| existing_dir(package_dir.join(LEGACY_PATH_DIRNAME)))
 }
 
 fn install_method_from_exe(
@@ -240,10 +259,9 @@ fn standalone_install_method(
         return None;
     }
 
-    let resources_dir = release_dir.join(RESOURCES_DIRNAME);
     Some(InstallMethod::Standalone {
+        resources_dir: existing_resources_dir(&release_dir),
         release_dir,
-        resources_dir: resources_dir.is_dir().then_some(resources_dir),
         platform: standalone_platform(),
     })
 }
@@ -417,6 +435,86 @@ mod tests {
                 Some(canonical_resources_dir.join(ZSH_DIRNAME).join(BIN_DIRNAME))
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn detects_legacy_codex_package_layout_directories() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(LEGACY_RESOURCES_DIRNAME);
+        let path_dir = package_dir.path().join(LEGACY_PATH_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&resources_dir)?;
+        fs::create_dir_all(&path_dir)?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+        fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
+        fs::write(path_dir.join(default_rg_command()), "")?;
+        let canonical_resources_dir =
+            AbsolutePathBuf::from_absolute_path(resources_dir.canonicalize()?)?;
+        let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*managed_by_npm*/ false,
+            /*managed_by_bun*/ false,
+            /*codex_home*/ None,
+        );
+        let package_layout = context
+            .package_layout
+            .as_ref()
+            .expect("legacy package layout should be detected");
+        assert_eq!(package_layout.resources_dir, Some(canonical_resources_dir.clone()));
+        assert_eq!(package_layout.path_dir, Some(canonical_path_dir.clone()));
+        assert_eq!(
+            context.rg_command(),
+            canonical_path_dir
+                .join(default_rg_command())
+                .into_path_buf()
+        );
+        assert_eq!(
+            context.bundled_resource(TEST_RESOURCE_NAME),
+            Some(canonical_resources_dir.join(TEST_RESOURCE_NAME))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prefers_codewith_package_layout_over_legacy_codex() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
+        let legacy_resources_dir = package_dir.path().join(LEGACY_RESOURCES_DIRNAME);
+        let path_dir = package_dir.path().join(PATH_DIRNAME);
+        let legacy_path_dir = package_dir.path().join(LEGACY_PATH_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&resources_dir)?;
+        fs::create_dir_all(&legacy_resources_dir)?;
+        fs::create_dir_all(&path_dir)?;
+        fs::create_dir_all(&legacy_path_dir)?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+        let canonical_resources_dir =
+            AbsolutePathBuf::from_absolute_path(resources_dir.canonicalize()?)?;
+        let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*managed_by_npm*/ false,
+            /*managed_by_bun*/ false,
+            /*codex_home*/ None,
+        );
+        let package_layout = context
+            .package_layout
+            .as_ref()
+            .expect("package layout should be detected");
+        assert_eq!(package_layout.resources_dir, Some(canonical_resources_dir));
+        assert_eq!(package_layout.path_dir, Some(canonical_path_dir));
         Ok(())
     }
 
