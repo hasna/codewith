@@ -26,7 +26,7 @@ class GhCommandError(RuntimeError):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Collect recent GitHub issue activity for a Codex owner digest."
+        description="Collect recent GitHub issue activity for a Codewith owner digest."
     )
     parser.add_argument(
         "--repo", default="openai/codex", help="OWNER/REPO, default openai/codex"
@@ -950,7 +950,7 @@ def collect_digest(args):
         "generated_at": format_timestamp(datetime.now(timezone.utc)),
         "source": {
             "repo": args.repo,
-            "skill": "codex-issue-digest",
+            "skill": "codewith-issue-digest",
             "collector": skill_relative_path(),
             "script_version": SCRIPT_VERSION,
             "git_head": git_head(),

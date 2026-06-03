@@ -1,9 +1,9 @@
 ---
-name: codex-issue-digest
-description: Run a GitHub issue digest for openai/codex by feature-area labels, all areas, and configurable time windows. Use when asked to summarize recent Codex bug reports or enhancement requests, especially for owner-specific labels such as tui, exec, app, or similar areas.
+name: codewith-issue-digest
+description: Run a GitHub issue digest for openai/codex by feature-area labels, all areas, and configurable time windows. Use when asked to summarize recent Codewith bug reports or enhancement requests, especially for owner-specific labels such as tui, exec, app, or similar areas.
 ---
 
-# Codex Issue Digest
+# Codewith Issue Digest
 
 ## Objective
 
@@ -20,10 +20,10 @@ Include only issues that currently have `bug` or `enhancement` plus at least one
 
 ## Workflow
 
-1. Run the collector from a current Codex repo checkout:
+1. Run the collector from a current Codewith repo checkout:
 
 ```bash
-python3 .codex/skills/codex-issue-digest/scripts/collect_issue_digest.py --labels tui exec --window-hours 24
+python3 .codewith/skills/codewith-issue-digest/scripts/collect_issue_digest.py --labels tui exec --window-hours 24
 ```
 
 Use `--window "past week"` or `--window-hours 168` when the user asks for a non-default duration. Use `--all-labels` when the user says all areas or all labels.
@@ -101,11 +101,11 @@ The automation should run from a repo checkout that contains this skill. For sha
 ## Sample Owner Prompt
 
 ```text
-Use $codex-issue-digest to run the Codex issue digest for labels tui and exec over the previous 24 hours.
+Use $codewith-issue-digest to run the Codewith issue digest for labels tui and exec over the previous 24 hours.
 ```
 
 ```text
-Use $codex-issue-digest to run the Codex issue digest for all areas over the past week.
+Use $codewith-issue-digest to run the Codewith issue digest for all areas over the past week.
 ```
 
 ## Validation
@@ -113,15 +113,15 @@ Use $codex-issue-digest to run the Codex issue digest for all areas over the pas
 Dry run the collector against recent issues:
 
 ```bash
-python3 .codex/skills/codex-issue-digest/scripts/collect_issue_digest.py --labels tui exec --window-hours 24
+python3 .codewith/skills/codewith-issue-digest/scripts/collect_issue_digest.py --labels tui exec --window-hours 24
 ```
 
 ```bash
-python3 .codex/skills/codex-issue-digest/scripts/collect_issue_digest.py --all-labels --window "past week" --limit-issues 10
+python3 .codewith/skills/codewith-issue-digest/scripts/collect_issue_digest.py --all-labels --window "past week" --limit-issues 10
 ```
 
 Run the focused script tests:
 
 ```bash
-pytest .codex/skills/codex-issue-digest/scripts/test_collect_issue_digest.py
+pytest .codewith/skills/codewith-issue-digest/scripts/test_collect_issue_digest.py
 ```

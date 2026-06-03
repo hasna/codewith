@@ -3,7 +3,7 @@ name: remote-tests
 description: How to run tests using remote executor.
 ---
 
-Some codex integration tests support a running against a remote executor.
+Some Codewith integration tests support a running against a remote executor.
 This means that when CODEX_TEST_REMOTE_ENV environment variable is set they will attempt to start an executor process in a docker container CODEX_TEST_REMOTE_ENV points to and use it in tests.
 
 Docker container is built and initialized via ./scripts/test-remote-env.sh

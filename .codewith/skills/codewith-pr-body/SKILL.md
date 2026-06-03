@@ -1,5 +1,5 @@
 ---
-name: codex-pr-body
+name: codewith-pr-body
 description: Update the title and body of one or more pull requests.
 ---
 

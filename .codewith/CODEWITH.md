@@ -32,7 +32,7 @@ In the codex-rs folder where the rust code lives:
   - Implementations may still use `async fn foo(&self, ...) -> T` when they satisfy that contract.
   - Do not use `#[allow(async_fn_in_trait)]` as a shortcut around spelling the future contract explicitly.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
-- Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
+- Do not add general product or user-facing documentation to the `docs/` folder. The official Codewith documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
 - Prefer private modules and explicitly exported public crate API.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
@@ -154,7 +154,7 @@ If you don’t have the tool:
 
 ### Integration tests (core)
 
-- Prefer the utilities in `core_test_support::responses` when writing end-to-end Codex tests.
+- Prefer the utilities in `core_test_support::responses` when writing end-to-end Codewith tests.
 
 - All `mount_sse*` helpers return a `ResponseMock`; hold onto it so you can assert against outbound `/responses` POST bodies.
 - Use `ResponseMock::single_request()` when a test should only issue one POST, or `ResponseMock::requests()` to inspect every captured `ResponsesRequest`.

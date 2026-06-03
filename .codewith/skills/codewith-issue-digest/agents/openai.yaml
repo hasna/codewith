@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewith Issue Digest"
+  short_description: "Summarize Codewith issues by labels or all areas"
+  default_prompt: "Use $codewith-issue-digest to run the Codewith issue digest for labels tui and exec over the previous 24 hours."

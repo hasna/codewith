@@ -1,13 +1,13 @@
 ---
-name: codex-bug
+name: codewith-bug
 description: Diagnose GitHub bug reports in openai/codex. Use when given a GitHub issue URL from openai/codex and asked to decide next steps such as verifying against the repo, requesting more info, or explaining why it is not a bug; follow any additional user-provided instructions.
 ---
 
-# Codex Bug
+# Codewith Bug
 
 ## Overview
 
-Diagnose a Codex GitHub bug report and decide the next action: verify against sources, request more info, or explain why it is not a bug.
+Diagnose a Codewith GitHub bug report and decide the next action: verify against sources, request more info, or explain why it is not a bug.
 
 ## Workflow
 
@@ -39,7 +39,7 @@ Diagnose a Codex GitHub bug report and decide the next action: verify against so
 
 5. Decide the course of action
 
-- **Verify with sources** when the report is specific and likely reproducible. Inspect relevant Codex files (or mention the files to inspect if access is unavailable).
+- **Verify with sources** when the report is specific and likely reproducible. Inspect relevant Codewith files (or mention the files to inspect if access is unavailable).
 - **Request more information** when the report is vague, missing repro steps, or lacks logs/environment.
 - **Explain not a bug** when the report contradicts current behavior or documented constraints (cite the evidence from the issue and any local sources you checked).
 
