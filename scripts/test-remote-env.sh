@@ -38,7 +38,7 @@ setup_remote_env() {
   fi
 
   if ! command -v cargo >/dev/null 2>&1; then
-    echo "cargo is required to build codex" >&2
+    echo "cargo is required to build codewith" >&2
     return 1
   fi
 
@@ -48,7 +48,7 @@ setup_remote_env() {
   )
 
   if [[ ! -f "${codex_binary_path}" ]]; then
-    echo "codex binary not found at ${codex_binary_path}" >&2
+    echo "codewith binary not found at ${codex_binary_path}" >&2
     return 1
   fi
 

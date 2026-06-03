@@ -309,7 +309,7 @@ jobs:
           python-version: "3.11"
           architecture: x64
 
-      - name: Set up Codex Rust toolchain for Cargo smoke
+      - name: Set up Codewith Rust toolchain for Cargo smoke
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: "1.95.0"

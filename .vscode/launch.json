@@ -14,7 +14,7 @@
     {
       "type": "lldb",
       "request": "attach",
-      "name": "Attach to running codex CLI",
+      "name": "Attach to running codewith CLI",
       "pid": "${command:pickProcess}",
       "sourceLanguages": ["rust"]
     }
