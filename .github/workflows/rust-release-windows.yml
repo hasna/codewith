@@ -20,6 +20,9 @@ on:
       AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME:
         required: false
 
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   build-windows-binaries:
     name: Build Windows binaries - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }}

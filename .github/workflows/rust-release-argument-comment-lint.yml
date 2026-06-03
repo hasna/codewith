@@ -7,6 +7,9 @@ on:
         required: true
         type: boolean
 
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   skip:
     if: ${{ !inputs.publish }}
