@@ -72,8 +72,8 @@ from .generated.v2_all import (
 from .models import InitializeResponse, JsonObject, Notification
 
 
-class Codex:
-    """Synchronous client for creating threads and running Codex turns.
+class Codewith:
+    """Synchronous client for creating threads and running Codewith turns.
 
     The client starts its runtime connection during construction. Use it as a
     context manager so resources are closed promptly.
@@ -88,7 +88,7 @@ class Codex:
             self._client.close()
             raise
 
-    def __enter__(self) -> "Codex":
+    def __enter__(self) -> "Codewith":
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:
@@ -128,7 +128,7 @@ class Codex:
         """Clear the current Codewith account session."""
         self._client.account_logout()
 
-    # BEGIN GENERATED: Codex.flat_methods
+    # BEGIN GENERATED: Codewith.flat_methods
     def thread_start(
         self,
         *,
@@ -147,7 +147,7 @@ class Codex:
         session_start_source: ThreadStartSource | None = None,
         thread_source: ThreadSource | None = None,
     ) -> Thread:
-        """Create a new Codex conversation thread."""
+        """Create a new Codewith conversation thread."""
         approval_policy, approvals_reviewer = _approval_mode_settings(approval_mode)
         params = ThreadStartParams(
             approval_policy=approval_policy,
@@ -277,17 +277,17 @@ class Codex:
         unarchived = self._client.thread_unarchive(thread_id)
         return Thread(self._client, unarchived.thread.id)
 
-    # END GENERATED: Codex.flat_methods
+    # END GENERATED: Codewith.flat_methods
 
     def models(self, *, include_hidden: bool = False) -> ModelListResponse:
-        """List available models reported by Codex."""
+        """List available models reported by Codewith."""
         return self._client.model_list(include_hidden=include_hidden)
 
 
-class AsyncCodex:
-    """Async mirror of :class:`Codex`.
+class AsyncCodewith:
+    """Async mirror of :class:`Codewith`.
 
-    Prefer ``async with AsyncCodex()`` so initialization and shutdown are
+    Prefer ``async with AsyncCodewith()`` so initialization and shutdown are
     explicit and paired. The async client initializes lazily on context entry
     or first awaited API use.
     """
@@ -298,7 +298,7 @@ class AsyncCodex:
         self._initialized = False
         self._init_lock = asyncio.Lock()
 
-    async def __aenter__(self) -> "AsyncCodex":
+    async def __aenter__(self) -> "AsyncCodewith":
         await self._ensure_initialized()
         return self
 
@@ -326,7 +326,7 @@ class AsyncCodex:
     def metadata(self) -> InitializeResponse:
         if self._init is None:
             raise RuntimeError(
-                "AsyncCodex is not initialized yet. Prefer `async with AsyncCodex()`; "
+                "AsyncCodewith is not initialized yet. Prefer `async with AsyncCodewith()`; "
                 "initialization also happens on first awaited API use."
             )
         return self._init
@@ -368,7 +368,7 @@ class AsyncCodex:
         await self._ensure_initialized()
         await self._client.account_logout()
 
-    # BEGIN GENERATED: AsyncCodex.flat_methods
+    # BEGIN GENERATED: AsyncCodewith.flat_methods
     async def thread_start(
         self,
         *,
@@ -387,7 +387,7 @@ class AsyncCodex:
         session_start_source: ThreadStartSource | None = None,
         thread_source: ThreadSource | None = None,
     ) -> AsyncThread:
-        """Create a new Codex conversation thread."""
+        """Create a new Codewith conversation thread."""
         await self._ensure_initialized()
         approval_policy, approvals_reviewer = _approval_mode_settings(approval_mode)
         params = ThreadStartParams(
@@ -523,7 +523,7 @@ class AsyncCodex:
         unarchived = await self._client.thread_unarchive(thread_id)
         return AsyncThread(self, unarchived.thread.id)
 
-    # END GENERATED: AsyncCodex.flat_methods
+    # END GENERATED: AsyncCodewith.flat_methods
 
     async def models(self, *, include_hidden: bool = False) -> ModelListResponse:
         await self._ensure_initialized()
@@ -622,7 +622,7 @@ class Thread:
 class AsyncThread:
     """Asynchronous conversation thread used to run one or more turns."""
 
-    _codex: AsyncCodex
+    _codex: AsyncCodewith
     id: str
 
     async def run(
@@ -763,7 +763,7 @@ class TurnHandle:
 class AsyncTurnHandle:
     """Control and consume an asynchronous turn after it has started."""
 
-    _codex: AsyncCodex
+    _codex: AsyncCodewith
     thread_id: str
     id: str
 

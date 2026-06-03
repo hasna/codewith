@@ -15,10 +15,10 @@ Requires Node.js 18+.
 ## Quickstart
 
 ```typescript
-import { Codex } from "@hasna/codewith-sdk";
+import { Codewith } from "@hasna/codewith-sdk";
 
-const codex = new Codex();
-const thread = codex.startThread();
+const codewith = new Codewith();
+const thread = codewith.startThread();
 const turn = await thread.run("Diagnose the test failure and propose a fix");
 
 console.log(turn.finalResponse);
@@ -101,7 +101,7 @@ Threads are persisted in `~/.codewith/sessions`. If you lose the in-memory `Thre
 
 ```typescript
 const savedThreadId = process.env.CODEX_THREAD_ID!;
-const thread = codex.resumeThread(savedThreadId);
+const thread = codewith.resumeThread(savedThreadId);
 await thread.run("Implement the fix");
 ```
 
@@ -110,7 +110,7 @@ await thread.run("Implement the fix");
 Codewith runs in the current working directory by default. To avoid unrecoverable errors, Codewith requires the working directory to be a Git repository. You can skip the Git repository check by passing the `skipGitRepoCheck` option when creating a thread.
 
 ```typescript
-const thread = codex.startThread({
+const thread = codewith.startThread({
   workingDirectory: "/path/to/project",
   skipGitRepoCheck: true,
 });
@@ -119,10 +119,10 @@ const thread = codex.startThread({
 ### Controlling the Codewith CLI environment
 
 By default, the Codewith CLI inherits the Node.js process environment. Provide the optional `env` parameter when instantiating the
-`Codex` client to fully control which variables the Codewith CLI receives—useful for sandboxed hosts like Electron apps.
+`Codewith` client to fully control which variables the Codewith CLI receives—useful for sandboxed hosts like Electron apps.
 
 ```typescript
-const codex = new Codex({
+const codewith = new Codewith({
   env: {
     PATH: "/usr/local/bin",
   },
@@ -138,7 +138,7 @@ Use the `config` option to provide additional Codewith CLI configuration overrid
 into dotted paths, and serializes values as TOML literals before passing them as repeated `--config key=value` flags.
 
 ```typescript
-const codex = new Codex({
+const codewith = new Codewith({
   config: {
     show_raw_agent_reasoning: true,
     sandbox_workspace_write: { network_access: true },

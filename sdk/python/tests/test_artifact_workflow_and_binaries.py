@@ -245,11 +245,11 @@ def test_examples_readme_points_to_runtime_version_source_of_truth() -> None:
 def test_runtime_distribution_name_is_consistent() -> None:
     script = _load_update_script_module()
     runtime_setup = _load_runtime_setup_module()
-    from openai_codex import _version, client as client_module
+    from codewith import _version, client as client_module
 
-    assert script.SDK_DISTRIBUTION_NAME == "openai-codex"
-    assert runtime_setup.SDK_PACKAGE_NAME == "openai-codex"
-    assert _version.DISTRIBUTION_NAME == "openai-codex"
+    assert script.SDK_DISTRIBUTION_NAME == "hasna-codewith-sdk"
+    assert runtime_setup.SDK_PACKAGE_NAME == "hasna-codewith-sdk"
+    assert _version.DISTRIBUTION_NAME == "hasna-codewith-sdk"
     assert script.RUNTIME_DISTRIBUTION_NAME == "openai-codex-cli-bin"
     assert runtime_setup.PACKAGE_NAME == "openai-codex-cli-bin"
     assert client_module.RUNTIME_PKG_NAME == "openai-codex-cli-bin"
@@ -297,7 +297,7 @@ def test_source_sdk_package_declares_beta_documentation_and_release_files() -> N
         "license": "Apache-2.0",
         "documentation": "https://github.com/hasna/codewith/tree/main/sdk/python/docs",
         "sdist_include": [
-            "src/openai_codex/**",
+            "src/codewith/**",
             "README.md",
             "pyproject.toml",
         ],
@@ -521,7 +521,7 @@ def test_stage_runtime_release_rejects_incomplete_package_layout(tmp_path: Path)
     package_archive = tmp_path / "codex-package.tar.gz"
     _write_package_archive(package_dir, package_archive)
 
-    with pytest.raises(RuntimeError, match="Missing Codex package layout entries"):
+    with pytest.raises(RuntimeError, match="Missing Codewith package layout entries"):
         script.stage_python_runtime_package(tmp_path / "runtime-stage", "1.2.3", package_archive)
 
 
@@ -559,7 +559,7 @@ def test_stage_sdk_release_preserves_reviewed_runtime_pin(tmp_path: Path) -> Non
         "version": pyproject["project"]["version"],
         "dependencies": pyproject["project"]["dependencies"],
     } == {
-        "name": "openai-codex",
+        "name": "hasna-codewith-sdk",
         "version": "0.1.0b1",
         "dependencies": [
             "pydantic>=2.12",
@@ -568,13 +568,13 @@ def test_stage_sdk_release_preserves_reviewed_runtime_pin(tmp_path: Path) -> Non
     }
     assert (
         '__version__ = "0.1.0b1"'
-        not in (staged / "src" / "openai_codex" / "__init__.py").read_text()
+        not in (staged / "src" / "codewith" / "__init__.py").read_text()
     )
     assert (
         'client_version: str = "0.1.0b1"'
-        not in (staged / "src" / "openai_codex" / "client.py").read_text()
+        not in (staged / "src" / "codewith" / "client.py").read_text()
     )
-    assert not any((staged / "src" / "openai_codex").glob("bin/**"))
+    assert not any((staged / "src" / "codewith").glob("bin/**"))
 
 
 def test_stage_sdk_release_replaces_existing_staging_dir(tmp_path: Path) -> None:
@@ -712,7 +712,7 @@ def test_stage_runtime_stages_package_without_type_generation(tmp_path: Path) ->
 def test_default_runtime_is_resolved_from_installed_runtime_package(
     tmp_path: Path,
 ) -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     fake_binary = tmp_path / ("codex.exe" if client_module.os.name == "nt" else "codex")
     fake_binary.write_text("")
@@ -727,7 +727,7 @@ def test_default_runtime_is_resolved_from_installed_runtime_package(
 
 
 def test_runtime_path_dir_is_prepended_without_duplicates(tmp_path: Path) -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     path_dir = tmp_path / "codex-path"
     env = {"PATH": os.pathsep.join(["/usr/bin", str(path_dir), "/bin"])}
@@ -741,7 +741,7 @@ def test_runtime_path_dir_preserves_windows_path_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     path_dir = tmp_path / "codex-path"
     monkeypatch.setattr(client_module.os, "name", "nt")
@@ -756,7 +756,7 @@ def test_runtime_path_dir_preserves_windows_path_key(
 
 
 def test_explicit_codex_bin_override_takes_priority(tmp_path: Path) -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     explicit_binary = tmp_path / (
         "custom-codex.exe" if client_module.os.name == "nt" else "custom-codex"
@@ -774,7 +774,7 @@ def test_explicit_codex_bin_override_takes_priority(tmp_path: Path) -> None:
 
 
 def test_missing_runtime_package_requires_explicit_codex_bin() -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     ops = client_module.CodexBinResolverOps(
         installed_codex_path=lambda: (_ for _ in ()).throw(
@@ -788,7 +788,7 @@ def test_missing_runtime_package_requires_explicit_codex_bin() -> None:
 
 
 def test_broken_runtime_package_does_not_fall_back() -> None:
-    from openai_codex import client as client_module
+    from codewith import client as client_module
 
     ops = client_module.CodexBinResolverOps(
         installed_codex_path=lambda: (_ for _ in ()).throw(

@@ -11,34 +11,34 @@ ensure_local_sdk_src()
 
 import asyncio
 
-from openai_codex import AsyncCodex
+from codewith import AsyncCodewith
 
 
 async def main() -> None:
-    async with AsyncCodex(config=runtime_config()) as codex:
-        thread = await codex.thread_start(
+    async with AsyncCodewith(config=runtime_config()) as client:
+        thread = await client.thread_start(
             model="gpt-5.4", config={"model_reasoning_effort": "high"}
         )
         first = await (await thread.turn("One sentence about structured planning.")).run()
         second = await (await thread.turn("Now restate it for a junior engineer.")).run()
 
-        reopened = await codex.thread_resume(thread.id)
-        listing_active = await codex.thread_list(limit=20, archived=False)
+        reopened = await client.thread_resume(thread.id)
+        listing_active = await client.thread_list(limit=20, archived=False)
         reading = await reopened.read(include_turns=True)
 
         _ = await reopened.set_name("sdk-lifecycle-demo")
-        _ = await codex.thread_archive(reopened.id)
-        listing_archived = await codex.thread_list(limit=20, archived=True)
-        unarchived = await codex.thread_unarchive(reopened.id)
+        _ = await client.thread_archive(reopened.id)
+        listing_archived = await client.thread_list(limit=20, archived=True)
+        unarchived = await client.thread_unarchive(reopened.id)
 
-        resumed = await codex.thread_resume(
+        resumed = await client.thread_resume(
             unarchived.id,
             model="gpt-5.4",
             config={"model_reasoning_effort": "high"},
         )
         resumed_result = await (await resumed.turn("Continue in one short sentence.")).run()
 
-        forked = await codex.thread_fork(unarchived.id, model="gpt-5.4")
+        forked = await client.thread_fork(unarchived.id, model="gpt-5.4")
         forked_result = await (
             await forked.turn("Take a different angle in one short sentence.")
         ).run()

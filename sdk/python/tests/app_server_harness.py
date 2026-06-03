@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from openai_codex import CodexConfig
+from codewith import CodexConfig
 
 Json = dict[str, Any]
 

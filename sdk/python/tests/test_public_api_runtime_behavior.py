@@ -6,15 +6,15 @@ from typing import Any
 
 import pytest
 
-import openai_codex.api as public_api_module
-from openai_codex.api import (
+import codewith.api as public_api_module
+from codewith.api import (
     ApprovalMode,
-    AsyncCodex,
-    Codex,
+    AsyncCodewith,
+    Codewith,
     Sandbox,
 )
-from openai_codex.generated.v2_all import TurnStartParams
-from openai_codex.models import InitializeResponse
+from codewith.generated.v2_all import TurnStartParams
+from codewith.models import InitializeResponse
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,14 +55,14 @@ def test_codex_init_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(public_api_module, "CodexClient", FakeClient)
 
     with pytest.raises(RuntimeError, match="missing required metadata"):
-        Codex()
+        Codewith()
 
     assert closed == [True]
 
 
 def test_async_codex_init_failure_closes_client() -> None:
     async def scenario() -> None:
-        codex = AsyncCodex()
+        codex = AsyncCodewith()
         close_calls = 0
 
         async def fake_start() -> None:
@@ -91,7 +91,7 @@ def test_async_codex_init_failure_closes_client() -> None:
 
 def test_async_codex_initializes_only_once_under_concurrency() -> None:
     async def scenario() -> None:
-        codex = AsyncCodex()
+        codex = AsyncCodewith()
         start_calls = 0
         initialize_calls = 0
         ready = asyncio.Event()

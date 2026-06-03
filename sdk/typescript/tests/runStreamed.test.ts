@@ -11,7 +11,7 @@ import {
 } from "./responsesProxy";
 import { createMockClient } from "./testCodex";
 
-describe("Codex", () => {
+describe("Codewith", () => {
   it("returns thread events", async () => {
     const { url, close } = await startResponsesTestProxy({
       statusCode: 200,

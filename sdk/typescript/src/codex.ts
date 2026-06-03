@@ -8,7 +8,7 @@ import { ThreadOptions } from "./threadOptions";
  *
  * Use the `startThread()` method to start a new thread or `resumeThread()` to resume a previously started thread.
  */
-export class Codex {
+export class Codewith {
   private exec: CodexExec;
   private options: CodexOptions;
 

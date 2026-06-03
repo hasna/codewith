@@ -3,7 +3,7 @@ from __future__ import annotations
 from app_server_harness import AppServerHarness
 from app_server_helpers import TINY_PNG_BYTES
 
-from openai_codex import Codex, ImageInput, LocalImageInput, SkillInput, TextInput
+from codewith import Codewith, ImageInput, LocalImageInput, SkillInput, TextInput
 
 
 def test_remote_image_input_reaches_responses_api(
@@ -18,7 +18,7 @@ def test_remote_image_input_reaches_responses_api(
             response_id="remote-image",
         )
 
-        with Codex(config=harness.app_server_config()) as codex:
+        with Codewith(config=harness.app_server_config()) as codex:
             result = codex.thread_start().run(
                 [
                     TextInput("Describe the remote image."),
@@ -51,7 +51,7 @@ def test_local_image_input_reaches_responses_api(
             response_id="local-image",
         )
 
-        with Codex(config=harness.app_server_config()) as codex:
+        with Codewith(config=harness.app_server_config()) as codex:
             result = codex.thread_start().run(
                 [
                     TextInput("Describe the local image."),
@@ -87,7 +87,7 @@ def test_skill_input_injects_loaded_skill_body(tmp_path) -> None:
             response_id="skill-input",
         )
 
-        with Codex(config=harness.app_server_config()) as codex:
+        with Codewith(config=harness.app_server_config()) as codex:
             result = codex.thread_start().run(
                 [
                     TextInput("Use the selected skill."),

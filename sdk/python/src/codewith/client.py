@@ -174,7 +174,7 @@ def _resolve_codex_bin(config: "CodexConfig") -> Path:
 class CodexConfig:
     """Configuration for launching and identifying the local Codewith runtime.
 
-    Most callers can use ``Codex()`` without configuration. Set ``codex_bin``
+    Most callers can use ``Codewith()`` without configuration. Set ``codex_bin``
     only when intentionally using a specific local Codewith executable.
     """
 
@@ -665,19 +665,19 @@ class CodexClient:
 
     def _write_message(self, payload: JsonObject) -> None:
         if self._proc is None or self._proc.stdin is None:
-            raise TransportClosedError("Codex process is not running")
+            raise TransportClosedError("Codewith process is not running")
         with self._lock:
             self._proc.stdin.write(json.dumps(payload) + "\n")
             self._proc.stdin.flush()
 
     def _read_message(self) -> dict[str, JsonValue]:
         if self._proc is None or self._proc.stdout is None:
-            raise TransportClosedError("Codex process is not running")
+            raise TransportClosedError("Codewith process is not running")
 
         line = self._proc.stdout.readline()
         if not line:
             raise TransportClosedError(
-                f"Codex process closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
+                f"Codewith process closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
             )
 
         try:

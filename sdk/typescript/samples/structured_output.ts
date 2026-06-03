@@ -1,12 +1,12 @@
 #!/usr/bin/env -S NODE_NO_WARNINGS=1 pnpm ts-node-esm --files
 
-import { Codex } from "@hasna/codewith-sdk";
+import { Codewith } from "@hasna/codewith-sdk";
 
 import { codexPathOverride } from "./helpers.ts";
 
-const codex = new Codex({ codexPathOverride: codexPathOverride() });
+const codewith = new Codewith({ codexPathOverride: codexPathOverride() });
 
-const thread = codex.startThread();
+const thread = codewith.startThread();
 
 const schema = {
   type: "object",

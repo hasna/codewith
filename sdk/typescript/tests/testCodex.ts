@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { Codex } from "../src/codex";
+import { Codewith } from "../src/codex";
 import type { CodexConfigObject } from "../src/codexOptions";
 
 export const codexExecPath =
@@ -18,7 +18,7 @@ type CreateTestClientOptions = {
 
 export type TestClient = {
   cleanup: () => void;
-  client: Codex;
+  client: Codewith;
 };
 
 export function createMockClient(url: string): TestClient {
@@ -43,7 +43,7 @@ export function createTestClient(options: CreateTestClientOptions = {}): TestCli
 
   return {
     cleanup: () => {},
-    client: new Codex({
+    client: new Codewith({
       codexPathOverride: codexExecPath,
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,

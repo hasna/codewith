@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence, get_args, get_origin
 
-SDK_DISTRIBUTION_NAME = "openai-codex"
+SDK_DISTRIBUTION_NAME = "hasna-codewith-sdk"
 RUNTIME_DISTRIBUTION_NAME = "openai-codex-cli-bin"
 RUNTIME_PACKAGE_ROOT = Path("src") / "codex_cli_bin"
 CODEX_PACKAGE_METADATA = "codex-package.json"
@@ -96,7 +96,7 @@ def pinned_runtime_version() -> str:
 
 
 def pinned_runtime_codex_path() -> Path:
-    """Return the bundled Codex binary from the installed pinned runtime wheel."""
+    """Return the bundled Codewith binary from the installed pinned runtime wheel."""
     expected_version = pinned_runtime_version()
     try:
         installed_version = importlib.metadata.version(RUNTIME_DISTRIBUTION_NAME)
@@ -138,7 +138,7 @@ def normalize_codex_version(version: str) -> str:
     normalized = re.sub(r"-rc\.?([0-9]+)$", r"rc\1", normalized)
 
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?", normalized):
-        raise RuntimeError(f"Could not normalize Codex version {version!r} to a PEP 440 version")
+        raise RuntimeError(f"Could not normalize Codewith version {version!r} to a PEP 440 version")
     return normalized
 
 
@@ -219,7 +219,7 @@ def _rewrite_project_name(pyproject_text: str, name: str) -> str:
 def stage_python_sdk_package(staging_dir: Path, sdk_version: str) -> Path:
     package_version = normalize_codex_version(sdk_version)
     _copy_package_tree(sdk_root(), staging_dir)
-    sdk_bin_dir = staging_dir / "src" / "openai_codex" / "bin"
+    sdk_bin_dir = staging_dir / "src" / "codewith" / "bin"
     if sdk_bin_dir.exists():
         shutil.rmtree(sdk_bin_dir)
 
@@ -254,7 +254,7 @@ def stage_python_runtime_package(
 
 def _extract_codex_package_archive(package_archive: Path, runtime_package_root: Path) -> None:
     if not package_archive.name.endswith(".tar.gz"):
-        raise RuntimeError(f"Expected a .tar.gz Codex package archive: {package_archive}")
+        raise RuntimeError(f"Expected a .tar.gz Codewith package archive: {package_archive}")
 
     runtime_package_root.mkdir(parents=True, exist_ok=True)
     with tarfile.open(package_archive, "r:gz") as archive:
@@ -278,7 +278,9 @@ def _validate_codex_package_layout(package_dir: Path, package_archive: Path) -> 
         missing_entries.append(str(Path("bin") / runtime_binary_name()))
     if missing_entries:
         missing = ", ".join(missing_entries)
-        raise RuntimeError(f"Missing Codex package layout entries in {package_archive}: {missing}")
+        raise RuntimeError(
+            f"Missing Codewith package layout entries in {package_archive}: {missing}"
+        )
 
 
 def _flatten_string_enum_one_of(definition: dict[str, Any]) -> bool:
@@ -538,7 +540,7 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
 
 def generate_v2_all(schema_dir: Path) -> None:
     """Regenerate the Pydantic v2 protocol model module from runtime schemas."""
-    out_path = sdk_root() / "src" / "openai_codex" / "generated" / "v2_all.py"
+    out_path = sdk_root() / "src" / "codewith" / "generated" / "v2_all.py"
     out_dir = out_path.parent
     old_package_dir = out_dir / "v2_all"
     if old_package_dir.exists():
@@ -587,7 +589,7 @@ def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:
     """Map each server notification method to its generated payload model class."""
     server_notifications = json.loads((schema_dir / "ServerNotification.json").read_text())
     one_of = server_notifications.get("oneOf", [])
-    generated_source = (sdk_root() / "src" / "openai_codex" / "generated" / "v2_all.py").read_text()
+    generated_source = (sdk_root() / "src" / "codewith" / "generated" / "v2_all.py").read_text()
 
     specs: list[tuple[str, str]] = []
 
@@ -659,7 +661,7 @@ def _type_tuple_source(class_names: list[str]) -> str:
 
 def generate_notification_registry(schema_dir: Path) -> None:
     """Regenerate notification dispatch metadata from the runtime notification schema."""
-    out = sdk_root() / "src" / "openai_codex" / "generated" / "notification_registry.py"
+    out = sdk_root() / "src" / "codewith" / "generated" / "notification_registry.py"
     specs = _notification_specs(schema_dir)
     class_names = sorted({class_name for _, class_name in specs})
     direct_turn_id_types, nested_turn_types = _notification_turn_id_specs(
@@ -786,7 +788,7 @@ def _load_public_fields(
 ) -> list[PublicFieldSpec]:
     """Load generated model fields used to render the ergonomic public methods."""
     exclude = exclude or set()
-    if module_name == "openai_codex.generated.v2_all":
+    if module_name == "codewith.generated.v2_all":
         module = _load_generated_v2_all_module()
     else:
         module = importlib.import_module(module_name)
@@ -813,9 +815,9 @@ def _load_public_fields(
 
 def _load_generated_v2_all_module() -> types.ModuleType:
     """Import the freshly generated v2_all module without importing package init."""
-    module_name = "_openai_codex_generated_v2_all_for_artifacts"
+    module_name = "_codewith_generated_v2_all_for_artifacts"
     sys.modules.pop(module_name, None)
-    module_path = sdk_root() / "src" / "openai_codex" / "generated" / "v2_all.py"
+    module_path = sdk_root() / "src" / "codewith" / "generated" / "v2_all.py"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load generated module from {module_path}")
@@ -918,7 +920,7 @@ def _render_codex_block(
         *_approval_mode_start_signature_lines(),
         *_kw_signature_lines(thread_start_fields),
         "    ) -> Thread:",
-        '        """Create a new Codex conversation thread."""',
+        '        """Create a new Codewith conversation thread."""',
         _approval_mode_assignment_line("_approval_mode_settings"),
         "        params = ThreadStartParams(",
         *_approval_mode_model_arg_lines(),
@@ -997,7 +999,7 @@ def _render_async_codex_block(
         *_approval_mode_start_signature_lines(),
         *_kw_signature_lines(thread_start_fields),
         "    ) -> AsyncThread:",
-        '        """Create a new Codex conversation thread."""',
+        '        """Create a new Codewith conversation thread."""',
         "        await self._ensure_initialized()",
         _approval_mode_assignment_line("_approval_mode_settings"),
         "        params = ThreadStartParams(",
@@ -1129,7 +1131,7 @@ def _render_async_thread_block(
 def generate_public_api_flat_methods() -> None:
     """Regenerate the public convenience methods from generated protocol models."""
     src_dir = sdk_root() / "src"
-    public_api_path = src_dir / "openai_codex" / "api.py"
+    public_api_path = src_dir / "codewith" / "api.py"
     if not public_api_path.exists():
         # PR2 can run codegen before the ergonomic public API layer is added.
         return
@@ -1139,29 +1141,29 @@ def generate_public_api_flat_methods() -> None:
 
     approval_fields = {"approval_policy", "approvals_reviewer"}
     thread_start_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
+        "codewith.generated.v2_all",
         "ThreadStartParams",
         exclude=approval_fields,
     )
     thread_start_fields = _replace_public_sandbox_field(thread_start_fields, wire_name="sandbox")
     thread_list_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
+        "codewith.generated.v2_all",
         "ThreadListParams",
     )
     thread_resume_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
+        "codewith.generated.v2_all",
         "ThreadResumeParams",
         exclude={"thread_id", *approval_fields},
     )
     thread_resume_fields = _replace_public_sandbox_field(thread_resume_fields, wire_name="sandbox")
     thread_fork_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
+        "codewith.generated.v2_all",
         "ThreadForkParams",
         exclude={"thread_id", *approval_fields},
     )
     thread_fork_fields = _replace_public_sandbox_field(thread_fork_fields, wire_name="sandbox")
     turn_start_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
+        "codewith.generated.v2_all",
         "TurnStartParams",
         exclude={"thread_id", "input", *approval_fields},
     )
@@ -1170,7 +1172,7 @@ def generate_public_api_flat_methods() -> None:
     source = public_api_path.read_text()
     source = _replace_generated_block(
         source,
-        "Codex.flat_methods",
+        "Codewith.flat_methods",
         _render_codex_block(
             thread_start_fields,
             thread_list_fields,
@@ -1180,7 +1182,7 @@ def generate_public_api_flat_methods() -> None:
     )
     source = _replace_generated_block(
         source,
-        "AsyncCodex.flat_methods",
+        "AsyncCodewith.flat_methods",
         _render_async_codex_block(
             thread_start_fields,
             thread_list_fields,
@@ -1253,13 +1255,13 @@ def build_parser() -> argparse.ArgumentParser:
     stage_runtime_parser.add_argument(
         "package_archive",
         type=Path,
-        help="Path to a Codex package .tar.gz archive for this platform.",
+        help="Path to a Codewith package .tar.gz archive for this platform.",
     )
     stage_runtime_parser.add_argument(
         "--codex-version",
         required=True,
         help=(
-            "Codex release version to write into the staged runtime package. "
+            "Codewith release version to write into the staged runtime package. "
             "Accepts PEP 440 versions or release tags such as rust-v0.116.0-alpha.1."
         ),
     )

@@ -3,14 +3,14 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "openai-codex"
+name = "hasna-codewith-sdk"
 version = "0.1.0"
 description = "Python SDK for Codewith"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "Hasna" }]
-keywords = ["codex", "sdk", "llm", "ai", "agents"]
+keywords = ["codewith", "sdk", "llm", "ai", "agents"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -37,14 +37,14 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/openai_codex"]
+packages = ["src/codewith"]
 include = [
-  "src/openai_codex/py.typed",
+  "src/codewith/py.typed",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "src/openai_codex/**",
+  "src/codewith/**",
   "README.md",
   "pyproject.toml",
 ]
@@ -59,7 +59,7 @@ required-version = ">=0.15.8"
 line-length = 100
 extend-exclude = [
   "notebooks/**",
-  "src/openai_codex/generated/**",
+  "src/codewith/generated/**",
 ]
 
 [tool.ruff.lint]

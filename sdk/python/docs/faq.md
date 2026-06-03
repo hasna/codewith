@@ -2,8 +2,8 @@
 
 ## Is the Python SDK stable?
 
-`openai-codex` is a public beta. Install it with
-`pip install openai-codex`; public APIs may change before `1.0`. While beta
+`hasna-codewith-sdk` is a public beta. Install it with
+`pip install hasna-codewith-sdk`; public APIs may change before `1.0`. While beta
 releases are the only published SDK releases, pip selects the latest beta.
 After a stable release exists, pass `--pre` to opt into newer prereleases.
 
@@ -28,13 +28,13 @@ Choose `run()` for most apps. Choose `stream()` for progress UIs, custom timeout
 
 ## Sync vs async clients
 
-- `Codex` is the sync public API.
-- `AsyncCodex` is an async replica of the same public API shape.
-- Prefer `async with AsyncCodex()` for async code. It is the standard path for
-  explicit startup/shutdown, and `AsyncCodex` initializes lazily on context
+- `Codewith` is the sync public API.
+- `AsyncCodewith` is an async replica of the same public API shape.
+- Prefer `async with AsyncCodewith()` for async code. It is the standard path for
+  explicit startup/shutdown, and `AsyncCodewith` initializes lazily on context
   entry or first awaited API use.
 
-If your app is not already async, stay with `Codex`.
+If your app is not already async, stay with `Codewith`.
 
 ## How do I log in?
 
@@ -66,9 +66,9 @@ If you are migrating older code, update these names:
 Use the same `sandbox=` keyword for threads and turns:
 
 ```python
-from openai_codex import Sandbox
+from codewith import Sandbox
 
-thread = codex.thread_start(sandbox=Sandbox.workspace_write)
+thread = client.thread_start(sandbox=Sandbox.workspace_write)
 result = thread.run("Review only.", sandbox=Sandbox.read_only)
 ```
 
@@ -92,7 +92,7 @@ This avoids duplicate ways to do the same operation and keeps behavior explicit.
 
 ## Why does constructor fail?
 
-`Codex()` is eager: it starts transport and calls `initialize` in `__init__`.
+`Codewith()` is eager: it starts transport and calls `initialize` in `__init__`.
 
 Common causes:
 

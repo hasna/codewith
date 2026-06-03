@@ -1,6 +1,6 @@
 # Codewith Python SDK (Beta) - API Reference
 
-Public surface of `openai_codex` for Codewith workflows.
+Public surface of `codewith` for Codewith workflows.
 
 This SDK is in beta. Public APIs may change before `1.0`. Turn streams are routed by turn ID so one client can consume multiple active turns concurrently.
 Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optional `approval_mode` override.
@@ -8,9 +8,9 @@ Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optio
 ## Package Entry
 
 ```python
-from openai_codex import (
-    Codex,
-    AsyncCodex,
+from codewith import (
+    Codewith,
+    AsyncCodewith,
     CodexConfig,
     ApprovalMode,
     Sandbox,
@@ -32,7 +32,7 @@ from openai_codex import (
     SkillInput,
     MentionInput,
 )
-from openai_codex.types import (
+from codewith.types import (
     Account,
     AccountLoginCompletedNotification,
     CancelLoginAccountResponse,
@@ -46,14 +46,14 @@ from openai_codex.types import (
 )
 ```
 
-- Version: `openai_codex.__version__`
+- Version: `codewith.__version__`
 - Requires Python >= 3.10
-- Public Codewith protocol value and event types live in `openai_codex.types`
+- Public Codewith protocol value and event types live in `codewith.types`
 
-## Codex (sync)
+## Codewith (sync)
 
 ```python
-Codex(config: CodexConfig | None = None)
+Codewith(config: CodexConfig | None = None)
 ```
 
 Properties/methods:
@@ -76,24 +76,24 @@ Properties/methods:
 Context manager:
 
 ```python
-with Codex() as codex:
+with Codewith() as client:
     ...
 ```
 
-## AsyncCodex (async parity)
+## AsyncCodewith (async parity)
 
 ```python
-AsyncCodex(config: CodexConfig | None = None)
+AsyncCodewith(config: CodexConfig | None = None)
 ```
 
 Preferred usage:
 
 ```python
-async with AsyncCodex() as codex:
+async with AsyncCodewith() as client:
     ...
 ```
 
-`AsyncCodex` initializes lazily. Context entry is the standard path because it
+`AsyncCodewith` initializes lazily. Context entry is the standard path because it
 ensures startup and shutdown are paired explicitly.
 
 Properties/methods:
@@ -116,7 +116,7 @@ Properties/methods:
 Async context manager:
 
 ```python
-async with AsyncCodex() as codex:
+async with AsyncCodewith() as client:
     ...
 ```
 
@@ -189,10 +189,10 @@ Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 Use `sandbox=` consistently on thread lifecycle methods and turns:
 
 ```python
-from openai_codex import Codex, Sandbox
+from codewith import Codewith, Sandbox
 
-with Codex() as codex:
-    thread = codex.thread_start(sandbox=Sandbox.workspace_write)
+with Codewith() as client:
+    thread = client.thread_start(sandbox=Sandbox.workspace_write)
     result = thread.run("Review the diff only.", sandbox=Sandbox.read_only)
 ```
 
@@ -217,7 +217,7 @@ passed to `run(...)` or `turn(...)` applies to that turn and subsequent turns.
 Behavior notes:
 
 - `stream()` and `run()` consume only notifications for their own turn ID
-- one `Codex` instance can stream multiple active turns concurrently
+- one `Codewith` instance can stream multiple active turns concurrently
 
 ### AsyncTurnHandle
 
@@ -229,7 +229,7 @@ Behavior notes:
 Behavior notes:
 
 - `stream()` and `run()` consume only notifications for their own turn ID
-- one `AsyncCodex` instance can stream multiple active turns concurrently
+- one `AsyncCodewith` instance can stream multiple active turns concurrently
 
 ## Inputs
 
@@ -253,7 +253,7 @@ Use a plain `str` as shorthand for `TextInput(...)` anywhere a turn input is acc
 The SDK wrappers return and accept public Codewith protocol models wherever possible:
 
 ```python
-from openai_codex.types import (
+from codewith.types import (
     Account,
     AccountLoginCompletedNotification,
     CancelLoginAccountResponse,
@@ -268,7 +268,7 @@ from openai_codex.types import (
 ## Retry + errors
 
 ```python
-from openai_codex import (
+from codewith import (
     retry_on_overload,
     JsonRpcError,
     MethodNotFoundError,
@@ -284,10 +284,10 @@ from openai_codex import (
 ## Example
 
 ```python
-from openai_codex import Codex
+from codewith import Codewith
 
-with Codex() as codex:
-    thread = codex.thread_start(model="gpt-5.4", config={"model_reasoning_effort": "high"})
+with Codewith() as client:
+    thread = client.thread_start(model="gpt-5.4", config={"model_reasoning_effort": "high"})
     result = thread.run("Say hello in one sentence.")
     print(result.final_response)
 ```

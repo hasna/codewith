@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 PACKAGE_NAME = "openai-codex-cli-bin"
-SDK_PACKAGE_NAME = "openai-codex"
+SDK_PACKAGE_NAME = "hasna-codewith-sdk"
 REPO_SLUG = "hasna/codewith"
 
 

@@ -3,12 +3,12 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
-import { Codex } from "@hasna/codewith-sdk";
+import { Codewith } from "@hasna/codewith-sdk";
 import type { ThreadEvent, ThreadItem } from "@hasna/codewith-sdk";
 import { codexPathOverride } from "./helpers.ts";
 
-const codex = new Codex({ codexPathOverride: codexPathOverride() });
-const thread = codex.startThread();
+const codewith = new Codewith({ codexPathOverride: codexPathOverride() });
+const thread = codewith.startThread();
 const rl = createInterface({ input, output });
 
 const handleItemCompleted = (item: ThreadItem): void => {

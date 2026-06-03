@@ -22,7 +22,7 @@ class _AsyncLoginOwner(Protocol):
     _client: AsyncCodexClient
 
     async def _ensure_initialized(self) -> None:
-        """Ensure the owning SDK client has a live Codex connection."""
+        """Ensure the owning SDK client has a live Codewith connection."""
         ...
 
 
@@ -100,7 +100,7 @@ async def async_start_device_code_login(
 
 @dataclass(slots=True)
 class ChatgptLoginHandle:
-    """Live browser-login attempt returned by `Codex.login_chatgpt()`."""
+    """Live browser-login attempt returned by `Codewith.login_chatgpt()`."""
 
     _client: CodexClient
     login_id: str
@@ -117,7 +117,7 @@ class ChatgptLoginHandle:
 
 @dataclass(slots=True)
 class DeviceCodeLoginHandle:
-    """Live device-code login attempt returned by `Codex.login_chatgpt_device_code()`."""
+    """Live device-code login attempt returned by `Codewith.login_chatgpt_device_code()`."""
 
     _client: CodexClient
     login_id: str

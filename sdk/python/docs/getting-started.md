@@ -8,7 +8,7 @@ with a multi-turn thread.
 Install the SDK:
 
 ```bash
-pip install openai-codex
+pip install hasna-codewith-sdk
 ```
 
 Requirements:
@@ -19,7 +19,7 @@ Requirements:
 The SDK installs its compatible `openai-codex-cli-bin` runtime dependency
 automatically. While beta releases are the only published SDK releases, this
 normal install command selects the latest beta. After a stable release exists,
-use `pip install --pre openai-codex` to opt into a newer prerelease.
+use `pip install --pre hasna-codewith-sdk` to opt into a newer prerelease.
 
 ## 2. Authenticate When Needed
 
@@ -27,10 +27,10 @@ Existing Codewith authentication is reused automatically. For ChatGPT browser
 login:
 
 ```python
-from openai_codex import Codex
+from codewith import Codewith
 
-with Codex() as codex:
-    login = codex.login_chatgpt()
+with Codewith() as client:
+    login = client.login_chatgpt()
     print(login.auth_url)
     print(login.wait().success)
 ```
@@ -38,8 +38,8 @@ with Codex() as codex:
 For device-code login:
 
 ```python
-with Codex() as codex:
-    login = codex.login_chatgpt_device_code()
+with Codewith() as client:
+    login = client.login_chatgpt_device_code()
     print(login.verification_url, login.user_code)
     print(login.wait().success)
 ```
@@ -47,18 +47,18 @@ with Codex() as codex:
 For API-key login:
 
 ```python
-with Codex() as codex:
-    codex.login_api_key("sk-...")
-    print(codex.account().account)
+with Codewith() as client:
+    client.login_api_key("sk-...")
+    print(client.account().account)
 ```
 
 ## 3. Run A Turn
 
 ```python
-from openai_codex import Codex, Sandbox
+from codewith import Codewith, Sandbox
 
-with Codex() as codex:
-    thread = codex.thread_start(sandbox=Sandbox.workspace_write)
+with Codewith() as client:
+    thread = client.thread_start(sandbox=Sandbox.workspace_write)
     result = thread.run("Say hello in one sentence.")
 
     print("Thread:", thread.id)
@@ -77,10 +77,10 @@ or interrupting an active turn.
 Use one enum for the initial thread and later turn overrides:
 
 ```python
-from openai_codex import Codex, Sandbox
+from codewith import Codewith, Sandbox
 
-with Codex() as codex:
-    thread = codex.thread_start(sandbox=Sandbox.workspace_write)
+with Codewith() as client:
+    thread = client.thread_start(sandbox=Sandbox.workspace_write)
     thread.run("Make the requested changes.")
     review = thread.run("Review the diff only.", sandbox=Sandbox.read_only)
 ```
@@ -98,10 +98,10 @@ also applies to subsequent turns on that thread.
 ## 5. Continue A Thread
 
 ```python
-from openai_codex import Codex
+from codewith import Codewith
 
-with Codex() as codex:
-    thread = codex.thread_start()
+with Codewith() as client:
+    thread = client.thread_start()
     thread.run("Summarize Rust ownership in two bullets.")
     result = thread.run("Now explain it to a Python developer.")
     print(result.final_response)
@@ -110,8 +110,8 @@ with Codex() as codex:
 To resume a stored thread later:
 
 ```python
-with Codex() as codex:
-    thread = codex.thread_resume("thr_123")
+with Codewith() as client:
+    thread = client.thread_resume("thr_123")
     print(thread.run("Continue where we left off.").final_response)
 ```
 
@@ -120,12 +120,12 @@ with Codex() as codex:
 ```python
 import asyncio
 
-from openai_codex import AsyncCodex, Sandbox
+from codewith import AsyncCodewith, Sandbox
 
 
 async def main() -> None:
-    async with AsyncCodex() as codex:
-        thread = await codex.thread_start(sandbox=Sandbox.workspace_write)
+    async with AsyncCodewith() as client:
+        thread = await client.thread_start(sandbox=Sandbox.workspace_write)
         result = await thread.run("Continue where we left off.")
         print(result.final_response)
 
@@ -138,16 +138,16 @@ asyncio.run(main())
 Python's built-in documentation tools cover the curated SDK surface:
 
 ```python
-import openai_codex
-from openai_codex import Codex, CodexConfig
+import codewith
+from codewith import Codewith, CodexConfig
 
-help(openai_codex)
-help(Codex)
+help(codewith)
+help(Codewith)
 help(CodexConfig)
 ```
 
 ```bash
-python -m pydoc openai_codex
+python -m pydoc codewith
 ```
 
 ## Developing From This Repository
