@@ -567,8 +567,7 @@ def test_stage_sdk_release_preserves_reviewed_runtime_pin(tmp_path: Path) -> Non
         ],
     }
     assert (
-        '__version__ = "0.1.0b1"'
-        not in (staged / "src" / "codewith" / "__init__.py").read_text()
+        '__version__ = "0.1.0b1"' not in (staged / "src" / "codewith" / "__init__.py").read_text()
     )
     assert (
         'client_version: str = "0.1.0b1"'
