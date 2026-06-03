@@ -521,6 +521,14 @@ impl TurnRequestProcessor {
             ));
         }
 
+        let model_provider = model_provider.or_else(|| {
+            let (provider_id, _) = model.as_deref()?.split_once('/')?;
+            self.config
+                .model_providers
+                .contains_key(provider_id)
+                .then(|| provider_id.to_string())
+        });
+
         let collaboration_mode =
             collaboration_mode.map(|mode| self.normalize_collaboration_mode(mode));
         let runtime_workspace_roots_request = runtime_workspace_roots;

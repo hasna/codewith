@@ -2391,10 +2391,14 @@ async fn provider_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     let openai_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let cerebras_provider = ModelProviderInfo::create_cerebras_provider();
+    let nvidia_provider = ModelProviderInfo::create_nvidia_provider();
     let openrouter_provider = ModelProviderInfo::create_openrouter_provider();
     chat.config.model_provider_id = "openai".to_string();
     chat.config.model_provider = openai_provider.clone();
     chat.config.model_providers = HashMap::from([
+        ("cerebras".to_string(), cerebras_provider),
+        ("nvidia".to_string(), nvidia_provider),
         ("openai".to_string(), openai_provider),
         ("openrouter".to_string(), openrouter_provider),
     ]);
@@ -2411,10 +2415,18 @@ async fn provider_selection_popup_snapshot() {
         !popup.contains("OPENROUTER_API_KEY"),
         "provider picker should not render secret environment keys:\n{popup}"
     );
+    assert!(
+        !popup.contains("CEREBRAS_API_KEY"),
+        "provider picker should not render secret environment keys:\n{popup}"
+    );
+    assert!(
+        !popup.contains("NVIDIA_API_KEY"),
+        "provider picker should not render secret environment keys:\n{popup}"
+    );
 }
 
 #[tokio::test]
-async fn provider_selection_only_shows_openai_and_openrouter() {
+async fn provider_selection_shows_configured_providers() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     let openai_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
@@ -2443,7 +2455,7 @@ async fn provider_selection_only_shows_openai_and_openrouter() {
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(popup.contains("OpenAI"));
     assert!(popup.contains("OpenRouter"));
-    assert!(!popup.contains("Corp Provider"));
+    assert!(popup.contains("Corp Provider"));
 }
 
 #[tokio::test]
@@ -2626,7 +2638,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
 }
 
 #[tokio::test]
-async fn inactive_provider_model_selection_updates_default_only() {
+async fn inactive_provider_model_selection_switches_provider_and_model() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.model_provider_id = "openai".to_string();
@@ -2646,13 +2658,13 @@ async fn inactive_provider_model_selection_updates_default_only() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::PersistDefaultModelSelection {
+            AppEvent::SelectModelProviderModel {
                 provider_id,
                 model,
                 effort: Some(ReasoningEffortConfig::Medium),
             } if provider_id == "openrouter" && model == "codex-auto-balanced"
         )),
-        "expected provider-scoped default selection event; events: {events:?}"
+        "expected provider-scoped model selection event; events: {events:?}"
     );
     assert!(
         events.iter().all(|event| !matches!(
@@ -2661,12 +2673,12 @@ async fn inactive_provider_model_selection_updates_default_only() {
                 | AppEvent::UpdateReasoningEffort(_)
                 | AppEvent::PersistModelSelection { .. }
         )),
-        "inactive provider selection must not mutate the active thread; events: {events:?}"
+        "provider switch event should own the active thread mutation; events: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn inactive_provider_reasoning_selection_updates_default_only() {
+async fn inactive_provider_reasoning_selection_switches_provider_and_model() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.model_provider_id = "openai".to_string();
@@ -2683,13 +2695,13 @@ async fn inactive_provider_reasoning_selection_updates_default_only() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::PersistDefaultModelSelection {
+            AppEvent::SelectModelProviderModel {
                 provider_id,
                 model,
                 effort: Some(ReasoningEffortConfig::High),
             } if provider_id == "openrouter" && model == "openrouter/deepseek-v3.2"
         )),
-        "expected provider-scoped default reasoning event; events: {events:?}"
+        "expected provider-scoped model selection event; events: {events:?}"
     );
     assert!(
         events.iter().all(|event| !matches!(
@@ -2698,7 +2710,7 @@ async fn inactive_provider_reasoning_selection_updates_default_only() {
                 | AppEvent::UpdateReasoningEffort(_)
                 | AppEvent::PersistModelSelection { .. }
         )),
-        "inactive provider reasoning must not mutate the active thread; events: {events:?}"
+        "provider switch event should own the active thread mutation; events: {events:?}"
     );
 }
 

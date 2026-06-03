@@ -620,4 +620,109 @@ mod tests {
                 .any(|model| model.slug == "provider-model")
         );
     }
+
+    #[tokio::test]
+    async fn cerebras_provider_models_manager_preserves_authenticated_model_ids() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header_regex("Authorization", "Bearer cerebras-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "gpt-oss-120b",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Cerebras"
+                    },
+                    {
+                        "id": "account-scoped-model",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Cerebras"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider_info = ModelProviderInfo {
+            base_url: Some(format!("{}/v1", server.uri())),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: Some("cerebras-token".to_string()),
+            ..ModelProviderInfo::create_cerebras_provider()
+        };
+        let provider = create_model_provider(provider_info, /*auth_manager*/ None);
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-oss-120b", "account-scoped-model"]
+        );
+    }
+
+    #[tokio::test]
+    async fn nvidia_provider_models_manager_preserves_hosted_model_ids() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header_regex("Authorization", "Bearer nvidia-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "nvidia"
+                    },
+                    {
+                        "id": "openai/gpt-oss-120b",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "openai"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider_info = ModelProviderInfo {
+            base_url: Some(format!("{}/v1", server.uri())),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: Some("nvidia-token".to_string()),
+            ..ModelProviderInfo::create_nvidia_provider()
+        };
+        let provider = create_model_provider(provider_info, /*auth_manager*/ None);
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+                "openai/gpt-oss-120b"
+            ]
+        );
+    }
 }

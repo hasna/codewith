@@ -749,6 +749,13 @@ pub(crate) enum AppEvent {
         provider_id: String,
     },
 
+    /// Select a specific model from a provider catalog and switch the active thread to it.
+    SelectModelProviderModel {
+        provider_id: String,
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
     /// Switch the auth profile for the running session.
     SwitchAuthProfile {
         profile: Option<String>,
@@ -767,13 +774,6 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
-        model: String,
-        effort: Option<ReasoningEffort>,
-    },
-
-    /// Persist a default model for a provider without changing the active thread.
-    PersistDefaultModelSelection {
-        provider_id: String,
         model: String,
         effort: Option<ReasoningEffort>,
     },

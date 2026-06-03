@@ -3714,6 +3714,37 @@ async fn session_settings_model_provider_update_changes_turn_provider() {
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
 }
 
+#[tokio::test]
+async fn session_settings_provider_prefixed_model_update_changes_turn_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let openrouter_provider = session_configuration
+        .original_config_do_not_use
+        .model_providers
+        .get(OPENROUTER_PROVIDER_ID)
+        .cloned()
+        .expect("OpenRouter should be configured");
+    let model = "openrouter/deepseek-v3.2";
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            collaboration_mode: Some(session_configuration.collaboration_mode.with_updates(
+                Some(model.to_string()),
+                /*effort*/ None,
+                /*developer_instructions*/ None,
+            )),
+            ..Default::default()
+        })
+        .expect("model update should apply");
+
+    let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd.clone());
+    let snapshot = updated.thread_config_snapshot();
+    assert_eq!(updated.provider, openrouter_provider);
+    assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(snapshot.model, model);
+    assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(per_turn_config.model_provider, openrouter_provider);
+}
+
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;

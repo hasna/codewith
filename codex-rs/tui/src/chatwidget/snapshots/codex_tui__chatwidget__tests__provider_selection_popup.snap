@@ -6,6 +6,8 @@ expression: popup
   Switch chat provider and model.
 
 › 1. OpenAI (current)  Uses Codewith or OpenAI login
-  2. OpenRouter        openrouter
+  2. Cerebras          cerebras
+  3. NVIDIA            nvidia
+  4. OpenRouter        openrouter
 
   Press enter to confirm or esc to go back

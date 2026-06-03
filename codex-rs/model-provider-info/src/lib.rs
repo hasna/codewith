@@ -5,7 +5,7 @@
 //!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
-//! The built-in picker surface is intentionally small: OpenAI plus OpenRouter.
+//! The built-in picker surface is intentionally small: OpenAI, Cerebras, NVIDIA, and OpenRouter.
 
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
@@ -37,6 +37,12 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const CEREBRAS_PROVIDER_NAME: &str = "Cerebras";
+pub const CEREBRAS_PROVIDER_ID: &str = "cerebras";
+pub const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
+const NVIDIA_PROVIDER_NAME: &str = "NVIDIA";
+pub const NVIDIA_PROVIDER_ID: &str = "nvidia";
+pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -383,6 +389,50 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_cerebras_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: CEREBRAS_PROVIDER_NAME.into(),
+            base_url: Some(CEREBRAS_BASE_URL.into()),
+            env_key: Some("CEREBRAS_API_KEY".into()),
+            env_key_instructions: Some("Set CEREBRAS_API_KEY to a Cerebras API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_nvidia_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: NVIDIA_PROVIDER_NAME.into(),
+            base_url: Some(NVIDIA_BASE_URL.into()),
+            env_key: Some("NVIDIA_API_KEY".into()),
+            env_key_instructions: Some("Set NVIDIA_API_KEY to an NVIDIA NIM API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_amazon_bedrock_provider(
         aws: Option<ModelProviderAwsAuthInfo>,
     ) -> ModelProviderInfo {
@@ -442,10 +492,14 @@ pub fn built_in_model_providers(
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
+    let cerebras_provider = P::create_cerebras_provider();
+    let nvidia_provider = P::create_nvidia_provider();
     let openrouter_provider = P::create_openrouter_provider();
 
     [
         (OPENAI_PROVIDER_ID, openai_provider),
+        (CEREBRAS_PROVIDER_ID, cerebras_provider),
+        (NVIDIA_PROVIDER_ID, nvidia_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
     ]
     .into_iter()
@@ -456,8 +510,8 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable. OpenRouter remains overridable so users can point it
-/// at an OpenRouter-compatible mirror. Amazon Bedrock is no longer built in,
+/// generally overridable. OpenRouter, Cerebras, and NVIDIA remain overridable
+/// so users can point them at compatible mirrors. Amazon Bedrock is no longer built in,
 /// but an explicit `[model_providers.amazon-bedrock.aws]` block still enables
 /// the provider with the default Bedrock endpoint and optional AWS profile.
 pub fn merge_configured_model_providers(
@@ -487,7 +541,10 @@ pub fn merge_configured_model_providers(
                     built_in_aws.region = Some(region);
                 }
             }
-        } else if key == OPENROUTER_PROVIDER_ID {
+        } else if key == OPENROUTER_PROVIDER_ID
+            || key == CEREBRAS_PROVIDER_ID
+            || key == NVIDIA_PROVIDER_ID
+        {
             model_providers.insert(key, provider);
         } else {
             model_providers.entry(key).or_insert(provider);

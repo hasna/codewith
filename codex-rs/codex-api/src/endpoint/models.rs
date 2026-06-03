@@ -10,12 +10,15 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use http::HeaderMap;
 use http::Method;
 use http::header::ETAG;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct ModelsClient<T: HttpTransport> {
@@ -98,14 +101,30 @@ struct OpenAiCompatibleModel {
     description: Option<String>,
     context_length: Option<i64>,
     architecture: Option<OpenAiCompatibleArchitecture>,
+    capabilities: Option<OpenAiCompatibleCapabilities>,
+    limits: Option<OpenAiCompatibleLimits>,
     pricing: Option<OpenAiCompatiblePricing>,
     top_provider: Option<OpenAiCompatibleTopProvider>,
-    supported_parameters: Option<Vec<String>>,
+    supported_parameters: Option<OpenAiCompatibleSupportedParameters>,
 }
 
 #[derive(Deserialize)]
 struct OpenAiCompatibleArchitecture {
     input_modalities: Option<Vec<String>>,
+    modality: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleCapabilities {
+    function_calling: Option<bool>,
+    tools: Option<bool>,
+    parallel_tool_calls: Option<bool>,
+    reasoning: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleLimits {
+    max_context_length: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +138,29 @@ struct OpenAiCompatiblePricing {
 #[derive(Deserialize)]
 struct OpenAiCompatibleTopProvider {
     context_length: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OpenAiCompatibleSupportedParameters {
+    List(Vec<String>),
+    Flags(HashMap<String, bool>),
+}
+
+impl OpenAiCompatibleSupportedParameters {
+    fn supports(&self, parameter: &str) -> bool {
+        self.support_state(parameter).unwrap_or(false)
+    }
+
+    fn support_state(&self, parameter: &str) -> Option<bool> {
+        match self {
+            Self::List(parameters) => parameters
+                .iter()
+                .any(|value| value == parameter)
+                .then_some(true),
+            Self::Flags(parameters) => parameters.get(parameter).copied(),
+        }
+    }
 }
 
 fn decode_models_response(body: &[u8]) -> Result<Vec<ModelInfo>, serde_json::Error> {
@@ -141,21 +183,43 @@ impl OpenAiCompatibleModel {
             description,
             context_length,
             architecture,
+            capabilities,
+            limits,
             pricing,
             top_provider,
             supported_parameters,
         } = self;
         let supports_tools = supported_parameters
             .as_ref()
-            .is_some_and(|params| params.iter().any(|param| param == "tools"));
+            .is_some_and(|params| params.supports("tools"))
+            || capabilities.as_ref().is_some_and(|capabilities| {
+                capabilities.tools.unwrap_or(false)
+                    || capabilities.function_calling.unwrap_or(false)
+            });
+        let supports_parallel_tool_calls = supported_parameters
+            .as_ref()
+            .and_then(|params| params.support_state("parallel_tool_calls"))
+            .or_else(|| {
+                capabilities
+                    .as_ref()
+                    .and_then(|capabilities| capabilities.parallel_tool_calls)
+            })
+            .unwrap_or(supports_tools)
+            && supports_tools;
         let provider_context_length = top_provider.and_then(|provider| provider.context_length);
-        let effective_context_length = provider_context_length.or(context_length);
+        let limits_context_length = limits.and_then(|limits| limits.max_context_length);
+        let effective_context_length = provider_context_length
+            .or(context_length)
+            .or(limits_context_length);
+        let max_context_window = context_length.or(effective_context_length);
+        let (default_reasoning_level, supported_reasoning_levels) =
+            reasoning_levels_for_openai_compatible_model(&id, capabilities.as_ref());
         ModelInfo {
             slug: id.clone(),
             display_name: name.unwrap_or_else(|| id.clone()),
             description: with_pricing_description(description, pricing.as_ref()),
-            default_reasoning_level: None,
-            supported_reasoning_levels: Vec::new(),
+            default_reasoning_level,
+            supported_reasoning_levels,
             shell_type: ConfigShellToolType::Default,
             visibility: ModelVisibility::List,
             supported_in_api: true,
@@ -174,21 +238,56 @@ impl OpenAiCompatibleModel {
             apply_patch_tool_type: None,
             web_search_tool_type: WebSearchToolType::Text,
             truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            supports_parallel_tool_calls: supports_tools,
+            supports_parallel_tool_calls,
             supports_image_detail_original: false,
             context_window: effective_context_length,
-            max_context_window: context_length,
+            max_context_window,
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
             experimental_supported_tools: Vec::new(),
-            input_modalities: architecture
-                .and_then(|architecture| architecture.input_modalities)
-                .map(input_modalities_from_openai_compatible)
-                .unwrap_or_else(|| vec![InputModality::Text]),
+            input_modalities: input_modalities_from_openai_compatible_architecture(architecture),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
             tool_mode: None,
         }
+    }
+}
+
+fn reasoning_levels_for_openai_compatible_model(
+    id: &str,
+    capabilities: Option<&OpenAiCompatibleCapabilities>,
+) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    if !capabilities
+        .and_then(|capabilities| capabilities.reasoning)
+        .unwrap_or(false)
+    {
+        return (None, Vec::new());
+    }
+
+    match id {
+        "gpt-oss-120b" => (
+            Some(ReasoningEffort::Medium),
+            vec![
+                reasoning_preset(ReasoningEffort::Low, "Minimal reasoning"),
+                reasoning_preset(ReasoningEffort::Medium, "Moderate reasoning"),
+                reasoning_preset(ReasoningEffort::High, "Extensive reasoning"),
+            ],
+        ),
+        "zai-glm-4.7" => (
+            Some(ReasoningEffort::Medium),
+            vec![
+                reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
+                reasoning_preset(ReasoningEffort::Medium, "Reasoning enabled"),
+            ],
+        ),
+        _ => (None, Vec::new()),
+    }
+}
+
+fn reasoning_preset(effort: ReasoningEffort, description: &str) -> ReasoningEffortPreset {
+    ReasoningEffortPreset {
+        effort,
+        description: description.to_string(),
     }
 }
 
@@ -255,6 +354,23 @@ fn trim_price(amount: f64) -> String {
         formatted.pop();
     }
     formatted
+}
+
+fn input_modalities_from_openai_compatible_architecture(
+    architecture: Option<OpenAiCompatibleArchitecture>,
+) -> Vec<InputModality> {
+    let Some(architecture) = architecture else {
+        return vec![InputModality::Text];
+    };
+
+    if let Some(modalities) = architecture.input_modalities {
+        return input_modalities_from_openai_compatible(modalities);
+    }
+
+    architecture
+        .modality
+        .map(|modality| input_modalities_from_openai_compatible(vec![modality]))
+        .unwrap_or_else(|| vec![InputModality::Text])
 }
 
 fn input_modalities_from_openai_compatible(modalities: Vec<String>) -> Vec<InputModality> {
@@ -516,6 +632,147 @@ mod tests {
                 supports_search_tool: false,
                 tool_mode: None,
             }]
+        );
+    }
+
+    #[test]
+    fn parses_cerebras_authenticated_models_response() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "zai-glm-4.7",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Cerebras"
+                    },
+                    {
+                        "id": "account-scoped-model",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Cerebras"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+        )
+        .expect("Cerebras authenticated model response should decode");
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zai-glm-4.7", "account-scoped-model"]
+        );
+        assert_eq!(models[1].display_name, "account-scoped-model");
+        assert_eq!(models[1].input_modalities, vec![InputModality::Text]);
+    }
+
+    #[test]
+    fn parses_cerebras_detailed_models_response() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "zai-glm-4.7",
+                        "object": "model",
+                        "created": 1767744000,
+                        "owned_by": "Z.ai",
+                        "name": "Z.ai GLM 4.7",
+                        "description": "Fast coding model",
+                        "capabilities": {
+                            "function_calling": true,
+                            "tools": true,
+                            "parallel_tool_calls": true,
+                            "reasoning": true
+                        },
+                        "supported_parameters": {
+                            "temperature": true,
+                            "tools": true,
+                            "parallel_tool_calls": false
+                        },
+                        "architecture": {
+                            "modality": "text"
+                        },
+                        "limits": {
+                            "max_context_length": 131072
+                        },
+                        "pricing": {
+                            "prompt": "0.00000225",
+                            "completion": "0.00000275"
+                        }
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+        )
+        .expect("Cerebras detailed model response should decode");
+
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.slug, "zai-glm-4.7");
+        assert_eq!(model.display_name, "Z.ai GLM 4.7");
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+        assert_eq!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort)
+                .collect::<Vec<_>>(),
+            vec![ReasoningEffort::None, ReasoningEffort::Medium]
+        );
+        assert!(!model.supports_parallel_tool_calls);
+        assert_eq!(model.context_window, Some(131072));
+        assert_eq!(model.max_context_window, Some(131072));
+        assert_eq!(model.input_modalities, vec![InputModality::Text]);
+    }
+
+    #[test]
+    fn parses_nvidia_models_response() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "nvidia"
+                    },
+                    {
+                        "id": "qwen/qwen3-coder-480b-a35b-instruct",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "qwen"
+                    },
+                    {
+                        "id": "openai/gpt-oss-120b",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "openai"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+        )
+        .expect("NVIDIA hosted model response should decode");
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+                "qwen/qwen3-coder-480b-a35b-instruct",
+                "openai/gpt-oss-120b"
+            ]
         );
     }
 

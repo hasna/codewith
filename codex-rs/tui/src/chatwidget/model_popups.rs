@@ -4,8 +4,6 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
-use codex_model_provider_info::OPENAI_PROVIDER_ID;
-use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 
 const MAX_PICKER_DESCRIPTION_WORDS: usize = 8;
 
@@ -65,7 +63,6 @@ impl ChatWidget {
             .config
             .model_providers
             .iter()
-            .filter(|(id, _)| matches!(id.as_str(), OPENAI_PROVIDER_ID | OPENROUTER_PROVIDER_ID))
             .map(|(id, provider)| {
                 let name = provider.name.trim();
                 let display_name = if name.is_empty() {
@@ -168,11 +165,12 @@ impl ChatWidget {
             .collect();
 
         let catalog_provider_id = self.model_catalog.provider_id().map(str::to_string);
-        let updates_active_thread = self.model_selection_updates_active_thread();
+        let current_provider_id = self.config.model_provider_id.clone();
+        let catalog_uses_current_provider = self.model_catalog_uses_current_provider();
         let current_model = self.current_model();
         let current_label = presets
             .iter()
-            .find(|preset| preset.model.as_str() == current_model)
+            .find(|preset| catalog_uses_current_provider && preset.model.as_str() == current_model)
             .map(|preset| preset.model.to_string())
             .unwrap_or_else(|| self.model_display_name().to_string());
 
@@ -200,12 +198,12 @@ impl ChatWidget {
                     Some(preset.default_reasoning_effort),
                     should_prompt_plan_mode_scope,
                     catalog_provider_id.clone(),
-                    updates_active_thread,
+                    current_provider_id.clone(),
                 );
                 SelectionItem {
                     name: model.clone(),
                     description,
-                    is_current: model.as_str() == current_model,
+                    is_current: catalog_uses_current_provider && model.as_str() == current_model,
                     is_default: preset.is_default,
                     actions,
                     dismiss_on_select: true,
@@ -281,7 +279,7 @@ impl ChatWidget {
                     Some(preset.default_reasoning_effort),
                     should_prompt_plan_mode_scope,
                     self.model_catalog.provider_id().map(str::to_string),
-                    self.model_selection_updates_active_thread(),
+                    self.config.model_provider_id.clone(),
                 )
             } else {
                 let preset_for_action = preset.clone();
@@ -318,10 +316,13 @@ impl ChatWidget {
         effort_for_action: Option<ReasoningEffortConfig>,
         should_prompt_plan_mode_scope: bool,
         provider_id: Option<String>,
-        updates_active_thread: bool,
+        current_provider_id: String,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
-            if updates_active_thread && should_prompt_plan_mode_scope {
+            let switches_provider = provider_id
+                .as_deref()
+                .is_some_and(|provider_id| provider_id != current_provider_id);
+            if !switches_provider && should_prompt_plan_mode_scope {
                 tx.send(AppEvent::OpenPlanReasoningScopePrompt {
                     model: model_for_action.clone(),
                     effort: effort_for_action,
@@ -329,16 +330,18 @@ impl ChatWidget {
                 return;
             }
 
-            if updates_active_thread {
-                tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-                tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-                tx.send(AppEvent::PersistModelSelection {
+            if let Some(provider_id) = provider_id.clone()
+                && switches_provider
+            {
+                tx.send(AppEvent::SelectModelProviderModel {
+                    provider_id,
                     model: model_for_action.clone(),
                     effort: effort_for_action,
                 });
-            } else if let Some(provider_id) = provider_id.clone() {
-                tx.send(AppEvent::PersistDefaultModelSelection {
-                    provider_id,
+            } else {
+                tx.send(AppEvent::UpdateModel(model_for_action.clone()));
+                tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
+                tx.send(AppEvent::PersistModelSelection {
                     model: model_for_action.clone(),
                     effort: effort_for_action,
                 });
@@ -346,7 +349,7 @@ impl ChatWidget {
         })]
     }
 
-    fn model_selection_updates_active_thread(&self) -> bool {
+    fn model_catalog_uses_current_provider(&self) -> bool {
         self.model_catalog
             .provider_id()
             .is_none_or(|provider_id| provider_id == self.config.model_provider_id)
@@ -461,7 +464,8 @@ impl ChatWidget {
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
         let catalog_provider_id = self.model_catalog.provider_id().map(str::to_string);
-        let updates_active_thread = self.model_selection_updates_active_thread();
+        let current_provider_id = self.config.model_provider_id.clone();
+        let catalog_uses_current_provider = self.model_catalog_uses_current_provider();
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
         let supported = preset.supported_reasoning_efforts;
         let in_plan_mode =
@@ -511,7 +515,7 @@ impl ChatWidget {
         if choices.len() == 1 {
             let selected_effort = choices.first().and_then(|c| c.stored);
             let selected_model = preset.model;
-            if updates_active_thread
+            if catalog_uses_current_provider
                 && self.should_prompt_plan_mode_reasoning_scope(&selected_model, selected_effort)
             {
                 self.app_event_tx
@@ -524,7 +528,7 @@ impl ChatWidget {
                     selected_model,
                     selected_effort,
                     catalog_provider_id,
-                    updates_active_thread,
+                    current_provider_id,
                 );
             }
             return;
@@ -539,7 +543,8 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
-        let is_current_model = self.current_model() == preset.model.as_str();
+        let is_current_model =
+            catalog_uses_current_provider && self.current_model() == preset.model.as_str();
         let highlight_choice = if is_current_model {
             if in_plan_mode {
                 self.config
@@ -591,25 +596,31 @@ impl ChatWidget {
 
             let model_for_action = model_slug.clone();
             let choice_effort = choice.stored;
-            let should_prompt_plan_mode_scope = updates_active_thread
+            let should_prompt_plan_mode_scope = catalog_uses_current_provider
                 && self.should_prompt_plan_mode_reasoning_scope(model_slug.as_str(), choice_effort);
             let provider_id = catalog_provider_id.clone();
+            let current_provider_id = current_provider_id.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                let switches_provider = provider_id
+                    .as_deref()
+                    .is_some_and(|provider_id| provider_id != current_provider_id);
                 if should_prompt_plan_mode_scope {
                     tx.send(AppEvent::OpenPlanReasoningScopePrompt {
                         model: model_for_action.clone(),
                         effort: choice_effort,
                     });
-                } else if updates_active_thread {
-                    tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-                    tx.send(AppEvent::UpdateReasoningEffort(choice_effort));
-                    tx.send(AppEvent::PersistModelSelection {
+                } else if let Some(provider_id) = provider_id.clone()
+                    && switches_provider
+                {
+                    tx.send(AppEvent::SelectModelProviderModel {
+                        provider_id,
                         model: model_for_action.clone(),
                         effort: choice_effort,
                     });
-                } else if let Some(provider_id) = provider_id.clone() {
-                    tx.send(AppEvent::PersistDefaultModelSelection {
-                        provider_id,
+                } else {
+                    tx.send(AppEvent::UpdateModel(model_for_action.clone()));
+                    tx.send(AppEvent::UpdateReasoningEffort(choice_effort));
+                    tx.send(AppEvent::PersistModelSelection {
                         model: model_for_action.clone(),
                         effort: choice_effort,
                     });
@@ -667,19 +678,20 @@ impl ChatWidget {
         model: String,
         effort: Option<ReasoningEffortConfig>,
         provider_id: Option<String>,
-        updates_active_thread: bool,
+        current_provider_id: String,
     ) {
-        if updates_active_thread {
+        if let Some(provider_id) = provider_id
+            && provider_id != current_provider_id
+        {
+            self.app_event_tx.send(AppEvent::SelectModelProviderModel {
+                provider_id,
+                model,
+                effort,
+            });
+        } else {
             self.apply_model_and_effort_without_persist(model.clone(), effort);
             self.app_event_tx
                 .send(AppEvent::PersistModelSelection { model, effort });
-        } else if let Some(provider_id) = provider_id {
-            self.app_event_tx
-                .send(AppEvent::PersistDefaultModelSelection {
-                    provider_id,
-                    model,
-                    effort,
-                });
         }
     }
 }

@@ -239,32 +239,20 @@ impl SessionConfiguration {
                 None => Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
             };
         }
-        if let Some(model_provider_id) = &updates.model_provider_id {
-            let Some(provider) = next_configuration
-                .original_config_do_not_use
-                .model_providers
-                .get(model_provider_id)
-                .cloned()
-            else {
-                let mut allowed = next_configuration
+        let inferred_model_provider_id =
+            updates.model_provider_id.as_ref().cloned().or_else(|| {
+                let (candidate, _) = next_configuration
+                    .collaboration_mode
+                    .model()
+                    .split_once('/')?;
+                next_configuration
                     .original_config_do_not_use
                     .model_providers
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                allowed.sort();
-                return Err(ConstraintError::InvalidValue {
-                    field_name: "model_provider",
-                    candidate: model_provider_id.clone(),
-                    allowed: format!("[{}]", allowed.join(", ")),
-                    requirement_source: codex_config::RequirementSource::Unknown,
-                });
-            };
-            let mut config = (*next_configuration.original_config_do_not_use).clone();
-            config.model_provider_id.clone_from(model_provider_id);
-            config.model_provider.clone_from(&provider);
-            next_configuration.provider = provider;
-            next_configuration.original_config_do_not_use = Arc::new(config);
+                    .contains_key(candidate)
+                    .then(|| candidate.to_string())
+            });
+        if let Some(model_provider_id) = &inferred_model_provider_id {
+            apply_model_provider_id(&mut next_configuration, model_provider_id)?;
         }
         if let Some(auth_profile) = updates.auth_profile.clone() {
             if let Some(name) = auth_profile.as_deref() {
@@ -454,6 +442,38 @@ impl SessionConfiguration {
         self.permission_profile_state
             .set_permission_profile_snapshot(permission_snapshot)
     }
+}
+
+fn apply_model_provider_id(
+    next_configuration: &mut SessionConfiguration,
+    model_provider_id: &str,
+) -> ConstraintResult<()> {
+    let Some(provider) = next_configuration
+        .original_config_do_not_use
+        .model_providers
+        .get(model_provider_id)
+        .cloned()
+    else {
+        let mut allowed = next_configuration
+            .original_config_do_not_use
+            .model_providers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        allowed.sort();
+        return Err(ConstraintError::InvalidValue {
+            field_name: "model_provider",
+            candidate: model_provider_id.to_string(),
+            allowed: format!("[{}]", allowed.join(", ")),
+            requirement_source: codex_config::RequirementSource::Unknown,
+        });
+    };
+    let mut config = (*next_configuration.original_config_do_not_use).clone();
+    config.model_provider_id = model_provider_id.to_string();
+    config.model_provider.clone_from(&provider);
+    next_configuration.provider = provider;
+    next_configuration.original_config_do_not_use = Arc::new(config);
+    Ok(())
 }
 
 #[derive(Default, Clone)]

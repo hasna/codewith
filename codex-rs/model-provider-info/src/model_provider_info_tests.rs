@@ -287,7 +287,7 @@ fn test_amazon_bedrock_provider_adds_mantle_client_agent_header() {
 }
 
 #[test]
-fn test_built_in_model_providers_only_include_openai_and_openrouter() {
+fn test_built_in_model_providers_include_expected_picker_providers() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 
     assert_eq!(
@@ -296,9 +296,31 @@ fn test_built_in_model_providers_only_include_openai_and_openrouter() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from([
+            CEREBRAS_PROVIDER_ID.to_string(),
+            NVIDIA_PROVIDER_ID.to_string(),
             OPENAI_PROVIDER_ID.to_string(),
             OPENROUTER_PROVIDER_ID.to_string(),
         ])
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_cerebras() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(CEREBRAS_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_cerebras_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_nvidia() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(NVIDIA_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_nvidia_provider())
     );
 }
 
@@ -309,6 +331,56 @@ fn test_built_in_model_providers_include_openrouter() {
     assert_eq!(
         providers.get(OPENROUTER_PROVIDER_ID),
         Some(&ModelProviderInfo::create_openrouter_provider())
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_cerebras_override() {
+    let cerebras_provider = ModelProviderInfo {
+        name: "Cerebras Dedicated".to_string(),
+        base_url: Some("https://dedicated.cerebras.example.com/v1".to_string()),
+        env_key: Some("CEREBRAS_DEDICATED_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        CEREBRAS_PROVIDER_ID.to_string(),
+        cerebras_provider.clone(),
+    )]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    expected.insert(CEREBRAS_PROVIDER_ID.to_string(), cerebras_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_nvidia_override() {
+    let nvidia_provider = ModelProviderInfo {
+        name: "NVIDIA Dedicated".to_string(),
+        base_url: Some("https://dedicated.nvidia.example.com/v1".to_string()),
+        env_key: Some("NVIDIA_DEDICATED_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        NVIDIA_PROVIDER_ID.to_string(),
+        nvidia_provider.clone(),
+    )]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    expected.insert(NVIDIA_PROVIDER_ID.to_string(), nvidia_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
     );
 }
 

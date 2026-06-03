@@ -166,6 +166,70 @@ supports_websockets = false
 }
 
 #[tokio::test]
+async fn thread_settings_update_provider_prefixed_model_updates_future_turns() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(codex_home.path().join("config.toml"))?
+        .write_all(
+            format!(
+                r#"
+[model_providers.mock_provider_two]
+name = "Second mock provider"
+base_url = "{}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+"#,
+                server.uri()
+            )
+            .as_bytes(),
+        )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+    let model = "mock_provider_two/mock-model-two";
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model: Some(model.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.model_provider, "mock_provider_two");
+    assert_eq!(updated.thread_settings.model, model);
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request_bodies = received_response_bodies(&server).await?;
+    assert!(
+        request_bodies
+            .iter()
+            .any(|body| { body.get("model").and_then(Value::as_str) == Some(model) }),
+        "future turn did not use inferred provider/model: {request_bodies:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_settings_update_auth_profile_updates_future_turns() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(vec![
         create_final_assistant_message_sse_response("done")?,
