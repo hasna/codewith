@@ -16,6 +16,23 @@ REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 CODEX_NPM_NAME = "@hasna/codewith"
+COMPLIANCE_FILES = (
+    "LICENSE",
+    "NOTICE",
+    "MODIFICATIONS.md",
+    "THIRD_PARTY_NOTICES.md",
+)
+COMPLIANCE_DIRECTORIES = ("licenses",)
+THIRD_PARTY_LICENSE_FILES = {
+    "bubblewrap-LGPL-2.0.txt": (
+        REPO_ROOT / "codex-rs" / "vendor" / "bubblewrap" / "LICENSE"
+    ),
+    "ripgrep-LICENSE-MIT.txt": (
+        REPO_ROOT / "third_party_licenses" / "ripgrep-LICENSE-MIT.txt"
+    ),
+    "ripgrep-UNLICENSE.txt": REPO_ROOT / "third_party_licenses" / "ripgrep-UNLICENSE.txt",
+    "zsh-LICENCE.txt": REPO_ROOT / "third_party_licenses" / "zsh-LICENCE.txt",
+}
 CODEX_PUBLISH_CONFIG = {
     "registry": "https://registry.npmjs.org",
     "access": "public",
@@ -98,6 +115,7 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 }
 
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build or stage the Codewith npm package.")
@@ -296,6 +314,8 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     else:
         raise RuntimeError(f"Unknown package '{package}'.")
 
+    stage_compliance_files(staging_dir)
+
     if package_json_path is not None:
         with open(package_json_path, "r", encoding="utf-8") as fh:
             package_json = json.load(fh)
@@ -322,9 +342,37 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         dependencies[CODEX_NPM_NAME] = version
         package_json["dependencies"] = dependencies
 
+    include_compliance_files(package_json)
+
     with open(staging_dir / "package.json", "w", encoding="utf-8") as out:
         json.dump(package_json, out, indent=2)
         out.write("\n")
+
+
+def stage_compliance_files(staging_dir: Path) -> None:
+    for filename in COMPLIANCE_FILES:
+        source = REPO_ROOT / filename
+        if not source.is_file():
+            raise RuntimeError(f"Missing required compliance file: {source}")
+        shutil.copy2(source, staging_dir / filename)
+
+    licenses_dir = staging_dir / "licenses"
+    licenses_dir.mkdir(exist_ok=True)
+    for filename, source in THIRD_PARTY_LICENSE_FILES.items():
+        if not source.is_file():
+            raise RuntimeError(f"Missing required third-party license file: {source}")
+        shutil.copy2(source, licenses_dir / filename)
+
+
+def include_compliance_files(package_json: dict) -> None:
+    files = package_json.get("files")
+    if not isinstance(files, list):
+        return
+
+    for entry in (*COMPLIANCE_FILES, *COMPLIANCE_DIRECTORIES):
+        if entry not in files:
+            files.append(entry)
+
 
 def run_command(cmd: list[str], cwd: Path | None = None) -> None:
     print("+", " ".join(cmd), flush=True)

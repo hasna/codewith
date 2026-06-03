@@ -1,8 +1,11 @@
 Codewith
 Copyright 2026 Hasna
 
-This project includes material derived from OpenAI Codex.
+Codewith is a modified derivative of OpenAI Codex.
 Portions copyright 2025 OpenAI.
+See MODIFICATIONS.md for a summary of Codewith modifications.
+
+Codewith is not affiliated with, sponsored by, or endorsed by OpenAI.
 
 This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
 Copyright (c) 2016-2022 Florian Dehau

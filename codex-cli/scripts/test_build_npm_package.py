@@ -26,6 +26,8 @@ class BuildNpmPackageTest(unittest.TestCase):
             build_npm_package.stage_sources(staging_dir, "1.2.3", "codex")
 
             package_json = read_package_json(staging_dir)
+            compliance_files = read_compliance_files(staging_dir)
+            third_party_license_files = read_third_party_license_files(staging_dir)
 
         self.assertEqual(
             package_json,
@@ -41,7 +43,14 @@ class BuildNpmPackageTest(unittest.TestCase):
                     "registry": "https://registry.npmjs.org",
                     "access": "public",
                 },
-                "files": ["bin/codex.js"],
+                "files": [
+                    "bin/codex.js",
+                    "LICENSE",
+                    "NOTICE",
+                    "MODIFICATIONS.md",
+                    "THIRD_PARTY_NOTICES.md",
+                    "licenses",
+                ],
                 "repository": {
                     "type": "git",
                     "url": "git+https://github.com/hasna/codewith.git",
@@ -58,6 +67,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                 },
             },
         )
+        self.assertEqual(compliance_files, repo_compliance_files())
+        self.assertEqual(third_party_license_files, repo_third_party_license_files())
 
     def test_linux_arm64_package_stages_public_native_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -66,6 +77,8 @@ class BuildNpmPackageTest(unittest.TestCase):
             build_npm_package.stage_sources(staging_dir, "1.2.3", "codex-linux-arm64")
 
             package_json = read_package_json(staging_dir)
+            compliance_files = read_compliance_files(staging_dir)
+            third_party_license_files = read_third_party_license_files(staging_dir)
 
         self.assertEqual(
             package_json,
@@ -75,7 +88,14 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "license": "Apache-2.0",
                 "os": ["linux"],
                 "cpu": ["arm64"],
-                "files": ["vendor"],
+                "files": [
+                    "vendor",
+                    "LICENSE",
+                    "NOTICE",
+                    "MODIFICATIONS.md",
+                    "THIRD_PARTY_NOTICES.md",
+                    "licenses",
+                ],
                 "publishConfig": {
                     "registry": "https://registry.npmjs.org",
                     "access": "public",
@@ -89,6 +109,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "packageManager": PACKAGE_MANAGER,
             },
         )
+        self.assertEqual(compliance_files, repo_compliance_files())
+        self.assertEqual(third_party_license_files, repo_third_party_license_files())
 
     def test_linux_alias_uses_musl_target_for_upstream_release_artifacts(self) -> None:
         self.assertEqual(
@@ -125,9 +147,23 @@ class BuildNpmPackageTest(unittest.TestCase):
             )
 
             package_json = read_package_json(staging_dir)
+            compliance_files = read_compliance_files(staging_dir)
+            third_party_license_files = read_third_party_license_files(staging_dir)
 
         self.assertEqual(package_json["name"], "@hasna/codewith-responses-api-proxy")
         self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["files"],
+            [
+                "bin",
+                "vendor",
+                "LICENSE",
+                "NOTICE",
+                "MODIFICATIONS.md",
+                "THIRD_PARTY_NOTICES.md",
+                "licenses",
+            ],
+        )
         self.assertEqual(
             package_json["publishConfig"],
             {
@@ -135,6 +171,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                 "access": "public",
             },
         )
+        self.assertEqual(compliance_files, repo_compliance_files())
+        self.assertEqual(third_party_license_files, repo_third_party_license_files())
 
     def test_sdk_package_stages_public_metadata(self) -> None:
         def fake_stage_sdk_sources(staging_dir: Path) -> None:
@@ -151,9 +189,22 @@ class BuildNpmPackageTest(unittest.TestCase):
                 build_npm_package.stage_sources(staging_dir, "1.2.3", "codex-sdk")
 
             package_json = read_package_json(staging_dir)
+            compliance_files = read_compliance_files(staging_dir)
+            third_party_license_files = read_third_party_license_files(staging_dir)
 
         self.assertEqual(package_json["name"], "@hasna/codewith-sdk")
         self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["files"],
+            [
+                "dist",
+                "LICENSE",
+                "NOTICE",
+                "MODIFICATIONS.md",
+                "THIRD_PARTY_NOTICES.md",
+                "licenses",
+            ],
+        )
         self.assertEqual(
             package_json["publishConfig"],
             {
@@ -163,11 +214,41 @@ class BuildNpmPackageTest(unittest.TestCase):
         )
         self.assertEqual(package_json["dependencies"]["@hasna/codewith"], "1.2.3")
         self.assertNotIn("prepare", package_json["scripts"])
+        self.assertEqual(compliance_files, repo_compliance_files())
+        self.assertEqual(third_party_license_files, repo_third_party_license_files())
 
 
 def read_package_json(staging_dir: Path) -> dict:
     with open(staging_dir / "package.json", "r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def read_compliance_files(staging_dir: Path) -> dict[str, str]:
+    return {
+        name: (staging_dir / name).read_text(encoding="utf-8")
+        for name in build_npm_package.COMPLIANCE_FILES
+    }
+
+
+def repo_compliance_files() -> dict[str, str]:
+    return {
+        name: (build_npm_package.REPO_ROOT / name).read_text(encoding="utf-8")
+        for name in build_npm_package.COMPLIANCE_FILES
+    }
+
+
+def read_third_party_license_files(staging_dir: Path) -> dict[str, str]:
+    return {
+        name: (staging_dir / "licenses" / name).read_text(encoding="utf-8")
+        for name in build_npm_package.THIRD_PARTY_LICENSE_FILES
+    }
+
+
+def repo_third_party_license_files() -> dict[str, str]:
+    return {
+        name: source.read_text(encoding="utf-8")
+        for name, source in build_npm_package.THIRD_PARTY_LICENSE_FILES.items()
+    }
 
 
 if __name__ == "__main__":

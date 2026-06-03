@@ -5,6 +5,7 @@ import shutil
 import stat
 from pathlib import Path
 
+from .targets import REPO_ROOT
 from .targets import PackageInputs
 from .targets import PackageVariant
 from .targets import TargetSpec
@@ -12,6 +13,22 @@ from .zsh import ZSH_RESOURCE_PATH
 
 
 LAYOUT_VERSION = 1
+COMPLIANCE_FILES = (
+    "LICENSE",
+    "NOTICE",
+    "MODIFICATIONS.md",
+    "THIRD_PARTY_NOTICES.md",
+)
+THIRD_PARTY_LICENSE_FILES = {
+    "bubblewrap-LGPL-2.0.txt": (
+        REPO_ROOT / "codex-rs" / "vendor" / "bubblewrap" / "LICENSE"
+    ),
+    "ripgrep-LICENSE-MIT.txt": (
+        REPO_ROOT / "third_party_licenses" / "ripgrep-LICENSE-MIT.txt"
+    ),
+    "ripgrep-UNLICENSE.txt": REPO_ROOT / "third_party_licenses" / "ripgrep-UNLICENSE.txt",
+    "zsh-LICENCE.txt": REPO_ROOT / "third_party_licenses" / "zsh-LICENCE.txt",
+}
 
 
 def prepare_package_dir(package_dir: Path, *, force: bool) -> None:
@@ -75,6 +92,8 @@ def build_package_dir(
             is_windows=True,
         )
 
+    copy_compliance_files(package_dir)
+
     metadata = {
         "layoutVersion": LAYOUT_VERSION,
         "version": version,
@@ -127,10 +146,21 @@ def validate_package_dir(
             )
 
     required_files = [
+        Path("LICENSE"),
+        Path("NOTICE"),
+        Path("MODIFICATIONS.md"),
+        Path("THIRD_PARTY_NOTICES.md"),
+        Path("licenses") / "bubblewrap-LGPL-2.0.txt",
+        Path("licenses") / "ripgrep-LICENSE-MIT.txt",
+        Path("licenses") / "ripgrep-UNLICENSE.txt",
+        Path("licenses") / "zsh-LICENCE.txt",
         Path("bin") / variant.entrypoint_name(spec),
         Path("codewith-path") / spec.rg_name,
     ]
-    executable_files = list(required_files)
+    executable_files = [
+        Path("bin") / variant.entrypoint_name(spec),
+        Path("codewith-path") / spec.rg_name,
+    ]
 
     if include_zsh:
         zsh_path = Path("codewith-resources") / ZSH_RESOURCE_PATH
@@ -167,6 +197,21 @@ def copy_executable(src: Path, dest: Path, *, is_windows: bool) -> None:
     if not is_windows:
         mode = dest.stat().st_mode
         dest.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def copy_compliance_files(package_dir: Path) -> None:
+    for filename in COMPLIANCE_FILES:
+        source = REPO_ROOT / filename
+        if not source.is_file():
+            raise RuntimeError(f"Missing required compliance file: {source}")
+        shutil.copy2(source, package_dir / filename)
+
+    licenses_dir = package_dir / "licenses"
+    licenses_dir.mkdir(exist_ok=True)
+    for filename, source in THIRD_PARTY_LICENSE_FILES.items():
+        if not source.is_file():
+            raise RuntimeError(f"Missing required third-party license file: {source}")
+        shutil.copy2(source, licenses_dir / filename)
 
 
 def write_json(path: Path, value: object) -> None:

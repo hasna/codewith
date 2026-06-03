@@ -8,9 +8,15 @@ The builder creates a canonical Codewith package directory:
 
 ```text
 .
+├── LICENSE
+├── NOTICE
+├── MODIFICATIONS.md
+├── THIRD_PARTY_NOTICES.md
 ├── codex-package.json
 ├── bin
 │   └── <entrypoint>[.exe]
+├── licenses
+│   └── <third-party license texts>
 ├── codewith-resources
 │   ├── bwrap                             # Linux only
 │   ├── zsh/bin/zsh                       # supported Unix targets only

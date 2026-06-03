@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from codex_package.layout import build_package_dir
+from codex_package.layout import THIRD_PARTY_LICENSE_FILES
 from codex_package.layout import validate_package_dir
 from codex_package.targets import PACKAGE_VARIANTS
 from codex_package.targets import PackageInputs
@@ -50,6 +51,21 @@ class PackageLayoutTest(unittest.TestCase):
             self.assertTrue((package_dir / "bin" / "codewith").is_file())
             self.assertTrue((package_dir / "codewith-path" / "rg").is_file())
             self.assertTrue((package_dir / "codewith-resources" / "bwrap").is_file())
+            self.assertEqual((package_dir / "LICENSE").read_text(), repo_file("LICENSE"))
+            self.assertEqual((package_dir / "NOTICE").read_text(), repo_file("NOTICE"))
+            self.assertEqual(
+                (package_dir / "MODIFICATIONS.md").read_text(),
+                repo_file("MODIFICATIONS.md"),
+            )
+            self.assertEqual(
+                (package_dir / "THIRD_PARTY_NOTICES.md").read_text(),
+                repo_file("THIRD_PARTY_NOTICES.md"),
+            )
+            for filename, source in THIRD_PARTY_LICENSE_FILES.items():
+                self.assertEqual(
+                    (package_dir / "licenses" / filename).read_text(),
+                    source.read_text(encoding="utf-8"),
+                )
             self.assertFalse((package_dir / "bin" / "codex").exists())
             self.assertFalse((package_dir / "codex-path").exists())
             self.assertFalse((package_dir / "codex-resources").exists())
@@ -59,6 +75,10 @@ def touch_executable(path: Path) -> Path:
     path.write_text("", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path.resolve()
+
+
+def repo_file(name: str) -> str:
+    return (Path(__file__).resolve().parents[2] / name).read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
