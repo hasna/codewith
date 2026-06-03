@@ -7,6 +7,7 @@ pub use runfiles;
 
 /// Bazel sets this when runfiles directories are disabled, which we do on all platforms for consistency.
 const RUNFILES_MANIFEST_ONLY_ENV: &str = "RUNFILES_MANIFEST_ONLY";
+const NEXTEST_WORKSPACE_ROOT_ENV: &str = "NEXTEST_WORKSPACE_ROOT";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CargoBinError {
@@ -132,9 +133,52 @@ macro_rules! find_resource {
             $crate::resolve_bazel_runfile(option_env!("BAZEL_PACKAGE"), resource)
         } else {
             let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-            Ok(manifest_dir.join(resource))
+            $crate::resolve_cargo_manifest_resource(manifest_dir, resource)
         }
     }};
+}
+
+pub fn resolve_cargo_manifest_resource(
+    manifest_dir: &Path,
+    resource: &Path,
+) -> std::io::Result<PathBuf> {
+    if let Some(workspace_root) = std::env::var_os(NEXTEST_WORKSPACE_ROOT_ENV)
+        && let Some(remapped_manifest_dir) =
+            remap_manifest_dir_to_workspace_root(manifest_dir, &PathBuf::from(workspace_root))
+    {
+        return Ok(remapped_manifest_dir.join(resource));
+    }
+
+    Ok(manifest_dir.join(resource))
+}
+
+fn remap_manifest_dir_to_workspace_root(
+    manifest_dir: &Path,
+    workspace_root: &Path,
+) -> Option<PathBuf> {
+    let workspace_name = normalized_path_file_name(workspace_root)?;
+    let normalized_manifest_dir = manifest_dir.to_string_lossy().replace('\\', "/");
+    let manifest_segments = normalized_manifest_dir
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let workspace_index = manifest_segments
+        .iter()
+        .rposition(|segment| segment.eq_ignore_ascii_case(&workspace_name))?;
+
+    let mut remapped = workspace_root.to_path_buf();
+    for segment in &manifest_segments[workspace_index + 1..] {
+        remapped.push(segment);
+    }
+    Some(remapped)
+}
+
+fn normalized_path_file_name(path: &Path) -> Option<String> {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .split('/')
+        .rfind(|segment| !segment.is_empty())
+        .map(str::to_owned)
 }
 
 pub fn resolve_bazel_runfile(
@@ -167,7 +211,7 @@ pub fn resolve_bazel_runfile(
 
 pub fn resolve_cargo_runfile(resource: &Path) -> std::io::Result<PathBuf> {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    Ok(manifest_dir.join(resource))
+    resolve_cargo_manifest_resource(&manifest_dir, resource)
 }
 
 pub fn repo_root() -> io::Result<PathBuf> {

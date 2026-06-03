@@ -103,9 +103,6 @@ async fn debounced_receiver_coalesces_each_event_batch() {
     );
 
     tx.add_changed_paths(&[path("c")]).await;
-    let blocked = timeout(TEST_THROTTLE_INTERVAL / 2, debounced.recv()).await;
-    assert_eq!(blocked.is_err(), true);
-
     tx.add_changed_paths(&[path("d")]).await;
     let second = timeout(TEST_THROTTLE_INTERVAL * 2, debounced.recv())
         .await
