@@ -819,14 +819,14 @@
       "description": "Authentication mode for OpenAI-backed providers.",
       "oneOf": [
         {
-          "description": "OpenAI API key provided by the caller and stored by Codex.",
+          "description": "OpenAI API key provided by the caller and stored by Codewith.",
           "enum": [
             "apikey"
           ],
           "type": "string"
         },
         {
-          "description": "ChatGPT OAuth managed by Codex (tokens persisted and refreshed by Codex).",
+          "description": "ChatGPT OAuth managed by Codewith (tokens persisted and refreshed by Codewith).",
           "enum": [
             "chatgpt"
           ],
@@ -840,7 +840,7 @@
           "type": "string"
         },
         {
-          "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "description": "Programmatic Codewith auth backed by a registered Agent Identity.",
           "enum": [
             "agentIdentity"
           ],
@@ -3324,7 +3324,7 @@
       "type": "string"
     },
     "CollaborationMode": {
-      "description": "Collaboration mode for a Codex session.",
+      "description": "Collaboration mode for a Codewith session.",
       "properties": {
         "mode": {
           "$ref": "#/definitions/ModeKind"
@@ -4216,7 +4216,7 @@
           "type": "object"
         },
         {
-          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
+          "description": "User config layer from $CODEWITH_HOME/config.toml. CODEX_HOME remains a compatibility override for direct native binaries. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
           "properties": {
             "file": {
               "allOf": [
@@ -4249,7 +4249,7 @@
           "type": "object"
         },
         {
-          "description": "Path to a .codex/ folder within a project. There could be multiple of these between `cwd` and the project/repo root.",
+          "description": "Path to a project config folder within a project. Codewith prefers `.codewith/`; `.codex/` remains a legacy fallback. There could be multiple config folders between `cwd` and the project/repo root.",
           "properties": {
             "dotCodexFolder": {
               "$ref": "#/definitions/AbsolutePathBuf"
@@ -5116,7 +5116,7 @@
           ]
         },
         "includeHome": {
-          "description": "If true, include detection under the user's home (~/.claude, ~/.codex, etc.).",
+          "description": "If true, include detection under the user's home (~/.claude, ~/.codewith, etc.).",
           "type": "boolean"
         }
       },
@@ -7330,7 +7330,7 @@
           "type": "object"
         },
         {
-          "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE. The access token must contain the same scopes that Codex-managed ChatGPT auth tokens have.",
+          "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE. The access token must contain the same scopes that Codewith-managed ChatGPT auth tokens have.",
           "properties": {
             "accessToken": {
               "description": "Access token (JWT) supplied by the client. This token is used for backend API requests and email extraction.",
@@ -7341,7 +7341,7 @@
               "type": "string"
             },
             "chatgptPlanType": {
-              "description": "Optional plan type supplied by the client.\n\nWhen `null`, Codex attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
+              "description": "Optional plan type supplied by the client.\n\nWhen `null`, Codewith attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
               "type": [
                 "string",
                 "null"
@@ -8951,7 +8951,7 @@
           "type": "string"
         },
         {
-          "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. Codex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
+          "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. Codewith app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
           "enum": [
             "AVAILABLE"
           ],
@@ -13707,7 +13707,7 @@
               "$ref": "#/definitions/SessionSource"
             }
           ],
-          "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+          "description": "Origin of the thread (CLI, VSCode, codewith exec, codewith app-server, etc.)."
         },
         "status": {
           "allOf": [

@@ -25,7 +25,7 @@ fn toml(contents: &str) -> TomlValue {
 }
 
 fn base_dir() -> AbsolutePathBuf {
-    test_path_buf("/var/lib/codex").abs()
+    test_path_buf("/var/lib/codewith").abs()
 }
 
 #[test]
@@ -85,7 +85,7 @@ review_model = "system-review"
     );
     layers.push(ConfigLayerEntry::new(
         ConfigLayerSource::User {
-            file: test_path_buf("/home/alice/.codex/config.toml").abs(),
+            file: test_path_buf("/home/alice/.codewith/config.toml").abs(),
             profile: None,
         },
         toml("model = \"user\""),
@@ -120,7 +120,7 @@ review_model = "system-review"
                 name: "High priority".to_string(),
             },
             ConfigLayerSource::User {
-                file: test_path_buf("/home/alice/.codex/config.toml").abs(),
+                file: test_path_buf("/home/alice/.codewith/config.toml").abs(),
                 profile: None,
             },
         ]

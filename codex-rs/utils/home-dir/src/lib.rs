@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// Returns the path to the Codewith configuration directory.
 ///
 /// `CODEWITH_HOME` is preferred, with `CODEX_HOME` retained as a compatibility
-/// override for the underlying Codex-derived crates. If neither is set, the
+/// override for the underlying Codewith-derived crates. If neither is set, the
 /// default is `~/.codewith`.
 ///
 /// - If an environment override is set, the value must exist and be a

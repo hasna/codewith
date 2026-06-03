@@ -87,7 +87,7 @@ pub struct OtelTlsConfig {
 #[derive(Clone, Debug)]
 pub enum OtelExporter {
     None,
-    /// Statsig metrics ingestion exporter using Codex-internal defaults.
+    /// Statsig metrics ingestion exporter using Codewith-internal defaults.
     ///
     /// This is intended for metrics only.
     Statsig,

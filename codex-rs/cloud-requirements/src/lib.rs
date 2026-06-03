@@ -1,11 +1,11 @@
-//! Cloud-hosted config requirements for Codex.
+//! Cloud-hosted config requirements for Codewith.
 //!
 //! This crate fetches `requirements.toml` data from the backend as an alternative to loading it
 //! from the local filesystem. It only applies to Business (aka Enterprise CBP) or Enterprise ChatGPT
 //! customers.
 //!
 //! Fetching fails closed for eligible ChatGPT Business and Enterprise accounts. When cloud
-//! requirements cannot be loaded for those accounts, Codex fails configuration loading rather than
+//! requirements cannot be loaded for those accounts, Codewith fails configuration loading rather than
 //! continuing without them.
 
 use async_trait::async_trait;

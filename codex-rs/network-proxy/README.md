@@ -1,6 +1,6 @@
 # codex-network-proxy
 
-`codex-network-proxy` is Codex's local network policy enforcement proxy. It runs:
+`codex-network-proxy` is Codewith's local network policy enforcement proxy. It runs:
 
 - an HTTP proxy (default `127.0.0.1:3128`)
 - a SOCKS5 proxy (default `127.0.0.1:8081`, enabled by default)
@@ -11,7 +11,7 @@ It enforces an allow/deny policy and a "limited" mode intended for read-only net
 
 ### 1) Configure
 
-`codex-network-proxy` reads from Codex's merged `config.toml` (via `codex-core` config loading).
+`codex-network-proxy` reads from Codewith's merged `config.toml` (via `codex-core` config loading).
 
 Network settings live under the selected permissions profile. Example config:
 
@@ -34,7 +34,7 @@ allow_upstream_proxy = true
 dangerously_allow_non_loopback_proxy = false
 mode = "full" # default when unset; use "limited" for read-only mode
 # HTTPS MITM is enabled automatically when `mode = "limited"` or when MITM hooks are configured.
-# CA cert/key are managed internally under $CODEX_HOME/proxy/ (ca.pem + ca.key).
+# CA cert/key are managed internally under $CODEWITH_HOME/proxy/ (ca.pem + ca.key).
 
 # If false, local/private networking is rejected. Explicit allowlisting of local IP literals
 # (or `localhost`) is required to permit them.
@@ -155,7 +155,7 @@ the decider can auto-allow network requests originating from that command.
 
 ## OTEL Audit Events (embedded/managed)
 
-When `codex-network-proxy` is embedded in managed Codex runtime, policy decisions emit structured
+When `codex-network-proxy` is embedded in managed Codewith runtime, policy decisions emit structured
 OTEL-compatible events with `target=codex_otel.network_proxy`.
 
 Event name:

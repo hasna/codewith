@@ -43,9 +43,9 @@ pub const LOCAL_AGENTS_MD_FILENAME: &str = "CODEWITH.override.md";
 pub const DEFAULT_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.md";
 /// Preferred repository-relative local override path for Codewith project instructions.
 pub const LOCAL_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.override.md";
-/// Legacy Codex project instructions filename, read as a fallback.
+/// Legacy Codewith project instructions filename, read as a fallback.
 const LEGACY_DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
-/// Legacy Codex local override filename, read as a fallback.
+/// Legacy Codewith local override filename, read as a fallback.
 const LEGACY_LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
 
 /// When both `Config::instructions` and project docs are present, they will

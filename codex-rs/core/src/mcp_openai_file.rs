@@ -1,4 +1,4 @@
-//! Bridges Apps SDK-style `openai/fileParams` metadata into Codex's MCP flow.
+//! Bridges Apps SDK-style `openai/fileParams` metadata into Codewith's MCP flow.
 //!
 //! Strategy:
 //! - Inspect `_meta["openai/fileParams"]` to discover which tool arguments are
@@ -106,12 +106,12 @@ async fn build_uploaded_local_argument_value(
     let resolved_path = turn_context.resolve_path(Some(file_path.to_string()));
     let Some(auth) = auth else {
         return Err(
-            "ChatGPT auth is required to upload local files for Codex Apps tools".to_string(),
+            "ChatGPT auth is required to upload local files for Codewith Apps tools".to_string(),
         );
     };
     if !auth.uses_codex_backend() {
         return Err(
-            "ChatGPT auth is required to upload local files for Codex Apps tools".to_string(),
+            "ChatGPT auth is required to upload local files for Codewith Apps tools".to_string(),
         );
     }
     let upload_auth = codex_model_provider::auth_provider_from_auth(auth);

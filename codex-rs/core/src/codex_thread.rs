@@ -115,7 +115,7 @@ pub struct CodexThread {
 }
 
 /// Conduit for the bidirectional stream of messages that compose a thread
-/// (formerly called a conversation) in Codex.
+/// (formerly called a conversation) in Codewith.
 impl CodexThread {
     pub(crate) fn new(
         codex: Codex,

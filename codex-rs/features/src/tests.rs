@@ -124,7 +124,7 @@ fn external_migration_is_experimental_and_disabled_by_default() {
     assert_eq!(
         stage.experimental_menu_description(),
         Some(
-            "Show a startup prompt when Codex detects migratable external agent config for this machine or project."
+            "Show a startup prompt when Codewith detects migratable external agent config for this machine or project."
         )
     );
     assert_eq!(stage.experimental_announcement(), None);

@@ -671,7 +671,7 @@ async fn maybe_request_codex_apps_auth_elicitation(
 
 #[expect(
     clippy::await_holding_invalid_type,
-    reason = "Codex Apps cache refresh reads through the session-owned manager guard"
+    reason = "Codewith Apps cache refresh reads through the session-owned manager guard"
 )]
 async fn refresh_codex_apps_after_connector_auth(sess: &Session, turn_context: &TurnContext) {
     let mcp_tools_result = {
@@ -689,7 +689,7 @@ async fn refresh_codex_apps_after_connector_auth(sess: &Session, turn_context: &
             );
         }
         Err(err) => {
-            tracing::warn!("failed to refresh Codex Apps tools after connector auth: {err:#}");
+            tracing::warn!("failed to refresh Codewith Apps tools after connector auth: {err:#}");
         }
     }
 }

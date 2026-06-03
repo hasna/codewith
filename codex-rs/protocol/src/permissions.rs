@@ -152,8 +152,8 @@ pub enum FileSystemSpecialPath {
     /// WARNING: `:special_path` tokens are part of config compatibility.
     /// Do not make older runtimes reject newly introduced tokens.
     /// New parser support should be additive, while unknown values must stay
-    /// representable so config from a newer Codex degrades to warn-and-ignore
-    /// instead of failing to load. Codex 0.112.0 rejected unknown values here,
+    /// representable so config from a newer Codewith degrades to warn-and-ignore
+    /// instead of failing to load. Codewith 0.112.0 rejected unknown values here,
     /// which broke forward compatibility for newer config.
     /// Preserves future special-path tokens so older runtimes can ignore them
     /// without rejecting config authored by a newer release.

@@ -24,7 +24,7 @@ use tracing::info;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
-/// Controls whether the bundled Codex model catalog is used as an offline
+/// Controls whether the bundled Codewith model catalog is used as an offline
 /// fallback and merge base for a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BundledModelCatalog {
@@ -42,7 +42,7 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Returns whether this provider has configured provider-owned auth for model discovery.
     fn has_provider_auth(&self) -> bool;
 
-    /// Returns whether the currently resolved auth can use Codex backend-only models.
+    /// Returns whether the currently resolved auth can use Codewith backend-only models.
     async fn uses_codex_backend(&self) -> bool;
 
     /// Fetches the latest remote model catalog and optional ETag.

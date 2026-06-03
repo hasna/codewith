@@ -117,7 +117,7 @@ impl AsRef<str> for McpServerEnvVar {
     }
 }
 
-/// OAuth client settings used when Codex launches an MCP OAuth flow.
+/// OAuth client settings used when Codewith launches an MCP OAuth flow.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct McpServerOAuthConfig {
@@ -131,14 +131,14 @@ pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
 
-    /// Effective environment id for where Codex should start this MCP server.
+    /// Effective environment id for where Codewith should start this MCP server.
     pub environment_id: String,
 
-    /// When `false`, Codex skips initializing this MCP server.
+    /// When `false`, Codewith skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
+    /// When `true`, `codewith exec` exits with an error if this MCP server fails to initialize.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
 

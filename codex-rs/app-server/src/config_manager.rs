@@ -23,7 +23,7 @@ use std::sync::RwLock;
 use toml::Value as TomlValue;
 use tracing::warn;
 
-/// Shared app-server entry point for loading effective Codex configuration.
+/// Shared app-server entry point for loading effective Codewith configuration.
 #[derive(Clone)]
 pub(crate) struct ConfigManager {
     codex_home: PathBuf,

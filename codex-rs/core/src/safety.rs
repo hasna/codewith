@@ -75,7 +75,7 @@ pub fn assess_patch_safety(
             PermissionProfile::Disabled | PermissionProfile::External { .. }
         ) {
             // Disabled and External profiles intentionally do not apply an
-            // outer Codex filesystem sandbox.
+            // outer Codewith filesystem sandbox.
             SafetyCheck::AutoApprove {
                 sandbox_type: SandboxType::None,
                 user_explicitly_approved: false,

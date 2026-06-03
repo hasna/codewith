@@ -27,7 +27,7 @@ use crate::GitSha;
 ///
 /// Note that this does **not** detect *work‑trees* created with
 /// `git worktree add` where the checkout lives outside the main repository
-/// directory. If you need Codex to work from such a checkout simply pass the
+/// directory. If you need Codewith to work from such a checkout simply pass the
 /// `--allow-no-git-exec` CLI flag that disables the repo requirement.
 pub fn get_git_repo_root(base_dir: &Path) -> Option<PathBuf> {
     let base = if base_dir.is_dir() {
@@ -853,17 +853,17 @@ mod tests {
     #[test]
     fn canonicalize_git_remote_url_normalizes_github_variants() {
         for remote in [
-            "git@github.com:OpenAI/Codex.git",
-            "ssh://git@github.com/openai/codex.git",
-            "ssh://git@github.com:22/OpenAI/Codex.git",
-            "https://github.com/openai/codex.git",
-            "https://github.com:443/openai/codex.git",
-            "https://token@github.com/openai/codex/",
-            "github.com/OpenAI/Codex.git",
+            "git@github.com:Hasna/Codewith.git",
+            "ssh://git@github.com/hasna/codewith.git",
+            "ssh://git@github.com:22/Hasna/Codewith.git",
+            "https://github.com/hasna/codewith.git",
+            "https://github.com:443/hasna/codewith.git",
+            "https://token@github.com/hasna/codewith/",
+            "github.com/Hasna/Codewith.git",
         ] {
             assert_eq!(
                 canonicalize_git_remote_url(remote),
-                Some("github.com/openai/codex".to_string())
+                Some("github.com/hasna/codewith".to_string())
             );
         }
     }

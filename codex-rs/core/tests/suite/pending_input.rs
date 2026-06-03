@@ -89,7 +89,7 @@ async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
         .with_model("gpt-5.4")
         .build_with_streaming_server(server)
         .await
-        .unwrap_or_else(|err| panic!("build streaming Codex test session: {err}"))
+        .unwrap_or_else(|err| panic!("build streaming Codewith test session: {err}"))
         .codex
 }
 
@@ -560,7 +560,7 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
         })
         .build_with_streaming_server(&server)
         .await
-        .unwrap_or_else(|err| panic!("build streaming Codex test session: {err}"))
+        .unwrap_or_else(|err| panic!("build streaming Codewith test session: {err}"))
         .codex;
 
     submit_user_input(&codex, "first prompt").await;
@@ -647,7 +647,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         })
         .build_with_streaming_server(&server)
         .await
-        .unwrap_or_else(|err| panic!("build streaming Codex test session: {err}"))
+        .unwrap_or_else(|err| panic!("build streaming Codewith test session: {err}"))
         .codex;
 
     submit_user_input(&codex, "first prompt").await;
@@ -766,7 +766,7 @@ async fn steered_user_input_waits_when_tool_output_triggers_compact_before_next_
         })
         .build_with_streaming_server(&server)
         .await
-        .unwrap_or_else(|err| panic!("build streaming Codex test session: {err}"));
+        .unwrap_or_else(|err| panic!("build streaming Codewith test session: {err}"));
     let codex = test.codex.clone();
 
     submit_danger_full_access_user_turn(&test, "first prompt").await;

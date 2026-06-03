@@ -153,10 +153,10 @@ fn apply_zsh_fork_path_prepend_uses_shell_parent() {
     apply_zsh_fork_path_prepend(
         &mut env,
         &mut explicit_env_overrides,
-        PathBuf::from("/package/codex-resources/zsh/bin/zsh").as_path(),
+        PathBuf::from("/package/codewith-resources/zsh/bin/zsh").as_path(),
     );
 
-    let expected = "/package/codex-resources/zsh/bin:/usr/bin:/bin";
+    let expected = "/package/codewith-resources/zsh/bin:/usr/bin:/bin";
     assert_eq!(env.get("PATH").map(String::as_str), Some(expected));
     assert_eq!(
         explicit_env_overrides.get("PATH").map(String::as_str),
@@ -169,7 +169,7 @@ fn apply_zsh_fork_path_prepend_uses_shell_parent() {
 fn apply_zsh_fork_path_prepend_moves_existing_shell_parent_to_front() {
     let mut env = HashMap::from([(
         "PATH".to_string(),
-        "/usr/bin:/package/codex-resources/zsh/bin:/bin:/package/codex-resources/zsh/bin"
+        "/usr/bin:/package/codewith-resources/zsh/bin:/bin:/package/codewith-resources/zsh/bin"
             .to_string(),
     )]);
     let mut explicit_env_overrides = HashMap::new();
@@ -177,12 +177,12 @@ fn apply_zsh_fork_path_prepend_moves_existing_shell_parent_to_front() {
     apply_zsh_fork_path_prepend(
         &mut env,
         &mut explicit_env_overrides,
-        PathBuf::from("/package/codex-resources/zsh/bin/zsh").as_path(),
+        PathBuf::from("/package/codewith-resources/zsh/bin/zsh").as_path(),
     );
 
     assert_eq!(
         env.get("PATH").map(String::as_str),
-        Some("/package/codex-resources/zsh/bin:/usr/bin:/bin")
+        Some("/package/codewith-resources/zsh/bin:/usr/bin:/bin")
     );
 }
 
@@ -884,7 +884,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_zsh_fork_path_prepend() {
     ];
     let zsh_path = dir
         .path()
-        .join("codex-resources")
+        .join("codewith-resources")
         .join("zsh")
         .join("bin")
         .join("zsh");

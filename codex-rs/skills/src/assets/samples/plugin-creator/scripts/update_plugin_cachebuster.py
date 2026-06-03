@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite a local plugin version to a single Codex cachebuster suffix."""
+"""Rewrite a local plugin version to a single Codewith cachebuster suffix."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-//! The main Codex TUI chat surface.
+//! The main Codewith TUI chat surface.
 //!
 //! `ChatWidget` consumes protocol events, builds and updates history cells, and drives rendering
 //! for both the main viewport and overlay UIs.

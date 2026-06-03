@@ -17,7 +17,7 @@ use crate::local::LocalMemoriesBackend;
 use crate::prompts::build_memory_tool_developer_instructions;
 use crate::tools;
 
-/// Contributes Codex memory read-path prompt context and memory read tools.
+/// Contributes Codewith memory read-path prompt context and memory read tools.
 #[derive(Clone, Default)]
 pub(crate) struct MemoriesExtension {
     metrics_client: Option<MetricsClient>,

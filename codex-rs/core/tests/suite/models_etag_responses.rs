@@ -36,7 +36,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
 
     let server = MockServer::start().await;
 
-    // 1) On spawn, Codex fetches /models and stores the ETag.
+    // 1) On spawn, Codewith fetches /models and stores the ETag.
     let spawn_models_mock = responses::mount_models_once_with_etag(
         &server,
         ModelsResponse { models: Vec::new() },
@@ -69,7 +69,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
     assert_eq!(spawn_models_mock.requests().len(), 1);
     assert_eq!(spawn_models_mock.single_request_path(), "/v1/models");
 
-    // 2) If the server sends a different X-Models-Etag on /responses, Codex refreshes /models.
+    // 2) If the server sends a different X-Models-Etag on /responses, Codewith refreshes /models.
     let refresh_models_mock = responses::mount_models_once_with_etag(
         &server,
         ModelsResponse { models: Vec::new() },
@@ -90,7 +90,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
     )
     .await;
 
-    // Second /responses request (tool output) includes the same X-Models-Etag; Codex should not
+    // Second /responses request (tool output) includes the same X-Models-Etag; Codewith should not
     // refetch /models again after it has already refreshed the catalog.
     let completion_response_body = sse(vec![
         ev_response_created("resp-2"),
@@ -146,7 +146,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
         .into_iter()
         .next()
         .expect("one request");
-    // Ensure Codex includes client_version on refresh. (This is a stable signal that we're using the /models client.)
+    // Ensure Codewith includes client_version on refresh. (This is a stable signal that we're using the /models client.)
     assert!(
         refresh_req
             .url

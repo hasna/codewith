@@ -30,7 +30,7 @@ fn search_info_uses_dynamic_tool_metadata_and_parameter_names() {
         search_info.source_info,
         Some(ToolSearchSourceInfo {
             name: "Dynamic tools".to_string(),
-            description: Some("Tools provided by the current Codex thread.".to_string()),
+            description: Some("Tools provided by the current Codewith thread.".to_string()),
         })
     );
 }

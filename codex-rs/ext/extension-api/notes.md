@@ -10,5 +10,5 @@ personality                  Context
 plugins / apps / connectors  Context + Turn
 shell snapshot               Runtime
 web search                   Tool
-AGENTS.md                    Context   (Runtime too only if you want eager refresh/cache behavior)
+CODEWITH.md                  Context   (Runtime too only if you want eager refresh/cache behavior)
 future sandboxing            probably Request + Runtime

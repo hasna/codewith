@@ -5,7 +5,8 @@ import type { AbsolutePathBuf } from "./AbsolutePathBuf";
 
 export type InitializeResponse = { userAgent: string,
 /**
- * Absolute path to the server's $CODEX_HOME directory.
+ * Absolute path to the server's $CODEWITH_HOME directory (with $CODEX_HOME
+ * retained as a compatibility fallback).
  */
 codexHome: AbsolutePathBuf,
 /**

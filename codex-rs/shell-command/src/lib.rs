@@ -1,4 +1,4 @@
-//! Command parsing and safety utilities shared across Codex crates.
+//! Command parsing and safety utilities shared across Codewith crates.
 
 mod shell_detect;
 

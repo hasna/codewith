@@ -1,4 +1,4 @@
-//! Codex App git action directives embedded in assistant markdown.
+//! Codewith App git action directives embedded in assistant markdown.
 
 use std::collections::HashSet;
 

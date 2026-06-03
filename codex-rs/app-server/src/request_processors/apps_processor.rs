@@ -314,7 +314,7 @@ impl AppsRequestProcessor {
             Ok(enabled) => enabled,
             Err(err) => {
                 warn!(
-                    "failed to fetch workspace Codex plugins setting; allowing Codex plugins: {err:#}"
+                    "failed to fetch workspace Codewith plugins setting; allowing Codewith plugins: {err:#}"
                 );
                 true
             }

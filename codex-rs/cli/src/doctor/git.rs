@@ -145,7 +145,7 @@ fn git_check_from_inputs(inputs: GitCheckInputs) -> DoctorCheck {
                 .measured(inputs.git_version.unwrap_or_else(|| "unknown".to_string()))
                 .expected("current Git for Windows")
                 .remedy(
-                    "Update Git for Windows or the bundled Git executable Codex resolves first.",
+                    "Update Git for Windows or the bundled Git executable Codewith resolves first.",
                 )
                 .field("git version")
                 .field("selected git"),

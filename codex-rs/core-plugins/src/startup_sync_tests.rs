@@ -349,7 +349,7 @@ fn sync_openai_plugins_repo_via_git_succeeds_with_local_rewritten_remote() {
         .arg("-C")
         .arg(&work_repo)
         .arg("-c")
-        .arg("user.name=Codex Test")
+        .arg("user.name=Codewith Test")
         .arg("-c")
         .arg("user.email=codex@example.com")
         .arg("commit")

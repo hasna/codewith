@@ -6,7 +6,7 @@ use crate::environment::CODEX_EXEC_SERVER_URL_ENV_VAR;
 use crate::environment::LOCAL_ENVIRONMENT_ID;
 use crate::environment::REMOTE_ENVIRONMENT_ID;
 
-/// Lists the concrete environments available to Codex.
+/// Lists the concrete environments available to Codewith.
 ///
 /// Implementations own a startup snapshot containing both the available
 /// environment list in configured order and the default environment

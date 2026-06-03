@@ -157,7 +157,7 @@ pub struct StateRuntime {
 }
 
 impl StateRuntime {
-    /// Initialize the state runtime using the provided Codex home and default provider.
+    /// Initialize the state runtime using the provided Codewith home and default provider.
     ///
     /// This opens (and migrates) the SQLite databases under `codex_home`,
     /// keeping logs in a dedicated file to reduce lock contention with the
@@ -277,7 +277,7 @@ impl StateRuntime {
         Ok(runtime)
     }
 
-    /// Return the configured Codex home directory for this runtime.
+    /// Return the configured Codewith home directory for this runtime.
     pub fn codex_home(&self) -> &Path {
         self.codex_home.as_path()
     }

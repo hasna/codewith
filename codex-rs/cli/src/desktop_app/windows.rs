@@ -12,16 +12,16 @@ pub async fn run_windows_app_open_or_install(
     download_url_override: Option<String>,
 ) -> anyhow::Result<()> {
     if let Some(app_id) = find_codex_app_id().await? {
-        eprintln!("Opening Codex Desktop...");
+        eprintln!("Opening Codewith Desktop...");
         open_installed_codex_app(&app_id).await?;
         eprintln!(
-            "In Codex Desktop, open workspace {workspace}.",
+            "In Codewith Desktop, open workspace {workspace}.",
             workspace = display_workspace_path(&workspace)
         );
         return Ok(());
     }
 
-    eprintln!("Codex Desktop not found; opening Windows installer...");
+    eprintln!("Codewith Desktop not found; opening Windows installer...");
     let download_url = download_url_override
         .as_deref()
         .unwrap_or(CODEX_WINDOWS_INSTALLER_URL);
@@ -29,7 +29,7 @@ pub async fn run_windows_app_open_or_install(
         open_url(CODEX_MICROSOFT_STORE_WEB_URL).await?;
     }
     eprintln!(
-        "After installing Codex Desktop, open workspace {workspace}.",
+        "After installing Codewith Desktop, open workspace {workspace}.",
         workspace = display_workspace_path(&workspace)
     );
     Ok(())

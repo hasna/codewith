@@ -43,7 +43,7 @@ async fn connector_auth(config: &Config) -> anyhow::Result<CodexAuth> {
         .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
     anyhow::ensure!(
         auth.uses_codex_backend(),
-        "ChatGPT connectors require Codex backend auth"
+        "ChatGPT connectors require Codewith backend auth"
     );
     Ok(auth)
 }

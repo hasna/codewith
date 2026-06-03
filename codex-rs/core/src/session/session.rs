@@ -80,7 +80,7 @@ pub(crate) struct SessionConfiguration {
     /// Thread-scoped runtime workspace roots for materializing symbolic
     /// workspace permissions at session runtime.
     pub(super) workspace_roots: Vec<AbsolutePathBuf>,
-    /// Directory containing all Codex state for this session.
+    /// Directory containing all Codewith state for this session.
     pub(super) codex_home: AbsolutePathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     pub(super) thread_name: Option<String>,

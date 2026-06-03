@@ -10,7 +10,7 @@ The fallback CLI uses the OpenAI Image API, so it needs outbound network access.
 ## Important note about approvals vs network
 - `--ask-for-approval never` suppresses approval prompts.
 - It does **not** by itself enable network access.
-- In `workspace-write`, network access still depends on your Codex configuration (for example `[sandbox_workspace_write] network_access = true`).
+- In `workspace-write`, network access still depends on your Codewith configuration (for example `[sandbox_workspace_write] network_access = true`).
 
 ## How do I reduce repeated approval prompts?
 If you trust the repo and want fewer prompts, use a configuration or profile that both:

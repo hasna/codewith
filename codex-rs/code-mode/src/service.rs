@@ -127,7 +127,7 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
     fn cell_closed(&self, _cell_id: &CellId) {}
 }
 
-/// A durable code-mode session owned by one Codex thread.
+/// A durable code-mode session owned by one Codewith thread.
 ///
 /// Cells executed in the same session share stored values. Separate sessions
 /// must keep those values isolated. Implementations may execute cells
@@ -145,7 +145,7 @@ pub trait CodeModeSession: Send + Sync {
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()>;
 }
 
-/// Creates code-mode sessions for one Codex thread.
+/// Creates code-mode sessions for one Codewith thread.
 ///
 /// Providers choose where a session executes and receive the host delegate that
 /// the session should use for nested tool calls and notifications.
