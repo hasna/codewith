@@ -1,0 +1,966 @@
+//! Built-in model tool handler for managing thread schedules.
+
+use crate::function_tool::FunctionCallError;
+use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::schedule_control_spec::MANAGE_SCHEDULE_TOOL_NAME;
+use crate::tools::handlers::schedule_control_spec::create_manage_schedule_tool;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
+use chrono::DateTime;
+use chrono::Duration as ChronoDuration;
+use chrono::Utc;
+use chrono_tz::Tz;
+use codex_protocol::ThreadId;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
+use croner::Cron;
+use serde::Deserialize;
+use serde::Serialize;
+use std::fmt::Write as _;
+use std::str::FromStr;
+use std::sync::Arc;
+
+const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
+const DEFAULT_SCHEDULE_EXPIRATION_DAYS: i64 = 7;
+const MAX_THREAD_SCHEDULE_PROMPT_CHARS: usize = 4_000;
+const MAX_THREAD_SCHEDULES: usize = 50;
+
+pub struct ManageScheduleHandler;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ManageScheduleArgs {
+    action: ScheduleAction,
+    schedule_id: Option<String>,
+    prompt: Option<String>,
+    schedule: Option<ScheduleSpecArg>,
+    timezone: Option<String>,
+    next_run_at: Option<i64>,
+    expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ScheduleAction {
+    Create,
+    List,
+    Update,
+    #[serde(alias = "stop")]
+    Pause,
+    #[serde(alias = "start")]
+    Resume,
+    #[serde(alias = "clear", alias = "remove", alias = "cancel")]
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ScheduleSpecArg {
+    Dynamic,
+    Interval {
+        amount: i64,
+        unit: ScheduleIntervalUnitArg,
+    },
+    Cron {
+        expression: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScheduleIntervalUnitArg {
+    Minutes,
+    Hours,
+    Days,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManageScheduleResponse {
+    action: ScheduleAction,
+    schedule_id: Option<String>,
+    affected_schedule: Option<ScheduleSnapshot>,
+    schedules: Vec<ScheduleSnapshot>,
+    deleted: Option<bool>,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleSnapshot {
+    thread_id: String,
+    schedule_id: String,
+    prompt: String,
+    prompt_source: String,
+    schedule: ScheduleSpecSnapshot,
+    timezone: String,
+    status: String,
+    next_run_at: Option<i64>,
+    last_run_at: Option<i64>,
+    expires_at: Option<i64>,
+    failure_count: i64,
+    lease_expires_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum ScheduleSpecSnapshot {
+    Dynamic,
+    Interval { amount: i64, unit: String },
+    Cron { expression: String },
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for ManageScheduleHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(MANAGE_SCHEDULE_TOOL_NAME)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        create_manage_schedule_tool()
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let ToolInvocation {
+            session, payload, ..
+        } = invocation;
+
+        let arguments = match payload {
+            ToolPayload::Function { arguments } => arguments,
+            _ => {
+                return Err(FunctionCallError::RespondToModel(
+                    "manage_schedule handler received unsupported payload".to_string(),
+                ));
+            }
+        };
+
+        let args: ManageScheduleArgs = parse_arguments(&arguments)?;
+        let state_db = session.state_db().ok_or_else(|| {
+            FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
+        })?;
+        let response = manage_schedule(state_db, session.thread_id(), args).await?;
+        schedule_response(response).map(boxed_tool_output)
+    }
+}
+
+impl CoreToolRuntime for ManageScheduleHandler {}
+
+async fn manage_schedule(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageScheduleArgs,
+) -> Result<ManageScheduleResponse, FunctionCallError> {
+    match args.action {
+        ScheduleAction::Create => create_schedule(state_db, thread_id, args).await,
+        ScheduleAction::List => {
+            let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
+            Ok(ManageScheduleResponse {
+                action: ScheduleAction::List,
+                schedule_id: None,
+                affected_schedule: None,
+                deleted: None,
+                message: if schedules.is_empty() {
+                    "No schedules are created for this thread.".to_string()
+                } else {
+                    format!("Found {} schedule(s) for this thread.", schedules.len())
+                },
+                schedules,
+            })
+        }
+        ScheduleAction::Update => update_schedule(state_db, thread_id, args).await,
+        ScheduleAction::Pause | ScheduleAction::Resume => {
+            set_schedule_status(state_db, thread_id, args).await
+        }
+        ScheduleAction::Delete => delete_schedule(state_db, thread_id, args).await,
+    }
+}
+
+async fn create_schedule(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageScheduleArgs,
+) -> Result<ManageScheduleResponse, FunctionCallError> {
+    ensure_schedule_capacity(&state_db, thread_id).await?;
+    let prompt = validate_schedule_prompt(
+        args.prompt
+            .as_deref()
+            .ok_or_else(|| model_error("prompt is required when action is create"))?,
+    )?;
+    let schedule = args
+        .schedule
+        .ok_or_else(|| model_error("schedule is required when action is create"))
+        .and_then(schedule_spec_arg_to_state)?;
+    let timezone = normalize_timezone(args.timezone)?;
+    let now = Utc::now();
+    let next_run_at = args
+        .next_run_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "next_run_at"))
+        .transpose()?
+        .map_or_else(
+            || next_schedule_run_at(&schedule, timezone.as_str(), now),
+            |next_run_at| Ok(Some(next_run_at)),
+        )?;
+    let expires_at = args
+        .expires_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "expires_at"))
+        .transpose()?
+        .or_else(|| default_schedule_expires_at(now));
+    validate_schedule_expiry(next_run_at, expires_at)?;
+
+    let schedule = state_db
+        .thread_schedules()
+        .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+            thread_id,
+            prompt,
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            schedule,
+            timezone,
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at,
+            expires_at,
+        })
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
+    let affected_schedule = ScheduleSnapshot::from(schedule);
+    let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
+    let schedule_id = affected_schedule.schedule_id.clone();
+    Ok(ManageScheduleResponse {
+        action: ScheduleAction::Create,
+        schedule_id: Some(schedule_id.clone()),
+        affected_schedule: Some(affected_schedule),
+        schedules,
+        deleted: None,
+        message: format!("Schedule {schedule_id} created."),
+    })
+}
+
+async fn update_schedule(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageScheduleArgs,
+) -> Result<ManageScheduleResponse, FunctionCallError> {
+    let schedule_id = resolve_schedule_id(
+        &state_db,
+        thread_id,
+        args.schedule_id.clone(),
+        ScheduleAction::Update,
+    )
+    .await?;
+    let existing =
+        ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+    let prompt = args
+        .prompt
+        .as_deref()
+        .map(validate_schedule_prompt)
+        .transpose()?;
+    let prompt_source = prompt
+        .as_ref()
+        .map(|_| codex_state::ThreadSchedulePromptSource::Inline);
+    let schedule = args.schedule.map(schedule_spec_arg_to_state).transpose()?;
+    let timezone = args.timezone.map(normalize_timezone_value).transpose()?;
+    let explicit_next_run_at = args
+        .next_run_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "next_run_at"))
+        .transpose()?;
+    let next_run_at = if let Some(next_run_at) = explicit_next_run_at {
+        Some(Some(next_run_at))
+    } else if schedule.is_some() || timezone.is_some() {
+        let effective_schedule = schedule.as_ref().unwrap_or(&existing.schedule).clone();
+        let effective_timezone = timezone.as_ref().unwrap_or(&existing.timezone);
+        Some(next_schedule_run_at(
+            &effective_schedule,
+            effective_timezone.as_str(),
+            Utc::now(),
+        )?)
+    } else {
+        None
+    };
+    let expires_at = args
+        .expires_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "expires_at"))
+        .transpose()?
+        .map(Some);
+    let effective_next_run_at = next_run_at.unwrap_or(existing.next_run_at);
+    let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
+    validate_schedule_expiry(effective_next_run_at, effective_expires_at)?;
+
+    let schedule = state_db
+        .thread_schedules()
+        .update_thread_schedule(
+            schedule_id.as_str(),
+            codex_state::ThreadScheduleUpdate {
+                prompt,
+                prompt_source,
+                schedule,
+                timezone,
+                status: None,
+                next_run_at,
+                expires_at,
+            },
+        )
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
+        .ok_or_else(|| missing_schedule_error(schedule_id.as_str()))?;
+    if schedule.thread_id != thread_id {
+        return Err(missing_schedule_error(schedule_id.as_str()));
+    }
+    let affected_schedule = ScheduleSnapshot::from(schedule);
+    let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
+    Ok(ManageScheduleResponse {
+        action: ScheduleAction::Update,
+        schedule_id: Some(schedule_id.clone()),
+        affected_schedule: Some(affected_schedule),
+        schedules,
+        deleted: None,
+        message: format!("Schedule {schedule_id} updated."),
+    })
+}
+
+async fn set_schedule_status(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageScheduleArgs,
+) -> Result<ManageScheduleResponse, FunctionCallError> {
+    let schedule_id =
+        resolve_schedule_id(&state_db, thread_id, args.schedule_id.clone(), args.action).await?;
+    ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+    let status = match args.action {
+        ScheduleAction::Pause => codex_state::ThreadScheduleStatus::Paused,
+        ScheduleAction::Resume => codex_state::ThreadScheduleStatus::Active,
+        ScheduleAction::Create
+        | ScheduleAction::List
+        | ScheduleAction::Update
+        | ScheduleAction::Delete => unreachable!("action matched above"),
+    };
+    let schedule = state_db
+        .thread_schedules()
+        .set_thread_schedule_status(schedule_id.as_str(), status)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
+        .ok_or_else(|| missing_schedule_error(schedule_id.as_str()))?;
+    if schedule.thread_id != thread_id {
+        return Err(missing_schedule_error(schedule_id.as_str()));
+    }
+    let affected_schedule = ScheduleSnapshot::from(schedule);
+    let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
+    let message = match args.action {
+        ScheduleAction::Pause => {
+            format!("Schedule {schedule_id} paused; future runs are paused.")
+        }
+        ScheduleAction::Resume => {
+            format!("Schedule {schedule_id} resumed; future runs are active.")
+        }
+        ScheduleAction::Create
+        | ScheduleAction::List
+        | ScheduleAction::Update
+        | ScheduleAction::Delete => unreachable!("action matched above"),
+    };
+    Ok(ManageScheduleResponse {
+        action: args.action,
+        schedule_id: Some(schedule_id),
+        affected_schedule: Some(affected_schedule),
+        schedules,
+        deleted: None,
+        message,
+    })
+}
+
+async fn delete_schedule(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageScheduleArgs,
+) -> Result<ManageScheduleResponse, FunctionCallError> {
+    let schedule_id = resolve_schedule_id(
+        &state_db,
+        thread_id,
+        args.schedule_id.clone(),
+        ScheduleAction::Delete,
+    )
+    .await?;
+    let schedule =
+        ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+    let deleted = state_db
+        .thread_schedules()
+        .delete_thread_schedule(schedule_id.as_str())
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
+    let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
+    Ok(ManageScheduleResponse {
+        action: ScheduleAction::Delete,
+        schedule_id: Some(schedule_id.clone()),
+        affected_schedule: Some(ScheduleSnapshot::from(schedule)),
+        schedules,
+        deleted: Some(deleted),
+        message: if deleted {
+            format!("Schedule {schedule_id} deleted.")
+        } else {
+            format!("Schedule {schedule_id} was already absent.")
+        },
+    })
+}
+
+async fn list_schedule_snapshots(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+) -> Result<Vec<ScheduleSnapshot>, FunctionCallError> {
+    let schedules = state_db
+        .thread_schedules()
+        .list_thread_schedules(thread_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
+    Ok(schedules.into_iter().map(ScheduleSnapshot::from).collect())
+}
+
+async fn ensure_schedule_capacity(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+) -> Result<(), FunctionCallError> {
+    let schedules = state_db
+        .thread_schedules()
+        .list_thread_schedules(thread_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
+    if schedules.len() >= MAX_THREAD_SCHEDULES {
+        return Err(model_error(format!(
+            "thread already has the maximum of {MAX_THREAD_SCHEDULES} schedules"
+        )));
+    }
+    Ok(())
+}
+
+async fn resolve_schedule_id(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    schedule_id: Option<String>,
+    action: ScheduleAction,
+) -> Result<String, FunctionCallError> {
+    if let Some(schedule_id) = schedule_id.map(|value| value.trim().to_string())
+        && !schedule_id.is_empty()
+    {
+        return Ok(schedule_id);
+    }
+
+    let schedules = state_db
+        .thread_schedules()
+        .list_thread_schedules(thread_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
+        .into_iter()
+        .filter(|schedule| schedule.status != codex_state::ThreadScheduleStatus::Expired)
+        .collect::<Vec<_>>();
+    match schedules.as_slice() {
+        [] => Err(model_error(format!(
+            "cannot {} a schedule because no schedules are created for this thread",
+            action.verb()
+        ))),
+        [schedule] => Ok(schedule.schedule_id.clone()),
+        _ => Err(model_error(format!(
+            "cannot {} a schedule without schedule_id because this thread has multiple schedules; call manage_schedule with action=list, then pass the chosen schedule_id",
+            action.verb()
+        ))),
+    }
+}
+
+async fn ensure_current_thread_schedule(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    schedule_id: &str,
+) -> Result<codex_state::ThreadSchedule, FunctionCallError> {
+    let schedule = state_db
+        .thread_schedules()
+        .get_thread_schedule(schedule_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
+        .ok_or_else(|| missing_schedule_error(schedule_id))?;
+    if schedule.thread_id != thread_id {
+        return Err(missing_schedule_error(schedule_id));
+    }
+    Ok(schedule)
+}
+
+fn validate_schedule_prompt(prompt: &str) -> Result<String, FunctionCallError> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(model_error("schedule prompt must not be empty"));
+    }
+    if prompt.chars().count() > MAX_THREAD_SCHEDULE_PROMPT_CHARS {
+        return Err(model_error(format!(
+            "schedule prompt must be at most {MAX_THREAD_SCHEDULE_PROMPT_CHARS} characters"
+        )));
+    }
+    Ok(prompt.to_string())
+}
+
+fn schedule_spec_arg_to_state(
+    schedule: ScheduleSpecArg,
+) -> Result<codex_state::ThreadScheduleSpec, FunctionCallError> {
+    match schedule {
+        ScheduleSpecArg::Dynamic => Ok(codex_state::ThreadScheduleSpec::Dynamic),
+        ScheduleSpecArg::Interval { amount, unit } => {
+            if amount <= 0 {
+                return Err(model_error("interval amount must be positive"));
+            }
+            Ok(codex_state::ThreadScheduleSpec::Interval(
+                codex_state::ThreadScheduleInterval {
+                    amount,
+                    unit: match unit {
+                        ScheduleIntervalUnitArg::Minutes => {
+                            codex_state::ThreadScheduleIntervalUnit::Minutes
+                        }
+                        ScheduleIntervalUnitArg::Hours => {
+                            codex_state::ThreadScheduleIntervalUnit::Hours
+                        }
+                        ScheduleIntervalUnitArg::Days => {
+                            codex_state::ThreadScheduleIntervalUnit::Days
+                        }
+                    },
+                },
+            ))
+        }
+        ScheduleSpecArg::Cron { expression } => {
+            let expression = validate_cron_expression(expression.as_str())?;
+            Ok(codex_state::ThreadScheduleSpec::Cron { expression })
+        }
+    }
+}
+
+fn normalize_timezone(timezone: Option<String>) -> Result<String, FunctionCallError> {
+    timezone.map_or_else(
+        || {
+            let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
+            normalize_timezone_value(timezone)
+        },
+        normalize_timezone_value,
+    )
+}
+
+fn normalize_timezone_value(timezone: String) -> Result<String, FunctionCallError> {
+    let timezone = timezone.trim();
+    if timezone.is_empty() {
+        return Err(model_error("schedule timezone must not be empty"));
+    }
+    parse_schedule_timezone(timezone).map(|timezone| timezone.name().to_string())
+}
+
+fn parse_schedule_timezone(timezone: &str) -> Result<Tz, FunctionCallError> {
+    timezone
+        .parse::<Tz>()
+        .map_err(|err| model_error(format!("invalid schedule timezone `{timezone}`: {err}")))
+}
+
+fn timestamp_to_datetime(value: i64, field_name: &str) -> Result<DateTime<Utc>, FunctionCallError> {
+    DateTime::<Utc>::from_timestamp(value, 0)
+        .ok_or_else(|| model_error(format!("{field_name} must be a valid Unix timestamp")))
+}
+
+fn default_schedule_expires_at(now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    now.checked_add_signed(ChronoDuration::days(DEFAULT_SCHEDULE_EXPIRATION_DAYS))
+}
+
+fn next_schedule_run_at(
+    schedule: &codex_state::ThreadScheduleSpec,
+    timezone: &str,
+    after: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, FunctionCallError> {
+    let next = match schedule {
+        codex_state::ThreadScheduleSpec::Dynamic => {
+            after.checked_add_signed(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
+        }
+        codex_state::ThreadScheduleSpec::Interval(interval) => {
+            let duration = match interval.unit {
+                codex_state::ThreadScheduleIntervalUnit::Minutes => {
+                    ChronoDuration::minutes(interval.amount)
+                }
+                codex_state::ThreadScheduleIntervalUnit::Hours => {
+                    ChronoDuration::hours(interval.amount)
+                }
+                codex_state::ThreadScheduleIntervalUnit::Days => {
+                    ChronoDuration::days(interval.amount)
+                }
+            };
+            after.checked_add_signed(duration)
+        }
+        codex_state::ThreadScheduleSpec::Cron { expression } => {
+            let timezone = parse_schedule_timezone(timezone)?;
+            let cron = Cron::from_str(expression).map_err(|err| {
+                model_error(format!("invalid cron expression `{expression}`: {err}"))
+            })?;
+            let local_after = after.with_timezone(&timezone);
+            let next = cron
+                .find_next_occurrence(&local_after, /*inclusive*/ false)
+                .map_err(|err| model_error(err.to_string()))?;
+            Some(next.with_timezone(&Utc))
+        }
+    };
+    Ok(next)
+}
+
+fn validate_schedule_expiry(
+    next_run_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<(), FunctionCallError> {
+    if let (Some(next_run_at), Some(expires_at)) = (next_run_at, expires_at)
+        && expires_at <= next_run_at
+    {
+        return Err(model_error(
+            "schedule expires_at must be later than next_run_at",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cron_expression(expression: &str) -> Result<String, FunctionCallError> {
+    let expression = expression.trim();
+    let fields = expression.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 5 {
+        return Err(model_error(
+            "cron schedule must contain exactly five fields",
+        ));
+    }
+    let ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)];
+    for (field, (min, max)) in fields.iter().zip(ranges) {
+        validate_cron_field(field, min, max)?;
+    }
+    Ok(fields.join(" "))
+}
+
+fn validate_cron_field(field: &str, min: u32, max: u32) -> Result<(), FunctionCallError> {
+    if field.is_empty()
+        || !field
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '*' | '/' | '-' | ','))
+    {
+        return Err(model_error(
+            "cron fields may only use digits, *, /, -, and ,",
+        ));
+    }
+    for part in field.split(',') {
+        validate_cron_part(part, min, max)?;
+    }
+    Ok(())
+}
+
+fn validate_cron_part(part: &str, min: u32, max: u32) -> Result<(), FunctionCallError> {
+    let (base, step) = part
+        .split_once('/')
+        .map_or((part, None), |(base, step)| (base, Some(step)));
+    if let Some(step) = step {
+        let step = parse_cron_field_value(step, min, max)?;
+        if step == 0 {
+            return Err(model_error("cron step must be positive"));
+        }
+    }
+    if base == "*" {
+        return Ok(());
+    }
+    if let Some((start, end)) = base.split_once('-') {
+        let start = parse_cron_field_value(start, min, max)?;
+        let end = parse_cron_field_value(end, min, max)?;
+        if start > end {
+            return Err(model_error("cron range start must be before end"));
+        }
+        return Ok(());
+    }
+    let value = parse_cron_field_value(base, min, max)?;
+    if value < min || value > max {
+        return Err(model_error(format!(
+            "cron value {value} is outside range {min}-{max}"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_cron_field_value(value: &str, min: u32, max: u32) -> Result<u32, FunctionCallError> {
+    if value.is_empty() {
+        return Err(model_error("cron field value must not be empty"));
+    }
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| model_error(format!("invalid cron value `{value}`")))?;
+    if parsed < min || parsed > max {
+        return Err(model_error(format!(
+            "cron value {parsed} is outside range {min}-{max}"
+        )));
+    }
+    Ok(parsed)
+}
+
+impl ScheduleAction {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::List => "list",
+            Self::Update => "update",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+impl From<codex_state::ThreadSchedule> for ScheduleSnapshot {
+    fn from(schedule: codex_state::ThreadSchedule) -> Self {
+        Self {
+            thread_id: schedule.thread_id.to_string(),
+            schedule_id: schedule.schedule_id,
+            prompt: schedule.prompt,
+            prompt_source: schedule.prompt_source.as_str().to_string(),
+            schedule: ScheduleSpecSnapshot::from(schedule.schedule),
+            timezone: schedule.timezone,
+            status: schedule.status.as_str().to_string(),
+            next_run_at: timestamp_seconds(schedule.next_run_at),
+            last_run_at: timestamp_seconds(schedule.last_run_at),
+            expires_at: timestamp_seconds(schedule.expires_at),
+            failure_count: schedule.failure_count,
+            lease_expires_at: timestamp_seconds(schedule.lease_expires_at),
+            created_at: schedule.created_at.timestamp(),
+            updated_at: schedule.updated_at.timestamp(),
+        }
+    }
+}
+
+impl From<codex_state::ThreadScheduleSpec> for ScheduleSpecSnapshot {
+    fn from(schedule: codex_state::ThreadScheduleSpec) -> Self {
+        match schedule {
+            codex_state::ThreadScheduleSpec::Dynamic => Self::Dynamic,
+            codex_state::ThreadScheduleSpec::Interval(interval) => Self::Interval {
+                amount: interval.amount,
+                unit: interval.unit.as_str().to_string(),
+            },
+            codex_state::ThreadScheduleSpec::Cron { expression } => Self::Cron { expression },
+        }
+    }
+}
+
+fn timestamp_seconds(value: Option<DateTime<Utc>>) -> Option<i64> {
+    value.map(|datetime| datetime.timestamp())
+}
+
+fn missing_schedule_error(schedule_id: &str) -> FunctionCallError {
+    model_error(format!(
+        "no schedule with schedule_id `{schedule_id}` exists in this thread"
+    ))
+}
+
+fn model_error(message: impl Into<String>) -> FunctionCallError {
+    FunctionCallError::RespondToModel(message.into())
+}
+
+fn format_schedule_error(err: anyhow::Error) -> String {
+    let mut message = err.to_string();
+    for cause in err.chain().skip(1) {
+        let _ = write!(message, ": {cause}");
+    }
+    message
+}
+
+fn schedule_response(
+    response: ManageScheduleResponse,
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    let response = serde_json::to_string_pretty(&response)
+        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    Ok(FunctionToolOutput::from_text(response, Some(true)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use codex_protocol::protocol::SessionSource;
+    use codex_state::ThreadMetadataBuilder;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    async fn test_runtime() -> (TempDir, Arc<codex_state::StateRuntime>) {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let runtime =
+            codex_state::StateRuntime::init(temp_dir.path().to_path_buf(), "test-provider".into())
+                .await
+                .expect("state db should initialize");
+        (temp_dir, runtime)
+    }
+
+    fn test_thread_id(id: u32) -> ThreadId {
+        ThreadId::from_string(&format!("00000000-0000-0000-0000-{id:012}"))
+            .expect("valid thread id")
+    }
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(seconds, 0)
+            .single()
+            .expect("valid timestamp")
+    }
+
+    async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            runtime.codex_home().join(format!("{thread_id}.jsonl")),
+            at(1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = runtime.codex_home().join("workspace");
+        runtime
+            .upsert_thread(&builder.build("test-provider"))
+            .await
+            .expect("test thread should be upserted");
+    }
+
+    async fn create_interval_schedule(
+        runtime: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        prompt: &str,
+    ) -> codex_state::ThreadSchedule {
+        runtime
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: prompt.to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Interval(
+                    codex_state::ThreadScheduleInterval {
+                        amount: 5,
+                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                ),
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: Some(at(1_700_000_300)),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should be created")
+    }
+
+    #[tokio::test]
+    async fn create_adds_interval_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(1);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let response = manage_schedule(
+            runtime.clone(),
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Create,
+                schedule_id: None,
+                prompt: Some("check CI".to_string()),
+                schedule: Some(ScheduleSpecArg::Interval {
+                    amount: 5,
+                    unit: ScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                next_run_at: Some(1_700_000_300),
+                expires_at: Some(1_700_001_000),
+            },
+        )
+        .await
+        .expect("schedule should be created");
+
+        assert_eq!(response.action, ScheduleAction::Create);
+        assert_eq!(response.schedules.len(), 1);
+        let schedule = runtime
+            .thread_schedules()
+            .get_thread_schedule(response.schedule_id.as_deref().expect("schedule id"))
+            .await
+            .expect("lookup should succeed")
+            .expect("schedule should exist");
+        assert_eq!(schedule.prompt, "check CI");
+        assert_eq!(schedule.timezone, "UTC");
+    }
+
+    #[tokio::test]
+    async fn update_changes_prompt_and_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(2);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(&runtime, thread_id, "check CI").await;
+
+        let response = manage_schedule(
+            runtime.clone(),
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Update,
+                schedule_id: Some(schedule.schedule_id.clone()),
+                prompt: Some("write handoff".to_string()),
+                schedule: Some(ScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: ScheduleIntervalUnitArg::Hours,
+                }),
+                timezone: Some("UTC".to_string()),
+                next_run_at: Some(1_700_001_000),
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("schedule should update");
+
+        assert_eq!(response.action, ScheduleAction::Update);
+        let updated = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("lookup should succeed")
+            .expect("schedule should exist");
+        assert_eq!(updated.prompt, "write handoff");
+        assert_eq!(
+            updated.schedule,
+            codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                amount: 2,
+                unit: codex_state::ThreadScheduleIntervalUnit::Hours,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_specific_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(3);
+        upsert_test_thread(&runtime, thread_id).await;
+        let first = create_interval_schedule(&runtime, thread_id, "check CI").await;
+        let second = create_interval_schedule(&runtime, thread_id, "write handoff").await;
+
+        let response = manage_schedule(
+            runtime.clone(),
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Delete,
+                schedule_id: Some(first.schedule_id.clone()),
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("schedule should delete");
+
+        assert_eq!(response.action, ScheduleAction::Delete);
+        assert_eq!(response.deleted, Some(true));
+        assert!(
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&first.schedule_id)
+                .await
+                .expect("lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&second.schedule_id)
+                .await
+                .expect("lookup should succeed")
+                .is_some()
+        );
+    }
+}

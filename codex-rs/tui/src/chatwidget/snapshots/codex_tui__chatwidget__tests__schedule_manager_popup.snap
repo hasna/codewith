@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/loop_menu.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Schedules
+  Select a scheduled prompt to manage
+
+  Search schedules
+› active  every 5 minutes    active | every 5 minutes | next not scheduled | tz UTC | 0 failures
+  paused  every 5 minutes    id sch_paused | next not scheduled | prompt check whether CI is green
+                             and write the next action | 2 failures
+  expired  every 5 minutes   id sch_expired | next not scheduled | prompt check whether CI is
+                             green and write the next action
+
+  Press enter to confirm or esc to go back

@@ -350,6 +350,62 @@ pub(crate) enum AppEvent {
         schedule_id: Option<String>,
     },
 
+    /// Open the current thread schedule summary.
+    OpenThreadScheduleManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open an editor for a thread schedule.
+    OpenThreadScheduleEditor {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Open actions for a thread schedule.
+    OpenThreadScheduleActions {
+        thread_id: ThreadId,
+        schedule_id: String,
+    },
+
+    /// Create a recurring prompt schedule for the current thread.
+    CreateThreadSchedule {
+        thread_id: ThreadId,
+        prompt: String,
+        prompt_source: ThreadSchedulePromptSource,
+        schedule: ThreadScheduleSpec,
+    },
+
+    /// Update the prompt for a recurring prompt schedule.
+    UpdateThreadSchedulePrompt {
+        thread_id: ThreadId,
+        schedule_id: String,
+        prompt: String,
+    },
+
+    /// Pause a recurring prompt schedule.
+    PauseThreadSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Resume a recurring prompt schedule.
+    ResumeThreadSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Delete a recurring prompt schedule.
+    DeleteThreadSchedule {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
+    /// Run a recurring prompt schedule immediately.
+    RunThreadScheduleNow {
+        thread_id: ThreadId,
+        schedule_id: Option<String>,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,

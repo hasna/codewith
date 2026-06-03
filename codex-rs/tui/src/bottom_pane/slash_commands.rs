@@ -77,7 +77,10 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
-        .filter(|(_, cmd)| flags.scheduled_tasks_command_enabled || *cmd != SlashCommand::Loop)
+        .filter(|(_, cmd)| {
+            flags.scheduled_tasks_command_enabled
+                || !matches!(*cmd, SlashCommand::Loop | SlashCommand::Schedule)
+        })
         .filter(|(_, cmd)| flags.personality_command_enabled || *cmd != SlashCommand::Personality)
         .filter(|(_, cmd)| flags.realtime_conversation_enabled || *cmd != SlashCommand::Realtime)
         .filter(|(_, cmd)| flags.audio_device_selection_enabled || *cmd != SlashCommand::Settings)
@@ -264,6 +267,13 @@ mod tests {
         let mut flags = all_enabled_flags();
         flags.scheduled_tasks_command_enabled = false;
         assert_eq!(find_builtin_command("loop", flags), None);
+    }
+
+    #[test]
+    fn schedule_command_is_hidden_when_disabled() {
+        let mut flags = all_enabled_flags();
+        flags.scheduled_tasks_command_enabled = false;
+        assert_eq!(find_builtin_command("schedule", flags), None);
     }
 
     #[test]

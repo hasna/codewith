@@ -13,17 +13,25 @@ use codex_app_server_protocol::ThreadScheduleStatus;
 
 impl ChatWidget {
     pub(crate) fn show_loop_summary(&mut self, schedules: Vec<ThreadSchedule>) {
-        self.add_plain_history_lines(loop_summary_lines(&schedules));
+        self.add_plain_history_lines(thread_schedule_summary_lines(
+            ThreadScheduleDisplayKind::Loop,
+            &schedules,
+        ));
+    }
+
+    pub(crate) fn show_schedule_summary(&mut self, schedules: Vec<ThreadSchedule>) {
+        self.add_plain_history_lines(thread_schedule_summary_lines(
+            ThreadScheduleDisplayKind::Schedule,
+            &schedules,
+        ));
     }
 
     pub(crate) fn show_loop_scheduled(&mut self, schedule: ThreadSchedule) {
-        let schedule_id = schedule.schedule_id.clone();
-        self.announced_loop_schedule_ids.insert(schedule_id.clone());
-        self.show_loop_summary(vec![schedule]);
-        self.add_info_message(
-            "Loop scheduled".to_string(),
-            Some(loop_scheduled_action_hint(&schedule_id)),
-        );
+        self.show_thread_schedule_created(ThreadScheduleDisplayKind::Loop, schedule);
+    }
+
+    pub(crate) fn show_schedule_created(&mut self, schedule: ThreadSchedule) {
+        self.show_thread_schedule_created(ThreadScheduleDisplayKind::Schedule, schedule);
     }
 
     pub(crate) fn show_loop_manager(
@@ -31,7 +39,23 @@ impl ChatWidget {
         thread_id: ThreadId,
         schedules: Vec<ThreadSchedule>,
     ) {
-        self.show_selection_view(loop_manager_params(thread_id, schedules));
+        self.show_selection_view(thread_schedule_manager_params(
+            ThreadScheduleDisplayKind::Loop,
+            thread_id,
+            schedules,
+        ));
+    }
+
+    pub(crate) fn show_schedule_manager(
+        &mut self,
+        thread_id: ThreadId,
+        schedules: Vec<ThreadSchedule>,
+    ) {
+        self.show_selection_view(thread_schedule_manager_params(
+            ThreadScheduleDisplayKind::Schedule,
+            thread_id,
+            schedules,
+        ));
     }
 
     pub(crate) fn show_loop_schedule_actions(
@@ -39,23 +63,66 @@ impl ChatWidget {
         thread_id: ThreadId,
         schedule: ThreadSchedule,
     ) {
-        self.show_selection_view(loop_schedule_actions_params(thread_id, schedule));
+        self.show_selection_view(thread_schedule_actions_params(
+            ThreadScheduleDisplayKind::Loop,
+            thread_id,
+            schedule,
+        ));
+    }
+
+    pub(crate) fn show_schedule_actions(&mut self, thread_id: ThreadId, schedule: ThreadSchedule) {
+        self.show_selection_view(thread_schedule_actions_params(
+            ThreadScheduleDisplayKind::Schedule,
+            thread_id,
+            schedule,
+        ));
     }
 
     pub(crate) fn show_loop_edit_prompt(&mut self, thread_id: ThreadId, schedule: ThreadSchedule) {
+        self.show_thread_schedule_edit_prompt(ThreadScheduleDisplayKind::Loop, thread_id, schedule);
+    }
+
+    pub(crate) fn show_schedule_edit_prompt(
+        &mut self,
+        thread_id: ThreadId,
+        schedule: ThreadSchedule,
+    ) {
+        self.show_thread_schedule_edit_prompt(
+            ThreadScheduleDisplayKind::Schedule,
+            thread_id,
+            schedule,
+        );
+    }
+
+    fn show_thread_schedule_created(
+        &mut self,
+        kind: ThreadScheduleDisplayKind,
+        schedule: ThreadSchedule,
+    ) {
+        let schedule_id = schedule.schedule_id.clone();
+        self.announced_loop_schedule_ids.insert(schedule_id.clone());
+        self.add_plain_history_lines(thread_schedule_summary_lines(kind, &[schedule]));
+        self.add_info_message(
+            kind.created_title().to_string(),
+            Some(thread_schedule_created_action_hint(kind, &schedule_id)),
+        );
+    }
+
+    fn show_thread_schedule_edit_prompt(
+        &mut self,
+        kind: ThreadScheduleDisplayKind,
+        thread_id: ThreadId,
+        schedule: ThreadSchedule,
+    ) {
         let tx = self.app_event_tx.clone();
         let schedule_id = schedule.schedule_id.clone();
         let view = CustomPromptView::new(
-            "Edit loop".to_string(),
+            format!("Edit {}", kind.lower_label()),
             "Type the scheduled prompt and press Enter".to_string(),
             schedule.prompt,
             /*context_label*/ None,
             Box::new(move |prompt: String| {
-                tx.send(AppEvent::UpdateThreadLoopSchedulePrompt {
-                    thread_id,
-                    schedule_id: schedule_id.clone(),
-                    prompt,
-                });
+                tx.send(kind.update_prompt_event(thread_id, schedule_id.clone(), prompt));
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -81,7 +148,10 @@ impl ChatWidget {
             self.show_loop_summary(vec![schedule.clone()]);
             self.add_info_message(
                 "Loop scheduled".to_string(),
-                Some(loop_scheduled_action_hint(&schedule.schedule_id)),
+                Some(thread_schedule_created_action_hint(
+                    ThreadScheduleDisplayKind::Loop,
+                    &schedule.schedule_id,
+                )),
             );
         }
     }
@@ -116,6 +186,189 @@ impl ChatWidget {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ThreadScheduleDisplayKind {
+    Loop,
+    Schedule,
+}
+
+impl ThreadScheduleDisplayKind {
+    fn lower_label(self) -> &'static str {
+        match self {
+            Self::Loop => "loop",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    fn title_label(self) -> &'static str {
+        match self {
+            Self::Loop => "Loop",
+            Self::Schedule => "Schedule",
+        }
+    }
+
+    fn plural_title(self) -> &'static str {
+        match self {
+            Self::Loop => "Loops",
+            Self::Schedule => "Schedules",
+        }
+    }
+
+    fn plural_lower(self) -> &'static str {
+        match self {
+            Self::Loop => "loops",
+            Self::Schedule => "schedules",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Loop => "loop",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    fn empty_title(self) -> &'static str {
+        match self {
+            Self::Loop => "No loops scheduled",
+            Self::Schedule => "No schedules created",
+        }
+    }
+
+    fn empty_sentence(self) -> &'static str {
+        match self {
+            Self::Loop => "No loops scheduled.",
+            Self::Schedule => "No schedules created.",
+        }
+    }
+
+    fn manager_subtitle(self) -> &'static str {
+        match self {
+            Self::Loop => "Select a recurring prompt to manage",
+            Self::Schedule => "Select a scheduled prompt to manage",
+        }
+    }
+
+    fn search_placeholder(self) -> &'static str {
+        match self {
+            Self::Loop => "Search loops",
+            Self::Schedule => "Search schedules",
+        }
+    }
+
+    fn created_title(self) -> &'static str {
+        match self {
+            Self::Loop => "Loop scheduled",
+            Self::Schedule => "Schedule created",
+        }
+    }
+
+    fn open_manager_event(self, thread_id: ThreadId) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::OpenThreadLoopManager { thread_id },
+            Self::Schedule => AppEvent::OpenThreadScheduleManager { thread_id },
+        }
+    }
+
+    fn open_actions_event(self, thread_id: ThreadId, schedule_id: String) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::OpenThreadLoopScheduleActions {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::OpenThreadScheduleActions {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
+    fn open_editor_event(self, thread_id: ThreadId, schedule_id: Option<String>) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::OpenThreadLoopEditor {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::OpenThreadScheduleEditor {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
+    fn update_prompt_event(
+        self,
+        thread_id: ThreadId,
+        schedule_id: String,
+        prompt: String,
+    ) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::UpdateThreadLoopSchedulePrompt {
+                thread_id,
+                schedule_id,
+                prompt,
+            },
+            Self::Schedule => AppEvent::UpdateThreadSchedulePrompt {
+                thread_id,
+                schedule_id,
+                prompt,
+            },
+        }
+    }
+
+    fn pause_event(self, thread_id: ThreadId, schedule_id: Option<String>) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::PauseThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::PauseThreadSchedule {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
+    fn resume_event(self, thread_id: ThreadId, schedule_id: Option<String>) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::ResumeThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::ResumeThreadSchedule {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
+    fn delete_event(self, thread_id: ThreadId, schedule_id: Option<String>) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::DeleteThreadLoopSchedule {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::DeleteThreadSchedule {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
+    fn run_now_event(self, thread_id: ThreadId, schedule_id: Option<String>) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::RunThreadLoopScheduleNow {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::RunThreadScheduleNow {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+}
+
 fn should_announce_created_schedule(schedule: &ThreadSchedule) -> bool {
     matches!(schedule.status, ThreadScheduleStatus::Active)
         && schedule.created_at == schedule.updated_at
@@ -123,13 +376,18 @@ fn should_announce_created_schedule(schedule: &ThreadSchedule) -> bool {
         && schedule.lease_expires_at.is_none()
 }
 
-fn loop_scheduled_action_hint(schedule_id: &str) -> String {
+fn thread_schedule_created_action_hint(
+    kind: ThreadScheduleDisplayKind,
+    schedule_id: &str,
+) -> String {
+    let command = kind.command();
     format!(
-        "Use /loop pause {schedule_id}, /loop run-now {schedule_id}, or /loop delete {schedule_id}."
+        "Use /{command} pause {schedule_id}, /{command} run-now {schedule_id}, or /{command} delete {schedule_id}."
     )
 }
 
-fn loop_manager_params(
+fn thread_schedule_manager_params(
+    kind: ThreadScheduleDisplayKind,
     thread_id: ThreadId,
     mut schedules: Vec<ThreadSchedule>,
 ) -> SelectionViewParams {
@@ -144,8 +402,11 @@ fn loop_manager_params(
     let mut items = Vec::with_capacity(schedules.len() + 1);
     if schedules.is_empty() {
         items.push(SelectionItem {
-            name: "No loops scheduled".to_string(),
-            description: Some("Create one with /loop 5m check whether CI is green".to_string()),
+            name: kind.empty_title().to_string(),
+            description: Some(format!(
+                "Create one with /{} 5m check whether CI is green",
+                kind.command()
+            )),
             is_disabled: true,
             ..Default::default()
         });
@@ -153,10 +414,7 @@ fn loop_manager_params(
         for schedule in schedules {
             let schedule_id = schedule.schedule_id.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                tx.send(AppEvent::OpenThreadLoopScheduleActions {
-                    thread_id,
-                    schedule_id: schedule_id.clone(),
-                });
+                tx.send(kind.open_actions_event(thread_id, schedule_id.clone()));
             })];
             items.push(SelectionItem {
                 name: loop_manager_row_name(&schedule),
@@ -171,18 +429,24 @@ fn loop_manager_params(
     }
 
     SelectionViewParams {
-        title: Some("Loops".to_string()),
-        subtitle: Some("Select a recurring prompt to manage".to_string()),
+        title: Some(kind.plural_title().to_string()),
+        subtitle: Some(kind.manager_subtitle().to_string()),
         footer_hint: Some(standard_popup_hint_line()),
         items,
         is_searchable: true,
-        search_placeholder: Some("Search loops".to_string()),
+        search_placeholder: Some(kind.search_placeholder().to_string()),
         col_width_mode: ColumnWidthMode::Fixed,
         ..Default::default()
     }
 }
 
-fn loop_schedule_actions_params(
+#[cfg(test)]
+fn loop_manager_params(thread_id: ThreadId, schedules: Vec<ThreadSchedule>) -> SelectionViewParams {
+    thread_schedule_manager_params(ThreadScheduleDisplayKind::Loop, thread_id, schedules)
+}
+
+fn thread_schedule_actions_params(
+    kind: ThreadScheduleDisplayKind,
     thread_id: ThreadId,
     schedule: ThreadSchedule,
 ) -> SelectionViewParams {
@@ -193,11 +457,11 @@ fn loop_schedule_actions_params(
         "Run now",
         "Queue this prompt immediately",
         is_expired,
-        disabled_reason_if(is_expired, "Expired loops cannot be run"),
-        move || AppEvent::RunThreadLoopScheduleNow {
-            thread_id,
-            schedule_id: Some(run_schedule_id.clone()),
-        },
+        disabled_reason_if(
+            is_expired,
+            format!("Expired {} cannot be run", kind.plural_lower()),
+        ),
+        move || kind.run_now_event(thread_id, Some(run_schedule_id.clone())),
     )];
 
     let edit_schedule_id = schedule_id.clone();
@@ -205,11 +469,11 @@ fn loop_schedule_actions_params(
         "Edit prompt",
         "Change the prompt used on future runs",
         is_expired,
-        disabled_reason_if(is_expired, "Expired loops cannot be edited"),
-        move || AppEvent::OpenThreadLoopEditor {
-            thread_id,
-            schedule_id: Some(edit_schedule_id.clone()),
-        },
+        disabled_reason_if(
+            is_expired,
+            format!("Expired {} cannot be edited", kind.plural_lower()),
+        ),
+        move || kind.open_editor_event(thread_id, Some(edit_schedule_id.clone())),
     ));
 
     match schedule.status {
@@ -220,10 +484,7 @@ fn loop_schedule_actions_params(
                 "Stop future automatic runs until resumed",
                 false,
                 None,
-                move || AppEvent::PauseThreadLoopSchedule {
-                    thread_id,
-                    schedule_id: Some(pause_schedule_id.clone()),
-                },
+                move || kind.pause_event(thread_id, Some(pause_schedule_id.clone())),
             ));
         }
         ThreadScheduleStatus::Paused => {
@@ -233,23 +494,20 @@ fn loop_schedule_actions_params(
                 "Start scheduling future runs again",
                 false,
                 None,
-                move || AppEvent::ResumeThreadLoopSchedule {
-                    thread_id,
-                    schedule_id: Some(resume_schedule_id.clone()),
-                },
+                move || kind.resume_event(thread_id, Some(resume_schedule_id.clone())),
             ));
         }
         ThreadScheduleStatus::Expired => {
             let resume_schedule_id = schedule_id.clone();
             items.push(loop_action_item(
                 "Resume",
-                "Expired loops cannot be resumed",
+                format!("Expired {} cannot be resumed", kind.plural_lower()),
                 true,
-                Some("Expired loops are kept for history only".to_string()),
-                move || AppEvent::ResumeThreadLoopSchedule {
-                    thread_id,
-                    schedule_id: Some(resume_schedule_id.clone()),
-                },
+                Some(format!(
+                    "Expired {} are kept for history only",
+                    kind.plural_lower()
+                )),
+                move || kind.resume_event(thread_id, Some(resume_schedule_id.clone())),
             ));
         }
     }
@@ -257,24 +515,25 @@ fn loop_schedule_actions_params(
     let delete_schedule_id = schedule_id;
     items.push(loop_action_item(
         "Delete",
-        "Remove this loop from the thread",
+        format!("Remove this {} from the thread", kind.lower_label()),
         false,
         None,
-        move || AppEvent::DeleteThreadLoopSchedule {
-            thread_id,
-            schedule_id: Some(delete_schedule_id.clone()),
-        },
+        move || kind.delete_event(thread_id, Some(delete_schedule_id.clone())),
     ));
+    let back_label = match kind {
+        ThreadScheduleDisplayKind::Loop => "Back to loops",
+        ThreadScheduleDisplayKind::Schedule => "Back to schedules",
+    };
     items.push(loop_action_item(
-        "Back to loops",
+        back_label,
         "Return to all scheduled prompts",
         false,
         None,
-        move || AppEvent::OpenThreadLoopManager { thread_id },
+        move || kind.open_manager_event(thread_id),
     ));
 
     SelectionViewParams {
-        title: Some(format!("Loop {}", schedule.schedule_id)),
+        title: Some(format!("{} {}", kind.title_label(), schedule.schedule_id)),
         subtitle: Some(loop_schedule_detail(&schedule)),
         footer_hint: Some(standard_popup_hint_line()),
         items,
@@ -283,9 +542,17 @@ fn loop_schedule_actions_params(
     }
 }
 
+#[cfg(test)]
+fn loop_schedule_actions_params(
+    thread_id: ThreadId,
+    schedule: ThreadSchedule,
+) -> SelectionViewParams {
+    thread_schedule_actions_params(ThreadScheduleDisplayKind::Loop, thread_id, schedule)
+}
+
 fn loop_action_item(
-    name: &'static str,
-    description: &'static str,
+    name: impl Into<String>,
+    description: impl Into<String>,
     is_disabled: bool,
     disabled_reason: Option<String>,
     event: impl Fn() -> AppEvent + Send + Sync + 'static,
@@ -294,8 +561,8 @@ fn loop_action_item(
         tx.send(event());
     })];
     SelectionItem {
-        name: name.to_string(),
-        description: Some(description.to_string()),
+        name: name.into(),
+        description: Some(description.into()),
         is_disabled,
         disabled_reason,
         actions,
@@ -304,8 +571,8 @@ fn loop_action_item(
     }
 }
 
-fn disabled_reason_if(is_disabled: bool, reason: &'static str) -> Option<String> {
-    is_disabled.then(|| reason.to_string())
+fn disabled_reason_if(is_disabled: bool, reason: impl Into<String>) -> Option<String> {
+    is_disabled.then(|| reason.into())
 }
 
 pub(crate) fn loop_schedule_summary(schedule: &ThreadSchedule) -> String {
@@ -399,12 +666,22 @@ fn thread_schedule_status_sort_key(status: ThreadScheduleStatus) -> u8 {
     }
 }
 
+#[cfg(test)]
 fn loop_summary_lines(schedules: &[ThreadSchedule]) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from("Loops".bold())];
+    thread_schedule_summary_lines(ThreadScheduleDisplayKind::Loop, schedules)
+}
+
+fn thread_schedule_summary_lines(
+    kind: ThreadScheduleDisplayKind,
+    schedules: &[ThreadSchedule],
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(kind.plural_title().bold())];
     if schedules.is_empty() {
-        lines.push(Line::from("No loops scheduled.".dim()));
+        lines.push(Line::from(kind.empty_sentence().dim()));
         lines.push(Line::default());
-        lines.push(Line::from("Try /loop 5m check whether CI is green".dim()));
+        lines.push(Line::from(
+            format!("Try /{} 5m check whether CI is green", kind.command()).dim(),
+        ));
         return lines;
     }
 
@@ -447,9 +724,12 @@ fn loop_summary_lines(schedules: &[ThreadSchedule]) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::default());
+    let command = kind.command();
     lines.push(Line::from(
-        "Commands: /loop edit <id>, /loop pause <id>, /loop resume <id>, /loop run-now <id>, /loop delete <id>"
-            .dim(),
+        format!(
+            "Commands: /{command} edit <id>, /{command} pause <id>, /{command} resume <id>, /{command} run-now <id>, /{command} delete <id>"
+        )
+        .dim(),
     ));
     lines
 }

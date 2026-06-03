@@ -1,4 +1,4 @@
-//! Parser and normalized model for `/loop` slash command arguments.
+//! Parser and normalized model for thread schedule slash command arguments.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LoopSlashCommand {
@@ -61,20 +61,62 @@ pub(super) struct LoopSlashParseError {
 }
 
 pub(super) fn parse_loop_slash_args(args: &str) -> Result<LoopSlashCommand, LoopSlashParseError> {
+    parse_thread_schedule_slash_args(args, ThreadScheduleSlashKind::Loop)
+}
+
+pub(super) fn parse_schedule_slash_args(
+    args: &str,
+) -> Result<LoopSlashCommand, LoopSlashParseError> {
+    parse_thread_schedule_slash_args(args, ThreadScheduleSlashKind::Schedule)
+}
+
+#[derive(Clone, Copy)]
+enum ThreadScheduleSlashKind {
+    Loop,
+    Schedule,
+}
+
+impl ThreadScheduleSlashKind {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Loop => "loop",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Loop => "loop",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    fn label_title(self) -> &'static str {
+        match self {
+            Self::Loop => "Loop",
+            Self::Schedule => "Schedule",
+        }
+    }
+}
+
+fn parse_thread_schedule_slash_args(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<LoopSlashCommand, LoopSlashParseError> {
     let args = args.trim();
     if args.is_empty() {
         return Ok(LoopSlashCommand::Default);
     }
 
-    if let Some(manage) = parse_manage_command(args)? {
+    if let Some(manage) = parse_manage_command(args, kind)? {
         return Ok(LoopSlashCommand::Manage(manage));
     }
 
-    if let Some((interval, prompt)) = parse_compact_interval(args)? {
+    if let Some((interval, prompt)) = parse_compact_interval(args, kind)? {
         return create_with_prompt(LoopSchedule::Interval(interval), prompt);
     }
 
-    if let Some((interval, prompt)) = parse_every_interval(args)? {
+    if let Some((interval, prompt)) = parse_every_interval(args, kind)? {
         return create_with_prompt(LoopSchedule::Interval(interval), prompt);
     }
 
@@ -85,7 +127,10 @@ pub(super) fn parse_loop_slash_args(args: &str) -> Result<LoopSlashCommand, Loop
     create_with_prompt(LoopSchedule::Dynamic, args)
 }
 
-fn parse_manage_command(args: &str) -> Result<Option<LoopManageCommand>, LoopSlashParseError> {
+fn parse_manage_command(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<LoopManageCommand>, LoopSlashParseError> {
     let (command, rest) = split_first_token(args);
     let rest = rest.trim();
     let schedule_id = || {
@@ -97,7 +142,7 @@ fn parse_manage_command(args: &str) -> Result<Option<LoopManageCommand>, LoopSla
     };
     let command = match command.to_ascii_lowercase().as_str() {
         "list" | "ls" | "status" => {
-            reject_extra_manage_args(command, rest)?;
+            reject_extra_manage_args(command, rest, kind)?;
             LoopManageCommand::List
         }
         "pause" | "stop" => LoopManageCommand::Pause {
@@ -120,25 +165,41 @@ fn parse_manage_command(args: &str) -> Result<Option<LoopManageCommand>, LoopSla
     Ok(Some(command))
 }
 
-fn reject_extra_manage_args(command: &str, rest: &str) -> Result<(), LoopSlashParseError> {
+fn reject_extra_manage_args(
+    command: &str,
+    rest: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<(), LoopSlashParseError> {
     if rest.is_empty() {
         return Ok(());
     }
     Err(LoopSlashParseError {
-        message: format!("`/loop {command}` does not take additional arguments."),
-        hint: Some("Use `/loop` to open the schedule manager.".to_string()),
+        message: format!(
+            "`/{} {command}` does not take additional arguments.",
+            kind.command()
+        ),
+        hint: Some(format!(
+            "Use `/{}` to open the schedule manager.",
+            kind.command()
+        )),
     })
 }
 
-fn parse_compact_interval(args: &str) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
+fn parse_compact_interval(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
     let (token, rest) = split_first_token(args);
-    let Some(interval) = parse_interval_token(token)? else {
+    let Some(interval) = parse_interval_token(token, kind)? else {
         return Ok(None);
     };
     Ok(Some((interval, rest.trim_start())))
 }
 
-fn parse_every_interval(args: &str) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
+fn parse_every_interval(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
     let Some(rest) = args.strip_prefix("every ") else {
         return Ok(None);
     };
@@ -146,24 +207,27 @@ fn parse_every_interval(args: &str) -> Result<Option<(LoopInterval, &str)>, Loop
     let amount = amount_token
         .parse::<u32>()
         .map_err(|_| LoopSlashParseError {
-            message: format!("Invalid loop interval amount: `{amount_token}`."),
-            hint: Some(
-                "Use a positive whole number, for example `/loop every 5 minutes check CI`."
-                    .to_string(),
+            message: format!(
+                "Invalid {} interval amount: `{amount_token}`.",
+                kind.label()
             ),
+            hint: Some(format!(
+                "Use a positive whole number, for example `/{} every 5 minutes check CI`.",
+                kind.command()
+            )),
         })?;
     let (unit_token, prompt) = split_first_token(rest.trim_start());
     if is_seconds_unit(unit_token) {
-        validate_interval_amount(amount)?;
+        validate_interval_amount(amount, kind)?;
         return Ok(Some((seconds_interval(amount), prompt.trim_start())));
     }
     let Some(unit) = parse_interval_unit(unit_token) else {
         return Err(LoopSlashParseError {
-            message: format!("Invalid loop interval unit: `{unit_token}`."),
+            message: format!("Invalid {} interval unit: `{unit_token}`.", kind.label()),
             hint: Some("Supported units are seconds, minutes, hours, and days.".to_string()),
         });
     };
-    validate_interval_amount(amount)?;
+    validate_interval_amount(amount, kind)?;
     Ok(Some((LoopInterval { amount, unit }, prompt.trim_start())))
 }
 
@@ -207,7 +271,10 @@ fn create_with_prompt(
     }))
 }
 
-fn parse_interval_token(token: &str) -> Result<Option<LoopInterval>, LoopSlashParseError> {
+fn parse_interval_token(
+    token: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<LoopInterval>, LoopSlashParseError> {
     if token.len() < 2 {
         return Ok(None);
     }
@@ -222,14 +289,20 @@ fn parse_interval_token(token: &str) -> Result<Option<LoopInterval>, LoopSlashPa
         unit
     };
     let amount = amount.parse::<u32>().map_err(|_| LoopSlashParseError {
-        message: format!("Invalid loop interval: `{token}`."),
-        hint: Some("Use a compact interval such as `30s`, `5m`, `2h`, or `1d`.".to_string()),
+        message: format!("Invalid {} interval: `{token}`.", kind.label()),
+        hint: Some(format!(
+            "Use a compact interval such as `/{} 30s check CI`, `/{} 5m check CI`, `/{} 2h check CI`, or `/{} 1d check CI`.",
+            kind.command(),
+            kind.command(),
+            kind.command(),
+            kind.command()
+        )),
     })?;
     if seconds_unit {
-        validate_interval_amount(amount)?;
+        validate_interval_amount(amount, kind)?;
         return Ok(Some(seconds_interval(amount)));
     }
-    validate_interval_amount(amount)?;
+    validate_interval_amount(amount, kind)?;
     Ok(Some(LoopInterval { amount, unit }))
 }
 
@@ -265,10 +338,13 @@ fn seconds_interval(seconds: u32) -> LoopInterval {
     }
 }
 
-fn validate_interval_amount(amount: u32) -> Result<(), LoopSlashParseError> {
+fn validate_interval_amount(
+    amount: u32,
+    kind: ThreadScheduleSlashKind,
+) -> Result<(), LoopSlashParseError> {
     if amount == 0 {
         return Err(LoopSlashParseError {
-            message: "Loop interval must be greater than zero.".to_string(),
+            message: format!("{} interval must be greater than zero.", kind.label_title()),
             hint: Some("Use an interval such as `5m` or `every 10 minutes`.".to_string()),
         });
     }
@@ -545,6 +621,13 @@ mod tests {
     fn rejects_zero_interval() {
         let err = parse_loop_slash_args("0m check CI").expect_err("expected interval rejection");
         assert_eq!(err.message, "Loop interval must be greater than zero.");
+    }
+
+    #[test]
+    fn schedule_parser_uses_schedule_error_wording() {
+        let err = parse_schedule_slash_args("every 2 weeks check CI")
+            .expect_err("expected interval unit rejection");
+        assert_eq!(err.message, "Invalid schedule interval unit: `weeks`.");
     }
 
     #[test]

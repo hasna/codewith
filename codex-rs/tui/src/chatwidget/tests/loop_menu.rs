@@ -68,6 +68,42 @@ async fn loop_actions_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn schedule_manager_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_schedule_manager(
+        thread_id,
+        vec![
+            test_schedule("sch_expired", ThreadScheduleStatus::Expired),
+            test_schedule("sch_paused", ThreadScheduleStatus::Paused),
+            test_schedule("sch_active", ThreadScheduleStatus::Active),
+        ],
+    );
+
+    assert_chatwidget_snapshot!(
+        "schedule_manager_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
+async fn schedule_actions_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_schedule_actions(
+        thread_id,
+        test_schedule("sch_paused", ThreadScheduleStatus::Paused),
+    );
+
+    assert_chatwidget_snapshot!(
+        "schedule_actions_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
 async fn schedule_created_notification_announces_loop_once() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();

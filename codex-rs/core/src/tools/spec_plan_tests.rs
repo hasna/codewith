@@ -486,21 +486,21 @@ async fn host_context_gates_goal_loop_and_agent_job_tools() {
         turn.goal_tools_supported = true;
     })
     .await;
-    scheduled_tasks_feature_disabled.assert_visible_lacks(&["manage_loop"]);
+    scheduled_tasks_feature_disabled.assert_visible_lacks(&["manage_loop", "manage_schedule"]);
 
     let scheduled_tasks_host_disabled = probe(|turn| {
         set_feature(turn, Feature::ScheduledTasks, /*enabled*/ true);
         turn.goal_tools_supported = false;
     })
     .await;
-    scheduled_tasks_host_disabled.assert_visible_lacks(&["manage_loop"]);
+    scheduled_tasks_host_disabled.assert_visible_lacks(&["manage_loop", "manage_schedule"]);
 
     let scheduled_tasks_enabled = probe(|turn| {
         set_feature(turn, Feature::ScheduledTasks, /*enabled*/ true);
         turn.goal_tools_supported = true;
     })
     .await;
-    scheduled_tasks_enabled.assert_visible_contains(&["manage_loop"]);
+    scheduled_tasks_enabled.assert_visible_contains(&["manage_loop", "manage_schedule"]);
 
     let scheduled_tasks_review_thread = probe(|turn| {
         set_feature(turn, Feature::ScheduledTasks, /*enabled*/ true);
@@ -508,7 +508,7 @@ async fn host_context_gates_goal_loop_and_agent_job_tools() {
         turn.session_source = SessionSource::SubAgent(SubAgentSource::Review);
     })
     .await;
-    scheduled_tasks_review_thread.assert_visible_lacks(&["manage_loop"]);
+    scheduled_tasks_review_thread.assert_visible_lacks(&["manage_loop", "manage_schedule"]);
 
     let normal_agent_job = probe(|turn| {
         set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);

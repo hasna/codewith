@@ -13,6 +13,7 @@ use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
 use crate::tools::handlers::ManageLoopHandler;
+use crate::tools::handlers::ManageScheduleHandler;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
@@ -611,6 +612,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     }
     if loop_tools_enabled(turn_context) {
         planned_tools.add(ManageLoopHandler);
+        planned_tools.add(ManageScheduleHandler);
     }
 
     if turn_context.config.experimental_request_user_input_enabled {
