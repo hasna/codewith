@@ -519,12 +519,16 @@ jobs:
 
           stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
           wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"
+          codex_version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            codex_version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          fi
           stage_runtime_args=(
             "${GITHUB_WORKSPACE}/sdk/python/scripts/update_sdk_artifacts.py"
             stage-runtime
             "$stage_dir"
             "dist/${{ matrix.target }}/codex-package-${{ matrix.target }}.tar.gz"
-            --codex-version "${GITHUB_REF_NAME}"
+            --codex-version "$codex_version"
             --platform-tag "$platform_tag"
           )
           python3 "${stage_runtime_args[@]}"
@@ -784,12 +788,16 @@ jobs:
 
           stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
           wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"
+          codex_version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            codex_version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          fi
           python3 \
             "${GITHUB_WORKSPACE}/sdk/python/scripts/update_sdk_artifacts.py" \
             stage-runtime \
             "$stage_dir" \
             "dist/${{ matrix.target }}/codex-package-${{ matrix.target }}.tar.gz" \
-            --codex-version "${GITHUB_REF_NAME}" \
+            --codex-version "$codex_version" \
             --platform-tag "$platform_tag"
           "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
 

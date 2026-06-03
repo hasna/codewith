@@ -68,6 +68,26 @@ def test_generation_has_single_maintenance_entrypoint_script() -> None:
     assert scripts == ["update_sdk_artifacts.py"]
 
 
+def test_release_workflows_use_cargo_version_for_branch_runtime_wheels() -> None:
+    """Manual branch release builds need a PEP 440 runtime package version."""
+    repo_root = ROOT.parents[1]
+    workflow_paths = [
+        repo_root / ".github" / "workflows" / "rust-release.yml",
+        repo_root / ".github" / "workflows" / "rust-release-windows.yml",
+    ]
+
+    for workflow_path in workflow_paths:
+        workflow = workflow_path.read_text()
+        runtime_stage_count = workflow.count("stage-runtime")
+
+        assert runtime_stage_count > 0
+        assert workflow.count('codex_version="${GITHUB_REF_NAME}"') == runtime_stage_count
+        assert workflow.count('if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then') == runtime_stage_count
+        assert workflow.count("grep -m1 '^version' Cargo.toml") == runtime_stage_count
+        assert workflow.count('--codex-version "$codex_version"') == runtime_stage_count
+        assert '--codex-version "${GITHUB_REF_NAME}"' not in workflow
+
+
 def test_root_fmt_recipe_formats_rust_and_python_sdk() -> None:
     """The repo fmt command should work from Rust and Python SDK directories."""
     justfile = ROOT.parents[1] / "justfile"
