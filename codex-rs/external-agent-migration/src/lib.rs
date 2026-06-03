@@ -1840,7 +1840,11 @@ Review carefully."""
             }
         });
         let mut migration = serde_json::Map::new();
-        append_convertible_hook_groups(&settings, &mut migration, Some(Path::new("/repo/.codewith")));
+        append_convertible_hook_groups(
+            &settings,
+            &mut migration,
+            Some(Path::new("/repo/.codewith")),
+        );
 
         assert_eq!(
             migration,

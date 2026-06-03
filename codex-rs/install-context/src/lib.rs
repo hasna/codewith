@@ -467,7 +467,10 @@ mod tests {
             .package_layout
             .as_ref()
             .expect("legacy package layout should be detected");
-        assert_eq!(package_layout.resources_dir, Some(canonical_resources_dir.clone()));
+        assert_eq!(
+            package_layout.resources_dir,
+            Some(canonical_resources_dir.clone())
+        );
         assert_eq!(package_layout.path_dir, Some(canonical_path_dir.clone()));
         assert_eq!(
             context.rg_command(),

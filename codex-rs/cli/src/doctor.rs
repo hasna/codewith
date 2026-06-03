@@ -2114,8 +2114,9 @@ async fn state_check(config: &Config) -> DoctorCheck {
     };
     let mut check = DoctorCheck::new("state.paths", "state", status, summary).details(details);
     if status == CheckStatus::Fail {
-        check = check
-            .remediation("Back up CODEWITH_HOME, then remove or repair the affected SQLite database.");
+        check = check.remediation(
+            "Back up CODEWITH_HOME, then remove or repair the affected SQLite database.",
+        );
     }
     check
 }

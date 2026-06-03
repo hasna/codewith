@@ -1,5 +1,7 @@
 <p align="center"><strong>Codewith</strong> is a command-line coding agent from Hasna that runs locally on your computer.</p>
 
+<p align="center">Codewith is a modified derivative of OpenAI Codex. Codewith is not affiliated with, sponsored by, or endorsed by OpenAI.</p>
+
 ---
 
 ## Quickstart
@@ -49,4 +51,4 @@ You can also use Codewith with an API key.
 - [**Installing & building**](./docs/install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+This repository is licensed under the [Apache-2.0 License](LICENSE). See [NOTICE](NOTICE), [MODIFICATIONS.md](MODIFICATIONS.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution, modification, and bundled third-party notices. The Apache-2.0 license covers this codebase; it does not grant rights to OpenAI trademarks, services, accounts, subscriptions, models, or APIs.

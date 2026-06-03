@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::app_server_requests::ResolvedAppServerRequest;
+use crate::app_command::AppCommand;
 #[cfg(test)]
 use crate::app_command::AppCommand as Op;
 use crate::app_event::AppEvent;
@@ -50,11 +51,13 @@ use codex_app_server_protocol::NetworkApprovalContext;
 use codex_app_server_protocol::NetworkApprovalProtocol;
 use codex_app_server_protocol::NetworkPolicyRuleAction;
 use codex_app_server_protocol::RequestId;
+use codex_config::types::ApprovalsReviewer;
 use codex_features::Features;
 use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_approval_presets::builtin_approval_presets;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -314,6 +317,17 @@ impl ApprovalOverlay {
                     self.handle_exec_decision(id, command, decision.clone());
                 }
                 (
+                    ApprovalRequest::Exec {
+                        thread_id,
+                        id,
+                        command,
+                        ..
+                    },
+                    ApprovalDecision::CommandWithFullAccess,
+                ) => {
+                    self.handle_full_access_exec_decision(*thread_id, id, command);
+                }
+                (
                     ApprovalRequest::Permissions {
                         call_id,
                         permissions,
@@ -382,6 +396,50 @@ impl ApprovalOverlay {
         let thread_id = request.thread_id();
         self.app_event_tx
             .exec_approval(thread_id, id.to_string(), decision);
+    }
+
+    fn handle_full_access_exec_decision(&self, thread_id: ThreadId, id: &str, command: &[String]) {
+        let Some(full_access) = builtin_approval_presets()
+            .into_iter()
+            .find(|preset| preset.id == "full-access")
+        else {
+            return;
+        };
+        let approval = codex_app_server_protocol::AskForApproval::from(full_access.approval);
+        let active_permission_profile = full_access.active_permission_profile.clone();
+
+        self.app_event_tx.send(AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::override_turn_context(
+                /*cwd*/ None,
+                Some(approval),
+                Some(ApprovalsReviewer::User),
+                Some(full_access.permission_profile),
+                Some(active_permission_profile.clone()),
+                /*windows_sandbox_level*/ None,
+                /*model*/ None,
+                /*effort*/ None,
+                /*summary*/ None,
+                /*service_tier*/ None,
+                /*collaboration_mode*/ None,
+                /*personality*/ None,
+            ),
+        });
+        self.app_event_tx
+            .send(AppEvent::UpdateAskForApprovalPolicy(approval));
+        self.app_event_tx
+            .send(AppEvent::UpdateActivePermissionProfile(
+                active_permission_profile,
+            ));
+        self.app_event_tx
+            .send(AppEvent::UpdateApprovalsReviewer(ApprovalsReviewer::User));
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+            history_cell::new_info_event(
+                "Permissions updated to Full Access".to_string(),
+                /*hint*/ None,
+            ),
+        )));
+        self.handle_exec_decision(id, command, CommandExecutionApprovalDecision::Accept);
     }
 
     fn handle_permissions_decision(
@@ -793,6 +851,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
 #[derive(Clone)]
 enum ApprovalDecision {
     Command(CommandExecutionApprovalDecision),
+    CommandWithFullAccess,
     FileChange(FileChangeApprovalDecision),
     Permissions(PermissionsDecision),
     McpElicitation(McpServerElicitationAction),
@@ -840,7 +899,7 @@ fn exec_options(
     additional_permissions: Option<&AdditionalPermissionProfile>,
     keymap: &ApprovalKeymap,
 ) -> Vec<ApprovalOption> {
-    available_decisions
+    let mut options = available_decisions
         .iter()
         .filter_map(|decision| match decision {
             CommandExecutionApprovalDecision::Accept => Some(ApprovalOption {
@@ -919,7 +978,43 @@ fn exec_options(
                 shortcuts: keymap.decline.clone(),
             }),
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    let should_insert_full_access = network_approval_context.is_none()
+        && additional_permissions.is_none()
+        && options.iter().any(|option| {
+            matches!(
+                option.decision,
+                ApprovalDecision::Command(
+                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
+                        | CommandExecutionApprovalDecision::AcceptForSession
+                )
+            )
+        });
+    if should_insert_full_access {
+        let insert_at = options
+            .iter()
+            .position(|option| {
+                matches!(
+                    option.decision,
+                    ApprovalDecision::Command(
+                        CommandExecutionApprovalDecision::Decline
+                            | CommandExecutionApprovalDecision::Cancel
+                    )
+                )
+            })
+            .unwrap_or(options.len());
+        options.insert(
+            insert_at,
+            ApprovalOption {
+                label: "Yes, run everything with full access".to_string(),
+                decision: ApprovalDecision::CommandWithFullAccess,
+                shortcuts: vec![key_hint::plain(KeyCode::Char('f'))],
+            },
+        );
+    }
+
+    options
 }
 
 pub(crate) fn format_additional_permissions_rule(
@@ -1611,6 +1706,128 @@ mod tests {
     }
 
     #[test]
+    fn generic_exec_options_include_full_access_option() {
+        let keymap = crate::keymap::RuntimeKeymap::defaults();
+        let options = exec_options(
+            &[
+                CommandExecutionApprovalDecision::Accept,
+                CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                    execpolicy_amendment: ExecPolicyAmendment {
+                        command: vec!["pwd".to_string()],
+                    },
+                },
+                CommandExecutionApprovalDecision::Cancel,
+            ],
+            /*network_approval_context*/ None,
+            /*additional_permissions*/ None,
+            &keymap.approval,
+        );
+
+        let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Yes, proceed".to_string(),
+                "Yes, and don't ask again for commands that start with `pwd`".to_string(),
+                "Yes, run everything with full access".to_string(),
+                "No, and tell Codewith what to do differently".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_exec_options_do_not_duplicate_full_access_option() {
+        let keymap = crate::keymap::RuntimeKeymap::defaults();
+        let options = exec_options(
+            &[
+                CommandExecutionApprovalDecision::Accept,
+                CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                    execpolicy_amendment: ExecPolicyAmendment {
+                        command: vec!["pwd".to_string()],
+                    },
+                },
+                CommandExecutionApprovalDecision::AcceptForSession,
+                CommandExecutionApprovalDecision::Cancel,
+            ],
+            /*network_approval_context*/ None,
+            /*additional_permissions*/ None,
+            &keymap.approval,
+        );
+
+        let full_access_count = options
+            .iter()
+            .filter(|option| option.label == "Yes, run everything with full access")
+            .count();
+        assert_eq!(full_access_count, 1);
+    }
+
+    #[test]
+    fn full_access_shortcut_updates_permissions_then_approves_command() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let thread_id = ThreadId::new();
+        let mut view = make_overlay(
+            ApprovalRequest::Exec {
+                thread_id,
+                thread_label: None,
+                id: "test".to_string(),
+                command: vec!["pwd".to_string()],
+                reason: None,
+                available_decisions: vec![
+                    CommandExecutionApprovalDecision::Accept,
+                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                        execpolicy_amendment: ExecPolicyAmendment {
+                            command: vec!["pwd".to_string()],
+                        },
+                    },
+                    CommandExecutionApprovalDecision::Cancel,
+                ],
+                network_approval_context: None,
+                additional_permissions: None,
+            },
+            tx,
+            Features::with_defaults(),
+        );
+
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AppEvent::SubmitThreadOp {
+                        thread_id: event_thread_id,
+                        op: Op::OverrideTurnContext {
+                            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                            permission_profile: Some(codex_protocol::models::PermissionProfile::Disabled),
+                            active_permission_profile: Some(active_permission_profile),
+                            ..
+                        },
+                    } if *event_thread_id == thread_id
+                        && active_permission_profile.id == codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                )
+            }),
+            "expected full-access permission override before approving command, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AppEvent::SubmitThreadOp {
+                        thread_id: event_thread_id,
+                        op: Op::ExecApproval {
+                            decision: CommandExecutionApprovalDecision::Accept,
+                            ..
+                        },
+                    } if *event_thread_id == thread_id
+                )
+            }),
+            "expected command approval after full-access override, got {events:?}"
+        );
+    }
+
+    #[test]
     fn network_deny_forever_shortcut_is_not_bound() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
@@ -1746,6 +1963,7 @@ mod tests {
             vec![
                 "Yes, proceed".to_string(),
                 "Yes, and don't ask again for this command in this session".to_string(),
+                "Yes, run everything with full access".to_string(),
                 "No, and tell Codewith what to do differently".to_string(),
             ]
         );

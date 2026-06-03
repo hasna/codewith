@@ -10,6 +10,7 @@ expression: terminal.backend().vt100().screen().contents()
 
 › 1. Yes, proceed (y)
   2. Yes, and don't ask again for commands that start with `echo hello world` (p)
-  3. No, and tell Codewith what to do differently (esc)
+  3. Yes, run everything with full access (f)
+  4. No, and tell Codewith what to do differently (esc)
 
   Press enter to confirm or esc to cancel

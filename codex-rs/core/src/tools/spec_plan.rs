@@ -12,6 +12,7 @@ use crate::tools::handlers::GetGoalHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
+use crate::tools::handlers::ManageLoopHandler;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
@@ -295,6 +296,15 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
 
 fn goal_tools_enabled(turn_context: &TurnContext) -> bool {
     turn_context.goal_tools_enabled()
+        && !matches!(
+            turn_context.session_source,
+            SessionSource::SubAgent(SubAgentSource::Review)
+        )
+}
+
+fn loop_tools_enabled(turn_context: &TurnContext) -> bool {
+    turn_context.goal_tools_supported
+        && turn_context.features.get().enabled(Feature::ScheduledTasks)
         && !matches!(
             turn_context.session_source,
             SessionSource::SubAgent(SubAgentSource::Review)
@@ -598,6 +608,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add(GetGoalHandler);
         planned_tools.add(CreateGoalHandler);
         planned_tools.add(UpdateGoalHandler);
+    }
+    if loop_tools_enabled(turn_context) {
+        planned_tools.add(ManageLoopHandler);
     }
 
     if turn_context.config.experimental_request_user_input_enabled {
