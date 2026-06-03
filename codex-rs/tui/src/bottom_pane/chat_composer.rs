@@ -173,12 +173,14 @@ use super::footer::footer_height;
 use super::footer::footer_hint_items_width;
 use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
-use super::footer::max_left_width_for_right;
+use super::footer::passive_footer_status_height;
 use super::footer::passive_footer_status_line;
+use super::footer::passive_footer_status_lines;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
 use super::footer::render_footer_line;
+use super::footer::render_footer_lines;
 use super::footer::reset_mode_after_activity;
 use super::footer::side_conversation_context_line;
 use super::footer::single_line_footer_layout;
@@ -744,9 +746,7 @@ impl ChatComposer {
         textarea_right_reserve: u16,
     ) -> [Rect; 4] {
         let footer_props = self.footer_props();
-        let footer_hint_height = self
-            .custom_footer_height()
-            .unwrap_or_else(|| footer_height(&footer_props));
+        let footer_hint_height = self.footer_hint_height_for_width(area.width, &footer_props);
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         let popup_constraint = match &self.popups.active {
@@ -3494,6 +3494,52 @@ impl ChatComposer {
             .map(|items| if items.is_empty() { 0 } else { 1 })
     }
 
+    fn footer_hint_height_for_width(&self, width: u16, props: &FooterProps) -> u16 {
+        if let Some(height) = self.custom_footer_height() {
+            return height;
+        }
+
+        if !uses_passive_footer_status_layout(props) {
+            return footer_height(props);
+        }
+
+        let show_cycle_hint =
+            !props.is_task_running && self.footer.collaboration_mode_indicator.is_some();
+        let full_right_line =
+            if let Some(label) = self.footer.side_conversation_context_label.as_ref() {
+                Some(side_conversation_context_line(label))
+            } else if let Some(line) = self.shell_mode_footer_line() {
+                Some(line)
+            } else {
+                self.mode_indicator_line(show_cycle_hint)
+            };
+        let compact_right_line = if self.footer.side_conversation_context_label.is_none()
+            && self.shell_mode_footer_line().is_none()
+        {
+            self.mode_indicator_line(/*show_cycle_hint*/ false)
+        } else {
+            full_right_line.clone()
+        };
+        let area = Rect::new(0, 0, width, 2);
+        let full_right_width = full_right_line
+            .as_ref()
+            .map(|line| line.width() as u16)
+            .unwrap_or(0);
+        let right_width = passive_footer_status_height(props, area, full_right_width)
+            .filter(|height| *height == 1)
+            .map(|_| full_right_width)
+            .unwrap_or_else(|| {
+                compact_right_line
+                    .as_ref()
+                    .map(|line| line.width() as u16)
+                    .unwrap_or(0)
+            });
+
+        passive_footer_status_height(props, area, right_width)
+            .unwrap_or_else(|| footer_height(props))
+            .max(1)
+    }
+
     pub(crate) fn sync_popups(&mut self) {
         self.sync_slash_command_elements();
         if self.history_search.is_some() {
@@ -4112,9 +4158,7 @@ impl ChatComposer {
         textarea_right_reserve: u16,
     ) -> u16 {
         let footer_props = self.footer_props();
-        let footer_hint_height = self
-            .custom_footer_height()
-            .unwrap_or_else(|| footer_height(&footer_props));
+        let footer_hint_height = self.footer_hint_height_for_width(width, &footer_props);
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
@@ -4221,24 +4265,15 @@ impl ChatComposer {
                     let available_width =
                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
                     let status_line_active = uses_passive_footer_status_layout(&footer_props);
-                    let combined_status_line = if status_line_active {
-                        passive_footer_status_line(&footer_props)
-                    } else {
-                        None
-                    };
-                    let mut truncated_status_line = if status_line_active {
-                        combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
-                        })
-                    } else {
-                        None
-                    };
+                    let combined_status_line =
+                        status_line_active.then(|| passive_footer_status_line(&footer_props));
                     let left_mode_indicator = if status_line_active {
                         None
                     } else {
                         self.footer.collaboration_mode_indicator
                     };
                     let active_footer_hint_override = self.footer.hint_override.as_ref();
+                    let mut status_lines: Option<Vec<Line<'static>>> = None;
                     let mut left_width = if self.footer.flash_visible() {
                         self.footer
                             .flash
@@ -4248,9 +4283,16 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         footer_hint_items_width(items)
                     } else if status_line_active {
-                        truncated_status_line
+                        combined_status_line
                             .as_ref()
-                            .map(|line| line.width() as u16)
+                            .and_then(Option::as_ref)
+                            .map(|line| {
+                                truncate_line_with_ellipsis_if_overflow(
+                                    line.clone(),
+                                    available_width,
+                                )
+                                .width() as u16
+                            })
                             .unwrap_or(0)
                     } else {
                         footer_line_width(
@@ -4280,17 +4322,20 @@ impl ChatComposer {
                         };
                     let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                     if status_line_active
-                        && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
-                        && left_width > max_left
-                        && let Some(line) = combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
+                        && let Some(lines) =
+                            passive_footer_status_lines(&footer_props, hint_rect, right_width)
                     {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
+                        left_width = lines.last().map(|line| line.width() as u16).unwrap_or(0);
+                        status_lines = Some(lines);
                     }
-                    let can_show_left_and_context =
-                        can_show_left_with_context(hint_rect, left_width, right_width);
+                    let can_show_left_and_context = if status_line_active
+                        && hint_rect.height > 1
+                        && status_lines.as_ref().is_some_and(|lines| lines.len() == 1)
+                    {
+                        true
+                    } else {
+                        can_show_left_with_context(hint_rect, left_width, right_width)
+                    };
                     let has_override =
                         self.footer.flash_visible() || active_footer_hint_override.is_some();
                     let single_line_layout = if has_override || status_line_active {
@@ -4337,8 +4382,8 @@ impl ChatComposer {
                         match summary_left {
                             SummaryLeft::Default => {
                                 if status_line_active {
-                                    if let Some(line) = truncated_status_line.clone() {
-                                        render_footer_line(hint_rect, buf, line);
+                                    if let Some(lines) = status_lines.clone() {
+                                        render_footer_lines(hint_rect, buf, lines);
                                     } else {
                                         render_footer_from_props(
                                             hint_rect,
@@ -4374,8 +4419,8 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
-                        if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                        if let Some(lines) = status_lines {
+                            render_footer_lines(hint_rect, buf, lines);
                         }
                     } else {
                         render_footer_from_props(
@@ -4673,7 +4718,7 @@ mod tests {
         );
         setup(&mut composer);
         let footer_props = composer.footer_props();
-        let footer_lines = footer_height(&footer_props);
+        let footer_lines = composer.footer_hint_height_for_width(width, &footer_props);
         let footer_spacing = ChatComposer::footer_spacing(footer_lines);
         let height = footer_lines + footer_spacing + 8;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

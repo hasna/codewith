@@ -43,6 +43,7 @@
 //! `FooterProps` mapping.
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::ui_consts::FOOTER_INDENT_COLS;
@@ -106,6 +107,8 @@ pub(crate) enum GoalStatusIndicator {
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
 const FOOTER_CONTEXT_GAP_COLS: u16 = 1;
+const STATUS_LINE_SEPARATOR: &str = " · ";
+const STATUS_LINE_SEPARATOR_WIDTH: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FooterKeyHints {
@@ -255,8 +258,12 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
 
 /// Render a single precomputed footer line.
 pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
+    render_footer_lines(area, buf, vec![line]);
+}
+
+pub(crate) fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
     Paragraph::new(prefix_lines(
-        vec![line],
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
@@ -797,6 +804,117 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     line
 }
 
+pub(crate) fn passive_footer_status_lines(
+    props: &FooterProps,
+    area: Rect,
+    right_width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let line = passive_footer_status_line(props)?;
+    let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16);
+    if available_width == 0 {
+        return None;
+    }
+
+    let second_row_width = max_left_width_for_right(area, right_width).unwrap_or(available_width);
+    let row_widths = [available_width, second_row_width];
+    Some(pack_status_line_items(line, row_widths))
+}
+
+pub(crate) fn passive_footer_status_height(
+    props: &FooterProps,
+    area: Rect,
+    right_width: u16,
+) -> Option<u16> {
+    let line = passive_footer_status_line(props)?;
+    let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16);
+    if available_width == 0 {
+        return Some(0);
+    }
+
+    let one_row_width = line.width().min(available_width as usize) as u16;
+    if can_show_left_with_context(area, one_row_width, right_width) {
+        return Some(1);
+    }
+
+    if right_width > 0 {
+        return Some(2);
+    }
+
+    let lines = passive_footer_status_lines(props, area, right_width)?;
+    Some(lines.len().min(2) as u16)
+}
+
+fn pack_status_line_items(line: Line<'static>, row_widths: [u16; 2]) -> Vec<Line<'static>> {
+    let items = status_line_items(line);
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut rows = Vec::new();
+    let mut current = Line::from("");
+    let mut row_idx = 0usize;
+
+    for item in items {
+        let current_width = current.width();
+        let item_width = item.width();
+        let separator_width = if current_width == 0 {
+            0
+        } else {
+            STATUS_LINE_SEPARATOR_WIDTH
+        };
+        let row_width = row_widths[row_idx] as usize;
+        let would_fit = current_width + separator_width + item_width <= row_width;
+
+        if current_width > 0 && !would_fit && row_idx == 0 {
+            rows.push(truncate_line_with_ellipsis_if_overflow(
+                current,
+                row_widths[row_idx] as usize,
+            ));
+            current = item;
+            row_idx = 1;
+            continue;
+        }
+
+        if current_width > 0 && !would_fit && row_idx == 1 {
+            break;
+        }
+
+        if current_width > 0 {
+            current.push_span(STATUS_LINE_SEPARATOR.dim());
+        }
+        current.extend(item.spans);
+    }
+
+    if current.width() > 0 {
+        rows.push(truncate_line_with_ellipsis_if_overflow(
+            current,
+            row_widths[row_idx] as usize,
+        ));
+    }
+
+    rows
+}
+
+fn status_line_items(line: Line<'static>) -> Vec<Line<'static>> {
+    let mut items = Vec::new();
+    let mut current = Line::from("");
+
+    for span in line.spans {
+        if span.content.as_ref() == STATUS_LINE_SEPARATOR && current.width() > 0 {
+            items.push(current);
+            current = Line::from("");
+        } else {
+            current.push_span(span);
+        }
+    }
+
+    if current.width() > 0 {
+        items.push(current);
+    }
+
+    items
+}
+
 /// Whether the current footer mode allows contextual information to replace instructional hints.
 ///
 /// In practice this means the composer is idle, or it has a draft but is not currently running a
@@ -1259,13 +1377,19 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
     use crate::test_backend::VT100Backend;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
     use ratatui::backend::Backend;
     use ratatui::backend::TestBackend;
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
 
     fn snapshot_footer(name: &str, props: FooterProps) {
         snapshot_footer_with_mode_indicator(
@@ -1317,31 +1441,30 @@ mod tests {
                     | FooterMode::EscHint => false,
                 };
                 let status_line_active = uses_passive_footer_status_layout(props);
-                let passive_status_line = if status_line_active {
-                    passive_footer_status_line(props)
-                } else {
-                    None
-                };
                 let left_mode_indicator = if status_line_active {
                     None
                 } else {
                     collaboration_mode_indicator
                 };
                 let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
-                let mut truncated_status_line = if status_line_active
+                let mut status_lines = if status_line_active
                     && matches!(
                         props.mode,
                         FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
                     ) {
-                    passive_status_line.as_ref().map(|line| {
-                        truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
+                    passive_footer_status_line(props).map(|line| {
+                        vec![truncate_line_with_ellipsis_if_overflow(
+                            line,
+                            available_width,
+                        )]
                     })
                 } else {
                     None
                 };
                 let mut left_width = if status_line_active {
-                    truncated_status_line
+                    status_lines
                         .as_ref()
+                        .and_then(|lines| lines.last())
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
                 } else {
@@ -1380,24 +1503,26 @@ mod tests {
                     .map(|line| line.width() as u16)
                     .unwrap_or(0);
                 if status_line_active
-                    && let Some(max_left) = max_left_width_for_right(area, right_width)
-                    && left_width > max_left
-                    && let Some(line) = passive_status_line.as_ref().map(|line| {
-                        truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                    })
+                    && let Some(lines) = passive_footer_status_lines(props, area, right_width)
                 {
-                    left_width = line.width() as u16;
-                    truncated_status_line = Some(line);
+                    left_width = lines.last().map(|line| line.width() as u16).unwrap_or(0);
+                    status_lines = Some(lines);
                 }
-                let can_show_left_and_context =
-                    can_show_left_with_context(area, left_width, right_width);
+                let can_show_left_and_context = if status_line_active
+                    && area.height > 1
+                    && status_lines.as_ref().is_some_and(|lines| lines.len() == 1)
+                {
+                    true
+                } else {
+                    can_show_left_with_context(area, left_width, right_width)
+                };
                 if matches!(
                     props.mode,
                     FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
                 ) {
                     if status_line_active {
-                        if let Some(line) = truncated_status_line.clone() {
-                            render_footer_line(area, f.buffer_mut(), line);
+                        if let Some(lines) = status_lines.clone() {
+                            render_footer_lines(area, f.buffer_mut(), lines);
                         }
                         if can_show_left_and_context && let Some(line) = &right_line {
                             render_context_right(area, f.buffer_mut(), line);
@@ -1481,7 +1606,13 @@ mod tests {
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
         context_line: Line<'static>,
     ) {
-        let height = footer_height(props).max(1);
+        let height = footer_test_height(
+            width,
+            props,
+            collaboration_mode_indicator,
+            /*ide_context_active*/ false,
+            &context_line,
+        );
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         draw_footer_frame(
             &mut terminal,
@@ -1500,7 +1631,13 @@ mod tests {
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
         context_line: Line<'static>,
     ) -> String {
-        let height = footer_height(props).max(1);
+        let height = footer_test_height(
+            width,
+            props,
+            collaboration_mode_indicator,
+            /*ide_context_active*/ false,
+            &context_line,
+        );
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");
         draw_footer_frame(
             &mut terminal,
@@ -1520,7 +1657,14 @@ mod tests {
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
         ide_context_active: bool,
     ) {
-        let height = footer_height(props).max(1);
+        let context_line = context_window_line(/*percent*/ None, /*used_tokens*/ None);
+        let height = footer_test_height(
+            width,
+            props,
+            collaboration_mode_indicator,
+            ide_context_active,
+            &context_line,
+        );
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         draw_footer_frame(
             &mut terminal,
@@ -1528,9 +1672,38 @@ mod tests {
             props,
             collaboration_mode_indicator,
             ide_context_active,
-            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+            context_line,
         );
         assert_snapshot!(name, terminal.backend());
+    }
+
+    fn footer_test_height(
+        width: u16,
+        props: &FooterProps,
+        collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        ide_context_active: bool,
+        _context_line: &Line<'static>,
+    ) -> u16 {
+        if !uses_passive_footer_status_layout(props) {
+            return footer_height(props).max(1);
+        }
+
+        let show_cycle_hint = !props.is_task_running;
+        let area = Rect::new(0, 0, width, 2);
+        let right_line = status_line_right_indicator_line(
+            collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
+            ide_context_active,
+            show_cycle_hint,
+        );
+        let right_width = right_line
+            .as_ref()
+            .map(|line| line.width() as u16)
+            .unwrap_or(0);
+
+        passive_footer_status_height(props, area, right_width)
+            .unwrap_or_else(|| footer_height(props))
+            .max(1)
     }
 
     #[test]
@@ -1913,6 +2086,36 @@ mod tests {
             esc_backtrack_hint: false,
             use_shift_enter_hint: false,
             is_task_running: false,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: Some(Line::from(vec![
+                "gpt-5.2-codex".cyan(),
+                STATUS_LINE_SEPARATOR.dim(),
+                "open-codewith".green(),
+                STATUS_LINE_SEPARATOR.dim(),
+                "feature/statusline-wrap".magenta(),
+                STATUS_LINE_SEPARATOR.dim(),
+                "work".cyan(),
+            ])),
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            active_agent_label: None,
+        };
+
+        snapshot_footer_with_mode_indicator_and_context(
+            "footer_status_line_wraps_items_to_two_rows",
+            /*width*/ 52,
+            &props,
+            Some(CollaborationModeIndicator::Plan),
+            context_window_line(Some(50), /*used_tokens*/ None),
+        );
+
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
             collaboration_modes_enabled: false,
             is_wsl: false,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
@@ -1939,6 +2142,42 @@ mod tests {
         };
 
         snapshot_footer("footer_status_line_with_active_agent_label", props);
+    }
+
+    #[test]
+    fn status_line_wraps_by_whole_items_and_caps_at_two_rows() {
+        let line = Line::from(vec![
+            "model".cyan(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "/repo".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "branch".magenta(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "profile".cyan(),
+        ]);
+
+        let rows = pack_status_line_items(line, [13, 20]);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(line_text(&rows[0]), "model · /repo");
+        assert_eq!(line_text(&rows[1]), "branch · profile");
+    }
+
+    #[test]
+    fn status_line_drops_items_that_do_not_fit_in_two_rows() {
+        let line = Line::from(vec![
+            "one".cyan(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "two".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "three".magenta(),
+        ]);
+
+        let rows = pack_status_line_items(line, [3, 3]);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(line_text(&rows[0]), "one");
+        assert_eq!(line_text(&rows[1]), "two");
     }
 
     #[test]
