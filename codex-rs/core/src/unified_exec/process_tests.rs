@@ -159,3 +159,43 @@ async fn remote_process_waits_for_early_exit_event() {
     assert!(process.has_exited());
     assert_eq!(process.exit_code(), Some(17));
 }
+
+#[tokio::test]
+async fn remote_process_exit_event_signals_cancellation_even_if_stream_remains_open() {
+    let (wake_tx, _wake_rx) = watch::channel(0);
+    let started = StartedExecProcess {
+        process: Arc::new(MockExecProcess {
+            process_id: "test-process".to_string().into(),
+            write_response: WriteResponse {
+                status: WriteStatus::Accepted,
+            },
+            read_responses: Mutex::new(VecDeque::from([ReadResponse {
+                chunks: Vec::new(),
+                next_seq: 2,
+                exited: true,
+                exit_code: Some(23),
+                closed: false,
+                failure: None,
+            }])),
+            wake_tx: wake_tx.clone(),
+        }),
+    };
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = wake_tx.send(1);
+    });
+
+    let process = UnifiedExecProcess::from_exec_server_started(started, SandboxType::None)
+        .await
+        .expect("remote process should observe early exit");
+
+    assert!(process.has_exited());
+    assert_eq!(process.exit_code(), Some(23));
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        process.cancellation_token().cancelled(),
+    )
+    .await
+    .expect("remote process exit should wake cancellation waiters");
+}

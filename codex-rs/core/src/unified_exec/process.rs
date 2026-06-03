@@ -428,6 +428,7 @@ impl UnifiedExecProcess {
                         if exited {
                             let state = state_tx.borrow().clone();
                             let _ = state_tx.send_replace(state.exited(exit_code));
+                            cancellation_token.cancel();
                         }
 
                         if closed {

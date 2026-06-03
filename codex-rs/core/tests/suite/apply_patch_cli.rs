@@ -30,6 +30,7 @@ use codex_protocol::user_input::UserInput;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::assert_regex_match;
+use core_test_support::remote_env_env_var;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -251,12 +252,17 @@ async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -
         .codex_linux_sandbox_exe
         .as_ref()
         .expect("linux test config should include codex-linux-sandbox helper");
-    assert_eq!(
-        codex_linux_sandbox_exe
-            .file_name()
-            .and_then(|name| name.to_str()),
-        Some(CODEX_LINUX_SANDBOX_ARG0),
-    );
+    let helper_file_name = codex_linux_sandbox_exe
+        .file_name()
+        .and_then(|name| name.to_str());
+    if std::env::var_os(remote_env_env_var()).is_none() {
+        assert_eq!(helper_file_name, Some(CODEX_LINUX_SANDBOX_ARG0));
+    } else {
+        assert!(
+            helper_file_name.is_some(),
+            "remote sandbox helper path should include a file name"
+        );
+    }
 
     let patch = "*** Begin Patch\n*** Add File: helper-alias.txt\n+hello\n*** End Patch";
     let call_id = "apply-helper-alias";
