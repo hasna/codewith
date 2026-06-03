@@ -30,6 +30,7 @@ use codex_protocol::user_input::UserInput;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::assert_regex_match;
+#[cfg(target_os = "linux")]
 use core_test_support::remote_env_env_var;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
