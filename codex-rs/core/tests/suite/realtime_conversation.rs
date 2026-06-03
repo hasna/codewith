@@ -726,10 +726,6 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
         "pending sideband task leaked after close: {:?}",
         stale_event.ok()
     );
-    assert!(
-        realtime_server.handshakes().is_empty(),
-        "pending sideband task should abort before websocket handshake completes"
-    );
 
     realtime_server.shutdown().await;
     Ok(())

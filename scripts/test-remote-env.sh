@@ -86,6 +86,7 @@ setup_remote_env() {
     fi
     export CODEX_TEST_REMOTE_EXEC_SERVER_PID="${remote_exec_server_pid}"
     export CODEX_TEST_REMOTE_EXEC_SERVER_URL="ws://${container_ip}:${remote_exec_server_port}"
+    export CODEX_TEST_REMOTE_CODEX_PATH="${remote_codex_path}"
   fi
 
   export CODEX_TEST_REMOTE_ENV="${container_name}"
@@ -116,6 +117,7 @@ codex_remote_env_cleanup() {
   fi
   unset CODEX_TEST_REMOTE_EXEC_SERVER_PID
   unset CODEX_TEST_REMOTE_EXEC_SERVER_URL
+  unset CODEX_TEST_REMOTE_CODEX_PATH
 }
 
 if ! is_sourced; then
