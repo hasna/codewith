@@ -56,8 +56,9 @@ pub enum ConfigLayerSource {
         name: String,
     },
 
-    /// User config layer from $CODEX_HOME/config.toml. This layer is special
-    /// in that it is expected to be:
+    /// User config layer from $CODEWITH_HOME/config.toml. CODEX_HOME remains
+    /// a compatibility override for direct native binaries. This layer is
+    /// special in that it is expected to be:
     /// - writable by the user
     /// - generally outside the workspace directory
     #[serde(rename_all = "camelCase")]
@@ -72,8 +73,9 @@ pub enum ConfigLayerSource {
         profile: Option<String>,
     },
 
-    /// Path to a .codex/ folder within a project. There could be multiple of
-    /// these between `cwd` and the project/repo root.
+    /// Path to a project config folder within a project. Codewith prefers
+    /// `.codewith/`; `.codex/` remains a legacy fallback. There could be
+    /// multiple config folders between `cwd` and the project/repo root.
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     Project {
