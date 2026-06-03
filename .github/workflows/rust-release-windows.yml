@@ -3,7 +3,7 @@ name: rust-release-windows
 on:
   workflow_call:
     inputs:
-      release-lto:
+      release_lto:
         required: true
         type: string
     secrets:
@@ -33,7 +33,7 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-      CARGO_PROFILE_RELEASE_LTO: ${{ inputs.release-lto }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ inputs.release_lto }}
 
     strategy:
       fail-fast: false
