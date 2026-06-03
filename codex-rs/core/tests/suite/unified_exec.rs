@@ -828,7 +828,7 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
         wait_for_unified_exec_end(&test, call_id, &response_mock).await;
 
     assert_eq!(end_event.status, ExecCommandStatus::Failed);
-    assert_eq!(end_event.exit_code, -1);
+    assert_network_denial_exit_code(end_event.exit_code);
     assert!(
         end_event.aggregated_output.contains("Network access"),
         "expected network denial message in aggregated output: {:?}",
@@ -876,7 +876,7 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
         wait_for_unified_exec_end(&test, call_id, &response_mock).await;
 
     assert_eq!(end_event.status, ExecCommandStatus::Failed);
-    assert_eq!(end_event.exit_code, -1);
+    assert_network_denial_exit_code(end_event.exit_code);
     assert!(
         end_event.aggregated_output.contains("Network access"),
         "expected network denial message in aggregated output: {:?}",
@@ -1004,6 +1004,13 @@ async fn wait_for_unified_exec_end(
         }
     };
     (end_event, turn_completed)
+}
+
+fn assert_network_denial_exit_code(exit_code: i32) {
+    assert!(
+        matches!(exit_code, -1 | 1),
+        "expected network denial to report cancellation or shell-mediated failure exit code, got {exit_code}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

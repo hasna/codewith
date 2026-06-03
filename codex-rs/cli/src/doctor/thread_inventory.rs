@@ -779,12 +779,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|remedy| remedy.starts_with("Restart Codex"))
         }));
-        assert!(
-            check
-                .details
-                .iter()
-                .any(|detail| detail.contains(missing_path.to_string_lossy().as_ref()))
-        );
+        assert!(detail_contains_path_sample(&check, &missing_path));
     }
 
     struct Fixture {
@@ -892,6 +887,15 @@ INSERT INTO threads (
             .find_map(|detail| detail.strip_prefix(&prefix))
             .expect("detail should exist");
         assert_eq!(actual, expected);
+    }
+
+    fn detail_contains_path_sample(check: &DoctorCheck, expected_path: &Path) -> bool {
+        let expected_key = path_key(expected_path);
+        check.details.iter().any(|detail| {
+            detail
+                .split_once(": ")
+                .is_some_and(|(_, value)| path_key(Path::new(value)) == expected_key)
+        })
     }
 
     #[test]

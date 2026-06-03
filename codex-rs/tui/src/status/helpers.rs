@@ -271,7 +271,7 @@ mod tests {
             Some(format_directory_display(&global_agents_path, /*max_width*/ None).as_str())
         );
         let project_path = paths.next().expect("project agents path");
-        assert!(project_path.ends_with(DEFAULT_PROJECT_AGENTS_MD_PATH));
+        assert!(Path::new(project_path).ends_with(Path::new(DEFAULT_PROJECT_AGENTS_MD_PATH)));
         assert_eq!(paths.next(), None);
     }
 }
