@@ -11,6 +11,24 @@ fn test_get_codex_user_agent() {
     assert!(user_agent.starts_with(&prefix));
 }
 
+/// Regression: the OpenAI/ChatGPT backend gates newer models (e.g. `gpt-5.5`)
+/// behind a minimum *Codex* client version and rejects older clients with
+/// "requires a newer version of Codex". The Codewith fork's product version
+/// (`CARGO_PKG_VERSION`, 0.1.x) is intentionally low, so the User-Agent must
+/// advertise the Codex API-compatibility version instead.
+#[test]
+fn user_agent_advertises_codex_api_compat_version_not_product_version() {
+    let user_agent = get_codex_user_agent();
+    assert!(
+        user_agent.contains(codex_protocol::client_version::CODEX_API_COMPAT_VERSION),
+        "UA should advertise the Codex API-compat version, got: {user_agent}"
+    );
+    assert!(
+        !user_agent.contains(&format!("/{}", env!("CARGO_PKG_VERSION"))),
+        "UA must not advertise the low product version, got: {user_agent}"
+    );
+}
+
 #[test]
 fn is_first_party_originator_matches_known_values() {
     assert_eq!(is_first_party_originator(DEFAULT_ORIGINATOR), true);

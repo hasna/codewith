@@ -131,7 +131,10 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
-    let build_version = env!("CARGO_PKG_VERSION");
+    // Advertise the upstream Codex API-compatibility version (not the low product
+    // build version) so the backend does not reject newer models such as gpt-5.5
+    // with "requires a newer version of Codex". See codex_protocol::client_version.
+    let build_version = codex_protocol::client_version::codex_api_version();
     let os_info = os_info::get();
     let originator = originator();
     let prefix = format!(
