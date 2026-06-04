@@ -2288,11 +2288,15 @@ allow_local_binding = true
         "expected the network approval hook to bypass the approval prompt"
     );
 
-    assert_single_permission_request_hook_input(
-        test.codex_home_path(),
+    let hook_inputs = read_permission_request_hook_inputs(test.codex_home_path())?;
+    assert_eq!(hook_inputs.len(), 2);
+    assert_permission_request_hook_input(&hook_inputs[0], "Bash", command, None);
+    assert_permission_request_hook_input(
+        &hook_inputs[1],
+        "Bash",
         command,
         Some("network-access http://codex-network-test.invalid:80"),
-    )?;
+    );
 
     test.codex.submit(Op::Shutdown {}).await?;
     wait_for_event(&test.codex, |event| {
