@@ -118,6 +118,7 @@ fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
 async fn windows_restricted_token_rejects_exact_and_glob_deny_read_policy() -> anyhow::Result<()> {
     let codex_home =
         codex_home_for_windows_sandbox_test("windows-restricted-token-deny-read-codex-home")?;
+    let _codewith_home_guard = EnvVarGuard::set("CODEWITH_HOME", codex_home.path().as_os_str());
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
     let workspace = TempDir::new()?;
     let cwd = dunce::canonicalize(workspace.path())?.abs();
@@ -199,6 +200,7 @@ async fn windows_restricted_token_rejects_exact_and_glob_deny_read_policy() -> a
 #[serial(codex_home)]
 async fn windows_elevated_enforces_exact_and_glob_deny_read_policy() -> anyhow::Result<()> {
     let codex_home = codex_home_for_windows_sandbox_test("windows-elevated-deny-read-codex-home")?;
+    let _codewith_home_guard = EnvVarGuard::set("CODEWITH_HOME", codex_home.path().as_os_str());
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     let workspace = TempDir::new()?;

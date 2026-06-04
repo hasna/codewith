@@ -608,6 +608,8 @@ mod tests {
     struct TempCodexHome {
         _guard: MutexGuard<'static, ()>,
         _dir: tempfile::TempDir,
+        previous_codewith_home: Option<std::ffi::OsString>,
+        previous_codex_home: Option<std::ffi::OsString>,
     }
 
     impl TempCodexHome {
@@ -618,20 +620,38 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let dir = tempdir().expect("create CODEX_HOME temp dir");
+            let previous_codewith_home = std::env::var_os("CODEWITH_HOME");
+            let previous_codex_home = std::env::var_os("CODEX_HOME");
             unsafe {
+                std::env::set_var("CODEWITH_HOME", dir.path());
                 std::env::set_var("CODEX_HOME", dir.path());
             }
             Self {
                 _guard: guard,
                 _dir: dir,
+                previous_codewith_home,
+                previous_codex_home,
             }
         }
     }
 
     impl Drop for TempCodexHome {
         fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var("CODEX_HOME");
+            match self.previous_codewith_home.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("CODEWITH_HOME", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("CODEWITH_HOME");
+                },
+            }
+            match self.previous_codex_home.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("CODEX_HOME", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("CODEX_HOME");
+                },
             }
         }
     }

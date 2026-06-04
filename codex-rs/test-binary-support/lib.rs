@@ -8,6 +8,7 @@ use tempfile::TempDir;
 pub struct TestBinaryDispatchGuard {
     _codex_home: TempDir,
     arg0: Arg0PathEntryGuard,
+    _previous_codewith_home: Option<std::ffi::OsString>,
     _previous_codex_home: Option<std::ffi::OsString>,
 }
 
@@ -48,9 +49,11 @@ where
                 Ok(codex_home) => codex_home,
                 Err(error) => panic!("failed to create test CODEX_HOME: {error}"),
             };
+            let previous_codewith_home = std::env::var_os("CODEWITH_HOME");
             let previous_codex_home = std::env::var_os("CODEX_HOME");
             // Safety: this runs from a test ctor before test threads begin.
             unsafe {
+                std::env::set_var("CODEWITH_HOME", codex_home.path());
                 std::env::set_var("CODEX_HOME", codex_home.path());
             }
 
@@ -66,10 +69,19 @@ where
                     std::env::remove_var("CODEX_HOME");
                 },
             }
+            match previous_codewith_home.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("CODEWITH_HOME", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("CODEWITH_HOME");
+                },
+            }
 
             Some(TestBinaryDispatchGuard {
                 _codex_home: codex_home,
                 arg0,
+                _previous_codewith_home: previous_codewith_home,
                 _previous_codex_home: previous_codex_home,
             })
         }

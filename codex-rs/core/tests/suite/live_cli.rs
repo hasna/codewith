@@ -38,6 +38,7 @@ fn run_live(prompt: &str) -> (assert_cmd::assert::Assert, TempDir) {
     cmd.current_dir(dir.path());
     cmd.env("OPENAI_API_KEY", require_api_key());
     cmd.env("HOME", home.path());
+    cmd.env("CODEWITH_HOME", &codex_home);
     cmd.env("CODEX_HOME", &codex_home);
 
     // We want three things at once:
