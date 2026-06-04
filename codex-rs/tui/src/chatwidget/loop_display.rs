@@ -135,9 +135,10 @@ impl ChatWidget {
         {
             return;
         }
+        let kind = display_kind_for_schedule(&schedule);
         if matches!(schedule.status, ThreadScheduleStatus::Expired) {
             self.add_info_message(
-                "Loop expired".to_string(),
+                format!("{} expired", kind.title_label()),
                 Some(format!("{} expired.", loop_schedule_summary(&schedule))),
             );
         } else if should_announce_created_schedule(&schedule)
@@ -145,11 +146,14 @@ impl ChatWidget {
                 .announced_loop_schedule_ids
                 .insert(schedule.schedule_id.clone())
         {
-            self.show_loop_summary(vec![schedule.clone()]);
+            self.add_plain_history_lines(thread_schedule_summary_lines(
+                kind,
+                std::slice::from_ref(&schedule),
+            ));
             self.add_info_message(
-                "Loop scheduled".to_string(),
+                kind.created_title().to_string(),
                 Some(thread_schedule_created_action_hint(
-                    ThreadScheduleDisplayKind::Loop,
+                    kind,
                     &schedule.schedule_id,
                 )),
             );
@@ -366,6 +370,15 @@ impl ThreadScheduleDisplayKind {
                 schedule_id,
             },
         }
+    }
+}
+
+fn display_kind_for_schedule(schedule: &ThreadSchedule) -> ThreadScheduleDisplayKind {
+    match schedule.schedule {
+        ThreadScheduleSpec::Once => ThreadScheduleDisplayKind::Schedule,
+        ThreadScheduleSpec::Dynamic
+        | ThreadScheduleSpec::Interval { .. }
+        | ThreadScheduleSpec::Cron { .. } => ThreadScheduleDisplayKind::Loop,
     }
 }
 
@@ -744,6 +757,7 @@ fn thread_schedule_status_label(status: ThreadScheduleStatus) -> &'static str {
 
 fn thread_schedule_spec_label(schedule: &ThreadScheduleSpec) -> String {
     match schedule {
+        ThreadScheduleSpec::Once => "once".to_string(),
         ThreadScheduleSpec::Dynamic => "dynamic".to_string(),
         ThreadScheduleSpec::Interval { amount, unit } => {
             let unit = match unit {

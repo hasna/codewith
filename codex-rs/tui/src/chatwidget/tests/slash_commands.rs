@@ -798,6 +798,40 @@ async fn schedule_slash_command_emits_create_schedule_event() {
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
     let command = "/schedule 5m check whether CI is green";
+    let before = chrono::Utc::now().timestamp();
+
+    submit_composer_text(&mut chat, command);
+    let after = chrono::Utc::now().timestamp();
+
+    let event = rx.try_recv().expect("expected schedule create event");
+    let AppEvent::CreateThreadSchedule {
+        thread_id: actual_thread_id,
+        prompt,
+        prompt_source,
+        schedule,
+        next_run_at,
+    } = event
+    else {
+        panic!("expected CreateThreadSchedule, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(prompt, "check whether CI is green");
+    assert_eq!(prompt_source, ThreadSchedulePromptSource::Inline);
+    assert_eq!(schedule, ThreadScheduleSpec::Once);
+    let next_run_at = next_run_at.expect("one-time schedule should include next_run_at");
+    assert!(next_run_at >= before + 300);
+    assert!(next_run_at <= after + 300);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn schedule_slash_command_accepts_exact_timestamp() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/schedule 2099-06-05T09:30:00Z ask me something";
 
     submit_composer_text(&mut chat, command);
 
@@ -807,19 +841,22 @@ async fn schedule_slash_command_emits_create_schedule_event() {
         prompt,
         prompt_source,
         schedule,
+        next_run_at,
     } = event
     else {
         panic!("expected CreateThreadSchedule, got {event:?}");
     };
     assert_eq!(actual_thread_id, thread_id);
-    assert_eq!(prompt, "check whether CI is green");
+    assert_eq!(prompt, "ask me something");
     assert_eq!(prompt_source, ThreadSchedulePromptSource::Inline);
+    assert_eq!(schedule, ThreadScheduleSpec::Once);
     assert_eq!(
-        schedule,
-        ThreadScheduleSpec::Interval {
-            amount: 5,
-            unit: ThreadScheduleIntervalUnit::Minutes,
-        }
+        next_run_at,
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2099-06-05T09:30:00Z")
+                .expect("test timestamp should parse")
+                .timestamp()
+        )
     );
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);

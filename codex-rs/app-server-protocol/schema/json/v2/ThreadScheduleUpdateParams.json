@@ -15,6 +15,22 @@
           "properties": {
             "type": {
               "enum": [
+                "once"
+              ],
+              "title": "OnceThreadScheduleSpecType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "OnceThreadScheduleSpec",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
                 "dynamic"
               ],
               "title": "DynamicThreadScheduleSpecType",

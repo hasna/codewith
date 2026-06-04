@@ -1328,20 +1328,20 @@ fn user_message_display_from_inputs_hides_prompt_context() {
 }
 
 #[test]
-fn user_message_display_from_inputs_hides_scheduled_loop_guardrail() {
+fn user_message_display_from_inputs_hides_scheduled_prompt_guardrail() {
     let raw_message = "\
-You are running one scheduled /loop tick.
+You are running one scheduled Codewith prompt.
 
-Execute only the loop prompt below for this single tick. Do not wait, sleep, start a timer, or schedule the next tick; Codewith already manages the loop cadence. If the loop prompt mentions a cadence like \"every minute\", treat that as the cadence that triggered this tick, not as an instruction to implement the cadence yourself.
+Execute only the scheduled prompt below for this run. Produce exactly one response for this scheduled run, then stop. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
-Loop prompt:
+Scheduled prompt:
 ask me a funny question";
     let rendered = ChatWidget::user_message_display_from_inputs(&[UserInput::Text {
         text: raw_message.to_string(),
         text_elements: Vec::new(),
     }]);
 
-    insta::assert_snapshot!(rendered.message, @"Running scheduled loop.");
+    insta::assert_snapshot!(rendered.message, @"Running scheduled prompt.");
     assert_eq!(rendered.text_elements, Vec::new());
 }
 

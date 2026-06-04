@@ -60,6 +60,7 @@ enum ScheduleAction {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ScheduleSpecArg {
+    Once,
     Dynamic,
     Interval {
         amount: i64,
@@ -111,6 +112,7 @@ struct ScheduleSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ScheduleSpecSnapshot {
+    Once,
     Dynamic,
     Interval { amount: i64, unit: String },
     Cron { expression: String },
@@ -201,19 +203,30 @@ async fn create_schedule(
         .and_then(schedule_spec_arg_to_state)?;
     let timezone = normalize_timezone(args.timezone)?;
     let now = Utc::now();
-    let next_run_at = args
+    let explicit_next_run_at = args
         .next_run_at
         .map(|timestamp| timestamp_to_datetime(timestamp, "next_run_at"))
-        .transpose()?
-        .map_or_else(
-            || next_schedule_run_at(&schedule, timezone.as_str(), now),
-            |next_run_at| Ok(Some(next_run_at)),
-        )?;
+        .transpose()?;
+    let next_run_at = match explicit_next_run_at {
+        Some(next_run_at) => Some(next_run_at),
+        None if matches!(schedule, codex_state::ThreadScheduleSpec::Once) => {
+            return Err(model_error(
+                "next_run_at is required for one-time schedules",
+            ));
+        }
+        None => next_schedule_run_at(&schedule, timezone.as_str(), now)?,
+    };
     let expires_at = args
         .expires_at
         .map(|timestamp| timestamp_to_datetime(timestamp, "expires_at"))
         .transpose()?
-        .or_else(|| default_schedule_expires_at(now));
+        .or_else(|| {
+            if matches!(schedule, codex_state::ThreadScheduleSpec::Once) {
+                None
+            } else {
+                default_schedule_expires_at(now)
+            }
+        });
     validate_schedule_expiry(next_run_at, expires_at)?;
 
     let schedule = state_db
@@ -276,11 +289,20 @@ async fn update_schedule(
     } else if schedule.is_some() || timezone.is_some() {
         let effective_schedule = schedule.as_ref().unwrap_or(&existing.schedule).clone();
         let effective_timezone = timezone.as_ref().unwrap_or(&existing.timezone);
-        Some(next_schedule_run_at(
-            &effective_schedule,
-            effective_timezone.as_str(),
-            Utc::now(),
-        )?)
+        if matches!(effective_schedule, codex_state::ThreadScheduleSpec::Once) {
+            if existing.next_run_at.is_none() {
+                return Err(model_error(
+                    "next_run_at is required for one-time schedules",
+                ));
+            }
+            None
+        } else {
+            Some(next_schedule_run_at(
+                &effective_schedule,
+                effective_timezone.as_str(),
+                Utc::now(),
+            )?)
+        }
     } else {
         None
     };
@@ -417,7 +439,11 @@ async fn list_schedule_snapshots(
         .list_thread_schedules(thread_id)
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
-    Ok(schedules.into_iter().map(ScheduleSnapshot::from).collect())
+    Ok(schedules
+        .into_iter()
+        .filter(is_one_time_schedule)
+        .map(ScheduleSnapshot::from)
+        .collect())
 }
 
 async fn ensure_schedule_capacity(
@@ -455,6 +481,7 @@ async fn resolve_schedule_id(
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
         .into_iter()
+        .filter(is_one_time_schedule)
         .filter(|schedule| schedule.status != codex_state::ThreadScheduleStatus::Expired)
         .collect::<Vec<_>>();
     match schedules.as_slice() {
@@ -481,10 +508,14 @@ async fn ensure_current_thread_schedule(
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
         .ok_or_else(|| missing_schedule_error(schedule_id))?;
-    if schedule.thread_id != thread_id {
+    if schedule.thread_id != thread_id || !is_one_time_schedule(&schedule) {
         return Err(missing_schedule_error(schedule_id));
     }
     Ok(schedule)
+}
+
+fn is_one_time_schedule(schedule: &codex_state::ThreadSchedule) -> bool {
+    matches!(schedule.schedule, codex_state::ThreadScheduleSpec::Once)
 }
 
 fn validate_schedule_prompt(prompt: &str) -> Result<String, FunctionCallError> {
@@ -504,32 +535,12 @@ fn schedule_spec_arg_to_state(
     schedule: ScheduleSpecArg,
 ) -> Result<codex_state::ThreadScheduleSpec, FunctionCallError> {
     match schedule {
-        ScheduleSpecArg::Dynamic => Ok(codex_state::ThreadScheduleSpec::Dynamic),
-        ScheduleSpecArg::Interval { amount, unit } => {
-            if amount <= 0 {
-                return Err(model_error("interval amount must be positive"));
-            }
-            Ok(codex_state::ThreadScheduleSpec::Interval(
-                codex_state::ThreadScheduleInterval {
-                    amount,
-                    unit: match unit {
-                        ScheduleIntervalUnitArg::Minutes => {
-                            codex_state::ThreadScheduleIntervalUnit::Minutes
-                        }
-                        ScheduleIntervalUnitArg::Hours => {
-                            codex_state::ThreadScheduleIntervalUnit::Hours
-                        }
-                        ScheduleIntervalUnitArg::Days => {
-                            codex_state::ThreadScheduleIntervalUnit::Days
-                        }
-                    },
-                },
-            ))
-        }
-        ScheduleSpecArg::Cron { expression } => {
-            let expression = validate_cron_expression(expression.as_str())?;
-            Ok(codex_state::ThreadScheduleSpec::Cron { expression })
-        }
+        ScheduleSpecArg::Once => Ok(codex_state::ThreadScheduleSpec::Once),
+        ScheduleSpecArg::Dynamic
+        | ScheduleSpecArg::Interval { .. }
+        | ScheduleSpecArg::Cron { .. } => Err(model_error(
+            "recurring schedules belong in /loop; use schedule type `once` for /schedule",
+        )),
     }
 }
 
@@ -572,6 +583,7 @@ fn next_schedule_run_at(
     after: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>, FunctionCallError> {
     let next = match schedule {
+        codex_state::ThreadScheduleSpec::Once => None,
         codex_state::ThreadScheduleSpec::Dynamic => {
             after.checked_add_signed(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
         }
@@ -618,82 +630,6 @@ fn validate_schedule_expiry(
     Ok(())
 }
 
-fn validate_cron_expression(expression: &str) -> Result<String, FunctionCallError> {
-    let expression = expression.trim();
-    let fields = expression.split_whitespace().collect::<Vec<_>>();
-    if fields.len() != 5 {
-        return Err(model_error(
-            "cron schedule must contain exactly five fields",
-        ));
-    }
-    let ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)];
-    for (field, (min, max)) in fields.iter().zip(ranges) {
-        validate_cron_field(field, min, max)?;
-    }
-    Ok(fields.join(" "))
-}
-
-fn validate_cron_field(field: &str, min: u32, max: u32) -> Result<(), FunctionCallError> {
-    if field.is_empty()
-        || !field
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || matches!(ch, '*' | '/' | '-' | ','))
-    {
-        return Err(model_error(
-            "cron fields may only use digits, *, /, -, and ,",
-        ));
-    }
-    for part in field.split(',') {
-        validate_cron_part(part, min, max)?;
-    }
-    Ok(())
-}
-
-fn validate_cron_part(part: &str, min: u32, max: u32) -> Result<(), FunctionCallError> {
-    let (base, step) = part
-        .split_once('/')
-        .map_or((part, None), |(base, step)| (base, Some(step)));
-    if let Some(step) = step {
-        let step = parse_cron_field_value(step, min, max)?;
-        if step == 0 {
-            return Err(model_error("cron step must be positive"));
-        }
-    }
-    if base == "*" {
-        return Ok(());
-    }
-    if let Some((start, end)) = base.split_once('-') {
-        let start = parse_cron_field_value(start, min, max)?;
-        let end = parse_cron_field_value(end, min, max)?;
-        if start > end {
-            return Err(model_error("cron range start must be before end"));
-        }
-        return Ok(());
-    }
-    let value = parse_cron_field_value(base, min, max)?;
-    if value < min || value > max {
-        return Err(model_error(format!(
-            "cron value {value} is outside range {min}-{max}"
-        )));
-    }
-    Ok(())
-}
-
-fn parse_cron_field_value(value: &str, min: u32, max: u32) -> Result<u32, FunctionCallError> {
-    if value.is_empty() {
-        return Err(model_error("cron field value must not be empty"));
-    }
-    let parsed = value
-        .parse::<u32>()
-        .map_err(|_| model_error(format!("invalid cron value `{value}`")))?;
-    if parsed < min || parsed > max {
-        return Err(model_error(format!(
-            "cron value {parsed} is outside range {min}-{max}"
-        )));
-    }
-    Ok(parsed)
-}
-
 impl ScheduleAction {
     fn verb(self) -> &'static str {
         match self {
@@ -731,6 +667,7 @@ impl From<codex_state::ThreadSchedule> for ScheduleSnapshot {
 impl From<codex_state::ThreadScheduleSpec> for ScheduleSpecSnapshot {
     fn from(schedule: codex_state::ThreadScheduleSpec) -> Self {
         match schedule {
+            codex_state::ThreadScheduleSpec::Once => Self::Once,
             codex_state::ThreadScheduleSpec::Dynamic => Self::Dynamic,
             codex_state::ThreadScheduleSpec::Interval(interval) => Self::Interval {
                 amount: interval.amount,
@@ -814,7 +751,7 @@ mod tests {
             .expect("test thread should be upserted");
     }
 
-    async fn create_interval_schedule(
+    async fn create_once_schedule(
         runtime: &codex_state::StateRuntime,
         thread_id: ThreadId,
         prompt: &str,
@@ -825,12 +762,7 @@ mod tests {
                 thread_id,
                 prompt: prompt.to_string(),
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule: codex_state::ThreadScheduleSpec::Interval(
-                    codex_state::ThreadScheduleInterval {
-                        amount: 5,
-                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
-                    },
-                ),
+                schedule: codex_state::ThreadScheduleSpec::Once,
                 timezone: "UTC".to_string(),
                 status: codex_state::ThreadScheduleStatus::Active,
                 next_run_at: Some(at(1_700_000_300)),
@@ -841,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_adds_interval_schedule() {
+    async fn create_adds_one_time_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(1);
         upsert_test_thread(&runtime, thread_id).await;
@@ -853,13 +785,10 @@ mod tests {
                 action: ScheduleAction::Create,
                 schedule_id: None,
                 prompt: Some("check CI".to_string()),
-                schedule: Some(ScheduleSpecArg::Interval {
-                    amount: 5,
-                    unit: ScheduleIntervalUnitArg::Minutes,
-                }),
+                schedule: Some(ScheduleSpecArg::Once),
                 timezone: Some("UTC".to_string()),
                 next_run_at: Some(1_700_000_300),
-                expires_at: Some(1_700_001_000),
+                expires_at: None,
             },
         )
         .await
@@ -875,6 +804,69 @@ mod tests {
             .expect("schedule should exist");
         assert_eq!(schedule.prompt, "check CI");
         assert_eq!(schedule.timezone, "UTC");
+        assert_eq!(schedule.schedule, codex_state::ThreadScheduleSpec::Once);
+        assert_eq!(schedule.next_run_at, Some(at(1_700_000_300)));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_one_time_schedule_without_next_run_at() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(13);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let error = manage_schedule(
+            runtime,
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Create,
+                schedule_id: None,
+                prompt: Some("ask one question".to_string()),
+                schedule: Some(ScheduleSpecArg::Once),
+                timezone: Some("UTC".to_string()),
+                next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect_err("one-time schedule without next_run_at should fail");
+
+        assert_eq!(
+            error,
+            model_error("next_run_at is required for one-time schedules")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_recurring_schedule_specs() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(14);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let error = manage_schedule(
+            runtime,
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Create,
+                schedule_id: None,
+                prompt: Some("check CI".to_string()),
+                schedule: Some(ScheduleSpecArg::Interval {
+                    amount: 5,
+                    unit: ScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                next_run_at: Some(1_700_000_300),
+                expires_at: None,
+            },
+        )
+        .await
+        .expect_err("recurring schedule spec should fail");
+
+        assert_eq!(
+            error,
+            model_error(
+                "recurring schedules belong in /loop; use schedule type `once` for /schedule"
+            )
+        );
     }
 
     #[tokio::test]
@@ -882,7 +874,7 @@ mod tests {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(2);
         upsert_test_thread(&runtime, thread_id).await;
-        let schedule = create_interval_schedule(&runtime, thread_id, "check CI").await;
+        let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
 
         let response = manage_schedule(
             runtime.clone(),
@@ -891,10 +883,7 @@ mod tests {
                 action: ScheduleAction::Update,
                 schedule_id: Some(schedule.schedule_id.clone()),
                 prompt: Some("write handoff".to_string()),
-                schedule: Some(ScheduleSpecArg::Interval {
-                    amount: 2,
-                    unit: ScheduleIntervalUnitArg::Hours,
-                }),
+                schedule: Some(ScheduleSpecArg::Once),
                 timezone: Some("UTC".to_string()),
                 next_run_at: Some(1_700_001_000),
                 expires_at: None,
@@ -911,13 +900,8 @@ mod tests {
             .expect("lookup should succeed")
             .expect("schedule should exist");
         assert_eq!(updated.prompt, "write handoff");
-        assert_eq!(
-            updated.schedule,
-            codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
-                amount: 2,
-                unit: codex_state::ThreadScheduleIntervalUnit::Hours,
-            })
-        );
+        assert_eq!(updated.schedule, codex_state::ThreadScheduleSpec::Once);
+        assert_eq!(updated.next_run_at, Some(at(1_700_001_000)));
     }
 
     #[tokio::test]
@@ -925,8 +909,8 @@ mod tests {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(3);
         upsert_test_thread(&runtime, thread_id).await;
-        let first = create_interval_schedule(&runtime, thread_id, "check CI").await;
-        let second = create_interval_schedule(&runtime, thread_id, "write handoff").await;
+        let first = create_once_schedule(&runtime, thread_id, "check CI").await;
+        let second = create_once_schedule(&runtime, thread_id, "write handoff").await;
 
         let response = manage_schedule(
             runtime.clone(),

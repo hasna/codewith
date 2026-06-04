@@ -935,6 +935,7 @@ impl AppServerSession {
         prompt: String,
         prompt_source: ThreadSchedulePromptSource,
         schedule: ThreadScheduleSpec,
+        next_run_at: Option<i64>,
     ) -> Result<ThreadScheduleCreateResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -946,7 +947,7 @@ impl AppServerSession {
                     prompt_source: Some(prompt_source),
                     schedule,
                     timezone: None,
-                    next_run_at: None,
+                    next_run_at,
                     expires_at: None,
                 },
             })

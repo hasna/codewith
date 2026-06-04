@@ -861,9 +861,17 @@ impl App {
                 prompt,
                 prompt_source,
                 schedule,
+                next_run_at,
             } => {
-                self.create_thread_schedule(app_server, thread_id, prompt, prompt_source, schedule)
-                    .await;
+                self.create_thread_schedule(
+                    app_server,
+                    thread_id,
+                    prompt,
+                    prompt_source,
+                    schedule,
+                    next_run_at,
+                )
+                .await;
             }
             AppEvent::UpdateThreadSchedulePrompt {
                 thread_id,

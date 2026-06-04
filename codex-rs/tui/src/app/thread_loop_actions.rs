@@ -19,11 +19,21 @@ impl App {
         }
 
         match result {
-            Ok(response) if response.data.is_empty() => self.chat_widget.add_info_message(
-                "No loops scheduled".to_string(),
-                Some(LOOP_CREATE_HINT.to_string()),
-            ),
-            Ok(response) => self.chat_widget.show_loop_manager(thread_id, response.data),
+            Ok(response) => {
+                let loops = response
+                    .data
+                    .into_iter()
+                    .filter(is_loop_schedule)
+                    .collect::<Vec<_>>();
+                if loops.is_empty() {
+                    self.chat_widget.add_info_message(
+                        "No loops scheduled".to_string(),
+                        Some(LOOP_CREATE_HINT.to_string()),
+                    );
+                } else {
+                    self.chat_widget.show_loop_manager(thread_id, loops);
+                }
+            }
             Err(err) => self
                 .chat_widget
                 .add_error_message(format!("Failed to read loops: {err}")),
@@ -106,7 +116,7 @@ impl App {
         schedule: ThreadScheduleSpec,
     ) {
         let result = app_server
-            .thread_schedule_create(thread_id, prompt, prompt_source, schedule)
+            .thread_schedule_create(thread_id, prompt, prompt_source, schedule, None)
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -319,6 +329,7 @@ impl App {
         let active_or_paused = response
             .data
             .into_iter()
+            .filter(is_loop_schedule)
             .filter(|schedule| !matches!(schedule.status, ThreadScheduleStatus::Expired))
             .collect::<Vec<_>>();
 
@@ -342,4 +353,8 @@ impl App {
             }
         }
     }
+}
+
+fn is_loop_schedule(schedule: &codex_app_server_protocol::ThreadSchedule) -> bool {
+    !matches!(schedule.schedule, ThreadScheduleSpec::Once)
 }

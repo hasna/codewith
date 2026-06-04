@@ -31,6 +31,14 @@ fn test_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> ThreadSched
     }
 }
 
+fn test_once_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> ThreadSchedule {
+    ThreadSchedule {
+        schedule: ThreadScheduleSpec::Once,
+        next_run_at: Some(1_700_000_300),
+        ..test_schedule(schedule_id, status)
+    }
+}
+
 #[tokio::test]
 async fn loop_manager_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -75,9 +83,9 @@ async fn schedule_manager_popup_snapshot() {
     chat.show_schedule_manager(
         thread_id,
         vec![
-            test_schedule("sch_expired", ThreadScheduleStatus::Expired),
-            test_schedule("sch_paused", ThreadScheduleStatus::Paused),
-            test_schedule("sch_active", ThreadScheduleStatus::Active),
+            test_once_schedule("sch_expired", ThreadScheduleStatus::Expired),
+            test_once_schedule("sch_paused", ThreadScheduleStatus::Paused),
+            test_once_schedule("sch_active", ThreadScheduleStatus::Active),
         ],
     );
 
@@ -94,7 +102,7 @@ async fn schedule_actions_popup_snapshot() {
 
     chat.show_schedule_actions(
         thread_id,
-        test_schedule("sch_paused", ThreadScheduleStatus::Paused),
+        test_once_schedule("sch_paused", ThreadScheduleStatus::Paused),
     );
 
     assert_chatwidget_snapshot!(

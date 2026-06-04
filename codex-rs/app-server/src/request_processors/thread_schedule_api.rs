@@ -133,6 +133,7 @@ pub(super) fn api_thread_schedule_spec_to_state(
     schedule: ThreadScheduleSpec,
 ) -> Result<codex_state::ThreadScheduleSpec, JSONRPCErrorError> {
     match schedule {
+        ThreadScheduleSpec::Once => Ok(codex_state::ThreadScheduleSpec::Once),
         ThreadScheduleSpec::Dynamic => Ok(codex_state::ThreadScheduleSpec::Dynamic),
         ThreadScheduleSpec::Interval { amount, unit } => {
             if amount <= 0 {
@@ -156,6 +157,7 @@ fn thread_schedule_spec_from_state(
     schedule: codex_state::ThreadScheduleSpec,
 ) -> ThreadScheduleSpec {
     match schedule {
+        codex_state::ThreadScheduleSpec::Once => ThreadScheduleSpec::Once,
         codex_state::ThreadScheduleSpec::Dynamic => ThreadScheduleSpec::Dynamic,
         codex_state::ThreadScheduleSpec::Interval(interval) => ThreadScheduleSpec::Interval {
             amount: interval.amount,
@@ -317,6 +319,10 @@ mod tests {
 
     #[test]
     fn maps_api_schedule_spec_to_state() {
+        assert_eq!(
+            codex_state::ThreadScheduleSpec::Once,
+            api_thread_schedule_spec_to_state(ThreadScheduleSpec::Once).expect("once should map")
+        );
         assert_eq!(
             codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
                 amount: 5,

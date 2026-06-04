@@ -184,7 +184,7 @@ impl ThreadScheduleRuntime {
         let turn_id = thread
             .submit(Op::UserInput {
                 items: vec![CoreInputItem::Text {
-                    text: scheduled_loop_tick_prompt(&prompt),
+                    text: scheduled_thread_prompt(&prompt),
                     text_elements: Vec::new(),
                 }],
                 environments: None,
@@ -420,14 +420,14 @@ impl ThreadScheduleRuntime {
     }
 }
 
-fn scheduled_loop_tick_prompt(prompt: &str) -> String {
+fn scheduled_thread_prompt(prompt: &str) -> String {
     format!(
         "\
-You are running one scheduled /loop tick.
+You are running one scheduled Codewith prompt.
 
-Execute only the loop prompt below for this single tick. Produce exactly one response for this tick, then stop. Do not wait, sleep, start a timer, or schedule the next tick; Codewith already manages the loop cadence. If the loop prompt mentions a cadence like \"every minute\", treat that as the cadence that triggered this tick, not as an instruction to implement the cadence yourself.
+Execute only the scheduled prompt below for this run. Produce exactly one response for this scheduled run, then stop. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
-Loop prompt:
+Scheduled prompt:
 {prompt}"
     )
 }
@@ -442,6 +442,7 @@ pub(super) fn next_thread_schedule_run_at(
     after: DateTime<Utc>,
 ) -> anyhow::Result<Option<DateTime<Utc>>> {
     let next = match schedule {
+        codex_state::ThreadScheduleSpec::Once => None,
         codex_state::ThreadScheduleSpec::Dynamic => {
             after.checked_add_signed(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
         }
@@ -733,6 +734,19 @@ mod tests {
     }
 
     #[test]
+    fn computes_once_next_run() {
+        assert_eq!(
+            None,
+            next_thread_schedule_run_at(
+                &codex_state::ThreadScheduleSpec::Once,
+                "UTC",
+                at(1_700_000_000),
+            )
+            .expect("one-time schedule should not compute a follow-up run")
+        );
+    }
+
+    #[test]
     fn computes_cron_next_run_in_timezone() {
         assert_eq!(
             Some(at(1_700_031_600)),
@@ -753,11 +767,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_loop_tick_prompt_tells_model_not_to_wait() {
-        let prompt = scheduled_loop_tick_prompt("ask me a funny question every minute");
+    fn scheduled_thread_prompt_tells_model_not_to_wait() {
+        let prompt = scheduled_thread_prompt("ask me a funny question every minute");
 
-        assert!(prompt.contains("one scheduled /loop tick"));
-        assert!(prompt.contains("Produce exactly one response for this tick, then stop."));
+        assert!(prompt.contains("one scheduled Codewith prompt"));
+        assert!(prompt.contains("Produce exactly one response for this scheduled run, then stop."));
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));

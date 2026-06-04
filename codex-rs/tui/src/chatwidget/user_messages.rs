@@ -23,9 +23,11 @@ use codex_protocol::user_input::TextElement;
 
 use super::ChatWidget;
 
-const SCHEDULED_LOOP_TICK_PREFIX: &str = "You are running one scheduled /loop tick.\n\n";
-const SCHEDULED_LOOP_TICK_PROMPT_HEADER: &str = "\n\nLoop prompt:\n";
-const SCHEDULED_LOOP_TICK_DISPLAY: &str = "Running scheduled loop.";
+const SCHEDULED_PROMPT_PREFIX: &str = "You are running one scheduled Codewith prompt.\n\n";
+const SCHEDULED_PROMPT_HEADER: &str = "\n\nScheduled prompt:\n";
+const SCHEDULED_PROMPT_DISPLAY: &str = "Running scheduled prompt.";
+const LEGACY_SCHEDULED_LOOP_PREFIX: &str = "You are running one scheduled /loop tick.\n\n";
+const LEGACY_SCHEDULED_LOOP_HEADER: &str = "\n\nLoop prompt:\n";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UserMessage {
@@ -517,9 +519,9 @@ impl ChatWidget {
         local_images: Vec<PathBuf>,
         remote_image_urls: Vec<String>,
     ) -> UserMessageDisplay {
-        if is_scheduled_loop_tick_prompt(&message) {
+        if is_scheduled_prompt(&message) {
             return UserMessageDisplay {
-                message: SCHEDULED_LOOP_TICK_DISPLAY.to_string(),
+                message: SCHEDULED_PROMPT_DISPLAY.to_string(),
                 remote_image_urls,
                 local_images,
                 text_elements: Vec::new(),
@@ -622,7 +624,8 @@ impl ChatWidget {
     }
 }
 
-fn is_scheduled_loop_tick_prompt(message: &str) -> bool {
-    message.starts_with(SCHEDULED_LOOP_TICK_PREFIX)
-        && message.contains(SCHEDULED_LOOP_TICK_PROMPT_HEADER)
+fn is_scheduled_prompt(message: &str) -> bool {
+    (message.starts_with(SCHEDULED_PROMPT_PREFIX) && message.contains(SCHEDULED_PROMPT_HEADER))
+        || (message.starts_with(LEGACY_SCHEDULED_LOOP_PREFIX)
+            && message.contains(LEGACY_SCHEDULED_LOOP_HEADER))
 }

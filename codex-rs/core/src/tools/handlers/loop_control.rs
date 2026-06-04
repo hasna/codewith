@@ -74,6 +74,7 @@ struct LoopScheduleSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum LoopScheduleSpecSnapshot {
+    Once,
     Dynamic,
     Interval { amount: i64, unit: String },
     Cron { expression: String },
@@ -219,6 +220,7 @@ async fn list_loop_snapshots(
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
     Ok(schedules
         .into_iter()
+        .filter(is_loop_schedule)
         .map(LoopScheduleSnapshot::from)
         .collect())
 }
@@ -241,6 +243,7 @@ async fn resolve_loop_schedule_id(
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?
         .into_iter()
+        .filter(is_loop_schedule)
         .filter(|schedule| schedule.status != codex_state::ThreadScheduleStatus::Expired)
         .collect::<Vec<_>>();
     match schedules.as_slice() {
@@ -267,10 +270,14 @@ async fn ensure_current_thread_schedule(
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?
         .ok_or_else(|| missing_loop_error(schedule_id))?;
-    if schedule.thread_id != thread_id {
+    if schedule.thread_id != thread_id || !is_loop_schedule(&schedule) {
         return Err(missing_loop_error(schedule_id));
     }
     Ok(schedule)
+}
+
+fn is_loop_schedule(schedule: &codex_state::ThreadSchedule) -> bool {
+    !matches!(schedule.schedule, codex_state::ThreadScheduleSpec::Once)
 }
 
 impl LoopAction {
@@ -308,6 +315,7 @@ impl From<codex_state::ThreadSchedule> for LoopScheduleSnapshot {
 impl From<codex_state::ThreadScheduleSpec> for LoopScheduleSpecSnapshot {
     fn from(schedule: codex_state::ThreadScheduleSpec) -> Self {
         match schedule {
+            codex_state::ThreadScheduleSpec::Once => Self::Once,
             codex_state::ThreadScheduleSpec::Dynamic => Self::Dynamic,
             codex_state::ThreadScheduleSpec::Interval(interval) => Self::Interval {
                 amount: interval.amount,

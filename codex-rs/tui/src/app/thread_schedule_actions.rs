@@ -19,13 +19,21 @@ impl App {
         }
 
         match result {
-            Ok(response) if response.data.is_empty() => self.chat_widget.add_info_message(
-                "No schedules created".to_string(),
-                Some(SCHEDULE_CREATE_HINT.to_string()),
-            ),
-            Ok(response) => self
-                .chat_widget
-                .show_schedule_manager(thread_id, response.data),
+            Ok(response) => {
+                let schedules = response
+                    .data
+                    .into_iter()
+                    .filter(is_one_time_schedule)
+                    .collect::<Vec<_>>();
+                if schedules.is_empty() {
+                    self.chat_widget.add_info_message(
+                        "No schedules created".to_string(),
+                        Some(SCHEDULE_CREATE_HINT.to_string()),
+                    );
+                } else {
+                    self.chat_widget.show_schedule_manager(thread_id, schedules);
+                }
+            }
             Err(err) => self
                 .chat_widget
                 .add_error_message(format!("Failed to read schedules: {err}")),
@@ -106,9 +114,10 @@ impl App {
         prompt: String,
         prompt_source: ThreadSchedulePromptSource,
         schedule: ThreadScheduleSpec,
+        next_run_at: Option<i64>,
     ) {
         let result = app_server
-            .thread_schedule_create(thread_id, prompt, prompt_source, schedule)
+            .thread_schedule_create(thread_id, prompt, prompt_source, schedule, next_run_at)
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -324,6 +333,7 @@ impl App {
         let active_or_paused = response
             .data
             .into_iter()
+            .filter(is_one_time_schedule)
             .filter(|schedule| !matches!(schedule.status, ThreadScheduleStatus::Expired))
             .collect::<Vec<_>>();
 
@@ -347,4 +357,8 @@ impl App {
             }
         }
     }
+}
+
+fn is_one_time_schedule(schedule: &codex_app_server_protocol::ThreadSchedule) -> bool {
+    matches!(schedule.schedule, ThreadScheduleSpec::Once)
 }

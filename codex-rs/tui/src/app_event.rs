@@ -373,6 +373,7 @@ pub(crate) enum AppEvent {
         prompt: String,
         prompt_source: ThreadSchedulePromptSource,
         schedule: ThreadScheduleSpec,
+        next_run_at: Option<i64>,
     },
 
     /// Update the prompt for a recurring prompt schedule.

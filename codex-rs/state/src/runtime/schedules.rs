@@ -590,6 +590,12 @@ struct ScheduleBindings<'a> {
 
 fn schedule_bindings(schedule: &crate::ThreadScheduleSpec) -> ScheduleBindings<'_> {
     match schedule {
+        crate::ThreadScheduleSpec::Once => ScheduleBindings {
+            kind: "once",
+            interval_amount: None,
+            interval_unit: None,
+            cron_expression: None,
+        },
         crate::ThreadScheduleSpec::Dynamic => ScheduleBindings {
             kind: "dynamic",
             interval_amount: None,
@@ -832,6 +838,50 @@ mod tests {
                 .delete_thread_schedule(&created.schedule_id)
                 .await
                 .expect("missing schedule delete should be false")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_once_thread_schedule() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(11);
+        upsert_test_thread(&runtime, thread_id).await;
+        let next_run_at = at(1_700_000_060);
+
+        let created = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "ask one question".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(next_run_at),
+                expires_at: None,
+            })
+            .await
+            .expect("one-time schedule should be created");
+
+        assert_eq!(
+            crate::ThreadSchedule {
+                thread_id,
+                schedule_id: created.schedule_id.clone(),
+                prompt: "ask one question".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(next_run_at),
+                last_run_at: None,
+                expires_at: None,
+                failure_count: 0,
+                lease_id: None,
+                lease_expires_at: None,
+                created_at: created.created_at,
+                updated_at: created.updated_at,
+            },
+            created
         );
     }
 

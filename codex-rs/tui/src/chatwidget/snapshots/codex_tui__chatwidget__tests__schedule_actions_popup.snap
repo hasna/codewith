@@ -3,7 +3,7 @@ source: tui/src/chatwidget/tests/loop_menu.rs
 expression: "render_bottom_popup(&chat, 100)"
 ---
   Schedule sch_paused
-  paused | every 5 minutes | next not scheduled | tz UTC | 2 failures
+  paused | once | next 2023-11-15 00:18 | tz UTC | 2 failures
 
 › 1. Run now                 Queue this prompt immediately
   2. Edit prompt             Change the prompt used on future runs

@@ -135,26 +135,35 @@ impl ThreadScheduleRequestProcessor {
         let schedule = api_thread_schedule_spec_to_state(params.schedule)?;
         let timezone = normalize_timezone(params.timezone)?;
         let now = Utc::now();
-        let next_run_at = params
+        let explicit_next_run_at = params
             .next_run_at
             .map(|value| timestamp_to_datetime(value, "nextRunAt"))
-            .transpose()?
-            .map_or_else(
-                || {
-                    thread_schedule_runtime::next_thread_schedule_run_at(
-                        &schedule,
-                        timezone.as_str(),
-                        now,
-                    )
-                    .map_err(|err| invalid_request(err.to_string()))
-                },
-                |next_run_at| Ok(Some(next_run_at)),
-            )?;
+            .transpose()?;
+        let next_run_at = match explicit_next_run_at {
+            Some(next_run_at) => Some(next_run_at),
+            None if matches!(schedule, codex_state::ThreadScheduleSpec::Once) => {
+                return Err(invalid_request(
+                    "nextRunAt is required for one-time schedules",
+                ));
+            }
+            None => thread_schedule_runtime::next_thread_schedule_run_at(
+                &schedule,
+                timezone.as_str(),
+                now,
+            )
+            .map_err(|err| invalid_request(err.to_string()))?,
+        };
         let expires_at = params
             .expires_at
             .map(|value| timestamp_to_datetime(value, "expiresAt"))
             .transpose()?
-            .or_else(|| thread_schedule_runtime::default_thread_schedule_expires_at(now));
+            .or_else(|| {
+                if matches!(schedule, codex_state::ThreadScheduleSpec::Once) {
+                    None
+                } else {
+                    thread_schedule_runtime::default_thread_schedule_expires_at(now)
+                }
+            });
         validate_schedule_expiry(next_run_at, expires_at)?;
 
         let (state_db, listener_command_tx) = self.prepare_schedule_mutation(thread_id).await?;
@@ -313,14 +322,23 @@ impl ThreadScheduleRequestProcessor {
             let effective_timezone = timezone
                 .clone()
                 .unwrap_or_else(|| existing.timezone.clone());
-            Some(
-                thread_schedule_runtime::next_thread_schedule_run_at(
-                    &effective_schedule,
-                    effective_timezone.as_str(),
-                    Utc::now(),
+            if matches!(effective_schedule, codex_state::ThreadScheduleSpec::Once) {
+                if existing.next_run_at.is_none() {
+                    return Err(invalid_request(
+                        "nextRunAt is required for one-time schedules",
+                    ));
+                }
+                None
+            } else {
+                Some(
+                    thread_schedule_runtime::next_thread_schedule_run_at(
+                        &effective_schedule,
+                        effective_timezone.as_str(),
+                        Utc::now(),
+                    )
+                    .map_err(|err| invalid_request(err.to_string()))?,
                 )
-                .map_err(|err| invalid_request(err.to_string()))?,
-            )
+            }
         } else {
             next_run_at
         };

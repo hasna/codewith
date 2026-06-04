@@ -826,6 +826,7 @@ pub enum ThreadScheduleIntervalUnit {
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
 pub enum ThreadScheduleSpec {
+    Once,
     Dynamic,
     Interval {
         #[ts(type = "number")]

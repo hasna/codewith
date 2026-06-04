@@ -557,6 +557,37 @@ fn thread_schedule_requests_reject_ephemeral_threads() -> Result<()> {
 }
 
 #[test]
+fn thread_schedule_create_rejects_once_without_next_run_at() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread.thread.id.clone(),
+                    prompt: "ask me something".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Once,
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(
+            "nextRunAt is required for one-time schedules",
+            error.message
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_run_now_rejects_ambiguous_schedule_id_prefix() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -851,10 +882,11 @@ fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Re
         );
         assert!(
             response_request_bodies.iter().any(|body| body
-                .contains("You are running one scheduled /loop tick")
-                && body.contains("Produce exactly one response for this tick, then stop.")
+                .contains("You are running one scheduled Codewith prompt")
+                && body
+                    .contains("Produce exactly one response for this scheduled run, then stop.")
                 && body.contains("Do not wait, sleep, start a timer")),
-            "scheduled prompt should tell the model this is one loop tick: {response_request_bodies:#?}"
+            "scheduled prompt should tell the model this is one scheduled run: {response_request_bodies:#?}"
         );
         assert!(
             !response_request_bodies
@@ -938,11 +970,68 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
         let response_request_bodies = harness.response_request_bodies().await;
         assert!(
             response_request_bodies.iter().any(|body| body
-                .contains("You are running one scheduled /loop tick")
-                && body.contains("Produce exactly one response for this tick, then stop.")
+                .contains("You are running one scheduled Codewith prompt")
+                && body
+                    .contains("Produce exactly one response for this scheduled run, then stop.")
                 && body.contains("summarize the latest test status")),
-            "scheduled prompt should be wrapped as one loop tick: {response_request_bodies:#?}"
+            "scheduled prompt should be wrapped as one scheduled run: {response_request_bodies:#?}"
         );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_once_clears_next_run_after_completion() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "ask one funny question".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Once,
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_800_000_000),
+                    expires_at: None,
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(ThreadScheduleSpec::Once, schedule.schedule);
+        assert_eq!(Some(1_800_000_000), schedule.next_run_at);
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        harness
+            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+            .await;
+
+        let (updated_schedule, completed) = harness
+            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+        assert_eq!(None, completed.run.error);
+        assert_eq!(None, updated_schedule.schedule.next_run_at);
+        assert_eq!(ThreadScheduleSpec::Once, updated_schedule.schedule.schedule);
 
         harness.shutdown().await;
         Ok(())

@@ -67,6 +67,7 @@ impl TryFrom<&str> for ThreadScheduleStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadScheduleSpec {
+    Once,
     Dynamic,
     Interval(ThreadScheduleInterval),
     Cron { expression: String },
@@ -305,6 +306,7 @@ fn schedule_from_row_parts(
     cron_expression: Option<String>,
 ) -> Result<ThreadScheduleSpec> {
     match kind {
+        "once" => Ok(ThreadScheduleSpec::Once),
         "dynamic" => Ok(ThreadScheduleSpec::Dynamic),
         "interval" => {
             let amount = interval_amount

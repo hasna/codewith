@@ -1,5 +1,14 @@
 //! Parser and normalized model for thread schedule slash command arguments.
 
+use chrono::DateTime;
+use chrono::Datelike;
+use chrono::Days;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::NaiveTime;
+use chrono::TimeZone;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LoopSlashCommand {
     Default,
@@ -21,9 +30,16 @@ pub(super) enum LoopPrompt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LoopSchedule {
+    Once(ScheduleTime),
     Dynamic,
     Interval(LoopInterval),
     Cron(LoopCronSchedule),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ScheduleTime {
+    Delay(LoopInterval),
+    At(i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +113,13 @@ impl ThreadScheduleSlashKind {
             Self::Schedule => "Schedule",
         }
     }
+
+    fn interval_schedule(self, interval: LoopInterval) -> LoopSchedule {
+        match self {
+            Self::Loop => LoopSchedule::Interval(interval),
+            Self::Schedule => LoopSchedule::Once(ScheduleTime::Delay(interval)),
+        }
+    }
 }
 
 fn parse_thread_schedule_slash_args(
@@ -113,18 +136,45 @@ fn parse_thread_schedule_slash_args(
     }
 
     if let Some((interval, prompt)) = parse_compact_interval(args, kind)? {
-        return create_with_prompt(LoopSchedule::Interval(interval), prompt);
+        return create_with_prompt(kind, kind.interval_schedule(interval), prompt);
+    }
+
+    if matches!(kind, ThreadScheduleSlashKind::Schedule)
+        && let Some((interval, prompt)) = parse_in_interval(args, kind)?
+    {
+        return create_with_prompt(kind, kind.interval_schedule(interval), prompt);
+    }
+
+    if matches!(kind, ThreadScheduleSlashKind::Schedule)
+        && let Some((time, prompt)) = parse_schedule_time(args)?
+    {
+        return create_with_prompt(kind, LoopSchedule::Once(time), prompt);
     }
 
     if let Some((interval, prompt)) = parse_every_interval(args, kind)? {
-        return create_with_prompt(LoopSchedule::Interval(interval), prompt);
+        if matches!(kind, ThreadScheduleSlashKind::Schedule) {
+            return Err(recurring_schedule_error());
+        }
+        return create_with_prompt(kind, LoopSchedule::Interval(interval), prompt);
     }
 
     if let Some((cron, prompt)) = parse_cron_schedule(args)? {
-        return create_with_prompt(LoopSchedule::Cron(cron), prompt);
+        if matches!(kind, ThreadScheduleSlashKind::Schedule) {
+            return Err(recurring_schedule_error());
+        }
+        return create_with_prompt(kind, LoopSchedule::Cron(cron), prompt);
     }
 
-    create_with_prompt(LoopSchedule::Dynamic, args)
+    if matches!(kind, ThreadScheduleSlashKind::Schedule) {
+        return Err(LoopSlashParseError {
+            message: "Schedule time is required.".to_string(),
+            hint: Some(
+                "Use `/schedule 5m check CI` or `/schedule in 2 hours check CI`.".to_string(),
+            ),
+        });
+    }
+
+    create_with_prompt(kind, LoopSchedule::Dynamic, args)
 }
 
 fn parse_manage_command(
@@ -231,6 +281,48 @@ fn parse_every_interval(
     Ok(Some((LoopInterval { amount, unit }, prompt.trim_start())))
 }
 
+fn parse_in_interval(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
+    let Some(rest) = args.strip_prefix("in ") else {
+        return Ok(None);
+    };
+    parse_amount_unit_interval(rest, kind)
+}
+
+fn parse_amount_unit_interval(
+    args: &str,
+    kind: ThreadScheduleSlashKind,
+) -> Result<Option<(LoopInterval, &str)>, LoopSlashParseError> {
+    let (amount_token, rest) = split_first_token(args.trim_start());
+    let amount = amount_token
+        .parse::<u32>()
+        .map_err(|_| LoopSlashParseError {
+            message: format!(
+                "Invalid {} interval amount: `{amount_token}`.",
+                kind.label()
+            ),
+            hint: Some(format!(
+                "Use a positive whole number, for example `/{} in 5 minutes check CI`.",
+                kind.command()
+            )),
+        })?;
+    let (unit_token, prompt) = split_first_token(rest.trim_start());
+    if is_seconds_unit(unit_token) {
+        validate_interval_amount(amount, kind)?;
+        return Ok(Some((seconds_interval(amount), prompt.trim_start())));
+    }
+    let Some(unit) = parse_interval_unit(unit_token) else {
+        return Err(LoopSlashParseError {
+            message: format!("Invalid {} interval unit: `{unit_token}`.", kind.label()),
+            hint: Some("Supported units are seconds, minutes, hours, and days.".to_string()),
+        });
+    };
+    validate_interval_amount(amount, kind)?;
+    Ok(Some((LoopInterval { amount, unit }, prompt.trim_start())))
+}
+
 fn parse_cron_schedule(
     args: &str,
 ) -> Result<Option<(LoopCronSchedule, &str)>, LoopSlashParseError> {
@@ -254,12 +346,327 @@ fn parse_cron_schedule(
     Ok(Some((LoopCronSchedule { expression }, prompt)))
 }
 
+fn parse_schedule_time(args: &str) -> Result<Option<(ScheduleTime, &str)>, LoopSlashParseError> {
+    parse_schedule_time_with_now(args, Local::now())
+}
+
+fn parse_schedule_time_with_now(
+    args: &str,
+    now: DateTime<Local>,
+) -> Result<Option<(ScheduleTime, &str)>, LoopSlashParseError> {
+    let (first_token, rest) = split_first_token(args);
+    if first_token.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(timestamp) = parse_absolute_timestamp_token(first_token, now)? {
+        return Ok(Some((ScheduleTime::At(timestamp), rest.trim_start())));
+    }
+
+    let first_lower = first_token.to_ascii_lowercase();
+    if first_lower == "at" {
+        let (time, prompt) = parse_time_prefix(rest).ok_or_else(missing_schedule_time_error)?;
+        let timestamp = next_time_timestamp(time, now)?;
+        return Ok(Some((ScheduleTime::At(timestamp), prompt.trim_start())));
+    }
+
+    if matches!(first_lower.as_str(), "today" | "tomorrow") {
+        let date = if first_lower == "today" {
+            now.date_naive()
+        } else {
+            now.date_naive()
+                .checked_add_days(Days::new(1))
+                .ok_or_else(invalid_schedule_time_error)?
+        };
+        let (time, prompt) =
+            parse_optional_at_time_prefix(rest).ok_or_else(missing_schedule_time_error)?;
+        let timestamp = future_local_timestamp(date, time, now)?;
+        return Ok(Some((ScheduleTime::At(timestamp), prompt.trim_start())));
+    }
+
+    if looks_like_date_token(first_token) {
+        let date = parse_date_token(first_token).ok_or_else(invalid_schedule_time_error)?;
+        let (time, prompt) =
+            parse_optional_at_time_prefix(rest).ok_or_else(missing_schedule_time_error)?;
+        let timestamp = future_local_timestamp(date, time, now)?;
+        return Ok(Some((ScheduleTime::At(timestamp), prompt.trim_start())));
+    }
+
+    if let Some(month) = month_number(first_token) {
+        let Some((date, rest)) = parse_month_date_prefix(month, rest, now) else {
+            return Err(invalid_schedule_time_error());
+        };
+        let (time, prompt) =
+            parse_optional_at_time_prefix(rest).ok_or_else(missing_schedule_time_error)?;
+        let timestamp = future_local_timestamp(date, time, now)?;
+        return Ok(Some((ScheduleTime::At(timestamp), prompt.trim_start())));
+    }
+
+    Ok(None)
+}
+
+fn parse_absolute_timestamp_token(
+    token: &str,
+    now: DateTime<Local>,
+) -> Result<Option<i64>, LoopSlashParseError> {
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(token) {
+        return validate_future_timestamp(timestamp.timestamp(), now).map(Some);
+    }
+    if !token.contains('T') {
+        return Ok(None);
+    }
+    let token = token.replace('T', " ");
+    for pattern in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
+        if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(token.as_str(), pattern) {
+            let timestamp = future_local_timestamp(datetime.date(), datetime.time(), now)?;
+            return Ok(Some(timestamp));
+        }
+    }
+    Err(invalid_schedule_time_error())
+}
+
+fn parse_optional_at_time_prefix(args: &str) -> Option<(NaiveTime, &str)> {
+    let (first_token, rest) = split_first_token(args);
+    if first_token.eq_ignore_ascii_case("at") {
+        parse_time_prefix(rest)
+    } else {
+        parse_time_prefix(args)
+    }
+}
+
+fn parse_time_prefix(args: &str) -> Option<(NaiveTime, &str)> {
+    let (time_token, rest) = split_first_token(args);
+    if time_token.is_empty() {
+        return None;
+    }
+    let (period_token, after_period) = split_first_token(rest);
+    if is_day_period(period_token) {
+        return parse_time_token_with_period(time_token, Some(period_token))
+            .map(|time| (time, after_period));
+    }
+    parse_time_token_with_period(time_token, None).map(|time| (time, rest))
+}
+
+fn parse_time_token_with_period(token: &str, period: Option<&str>) -> Option<NaiveTime> {
+    let token = token.trim_end_matches([',', '.']);
+    if token.is_empty() {
+        return None;
+    }
+    let lower = token.to_ascii_lowercase();
+    let (time_token, period) = if let Some(stripped) = lower.strip_suffix("am") {
+        (stripped, Some("am"))
+    } else if let Some(stripped) = lower.strip_suffix("pm") {
+        (stripped, Some("pm"))
+    } else {
+        (token, period)
+    };
+    let (hour, minute) = parse_hour_minute(time_token)?;
+    match period.map(str::to_ascii_lowercase).as_deref() {
+        Some("am") => {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            NaiveTime::from_hms_opt(if hour == 12 { 0 } else { hour }, minute, 0)
+        }
+        Some("pm") => {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            NaiveTime::from_hms_opt(if hour == 12 { 12 } else { hour + 12 }, minute, 0)
+        }
+        Some(_) => None,
+        None => {
+            if hour > 23 {
+                return None;
+            }
+            NaiveTime::from_hms_opt(hour, minute, 0)
+        }
+    }
+}
+
+fn parse_hour_minute(token: &str) -> Option<(u32, u32)> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let mut parts = token.split(':');
+    let hour = parts.next()?.parse::<u32>().ok()?;
+    let minute = match parts.next() {
+        Some(minute) => minute.parse::<u32>().ok()?,
+        None => 0,
+    };
+    if parts.next().is_some() || minute > 59 {
+        return None;
+    }
+    Some((hour, minute))
+}
+
+fn is_day_period(token: &str) -> bool {
+    matches!(token.to_ascii_lowercase().as_str(), "am" | "pm")
+}
+
+fn looks_like_date_token(token: &str) -> bool {
+    let token = token.trim_end_matches(',');
+    let separator = if token.contains('-') { '-' } else { '/' };
+    let parts = token.split(separator).collect::<Vec<_>>();
+    match separator {
+        '-' => {
+            parts.len() == 3
+                && parts[0].len() == 4
+                && parts
+                    .iter()
+                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        }
+        '/' => {
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        }
+        _ => false,
+    }
+}
+
+fn parse_date_token(token: &str) -> Option<NaiveDate> {
+    let token = token.trim_end_matches(',');
+    NaiveDate::parse_from_str(token, "%Y-%m-%d")
+        .ok()
+        .or_else(|| NaiveDate::parse_from_str(token, "%m/%d/%Y").ok())
+}
+
+fn parse_month_date_prefix(
+    month: u32,
+    args: &str,
+    now: DateTime<Local>,
+) -> Option<(NaiveDate, &str)> {
+    let (day_token, rest) = split_first_token(args);
+    let day = parse_day_token(day_token)?;
+    let (next_token, after_next) = split_first_token(rest);
+    let (year, rest) = if next_token.len() == 4 && next_token.chars().all(|ch| ch.is_ascii_digit())
+    {
+        (Some(next_token.parse::<i32>().ok()?), after_next)
+    } else {
+        (None, rest)
+    };
+    let date = match year {
+        Some(year) => NaiveDate::from_ymd_opt(year, month, day)?,
+        None => next_month_day(month, day, now)?,
+    };
+    Some((date, rest))
+}
+
+fn parse_day_token(token: &str) -> Option<u32> {
+    let token = token
+        .trim_end_matches(',')
+        .trim_end_matches("st")
+        .trim_end_matches("nd")
+        .trim_end_matches("rd")
+        .trim_end_matches("th");
+    token.parse::<u32>().ok()
+}
+
+fn next_month_day(month: u32, day: u32, now: DateTime<Local>) -> Option<NaiveDate> {
+    let this_year = NaiveDate::from_ymd_opt(now.year(), month, day)?;
+    if this_year >= now.date_naive() {
+        Some(this_year)
+    } else {
+        NaiveDate::from_ymd_opt(now.year() + 1, month, day)
+    }
+}
+
+fn month_number(token: &str) -> Option<u32> {
+    match token.trim_end_matches(',').to_ascii_lowercase().as_str() {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+fn next_time_timestamp(time: NaiveTime, now: DateTime<Local>) -> Result<i64, LoopSlashParseError> {
+    if let Ok(timestamp) = future_local_timestamp(now.date_naive(), time, now) {
+        return Ok(timestamp);
+    }
+    let tomorrow = now
+        .date_naive()
+        .checked_add_days(Days::new(1))
+        .ok_or_else(invalid_schedule_time_error)?;
+    future_local_timestamp(tomorrow, time, now)
+}
+
+fn future_local_timestamp(
+    date: NaiveDate,
+    time: NaiveTime,
+    now: DateTime<Local>,
+) -> Result<i64, LoopSlashParseError> {
+    let naive = date.and_time(time);
+    let mut candidates = match Local.from_local_datetime(&naive) {
+        LocalResult::Single(datetime) => vec![datetime],
+        LocalResult::Ambiguous(earlier, later) => vec![earlier, later],
+        LocalResult::None => return Err(invalid_schedule_time_error()),
+    };
+    candidates.sort();
+    let Some(datetime) = candidates.into_iter().find(|datetime| *datetime > now) else {
+        return Err(LoopSlashParseError {
+            message: "Schedule time must be in the future.".to_string(),
+            hint: Some("Use a future date/time or a relative delay such as `5m`.".to_string()),
+        });
+    };
+    Ok(datetime.timestamp())
+}
+
+fn validate_future_timestamp(
+    timestamp: i64,
+    now: DateTime<Local>,
+) -> Result<i64, LoopSlashParseError> {
+    if timestamp > now.timestamp() {
+        Ok(timestamp)
+    } else {
+        Err(LoopSlashParseError {
+            message: "Schedule time must be in the future.".to_string(),
+            hint: Some("Use a future date/time or a relative delay such as `5m`.".to_string()),
+        })
+    }
+}
+
+fn missing_schedule_time_error() -> LoopSlashParseError {
+    LoopSlashParseError {
+        message: "Schedule time is required.".to_string(),
+        hint: Some(
+            "Use `/schedule 5m check CI` or `/schedule 2026-06-05 09:30 check CI`.".to_string(),
+        ),
+    }
+}
+
+fn invalid_schedule_time_error() -> LoopSlashParseError {
+    LoopSlashParseError {
+        message: "Invalid schedule time.".to_string(),
+        hint: Some("Use a time like `2026-06-05 09:30`, `tomorrow at 9am`, or `5m`.".to_string()),
+    }
+}
+
 fn create_with_prompt(
+    kind: ThreadScheduleSlashKind,
     schedule: LoopSchedule,
     prompt: &str,
 ) -> Result<LoopSlashCommand, LoopSlashParseError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
+        if matches!(kind, ThreadScheduleSlashKind::Schedule) {
+            return Err(LoopSlashParseError {
+                message: "Schedule prompt is required.".to_string(),
+                hint: Some("Use `/schedule 5m ask me something`.".to_string()),
+            });
+        }
         return Ok(LoopSlashCommand::Create(LoopCreateRequest {
             schedule,
             prompt: LoopPrompt::Default,
@@ -452,6 +859,13 @@ fn invalid_cron_field(field: &str) -> LoopSlashParseError {
     }
 }
 
+fn recurring_schedule_error() -> LoopSlashParseError {
+    LoopSlashParseError {
+        message: "Schedules are one-time events; recurring work belongs in /loop.".to_string(),
+        hint: Some("Use `/loop every 5 minutes check CI` for recurring work.".to_string()),
+    }
+}
+
 fn split_first_token(value: &str) -> (&str, &str) {
     let value = value.trim_start();
     match value.find(char::is_whitespace) {
@@ -573,6 +987,17 @@ mod tests {
     }
 
     #[test]
+    fn loop_in_phrase_remains_prompt_text() {
+        assert_eq!(
+            parse_loop_slash_args("in 2 hours check whether CI passed"),
+            Ok(LoopSlashCommand::Create(LoopCreateRequest {
+                schedule: LoopSchedule::Dynamic,
+                prompt: LoopPrompt::Inline("in 2 hours check whether CI passed".to_string()),
+            }))
+        );
+    }
+
+    #[test]
     fn prompt_only_loop_can_start_with_a_number() {
         assert_eq!(
             parse_loop_slash_args("5 things to check before release"),
@@ -628,6 +1053,104 @@ mod tests {
         let err = parse_schedule_slash_args("every 2 weeks check CI")
             .expect_err("expected interval unit rejection");
         assert_eq!(err.message, "Invalid schedule interval unit: `weeks`.");
+    }
+
+    #[test]
+    fn parses_compact_schedule_as_one_time_delay() {
+        assert_eq!(
+            parse_schedule_slash_args("5m check whether CI is green"),
+            Ok(LoopSlashCommand::Create(LoopCreateRequest {
+                schedule: LoopSchedule::Once(ScheduleTime::Delay(LoopInterval {
+                    amount: 5,
+                    unit: LoopIntervalUnit::Minutes,
+                })),
+                prompt: LoopPrompt::Inline("check whether CI is green".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_in_schedule_as_one_time_delay() {
+        assert_eq!(
+            parse_schedule_slash_args("in 2 hours check review comments"),
+            Ok(LoopSlashCommand::Create(LoopCreateRequest {
+                schedule: LoopSchedule::Once(ScheduleTime::Delay(LoopInterval {
+                    amount: 2,
+                    unit: LoopIntervalUnit::Hours,
+                })),
+                prompt: LoopPrompt::Inline("check review comments".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_rfc3339_schedule_as_one_time_at() {
+        let timestamp = DateTime::parse_from_rfc3339("2099-06-05T09:30:00Z")
+            .expect("test timestamp should parse")
+            .timestamp();
+        assert_eq!(
+            parse_schedule_slash_args("2099-06-05T09:30:00Z ask me something"),
+            Ok(LoopSlashCommand::Create(LoopCreateRequest {
+                schedule: LoopSchedule::Once(ScheduleTime::At(timestamp)),
+                prompt: LoopPrompt::Inline("ask me something".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_local_date_time_schedule_as_one_time_at() {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 4, 10, 0, 0)
+            .single()
+            .expect("test time should exist locally");
+        let expected = future_local_timestamp(
+            NaiveDate::from_ymd_opt(2026, 6, 5).expect("test date"),
+            NaiveTime::from_hms_opt(9, 30, 0).expect("test time"),
+            now,
+        )
+        .expect("future local timestamp should parse");
+        assert_eq!(
+            parse_schedule_time_with_now("2026-06-05 09:30 ask me something", now),
+            Ok(Some((ScheduleTime::At(expected), "ask me something",)))
+        );
+    }
+
+    #[test]
+    fn parses_friendly_schedule_time_variants() {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 4, 10, 0, 0)
+            .single()
+            .expect("test time should exist locally");
+        let expected = future_local_timestamp(
+            NaiveDate::from_ymd_opt(2026, 6, 5).expect("test date"),
+            NaiveTime::from_hms_opt(9, 0, 0).expect("test time"),
+            now,
+        )
+        .expect("future local timestamp should parse");
+        assert_eq!(
+            parse_schedule_time_with_now("tomorrow at 9am ask me something", now),
+            Ok(Some((ScheduleTime::At(expected), "ask me something",)))
+        );
+        assert_eq!(
+            parse_schedule_time_with_now("June 5 2026 at 9am ask me something", now),
+            Ok(Some((ScheduleTime::At(expected), "ask me something",)))
+        );
+    }
+
+    #[test]
+    fn rejects_schedule_without_prompt() {
+        let err = parse_schedule_slash_args("5m").expect_err("expected missing prompt rejection");
+        assert_eq!(err.message, "Schedule prompt is required.");
+    }
+
+    #[test]
+    fn rejects_recurring_schedule_slash_args() {
+        let err = parse_schedule_slash_args("every 2 hours check CI")
+            .expect_err("expected recurring schedule rejection");
+        assert_eq!(
+            err.message,
+            "Schedules are one-time events; recurring work belongs in /loop."
+        );
     }
 
     #[test]

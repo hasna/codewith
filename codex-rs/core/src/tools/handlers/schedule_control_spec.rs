@@ -54,14 +54,14 @@ pub fn create_manage_schedule_tool() -> ToolSpec {
         (
             "next_run_at".to_string(),
             JsonSchema::integer(Some(
-                "Optional Unix timestamp in seconds for the next run. Omit to calculate from the schedule."
+                "Unix timestamp in seconds for the one-time run. Required for schedule type `once`."
                     .to_string(),
             )),
         ),
         (
             "expires_at".to_string(),
             JsonSchema::integer(Some(
-                "Optional Unix timestamp in seconds when the schedule expires. Defaults to seven days from creation."
+                "Optional Unix timestamp in seconds when the schedule expires. One-time schedules do not expire by default."
                     .to_string(),
             )),
         ),
@@ -71,7 +71,8 @@ pub fn create_manage_schedule_tool() -> ToolSpec {
         name: MANAGE_SCHEDULE_TOOL_NAME.to_string(),
         description: r#"Manage scheduled prompts for the current thread.
 Use `list` before mutating when the user did not name a specific schedule.
-`create` adds a scheduled prompt with an interval, cron expression, or dynamic one-minute cadence.
+`create` adds a one-time scheduled prompt. For requests such as "in 3 minutes", "tomorrow at 9", or "at 10:30", use schedule type `once` and set `next_run_at`.
+Do not create recurring interval, cron, or dynamic schedules with this tool. Recurring work belongs in `/loop`.
 `pause` stops future scheduled runs without aborting an already running turn.
 `delete` removes the selected schedule.
 The tool is scoped to the current thread and rejects schedule ids from other threads."#
@@ -89,66 +90,20 @@ The tool is scoped to the current thread and rejects schedule ids from other thr
 
 fn schedule_spec_schema() -> JsonSchema {
     JsonSchema::any_of(
-        vec![
-            JsonSchema::object(
-                BTreeMap::from([(
-                    "type".to_string(),
-                    JsonSchema::string_enum(
-                        vec![json!("dynamic")],
-                        Some("Use the default dynamic cadence.".to_string()),
+        vec![JsonSchema::object(
+            BTreeMap::from([(
+                "type".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("once")],
+                    Some(
+                        "Run once at next_run_at. Use this for calendar-style schedules."
+                            .to_string(),
                     ),
-                )]),
-                Some(vec!["type".to_string()]),
-                Some(false.into()),
-            ),
-            JsonSchema::object(
-                BTreeMap::from([
-                    (
-                        "type".to_string(),
-                        JsonSchema::string_enum(
-                            vec![json!("interval")],
-                            Some("Use a fixed interval.".to_string()),
-                        ),
-                    ),
-                    (
-                        "amount".to_string(),
-                        JsonSchema::integer(Some("Positive interval amount.".to_string())),
-                    ),
-                    (
-                        "unit".to_string(),
-                        JsonSchema::string_enum(
-                            vec![json!("minutes"), json!("hours"), json!("days")],
-                            Some("Interval unit.".to_string()),
-                        ),
-                    ),
-                ]),
-                Some(vec![
-                    "type".to_string(),
-                    "amount".to_string(),
-                    "unit".to_string(),
-                ]),
-                Some(false.into()),
-            ),
-            JsonSchema::object(
-                BTreeMap::from([
-                    (
-                        "type".to_string(),
-                        JsonSchema::string_enum(
-                            vec![json!("cron")],
-                            Some("Use a five-field cron expression.".to_string()),
-                        ),
-                    ),
-                    (
-                        "expression".to_string(),
-                        JsonSchema::string(Some(
-                            "Standard five-field cron expression such as */5 * * * *.".to_string(),
-                        )),
-                    ),
-                ]),
-                Some(vec!["type".to_string(), "expression".to_string()]),
-                Some(false.into()),
-            ),
-        ],
+                ),
+            )]),
+            Some(vec!["type".to_string()]),
+            Some(false.into()),
+        )],
         Some("Schedule spec for create or update.".to_string()),
     )
 }

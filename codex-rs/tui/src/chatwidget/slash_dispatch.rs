@@ -12,6 +12,7 @@ use super::loop_slash::LoopManageCommand;
 use super::loop_slash::LoopPrompt;
 use super::loop_slash::LoopSchedule;
 use super::loop_slash::LoopSlashCommand;
+use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
 use super::*;
@@ -21,6 +22,7 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use chrono::Utc;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
@@ -51,9 +53,8 @@ const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const LOOP_USAGE: &str = "Usage: /loop [interval|cron] <prompt>";
 const LOOP_USAGE_HINT: &str =
     "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list";
-const SCHEDULE_USAGE: &str = "Usage: /schedule [interval|cron] <prompt>";
-const SCHEDULE_USAGE_HINT: &str =
-    "Examples: /schedule 5m check CI, /schedule every 2 hours review alerts, /schedule list";
+const SCHEDULE_USAGE: &str = "Usage: /schedule <time> <prompt>";
+const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 
 impl ChatWidget {
@@ -997,7 +998,11 @@ impl ChatWidget {
                     .send(AppEvent::OpenThreadLoopManager { thread_id });
             }
             LoopSlashCommand::Create(request) => {
-                let (prompt, prompt_source, schedule) = loop_create_request_to_api(request);
+                let Ok((prompt, prompt_source, schedule)) = loop_create_request_to_api(request)
+                else {
+                    self.add_error_message("One-time schedules belong in /schedule.".to_string());
+                    return;
+                };
                 self.app_event_tx.send(AppEvent::CreateThreadLoopSchedule {
                     thread_id,
                     prompt,
@@ -1082,12 +1087,18 @@ impl ChatWidget {
                     .send(AppEvent::OpenThreadScheduleManager { thread_id });
             }
             LoopSlashCommand::Create(request) => {
-                let (prompt, prompt_source, schedule) = loop_create_request_to_api(request);
+                let Ok((prompt, prompt_source, schedule, next_run_at)) =
+                    schedule_create_request_to_api(request)
+                else {
+                    self.add_error_message("Schedule delay is too large.".to_string());
+                    return;
+                };
                 self.app_event_tx.send(AppEvent::CreateThreadSchedule {
                     thread_id,
                     prompt,
                     prompt_source,
                     schedule,
+                    next_run_at,
                 });
             }
             LoopSlashCommand::Manage(manage) => match manage {
@@ -1385,7 +1396,7 @@ impl ChatWidget {
 
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
-) -> (String, ThreadSchedulePromptSource, ThreadScheduleSpec) {
+) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {
     let (prompt, prompt_source) = match request.prompt {
         LoopPrompt::Inline(prompt) => (prompt, ThreadSchedulePromptSource::Inline),
         LoopPrompt::Default => (
@@ -1394,6 +1405,7 @@ fn loop_create_request_to_api(
         ),
     };
     let schedule = match request.schedule {
+        LoopSchedule::Once(_) => return Err(()),
         LoopSchedule::Dynamic => ThreadScheduleSpec::Dynamic,
         LoopSchedule::Interval(interval) => ThreadScheduleSpec::Interval {
             amount: i64::from(interval.amount),
@@ -1407,7 +1419,52 @@ fn loop_create_request_to_api(
             expression: cron.expression,
         },
     };
-    (prompt, prompt_source, schedule)
+    Ok((prompt, prompt_source, schedule))
+}
+
+fn schedule_create_request_to_api(
+    request: LoopCreateRequest,
+) -> Result<
+    (
+        String,
+        ThreadSchedulePromptSource,
+        ThreadScheduleSpec,
+        Option<i64>,
+    ),
+    (),
+> {
+    let (prompt, prompt_source) = match request.prompt {
+        LoopPrompt::Inline(prompt) => (prompt, ThreadSchedulePromptSource::Inline),
+        LoopPrompt::Default => (
+            DEFAULT_LOOP_PROMPT_DISPLAY.to_string(),
+            ThreadSchedulePromptSource::Default,
+        ),
+    };
+    match request.schedule {
+        LoopSchedule::Once(time) => {
+            let next_run_at = match time {
+                ScheduleTime::Delay(interval) => schedule_delay_next_run_at(&interval).ok_or(())?,
+                ScheduleTime::At(next_run_at) => next_run_at,
+            };
+            Ok((
+                prompt,
+                prompt_source,
+                ThreadScheduleSpec::Once,
+                Some(next_run_at),
+            ))
+        }
+        LoopSchedule::Dynamic | LoopSchedule::Interval(_) | LoopSchedule::Cron(_) => Err(()),
+    }
+}
+
+fn schedule_delay_next_run_at(interval: &super::loop_slash::LoopInterval) -> Option<i64> {
+    let amount = i64::from(interval.amount);
+    let seconds = match interval.unit {
+        LoopIntervalUnit::Minutes => amount.checked_mul(60)?,
+        LoopIntervalUnit::Hours => amount.checked_mul(60 * 60)?,
+        LoopIntervalUnit::Days => amount.checked_mul(24 * 60 * 60)?,
+    };
+    Utc::now().timestamp().checked_add(seconds)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
