@@ -315,7 +315,8 @@ impl ThreadScheduleRequestProcessor {
         let existing = self
             .load_schedule_for_thread(&state_db, thread_id, schedule_id.as_str())
             .await?;
-        let next_run_at = if next_run_at.is_none() && (schedule.is_some() || timezone.is_some()) {
+        let mut next_run_at = if next_run_at.is_none() && (schedule.is_some() || timezone.is_some())
+        {
             let effective_schedule = schedule
                 .clone()
                 .unwrap_or_else(|| existing.schedule.clone());
@@ -342,18 +343,24 @@ impl ThreadScheduleRequestProcessor {
         } else {
             next_run_at
         };
-        let effective_next_run_at = next_run_at.unwrap_or(existing.next_run_at);
-        let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
         let effective_schedule = schedule.as_ref().unwrap_or(&existing.schedule);
         let effective_status = status.unwrap_or(existing.status);
-        if matches!(effective_schedule, codex_state::ThreadScheduleSpec::Once)
-            && effective_status != codex_state::ThreadScheduleStatus::Expired
+        let effective_timezone = timezone.as_ref().unwrap_or(&existing.timezone);
+        let mut effective_next_run_at = next_run_at.unwrap_or(existing.next_run_at);
+        if effective_status == codex_state::ThreadScheduleStatus::Active
             && effective_next_run_at.is_none()
         {
-            return Err(invalid_request(
-                "nextRunAt is required for one-time schedules",
-            ));
+            if matches!(effective_schedule, codex_state::ThreadScheduleSpec::Once) {
+                return Err(invalid_request(
+                    "nextRunAt is required for one-time schedules",
+                ));
+            }
+            let computed_next_run_at =
+                next_active_recurring_run_at(effective_schedule, effective_timezone.as_str())?;
+            next_run_at = Some(Some(computed_next_run_at));
+            effective_next_run_at = Some(computed_next_run_at);
         }
+        let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
         validate_schedule_expiry(effective_next_run_at, effective_expires_at)?;
         let schedule = state_db
             .thread_schedules()
@@ -404,22 +411,44 @@ impl ThreadScheduleRequestProcessor {
         let existing = self
             .load_schedule_for_thread(&state_db, thread_id, schedule_id.as_str())
             .await?;
-        if status == codex_state::ThreadScheduleStatus::Active
-            && matches!(existing.schedule, codex_state::ThreadScheduleSpec::Once)
+        let schedule = if status == codex_state::ThreadScheduleStatus::Active
             && existing.next_run_at.is_none()
         {
-            return Err(invalid_request(
-                "nextRunAt is required for one-time schedules",
-            ));
+            if matches!(existing.schedule, codex_state::ThreadScheduleSpec::Once) {
+                return Err(invalid_request(
+                    "nextRunAt is required for one-time schedules",
+                ));
+            }
+            let next_run_at =
+                next_active_recurring_run_at(&existing.schedule, existing.timezone.as_str())?;
+            state_db
+                .thread_schedules()
+                .update_thread_schedule(
+                    schedule_id.as_str(),
+                    codex_state::ThreadScheduleUpdate {
+                        prompt: None,
+                        prompt_source: None,
+                        schedule: None,
+                        timezone: None,
+                        status: Some(status),
+                        next_run_at: Some(Some(next_run_at)),
+                        expires_at: None,
+                    },
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to update thread schedule status: {err}"))
+                })?
+        } else {
+            state_db
+                .thread_schedules()
+                .set_thread_schedule_status(schedule_id.as_str(), status)
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to update thread schedule status: {err}"))
+                })?
         }
-        let schedule = state_db
-            .thread_schedules()
-            .set_thread_schedule_status(schedule_id.as_str(), status)
-            .await
-            .map_err(|err| {
-                internal_error(format!("failed to update thread schedule status: {err}"))
-            })?
-            .ok_or_else(|| invalid_request(format!("schedule not found: {schedule_id}")))?;
+        .ok_or_else(|| invalid_request(format!("schedule not found: {schedule_id}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -789,6 +818,15 @@ impl ThreadScheduleRequestProcessor {
             ))
             .await;
     }
+}
+
+fn next_active_recurring_run_at(
+    schedule: &codex_state::ThreadScheduleSpec,
+    timezone: &str,
+) -> Result<DateTime<Utc>, JSONRPCErrorError> {
+    thread_schedule_runtime::next_thread_schedule_run_at(schedule, timezone, Utc::now())
+        .map_err(|err| invalid_request(err.to_string()))?
+        .ok_or_else(|| invalid_request("nextRunAt is required for one-time schedules"))
 }
 
 enum ScheduleStatusResponseKind {

@@ -638,6 +638,136 @@ fn thread_schedule_update_rejects_active_once_without_next_run_at() -> Result<()
 }
 
 #[test]
+fn thread_schedule_update_recomputes_active_recurring_without_next_run_at() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check recurring work".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            })
+            .await;
+        harness.read_schedule_updated(&thread_id).await;
+
+        let request_id = harness.request_id();
+        let update_response: ThreadScheduleUpdateResponse = harness
+            .request(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: create_response.schedule.schedule_id,
+                    prompt: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(
+            ThreadScheduleStatus::Active,
+            update_response.schedule.status
+        );
+        assert!(update_response.schedule.next_run_at.is_some());
+        assert_eq!(
+            update_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check recurring work".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            })
+            .await;
+        harness.read_schedule_updated(&thread_id).await;
+
+        let request_id = harness.request_id();
+        let pause_response: ThreadScheduleUpdateResponse = harness
+            .request(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: create_response.schedule.schedule_id.clone(),
+                    prompt: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(ThreadScheduleStatus::Paused),
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(ThreadScheduleStatus::Paused, pause_response.schedule.status);
+        assert_eq!(None, pause_response.schedule.next_run_at);
+        harness.read_schedule_updated(&thread_id).await;
+
+        let request_id = harness.request_id();
+        let resume_response: ThreadScheduleResumeResponse = harness
+            .request(ClientRequest::ThreadScheduleResume {
+                request_id,
+                params: ThreadScheduleResumeParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: create_response.schedule.schedule_id,
+                },
+            })
+            .await;
+        assert_eq!(
+            ThreadScheduleStatus::Active,
+            resume_response.schedule.status
+        );
+        assert!(resume_response.schedule.next_run_at.is_some());
+        assert_eq!(
+            resume_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_run_now_rejects_ambiguous_schedule_id_prefix() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
