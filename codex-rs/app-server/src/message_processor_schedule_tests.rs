@@ -588,6 +588,56 @@ fn thread_schedule_create_rejects_once_without_next_run_at() -> Result<()> {
 }
 
 #[test]
+fn thread_schedule_update_rejects_active_once_without_next_run_at() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "ask me something".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Once,
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: None,
+                },
+            })
+            .await;
+        harness.read_schedule_updated(&thread_id).await;
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id,
+                    schedule_id: create_response.schedule.schedule_id,
+                    prompt: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(
+            "nextRunAt is required for one-time schedules",
+            error.message
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_run_now_rejects_ambiguous_schedule_id_prefix() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -1031,7 +1081,26 @@ fn thread_schedule_once_clears_next_run_after_completion() -> Result<()> {
             .await;
         assert_eq!(None, completed.run.error);
         assert_eq!(None, updated_schedule.schedule.next_run_at);
+        assert_eq!(
+            ThreadScheduleStatus::Expired,
+            updated_schedule.schedule.status
+        );
         assert_eq!(ThreadScheduleSpec::Once, updated_schedule.schedule.schedule);
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleResume {
+                request_id,
+                params: ThreadScheduleResumeParams {
+                    thread_id,
+                    schedule_id: schedule.schedule_id,
+                },
+            })
+            .await;
+        assert_eq!(
+            "nextRunAt is required for one-time schedules",
+            error.message
+        );
 
         harness.shutdown().await;
         Ok(())

@@ -354,7 +354,8 @@ async fn set_schedule_status(
 ) -> Result<ManageScheduleResponse, FunctionCallError> {
     let schedule_id =
         resolve_schedule_id(&state_db, thread_id, args.schedule_id.clone(), args.action).await?;
-    ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+    let existing =
+        ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
     let status = match args.action {
         ScheduleAction::Pause => codex_state::ThreadScheduleStatus::Paused,
         ScheduleAction::Resume => codex_state::ThreadScheduleStatus::Active,
@@ -363,6 +364,11 @@ async fn set_schedule_status(
         | ScheduleAction::Update
         | ScheduleAction::Delete => unreachable!("action matched above"),
     };
+    if status == codex_state::ThreadScheduleStatus::Active && existing.next_run_at.is_none() {
+        return Err(model_error(
+            "next_run_at is required for one-time schedules",
+        ));
+    }
     let schedule = state_db
         .thread_schedules()
         .set_thread_schedule_status(schedule_id.as_str(), status)
@@ -902,6 +908,52 @@ mod tests {
         assert_eq!(updated.prompt, "write handoff");
         assert_eq!(updated.schedule, codex_state::ThreadScheduleSpec::Once);
         assert_eq!(updated.next_run_at, Some(at(1_700_001_000)));
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_one_time_schedule_without_next_run_at() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(15);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
+        runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                schedule.schedule_id.as_str(),
+                codex_state::ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(codex_state::ThreadScheduleStatus::Expired),
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+
+        let error = manage_schedule(
+            runtime,
+            thread_id,
+            ManageScheduleArgs {
+                action: ScheduleAction::Resume,
+                schedule_id: Some(schedule.schedule_id),
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect_err("schedule without next_run_at should not resume");
+
+        assert_eq!(
+            error,
+            model_error("next_run_at is required for one-time schedules")
+        );
     }
 
     #[tokio::test]

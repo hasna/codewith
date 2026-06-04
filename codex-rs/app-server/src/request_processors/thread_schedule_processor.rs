@@ -344,6 +344,16 @@ impl ThreadScheduleRequestProcessor {
         };
         let effective_next_run_at = next_run_at.unwrap_or(existing.next_run_at);
         let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
+        let effective_schedule = schedule.as_ref().unwrap_or(&existing.schedule);
+        let effective_status = status.unwrap_or(existing.status);
+        if matches!(effective_schedule, codex_state::ThreadScheduleSpec::Once)
+            && effective_status != codex_state::ThreadScheduleStatus::Expired
+            && effective_next_run_at.is_none()
+        {
+            return Err(invalid_request(
+                "nextRunAt is required for one-time schedules",
+            ));
+        }
         validate_schedule_expiry(effective_next_run_at, effective_expires_at)?;
         let schedule = state_db
             .thread_schedules()
@@ -391,6 +401,17 @@ impl ThreadScheduleRequestProcessor {
         let schedule_id = self
             .resolve_schedule_id_for_thread(&state_db, thread_id, schedule_id.as_str())
             .await?;
+        let existing = self
+            .load_schedule_for_thread(&state_db, thread_id, schedule_id.as_str())
+            .await?;
+        if status == codex_state::ThreadScheduleStatus::Active
+            && matches!(existing.schedule, codex_state::ThreadScheduleSpec::Once)
+            && existing.next_run_at.is_none()
+        {
+            return Err(invalid_request(
+                "nextRunAt is required for one-time schedules",
+            ));
+        }
         let schedule = state_db
             .thread_schedules()
             .set_thread_schedule_status(schedule_id.as_str(), status)

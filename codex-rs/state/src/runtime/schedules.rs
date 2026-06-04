@@ -519,12 +519,14 @@ WHERE status = 'active'
         finish: FinishScheduleRun,
     ) -> anyhow::Result<bool> {
         let completed_at_ms = datetime_to_epoch_millis(completed_at);
+        let next_run_at_ms = next_run_at.map(datetime_to_epoch_millis);
         let mut tx = self.pool.begin().await?;
         let failed = matches!(finish, FinishScheduleRun::Failed { .. });
         let schedule_result = sqlx::query(
             r#"
 UPDATE thread_schedules
 SET
+    status = CASE WHEN ? IS NULL THEN 'expired' ELSE status END,
     lease_id = NULL,
     lease_expires_at_ms = NULL,
     last_run_at_ms = ?,
@@ -534,8 +536,9 @@ SET
 WHERE schedule_id = ? AND lease_id = ?
             "#,
         )
+        .bind(next_run_at_ms)
         .bind(completed_at_ms)
-        .bind(next_run_at.map(datetime_to_epoch_millis))
+        .bind(next_run_at_ms)
         .bind(failed)
         .bind(completed_at_ms)
         .bind(schedule_id)
@@ -882,6 +885,82 @@ mod tests {
                 updated_at: created.updated_at,
             },
             created
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_one_time_schedule_expires_and_cannot_run_again() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(12);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(1_700_000_000);
+        let schedule = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "ask one question".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: None,
+            })
+            .await
+            .expect("one-time schedule should be created");
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-once", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("one-time schedule should claim");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-once",
+                "turn-once",
+            )
+            .await
+            .expect("run should update")
+            .expect("run should exist");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-once",
+                    now + chrono::Duration::seconds(5),
+                    None,
+                )
+                .await
+                .expect("run should complete")
+        );
+
+        let completed = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, completed.status);
+        assert_eq!(None, completed.next_run_at);
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_thread_schedule_now(
+                    &schedule.schedule_id,
+                    now + chrono::Duration::seconds(10),
+                    "lease-repeat",
+                    Duration::from_secs(300),
+                )
+                .await
+                .expect("manual claim should not fail")
+                .is_none(),
+            "completed one-time schedule should not be runnable again"
         );
     }
 
