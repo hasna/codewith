@@ -59,6 +59,10 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadScheduleIntervalUnit;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -5274,6 +5278,93 @@ async fn interrupt_without_active_turn_is_treated_as_handled() {
         assert_eq!(handled, true);
     })
     .await;
+}
+
+#[tokio::test]
+async fn schedule_actions_ignore_explicit_loop_ids() -> Result<()> {
+    Box::pin(async {
+        let mut app = make_test_app().await;
+        let mut app_server = start_config_write_test_app_server(&app).await?;
+        let started = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let thread_id = started.session.thread_id;
+        app.enqueue_primary_thread_session(started.session, started.turns)
+            .await?;
+        let loop_schedule = app_server
+            .thread_schedule_create(
+                thread_id,
+                "check recurring work".to_string(),
+                ThreadSchedulePromptSource::Inline,
+                ThreadScheduleSpec::Interval {
+                    amount: 5,
+                    unit: ThreadScheduleIntervalUnit::Minutes,
+                },
+                None,
+            )
+            .await?
+            .schedule;
+
+        app.pause_thread_schedule(
+            &mut app_server,
+            thread_id,
+            Some(loop_schedule.schedule_id.clone()),
+        )
+        .await;
+
+        let after = app_server
+            .thread_schedule_get(thread_id, loop_schedule.schedule_id)
+            .await?
+            .schedule
+            .expect("loop should still exist");
+        assert_eq!(ThreadScheduleStatus::Active, after.status);
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn loop_actions_ignore_explicit_schedule_ids() -> Result<()> {
+    Box::pin(async {
+        let mut app = make_test_app().await;
+        let mut app_server = start_config_write_test_app_server(&app).await?;
+        let started = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let thread_id = started.session.thread_id;
+        app.enqueue_primary_thread_session(started.session, started.turns)
+            .await?;
+        let one_time_schedule = app_server
+            .thread_schedule_create(
+                thread_id,
+                "ask once".to_string(),
+                ThreadSchedulePromptSource::Inline,
+                ThreadScheduleSpec::Once,
+                Some(4_100_000_000),
+            )
+            .await?
+            .schedule;
+
+        app.pause_thread_loop_schedule(
+            &mut app_server,
+            thread_id,
+            Some(one_time_schedule.schedule_id.clone()),
+        )
+        .await;
+
+        let after = app_server
+            .thread_schedule_get(thread_id, one_time_schedule.schedule_id)
+            .await?
+            .schedule
+            .expect("schedule should still exist");
+        assert_eq!(ThreadScheduleStatus::Active, after.status);
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

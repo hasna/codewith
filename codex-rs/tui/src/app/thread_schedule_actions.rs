@@ -55,7 +55,7 @@ impl App {
 
         match result {
             Ok(response) => {
-                if let Some(schedule) = response.schedule {
+                if let Some(schedule) = response.schedule.filter(is_one_time_schedule) {
                     self.chat_widget.show_schedule_actions(thread_id, schedule);
                 } else {
                     self.chat_widget.add_info_message(
@@ -91,7 +91,7 @@ impl App {
 
         match result {
             Ok(response) => {
-                if let Some(schedule) = response.schedule {
+                if let Some(schedule) = response.schedule.filter(is_one_time_schedule) {
                     self.chat_widget
                         .show_schedule_edit_prompt(thread_id, schedule);
                 } else {
@@ -314,7 +314,30 @@ impl App {
         action: &'static str,
     ) -> Option<String> {
         if let Some(schedule_id) = schedule_id.filter(|value| !value.trim().is_empty()) {
-            return Some(schedule_id);
+            let result = app_server
+                .thread_schedule_get(thread_id, schedule_id.clone())
+                .await;
+            if self.current_displayed_thread_id() != Some(thread_id) {
+                return None;
+            }
+
+            match result {
+                Ok(response) if response.schedule.as_ref().is_some_and(is_one_time_schedule) => {
+                    return Some(schedule_id);
+                }
+                Ok(_) => {
+                    self.chat_widget.add_info_message(
+                        "No matching schedule".to_string(),
+                        Some(format!("Could not find schedule {schedule_id}.")),
+                    );
+                    return None;
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to read schedule: {err}"));
+                    return None;
+                }
+            }
         }
 
         let result = app_server.thread_schedule_list(thread_id).await;
