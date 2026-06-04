@@ -11,13 +11,17 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use chrono::DateTime;
+use chrono::Duration as ChronoDuration;
 use chrono::Utc;
+use chrono_tz::Tz;
 use codex_protocol::ThreadId;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use croner::Cron;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt::Write as _;
+use std::str::FromStr;
 use std::sync::Arc;
 
 pub struct ManageLoopHandler;
@@ -146,18 +150,52 @@ async fn manage_loop(
             let schedule_id =
                 resolve_loop_schedule_id(&state_db, thread_id, args.schedule_id, args.action)
                     .await?;
-            ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+            let existing =
+                ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
             let status = match args.action {
                 LoopAction::Stop => codex_state::ThreadScheduleStatus::Paused,
                 LoopAction::Resume => codex_state::ThreadScheduleStatus::Active,
                 LoopAction::List | LoopAction::Clear => unreachable!("action matched above"),
             };
-            let schedule = state_db
-                .thread_schedules()
-                .set_thread_schedule_status(schedule_id.as_str(), status)
-                .await
-                .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?
-                .ok_or_else(|| missing_loop_error(schedule_id.as_str()))?;
+            let schedule = if args.action == LoopAction::Resume && existing.next_run_at.is_none() {
+                let next_run_at =
+                    next_loop_run_at(&existing.schedule, &existing.timezone, Utc::now())?
+                        .ok_or_else(|| {
+                            FunctionCallError::RespondToModel(
+                                "cannot resume loop because no next run time could be computed"
+                                    .to_string(),
+                            )
+                        })?;
+                if let Some(expires_at) = existing.expires_at
+                    && expires_at <= next_run_at
+                {
+                    return Err(FunctionCallError::RespondToModel(
+                        "loop expires_at must be later than next_run_at".to_string(),
+                    ));
+                }
+                state_db
+                    .thread_schedules()
+                    .update_thread_schedule(
+                        schedule_id.as_str(),
+                        codex_state::ThreadScheduleUpdate {
+                            prompt: None,
+                            prompt_source: None,
+                            schedule: None,
+                            timezone: None,
+                            status: Some(status),
+                            next_run_at: Some(Some(next_run_at)),
+                            expires_at: None,
+                        },
+                    )
+                    .await
+            } else {
+                state_db
+                    .thread_schedules()
+                    .set_thread_schedule_status(schedule_id.as_str(), status)
+                    .await
+            }
+            .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?
+            .ok_or_else(|| missing_loop_error(schedule_id.as_str()))?;
             if schedule.thread_id != thread_id {
                 return Err(missing_loop_error(schedule_id.as_str()));
             }
@@ -278,6 +316,51 @@ async fn ensure_current_thread_schedule(
 
 fn is_loop_schedule(schedule: &codex_state::ThreadSchedule) -> bool {
     !matches!(schedule.schedule, codex_state::ThreadScheduleSpec::Once)
+}
+
+fn next_loop_run_at(
+    schedule: &codex_state::ThreadScheduleSpec,
+    timezone: &str,
+    after: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, FunctionCallError> {
+    let next = match schedule {
+        codex_state::ThreadScheduleSpec::Once => None,
+        codex_state::ThreadScheduleSpec::Dynamic => {
+            after.checked_add_signed(ChronoDuration::minutes(1))
+        }
+        codex_state::ThreadScheduleSpec::Interval(interval) => {
+            let duration = match interval.unit {
+                codex_state::ThreadScheduleIntervalUnit::Minutes => {
+                    ChronoDuration::minutes(interval.amount)
+                }
+                codex_state::ThreadScheduleIntervalUnit::Hours => {
+                    ChronoDuration::hours(interval.amount)
+                }
+                codex_state::ThreadScheduleIntervalUnit::Days => {
+                    ChronoDuration::days(interval.amount)
+                }
+            };
+            after.checked_add_signed(duration)
+        }
+        codex_state::ThreadScheduleSpec::Cron { expression } => {
+            let timezone = timezone.parse::<Tz>().map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "invalid loop timezone `{timezone}`: {err}"
+                ))
+            })?;
+            let cron = Cron::from_str(expression).map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "invalid cron expression `{expression}`: {err}"
+                ))
+            })?;
+            let local_after = after.with_timezone(&timezone);
+            let next = cron
+                .find_next_occurrence(&local_after, /*inclusive*/ false)
+                .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+            Some(next.with_timezone(&Utc))
+        }
+    };
+    Ok(next)
 }
 
 impl LoopAction {
@@ -517,6 +600,63 @@ mod tests {
         );
         assert_eq!(response.schedules.len(), 1);
         assert_eq!(response.schedules[0].schedule_id, second.schedule_id);
+    }
+
+    #[tokio::test]
+    async fn resume_recomputes_missing_next_run_at() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(6);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Paused,
+        )
+        .await;
+        runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                codex_state::ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: Some(None),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+        let before_resume = Utc::now();
+
+        let response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            ManageLoopArgs {
+                action: LoopAction::Resume,
+                schedule_id: Some(schedule.schedule_id.clone()),
+            },
+        )
+        .await
+        .expect("loop should resume");
+
+        let updated = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(codex_state::ThreadScheduleStatus::Active, updated.status);
+        let next_run_at = updated.next_run_at.expect("next_run_at should be set");
+        assert!(next_run_at >= before_resume);
+        let affected_schedule = response
+            .affected_schedule
+            .expect("affected schedule should be returned");
+        assert_eq!(Some(next_run_at.timestamp()), affected_schedule.next_run_at);
     }
 
     #[tokio::test]

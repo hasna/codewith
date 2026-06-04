@@ -500,8 +500,10 @@ SET
 WHERE status = 'active'
   AND expires_at_ms IS NOT NULL
   AND expires_at_ms <= ?
+  AND (lease_id IS NULL OR lease_expires_at_ms <= ?)
             "#,
         )
+        .bind(now_ms)
         .bind(now_ms)
         .bind(now_ms)
         .execute(self.pool.as_ref())
@@ -1349,5 +1351,129 @@ mod tests {
                 .await
                 .expect("thread schedules should be removed")
         );
+    }
+
+    #[tokio::test]
+    async fn expire_thread_schedules_preserves_valid_lease_until_completion() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(13);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(1_700_000_000);
+        let schedule = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "finish despite expiry".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: Some(now + chrono::Duration::seconds(10)),
+            })
+            .await
+            .expect("one-time schedule should be created");
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-live", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-live",
+                "turn-live",
+            )
+            .await
+            .expect("run should update")
+            .expect("run should exist");
+
+        let after_expiry = now + chrono::Duration::seconds(20);
+        assert_eq!(
+            0,
+            runtime
+                .thread_schedules()
+                .expire_thread_schedules(after_expiry)
+                .await
+                .expect("valid lease should prevent expiry")
+        );
+        let still_leased = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Active, still_leased.status);
+        assert_eq!(Some("lease-live".to_string()), still_leased.lease_id);
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-live",
+                    after_expiry,
+                    None,
+                )
+                .await
+                .expect("run should complete after schedule expiry")
+        );
+        let completed = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, completed.status);
+        assert_eq!(None, completed.lease_id);
+    }
+
+    #[tokio::test]
+    async fn expire_thread_schedules_clears_expired_lease() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(14);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(1_700_000_000);
+        let schedule = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "abandoned run".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: Some(now + chrono::Duration::seconds(10)),
+            })
+            .await
+            .expect("one-time schedule should be created");
+        runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-abandoned", Duration::from_secs(30))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+
+        assert_eq!(
+            1,
+            runtime
+                .thread_schedules()
+                .expire_thread_schedules(now + chrono::Duration::seconds(40))
+                .await
+                .expect("expired lease should not block expiry")
+        );
+        let expired = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, expired.status);
+        assert_eq!(None, expired.lease_id);
     }
 }
