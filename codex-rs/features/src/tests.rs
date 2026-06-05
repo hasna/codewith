@@ -43,6 +43,26 @@ fn default_enabled_features_are_stable() {
 }
 
 #[test]
+fn user_config_cannot_disable_shell_tool() {
+    let mut features = Features::with_defaults();
+    features.apply_map(&BTreeMap::from([("shell_tool".to_string(), false)]));
+
+    assert!(features.enabled(Feature::ShellTool));
+}
+
+#[test]
+fn persisted_shell_tool_toggles_are_cleared() {
+    assert!(crate::should_clear_user_config_feature_toggle(
+        "shell_tool",
+        false
+    ));
+    assert!(crate::should_clear_user_config_feature_toggle(
+        "shell_tool",
+        true
+    ));
+}
+
+#[test]
 fn use_legacy_landlock_is_deprecated_and_disabled_by_default() {
     assert_eq!(Feature::UseLegacyLandlock.stage(), Stage::Deprecated);
     assert_eq!(Feature::UseLegacyLandlock.default_enabled(), false);

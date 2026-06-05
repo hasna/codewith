@@ -26,7 +26,9 @@ use codex_config::config_toml::RealtimeWsVersion;
 use codex_login::CodexAuth;
 use codex_login::default_client::default_headers;
 use codex_login::read_openai_api_key_from_env;
+use codex_model_provider::provider_api_key;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -610,14 +612,22 @@ async fn prepare_realtime_start(
     sess: &Arc<Session>,
     params: ConversationStartParams,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
-    let provider = sess.provider().await;
-    let auth_manager = sess
-        .services
-        .model_client
-        .auth_manager()
-        .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
-    let auth = auth_manager.auth().await;
     let config = sess.get_config().await;
+    let provider = config.model_provider.clone();
+    let auth_manager = sess.services.model_client.auth_manager().or_else(|| {
+        provider
+            .requires_openai_auth
+            .then(|| Arc::clone(&sess.services.auth_manager))
+    });
+    let auth = match auth_manager.as_ref() {
+        Some(auth_manager) => auth_manager.auth().await,
+        None => sess
+            .services
+            .auth_manager
+            .auth()
+            .await
+            .filter(CodexAuth::is_api_key_auth),
+    };
     let transport = params
         .transport
         .unwrap_or(ConversationStartTransport::Websocket);
@@ -637,7 +647,13 @@ async fn prepare_realtime_start(
     let requested_realtime_session_id = session_config.session_id.clone();
     let extra_headers = match transport {
         ConversationStartTransport::Websocket => {
-            let realtime_api_key = realtime_api_key(auth.as_ref(), &provider)?;
+            let realtime_api_key = realtime_api_key(
+                auth.as_ref(),
+                &provider,
+                provider.requires_openai_auth
+                    || config.model_provider_id == OPENAI_PROVIDER_ID
+                    || auth.as_ref().is_some_and(CodexAuth::is_api_key_auth),
+            )?;
             realtime_request_headers(
                 requested_realtime_session_id.as_deref(),
                 Some(realtime_api_key.as_str()),
@@ -946,8 +962,12 @@ fn escape_xml_text(input: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> CodexResult<String> {
-    if let Some(api_key) = provider.api_key()? {
+fn realtime_api_key(
+    auth: Option<&CodexAuth>,
+    provider: &ModelProviderInfo,
+    allow_openai_api_key_auth: bool,
+) -> CodexResult<String> {
+    if let Some(api_key) = provider_api_key(provider)? {
         return Ok(api_key);
     }
 
@@ -955,15 +975,13 @@ fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> C
         return Ok(token);
     }
 
-    if let Some(api_key) = auth.and_then(CodexAuth::api_key) {
+    if allow_openai_api_key_auth && let Some(api_key) = auth.and_then(CodexAuth::api_key) {
         return Ok(api_key.to_string());
     }
 
     // TODO(aibrahim): Remove this temporary fallback once realtime auth no longer
     // requires API key auth for ChatGPT/SIWC sessions.
-    if provider.is_openai()
-        && let Some(api_key) = read_openai_api_key_from_env()
-    {
+    if allow_openai_api_key_auth && let Some(api_key) = read_openai_api_key_from_env() {
         return Ok(api_key);
     }
 

@@ -1286,6 +1286,34 @@ model_reasoning_effort = "high"
     assert_eq!(contents, expected);
 }
 
+#[tokio::test]
+async fn builder_clears_shell_tool_toggle_instead_of_persisting_disable() {
+    let tmp = tempdir().expect("tmpdir");
+    let codex_home = tmp.path().to_path_buf();
+    std::fs::write(
+        codex_home.join(CONFIG_TOML_FILE),
+        r#"[features]
+shell_tool = false
+unified_exec = true
+"#,
+    )
+    .expect("write config");
+
+    ConfigEditsBuilder::new(&codex_home)
+        .set_feature_enabled("shell_tool", /*enabled*/ false)
+        .apply()
+        .await
+        .expect("persist");
+
+    let raw = std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+    let config: TomlValue = toml::from_str(&raw).expect("parse config");
+    let shell_tool = config
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .and_then(|features| features.get("shell_tool"));
+    assert_eq!(shell_tool, None);
+}
+
 #[test]
 fn blocking_builder_set_model_round_trips_back_and_forth() {
     let tmp = tempdir().expect("tmpdir");

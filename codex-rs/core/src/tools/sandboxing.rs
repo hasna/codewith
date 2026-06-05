@@ -427,6 +427,11 @@ impl<'a> SandboxAttempt<'a> {
         options: ExecOptions,
         network: Option<&NetworkProxy>,
     ) -> Result<crate::sandboxing::ExecRequest, SandboxTransformError> {
+        let network = if self.enforce_managed_network {
+            network
+        } else {
+            None
+        };
         self.manager
             .transform(SandboxTransformRequest {
                 command,

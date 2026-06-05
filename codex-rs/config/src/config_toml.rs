@@ -22,6 +22,7 @@ use crate::types::OAuthCredentialsStoreMode;
 use crate::types::OtelConfigToml;
 use crate::types::PluginConfig;
 use crate::types::SandboxWorkspaceWrite;
+use crate::types::SessionRecapToml;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
 use crate::types::ToolSuggestConfig;
@@ -30,12 +31,17 @@ use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::ModelProviderAwsAuthInfo;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
@@ -247,6 +253,10 @@ pub struct ConfigToml {
     /// Runtime auth-profile failover behavior for rate-limited sessions.
     #[serde(default)]
     pub auth_profile_auto_switch: Option<AuthProfileAutoSwitchToml>,
+
+    /// Lightweight recap generation for returning to interactive sessions.
+    #[serde(default)]
+    pub session_recap: Option<SessionRecapToml>,
 
     /// Definition for MCP servers that Codewith can reach out to for tool calls.
     #[serde(default)]
@@ -920,7 +930,7 @@ pub fn validate_model_providers(
                 "model_providers.{key}: provider aws is only supported for `{AMAZON_BEDROCK_PROVIDER_ID}`"
             ));
         }
-        if provider.name.trim().is_empty() {
+        if provider.name.trim().is_empty() && !is_partial_builtin_provider_override(key) {
             return Err(format!(
                 "model_providers.{key}: provider name must not be empty"
             ));
@@ -932,13 +942,84 @@ pub fn validate_model_providers(
     Ok(())
 }
 
+fn is_partial_builtin_provider_override(key: &str) -> bool {
+    matches!(
+        key,
+        CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID | OPENROUTER_PROVIDER_ID
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelProviderInfoToml {
+    #[serde(default)]
+    name: String,
+    base_url: Option<String>,
+    env_key: Option<String>,
+    env_key_instructions: Option<String>,
+    experimental_bearer_token: Option<String>,
+    auth: Option<codex_protocol::config_types::ModelProviderAuthInfo>,
+    aws: Option<ModelProviderAwsAuthInfo>,
+    wire_api: Option<WireApi>,
+    query_params: Option<HashMap<String, String>>,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    request_max_retries: Option<u64>,
+    stream_max_retries: Option<u64>,
+    stream_idle_timeout_ms: Option<u64>,
+    websocket_connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    requires_openai_auth: bool,
+    #[serde(default)]
+    supports_websockets: bool,
+}
+
+impl ModelProviderInfoToml {
+    fn into_model_provider_info(self, provider_id: &str) -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: self.name,
+            base_url: self.base_url,
+            env_key: self.env_key,
+            env_key_instructions: self.env_key_instructions,
+            experimental_bearer_token: self.experimental_bearer_token,
+            auth: self.auth,
+            aws: self.aws,
+            wire_api: self
+                .wire_api
+                .unwrap_or_else(|| default_wire_api_for_provider_override(provider_id)),
+            query_params: self.query_params,
+            http_headers: self.http_headers,
+            env_http_headers: self.env_http_headers,
+            request_max_retries: self.request_max_retries,
+            stream_max_retries: self.stream_max_retries,
+            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
+            websocket_connect_timeout_ms: self.websocket_connect_timeout_ms,
+            requires_openai_auth: self.requires_openai_auth,
+            supports_websockets: self.supports_websockets,
+        }
+    }
+}
+
+fn default_wire_api_for_provider_override(provider_id: &str) -> WireApi {
+    match provider_id {
+        CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID => WireApi::Chat,
+        _ => WireApi::Responses,
+    }
+}
+
 fn deserialize_model_providers<'de, D>(
     deserializer: D,
 ) -> Result<HashMap<String, ModelProviderInfo>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
+    let model_providers = HashMap::<String, ModelProviderInfoToml>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(key, provider)| {
+            let provider = provider.into_model_provider_info(&key);
+            (key, provider)
+        })
+        .collect::<HashMap<_, _>>();
     validate_model_providers(&model_providers).map_err(serde::de::Error::custom)?;
     Ok(model_providers)
 }
@@ -1009,5 +1090,85 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
+    }
+
+    #[test]
+    fn model_providers_allow_partial_builtin_override() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[model_providers.cerebras]
+base_url = "https://cerebras.example.com/v1"
+"#,
+        )
+        .expect("partial built-in provider override should deserialize");
+
+        assert_eq!(
+            config
+                .model_providers
+                .get(CEREBRAS_PROVIDER_ID)
+                .and_then(|provider| provider.base_url.as_deref()),
+            Some("https://cerebras.example.com/v1")
+        );
+        assert_eq!(
+            config
+                .model_providers
+                .get(CEREBRAS_PROVIDER_ID)
+                .map(|provider| provider.wire_api),
+            Some(WireApi::Chat)
+        );
+    }
+
+    #[test]
+    fn model_providers_honor_explicit_builtin_wire_api_override() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[model_providers.cerebras]
+wire_api = "responses"
+"#,
+        )
+        .expect("explicit built-in provider wire_api override should deserialize");
+
+        assert_eq!(
+            config
+                .model_providers
+                .get(CEREBRAS_PROVIDER_ID)
+                .map(|provider| provider.wire_api),
+            Some(WireApi::Responses)
+        );
+    }
+
+    #[test]
+    fn model_providers_default_nvidia_partial_override_to_chat_wire_api() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[model_providers.nvidia]
+base_url = "https://nvidia.example.com/v1"
+"#,
+        )
+        .expect("partial NVIDIA provider override should deserialize");
+
+        assert_eq!(
+            config
+                .model_providers
+                .get(NVIDIA_PROVIDER_ID)
+                .map(|provider| provider.wire_api),
+            Some(WireApi::Chat)
+        );
+    }
+
+    #[test]
+    fn model_providers_reject_empty_custom_provider_name() {
+        let err = toml::from_str::<ConfigToml>(
+            r#"
+[model_providers.custom]
+base_url = "https://custom.example.com/v1"
+"#,
+        )
+        .expect_err("custom providers should still require a name");
+
+        assert!(
+            err.to_string()
+                .contains("model_providers.custom: provider name must not be empty")
+        );
     }
 }

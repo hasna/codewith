@@ -1012,15 +1012,21 @@ impl UnifiedExecProcessManager {
         let mut orchestrator = ToolOrchestrator::new();
         let mut runtime =
             UnifiedExecRuntime::new(self, context.turn.unified_exec_shell_mode.clone());
-        let file_system_sandbox_policy = context.turn.file_system_sandbox_policy();
+        let effective_turn_settings = context
+            .session
+            .effective_turn_settings(context.turn.as_ref())
+            .await;
+        let file_system_sandbox_policy = effective_turn_settings
+            .permission_profile
+            .file_system_sandbox_policy();
         let exec_approval_requirement = context
             .session
             .services
             .exec_policy
             .create_exec_approval_requirement_for_command(ExecApprovalRequest {
                 command: &request.command,
-                approval_policy: context.turn.approval_policy.value(),
-                permission_profile: context.turn.permission_profile(),
+                approval_policy: effective_turn_settings.approval_policy,
+                permission_profile: effective_turn_settings.permission_profile.clone(),
                 file_system_sandbox_policy: &file_system_sandbox_policy,
                 // The process cwd may be model-controlled. Policy resolution
                 // stays anchored to the selected turn environment cwd instead.
@@ -1065,7 +1071,8 @@ impl UnifiedExecProcessManager {
                 &req,
                 &tool_ctx,
                 &context.turn,
-                context.turn.approval_policy.value(),
+                effective_turn_settings.approval_policy,
+                &effective_turn_settings.permission_profile,
             )
             .await
             .map(|result| (result.output, result.deferred_network_approval))

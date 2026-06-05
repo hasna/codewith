@@ -249,6 +249,9 @@ impl App {
                         "disable_paste_burst" => {
                             self.config.disable_paste_burst = enabled;
                         }
+                        "session_recap.enabled" => {
+                            self.config.session_recap.enabled = enabled;
+                        }
                         "hide_agent_reasoning" => {
                             self.config.hide_agent_reasoning = enabled;
                         }
@@ -457,6 +460,13 @@ impl App {
 
         for (feature, enabled) in updates {
             let feature_key = feature.key();
+            if !enabled && !codex_features::can_disable_feature_in_user_config(feature) {
+                config_edits.push(crate::config_update::build_feature_enabled_edit(
+                    feature_key,
+                    enabled,
+                ));
+                continue;
+            }
             let mut feature_edits = Vec::new();
             let mut feature_config = next_config.clone();
             if let Err(err) = feature_config.features.set_enabled(feature, enabled) {

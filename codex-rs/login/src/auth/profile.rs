@@ -46,6 +46,9 @@ pub enum AuthProfileError {
     #[error("auth profile `{name}` does not exist")]
     ProfileNotFound { name: String },
 
+    #[error("auth profile `{name}` already exists")]
+    ProfileAlreadyExists { name: String },
+
     #[error("not logged in; run `codewith login` first")]
     NoActiveAuth,
 
@@ -246,6 +249,49 @@ pub fn remove_auth_profile(
         clear_active_auth_profile(codex_home)?;
     }
     Ok(())
+}
+
+pub fn rename_auth_profile(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    old_name: &str,
+    new_name: &str,
+) -> Result<AuthProfile, AuthProfileError> {
+    validate_auth_profile_name(old_name)?;
+    validate_auth_profile_name(new_name)?;
+    ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+
+    if old_name == new_name {
+        let auth = load_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
+        let active = active_auth_profile(codex_home).ok().flatten().as_deref() == Some(old_name);
+        return Ok(profile_from_auth(old_name.to_string(), &auth, active));
+    }
+
+    let old_profile_dir = auth_profile_dir(codex_home, old_name);
+    if !old_profile_dir.is_dir() {
+        return Err(AuthProfileError::ProfileNotFound {
+            name: old_name.to_string(),
+        });
+    }
+
+    let new_profile_dir = auth_profile_dir(codex_home, new_name);
+    if new_profile_dir.exists() {
+        return Err(AuthProfileError::ProfileAlreadyExists {
+            name: new_name.to_string(),
+        });
+    }
+
+    let auth = load_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
+    let active = active_auth_profile(codex_home).ok().flatten().as_deref() == Some(old_name);
+    // Keyring-backed stores derive their key from the profile directory, so
+    // migrate through the storage abstraction instead of only renaming the dir.
+    save_profile_auth(codex_home, auth_credentials_store_mode, new_name, &auth)?;
+    delete_profile_storage_dir(old_profile_dir, auth_credentials_store_mode)?;
+    if active {
+        write_active_profile(codex_home, new_name)?;
+    }
+
+    Ok(profile_from_auth(new_name.to_string(), &auth, active))
 }
 
 pub fn auth_profile_storage_dir(

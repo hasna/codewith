@@ -43,6 +43,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::PatchApplyUpdatedEvent;
@@ -264,9 +265,9 @@ fn apply_patch_payload_command(payload: &ToolPayload) -> Option<String> {
 
 async fn effective_patch_permissions(
     session: &Session,
-    turn: &TurnContext,
     action: &ApplyPatchAction,
     cwd: &AbsolutePathBuf,
+    base_file_system_sandbox_policy: &FileSystemSandboxPolicy,
 ) -> (
     Vec<AbsolutePathBuf>,
     crate::tools::handlers::EffectiveAdditionalPermissions,
@@ -277,9 +278,8 @@ async fn effective_patch_permissions(
         session.granted_session_permissions().await.as_ref(),
         session.granted_turn_permissions().await.as_ref(),
     );
-    let base_file_system_sandbox_policy = turn.file_system_sandbox_policy();
     let file_system_sandbox_policy = effective_file_system_sandbox_policy(
-        &base_file_system_sandbox_policy,
+        base_file_system_sandbox_policy,
         granted_permissions.as_ref(),
     );
     let effective_additional_permissions = apply_granted_turn_permissions(
@@ -352,9 +352,18 @@ impl ToolExecutor<ToolInvocation> for ApplyPatchHandler {
             .await
         {
             codex_apply_patch::MaybeApplyPatchVerified::Body(changes) => {
+                let effective_turn_settings = session.effective_turn_settings(turn.as_ref()).await;
+                let base_file_system_sandbox_policy = effective_turn_settings
+                    .permission_profile
+                    .file_system_sandbox_policy();
                 let (file_paths, effective_additional_permissions, file_system_sandbox_policy) =
-                    effective_patch_permissions(session.as_ref(), turn.as_ref(), &changes, &cwd)
-                        .await;
+                    effective_patch_permissions(
+                        session.as_ref(),
+                        &changes,
+                        &cwd,
+                        &base_file_system_sandbox_policy,
+                    )
+                    .await;
                 match apply_patch::apply_patch(turn.as_ref(), &file_system_sandbox_policy, changes)
                     .await
                 {
@@ -400,7 +409,8 @@ impl ToolExecutor<ToolInvocation> for ApplyPatchHandler {
                                 &req,
                                 &tool_ctx,
                                 turn.as_ref(),
-                                turn.approval_policy.value(),
+                                effective_turn_settings.approval_policy,
+                                &effective_turn_settings.permission_profile,
                             )
                             .await
                             .map(|result| result.output);
@@ -505,8 +515,18 @@ pub(crate) async fn intercept_apply_patch(
         .await
     {
         codex_apply_patch::MaybeApplyPatchVerified::Body(changes) => {
+            let effective_turn_settings = session.effective_turn_settings(turn.as_ref()).await;
+            let base_file_system_sandbox_policy = effective_turn_settings
+                .permission_profile
+                .file_system_sandbox_policy();
             let (approval_keys, effective_additional_permissions, file_system_sandbox_policy) =
-                effective_patch_permissions(session.as_ref(), turn.as_ref(), &changes, cwd).await;
+                effective_patch_permissions(
+                    session.as_ref(),
+                    &changes,
+                    cwd,
+                    &base_file_system_sandbox_policy,
+                )
+                .await;
             match apply_patch::apply_patch(turn.as_ref(), &file_system_sandbox_policy, changes)
                 .await
             {
@@ -551,7 +571,8 @@ pub(crate) async fn intercept_apply_patch(
                             &req,
                             &tool_ctx,
                             turn.as_ref(),
-                            turn.approval_policy.value(),
+                            effective_turn_settings.approval_policy,
+                            &effective_turn_settings.permission_profile,
                         )
                         .await
                         .map(|result| result.output);

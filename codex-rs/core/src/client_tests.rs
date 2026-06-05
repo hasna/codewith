@@ -11,7 +11,9 @@ use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use codex_api::ApiError;
+use codex_api::Provider as ApiProvider;
 use codex_api::ResponseEvent;
+use codex_api::RetryConfig as ApiRetryConfig;
 use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -23,6 +25,7 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
@@ -36,6 +39,12 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use codex_tools::AdditionalProperties;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiNamespace;
+use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -129,6 +138,38 @@ fn test_session_telemetry() -> SessionTelemetry {
         "test-terminal".to_string(),
         SessionSource::Cli,
     )
+}
+
+fn api_provider(name: &str, base_url: &str) -> ApiProvider {
+    ApiProvider {
+        name: name.to_string(),
+        base_url: base_url.to_string(),
+        query_params: None,
+        headers: http::HeaderMap::new(),
+        retry: ApiRetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            retry_429: false,
+            retry_5xx: false,
+            retry_transport: false,
+        },
+        stream_idle_timeout: Duration::from_secs(5),
+    }
+}
+
+fn test_function_tool(name: &str) -> ResponsesApiTool {
+    ResponsesApiTool {
+        name: name.to_string(),
+        description: "test tool".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::new(),
+            Some(Vec::new()),
+            Some(AdditionalProperties::from(false)),
+        ),
+        output_schema: None,
+    }
 }
 
 #[derive(Default)]
@@ -275,6 +316,211 @@ fn build_subagent_headers_sets_internal_memory_consolidation_label() {
         .get(X_OPENAI_SUBAGENT_HEADER)
         .and_then(|value| value.to_str().ok());
     assert_eq!(value, Some("memory_consolidation"));
+}
+
+#[test]
+fn nvidia_responses_request_omits_unsupported_advanced_tools() {
+    let client = test_model_client(SessionSource::Cli);
+    let namespace_tool = test_function_tool("spawn_agent");
+    let function_tool = test_function_tool("exec_command");
+    let prompt = crate::Prompt {
+        tools: vec![
+            ToolSpec::Namespace(ResponsesApiNamespace {
+                name: "multi_agent_v1".to_string(),
+                description: "Tools for spawning and managing sub-agents.".to_string(),
+                tools: vec![ResponsesApiNamespaceTool::Function(namespace_tool)],
+            }),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            },
+            ToolSpec::Function(function_tool),
+        ],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("nvidia", "https://integrate.api.nvidia.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.tools,
+        vec![json!({
+            "type": "function",
+            "name": "exec_command",
+            "description": "test tool",
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false,
+            }
+        })]
+    );
+}
+
+#[test]
+fn openrouter_responses_request_omits_tools_for_models_without_tool_support() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Function(test_function_tool("exec_command"))],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("OpenRouter", "https://openrouter.ai/api/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(request.tools, Vec::<serde_json::Value>::new());
+}
+
+#[test]
+fn openrouter_responses_request_keeps_serial_tools_for_models_with_tool_support() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Function(test_function_tool("exec_command"))],
+        ..Default::default()
+    };
+    let mut model_info = test_model_info();
+    model_info.experimental_supported_tools = vec!["tools".to_string()];
+    model_info.supports_parallel_tool_calls = false;
+
+    let request = client
+        .build_responses_request(
+            &api_provider("OpenRouter", "https://openrouter.ai/api/v1"),
+            &prompt,
+            &model_info,
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.tools,
+        vec![json!({
+            "type": "function",
+            "name": "exec_command",
+            "description": "test tool",
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false,
+            }
+        })]
+    );
+    assert!(!request.parallel_tool_calls);
+}
+
+#[test]
+fn openrouter_no_tool_responses_request_moves_instruction_messages_out_of_input() {
+    let client = test_model_client(SessionSource::Cli);
+    let user_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        phase: None,
+    };
+    let second_user_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "second user message".to_string(),
+        }],
+        phase: None,
+    };
+    let merged_user_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "hello".to_string(),
+            },
+            ContentItem::InputText {
+                text: "second user message".to_string(),
+            },
+        ],
+        phase: None,
+    };
+    let assistant_message = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "hi".to_string(),
+        }],
+        phase: None,
+    };
+    let mut prompt = crate::Prompt::default();
+    prompt.base_instructions.text = "Base instructions".to_string();
+    prompt.tools = vec![ToolSpec::Function(test_function_tool("exec_command"))];
+    prompt.input = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Developer note".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "system".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "System note".to_string(),
+            }],
+            phase: None,
+        },
+        user_message,
+        second_user_message,
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "exec_command".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: "call-1".to_string(),
+        },
+        assistant_message.clone(),
+    ];
+
+    let request = client
+        .build_responses_request(
+            &api_provider("OpenRouter", "https://openrouter.ai/api/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.instructions,
+        "Base instructions\n\nDeveloper note\n\nSystem note"
+    );
+    assert_eq!(request.input, vec![merged_user_message, assistant_message]);
+    assert_eq!(request.tools, Vec::<serde_json::Value>::new());
 }
 
 #[test]

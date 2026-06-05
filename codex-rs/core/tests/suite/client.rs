@@ -1617,7 +1617,7 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
         "expected root alias for {expected_root_str}: {developer_messages:?}"
     );
     assert!(
-        developer_text.contains("- s00: d (file: r0/s00/SKILL.md)"),
+        developer_text.contains("- s00: (file: r0/s00/SKILL.md)"),
         "expected skill path to use root alias: {developer_messages:?}"
     );
     assert!(
@@ -2474,6 +2474,135 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         body["input"][7]["call_id"].as_str(),
         Some("custom-tool-call-id")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_api_posts_to_chat_completions() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-oss-120b\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-oss-120b\",\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-oss-120b\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let response = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body, "text/event-stream");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(response)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = ModelProviderInfo {
+        name: "chat-provider".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Chat,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    config.model = Some("gpt-oss-120b".to_string());
+    let effort = config.model_reasoning_effort;
+    let summary = config.model_reasoning_summary;
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline("gpt-oss-120b", &config);
+    let thread_id = ThreadId::new();
+    let session_telemetry = SessionTelemetry::new(
+        thread_id,
+        "gpt-oss-120b",
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        /*auth_mode*/ None,
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id.into(),
+        thread_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Exec,
+        /*parent_thread_id*/ None,
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+    );
+    let mut client_session = client.new_session();
+
+    let mut prompt = Prompt::default();
+    prompt.base_instructions.text = "Be terse".into();
+    prompt.input.push(ResponseItem::Message {
+        id: Some("message-id".into()),
+        role: "user".into(),
+        content: vec![ContentItem::InputText {
+            text: "hello".into(),
+        }],
+        phase: None,
+    });
+
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(ReasoningSummary::Auto),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("chat completions stream to start");
+
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            break;
+        }
+    }
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be json");
+    assert!(body.get("input").is_none());
+    assert_eq!(
+        body["messages"],
+        json!([
+            {"role": "system", "content": "Be terse"},
+            {"role": "user", "content": "hello"}
+        ])
+    );
+    assert_eq!(body["model"].as_str(), Some("gpt-oss-120b"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

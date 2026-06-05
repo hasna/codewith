@@ -3,6 +3,7 @@
 use super::*;
 use codex_login::AuthProfile;
 use codex_login::list_auth_profiles;
+use crossterm::event::KeyCode;
 
 impl ChatWidget {
     pub(crate) fn open_profile_popup(&mut self) {
@@ -50,6 +51,7 @@ impl ChatWidget {
             tx.send(AppEvent::SwitchAuthProfile {
                 profile: None,
                 reason: crate::app_event::AuthProfileSwitchReason::Manual,
+                resume_queued_input: false,
             });
         })];
         SelectionItem {
@@ -74,17 +76,101 @@ impl ChatWidget {
             tx.send(AppEvent::SwitchAuthProfile {
                 profile: Some(profile_name.clone()),
                 reason: crate::app_event::AuthProfileSwitchReason::Manual,
+                resume_queued_input: false,
             });
         })];
+        let rename_profile_name = profile.name.clone();
+        let delete_profile_name = profile.name.clone();
+        let shortcut_actions = vec![
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char('r')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAuthProfileRenamePrompt {
+                        profile: rename_profile_name.clone(),
+                    });
+                }),
+                dismiss_on_select: true,
+            },
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char('d')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAuthProfileDeleteConfirm {
+                        profile: delete_profile_name.clone(),
+                    });
+                }),
+                dismiss_on_select: true,
+            },
+        ];
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: profile.email.clone().or(profile.plan.clone()),
+            selected_description: Some("Enter switch / r rename / d delete".to_string()),
             is_current: current == Some(profile.name.as_str()),
             actions,
+            shortcut_actions,
             dismiss_on_select: true,
             ..Default::default()
         }
+    }
+
+    pub(crate) fn open_auth_profile_rename_prompt(&mut self, profile: String) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new(
+            "Rename profile".to_string(),
+            "Type a new profile name and press Enter".to_string(),
+            profile.clone(),
+            Some(format!("Current: {profile}")),
+            Box::new(move |new_name: String| {
+                if let Err(err) = codex_login::validate_auth_profile_name(&new_name) {
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!("Invalid auth profile name: {err}")),
+                    )));
+                    return;
+                }
+                tx.send(AppEvent::RenameAuthProfile {
+                    old_name: profile.clone(),
+                    new_name,
+                });
+            }),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
+    pub(crate) fn open_auth_profile_delete_confirm(&mut self, profile: String) {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Delete profile".bold()));
+        header.push(Line::from(
+            format!("Delete auth profile `{profile}`?").dim(),
+        ));
+        header.push(Line::from("This removes only the saved profile.".dim()));
+
+        let delete_profile = profile.clone();
+        let delete_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+            tx.send(AppEvent::DeleteAuthProfile {
+                profile: delete_profile.clone(),
+            });
+        })];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            header: Box::new(header),
+            items: vec![
+                SelectionItem {
+                    name: "Delete".to_string(),
+                    description: Some(format!("Remove `{profile}` from saved auth profiles.")),
+                    actions: delete_actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+                SelectionItem {
+                    name: "Cancel".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+            ],
+            initial_selected_idx: Some(1),
+            ..Default::default()
+        });
     }
 }
 

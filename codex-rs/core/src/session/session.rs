@@ -4,6 +4,7 @@ use crate::config::ConstraintError;
 use crate::goals::GoalRuntimeState;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -245,6 +246,13 @@ impl SessionConfiguration {
                     .collaboration_mode
                     .model()
                     .split_once('/')?;
+                let current_provider = next_configuration
+                    .original_config_do_not_use
+                    .model_provider_id
+                    .as_str();
+                if current_provider != OPENAI_PROVIDER_ID && candidate != current_provider {
+                    return None;
+                }
                 next_configuration
                     .original_config_do_not_use
                     .model_providers

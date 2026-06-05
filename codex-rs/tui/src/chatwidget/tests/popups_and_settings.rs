@@ -2347,9 +2347,49 @@ async fn profile_selection_popup_snapshot_and_selection() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::SwitchAuthProfile { profile, reason })
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input
+        })
             if profile.as_deref() == Some("personal")
                 && reason == crate::app_event::AuthProfileSwitchReason::Manual
+                && !resume_queued_input
+    );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileRenamePrompt { profile }) if profile == "personal"
+    );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
+    );
+}
+
+#[tokio::test]
+async fn profile_delete_confirm_defaults_to_cancel() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    while rx.try_recv().is_ok() {}
+
+    chat.open_auth_profile_delete_confirm("personal".to_string());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(rx.try_recv().is_err());
+
+    chat.open_auth_profile_delete_confirm("personal".to_string());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::DeleteAuthProfile { profile }) if profile == "personal"
     );
 }
 
@@ -2487,13 +2527,14 @@ async fn provider_selection_emits_selected_provider_id() {
 }
 
 #[tokio::test]
-async fn all_models_single_effort_selection_updates_model_and_closes() {
+async fn current_provider_model_selection_sends_provider_and_model() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.config.model_provider_id = "openai".to_string();
-    let preset = provider_picker_preset("openrouter/deepseek-v3.2", ReasoningEffortConfig::High);
+    chat.config.model_provider_id = "nvidia".to_string();
+    let preset =
+        provider_picker_preset("deepseek-ai/deepseek-v4-flash", ReasoningEffortConfig::High);
     chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
-        "openai".to_string(),
+        "nvidia".to_string(),
         vec![preset.clone()],
     )));
     while rx.try_recv().is_ok() {}
@@ -2505,26 +2546,22 @@ async fn all_models_single_effort_selection_updates_model_and_closes() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "openrouter/deepseek-v3.2"
-        )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::High))
-        )),
-        "expected reasoning update event; events: {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::PersistModelSelection {
+            AppEvent::SelectModelProviderModel {
+                provider_id,
                 model,
                 effort: Some(ReasoningEffortConfig::High),
-            } if model == "openrouter/deepseek-v3.2"
+            } if provider_id == "nvidia" && model == "deepseek-ai/deepseek-v4-flash"
         )),
-        "expected model persistence event; events: {events:?}"
+        "expected provider-scoped model selection event; events: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            AppEvent::UpdateModel(_)
+                | AppEvent::UpdateReasoningEffort(_)
+                | AppEvent::PersistModelSelection { .. }
+        )),
+        "provider-scoped selection should own the active thread mutation; events: {events:?}"
     );
     assert!(chat.bottom_pane.no_modal_or_popup_active());
 }
@@ -2711,6 +2748,44 @@ async fn inactive_provider_reasoning_selection_switches_provider_and_model() {
                 | AppEvent::PersistModelSelection { .. }
         )),
         "provider switch event should own the active thread mutation; events: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn current_provider_reasoning_selection_sends_provider_and_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "nvidia".to_string();
+    let preset =
+        provider_picker_preset("deepseek-ai/deepseek-v4-flash", ReasoningEffortConfig::High);
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "nvidia".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_reasoning_popup(preset);
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectModelProviderModel {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::High),
+            } if provider_id == "nvidia" && model == "deepseek-ai/deepseek-v4-flash"
+        )),
+        "expected provider-scoped reasoning selection event; events: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            AppEvent::UpdateModel(_)
+                | AppEvent::UpdateReasoningEffort(_)
+                | AppEvent::PersistModelSelection { .. }
+        )),
+        "provider-scoped selection should own the active thread mutation; events: {events:?}"
     );
 }
 

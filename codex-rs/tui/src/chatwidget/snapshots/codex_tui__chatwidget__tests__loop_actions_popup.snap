@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/loop_menu.rs
-assertion_line: 62
 expression: "render_bottom_popup(&chat, 100)"
 ---
   Loop sch_paused
@@ -8,8 +7,9 @@ expression: "render_bottom_popup(&chat, 100)"
 
 › 1. Run now                 Queue this prompt immediately
   2. Edit prompt             Change the prompt used on future runs
-  3. Resume                  Start scheduling future runs again
-  4. Delete                  Remove this loop from the thread
-  5. Back to loops           Return to all scheduled prompts
+  3. Stats                   Show run counts and latest outcomes
+  4. Resume                  Start scheduling future runs again
+  5. Delete                  Remove this loop from the thread
+  6. Back to loops           Return to all scheduled prompts
 
   Press enter to confirm or esc to go back

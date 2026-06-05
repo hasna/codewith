@@ -17,6 +17,7 @@ use crate::tools::handlers::ManageScheduleHandler;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
+use crate::tools::handlers::RenameSessionHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
 use crate::tools::handlers::RequestUserInputHandler;
@@ -605,6 +606,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     let environment_mode = turn_context.tool_environment_mode();
 
     planned_tools.add(PlanHandler);
+    planned_tools.add(RenameSessionHandler);
     if goal_tools_enabled(turn_context) {
         planned_tools.add(GetGoalHandler);
         planned_tools.add(CreateGoalHandler);

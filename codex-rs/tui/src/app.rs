@@ -199,6 +199,7 @@ mod agent_navigation;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
+mod auth_profiles;
 mod background_requests;
 mod config_persistence;
 mod event_dispatch;
@@ -212,6 +213,7 @@ mod plugin_mentions;
 mod replay_filter;
 mod resize_reflow;
 mod session_lifecycle;
+mod session_recap;
 mod side;
 mod startup_prompts;
 mod thread_events;
@@ -228,6 +230,7 @@ use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
+use self::session_recap::SessionRecapScheduler;
 use self::side::SideParentStatus;
 use self::side::SideParentStatusChange;
 use self::side::SideThreadState;
@@ -552,6 +555,7 @@ pub(crate) struct App {
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
+    session_recap: SessionRecapScheduler,
     pending_startup_thread_start: bool,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
@@ -1035,6 +1039,7 @@ See the Codewith keymap documentation for supported actions and examples."
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
+            session_recap: SessionRecapScheduler::default(),
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
@@ -1235,9 +1240,25 @@ See the Codewith keymap documentation for supported actions and examples."
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         let terminal_resize_reflow_enabled = self.terminal_resize_reflow_enabled();
-        if terminal_resize_reflow_enabled && matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
+        if matches!(event, TuiEvent::FocusLost) {
+            self.handle_terminal_focus_lost();
+            return Ok(AppRunControl::Continue);
+        }
+        if matches!(event, TuiEvent::FocusGained) {
+            self.handle_terminal_focus_gained();
+        }
+
+        if terminal_resize_reflow_enabled
+            && matches!(
+                event,
+                TuiEvent::Draw | TuiEvent::Resize | TuiEvent::FocusGained
+            )
+        {
             self.handle_draw_pre_render(tui)?;
-        } else if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
+        } else if matches!(
+            event,
+            TuiEvent::Draw | TuiEvent::Resize | TuiEvent::FocusGained
+        ) {
             let size = tui.terminal.size()?;
             if size != tui.terminal.last_known_screen_size {
                 self.refresh_status_line();
@@ -1259,7 +1280,7 @@ See the Codewith keymap documentation for supported actions and examples."
                     let pasted = pasted.replace("\r", "\n");
                     self.chat_widget.handle_paste(pasted);
                 }
-                TuiEvent::Draw | TuiEvent::Resize => {
+                TuiEvent::Draw | TuiEvent::Resize | TuiEvent::FocusGained => {
                     if self.backtrack_render_pending {
                         self.backtrack_render_pending = false;
                         self.render_transcript_once(tui);
@@ -1305,6 +1326,7 @@ See the Codewith keymap documentation for supported actions and examples."
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
+                TuiEvent::FocusLost => unreachable!("focus lost is handled before dispatch"),
             }
         }
         Ok(AppRunControl::Continue)

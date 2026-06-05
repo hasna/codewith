@@ -89,8 +89,13 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     /// Returns model presets sorted by priority and filtered by auth mode and visibility.
     async fn list_models(&self, refresh_strategy: RefreshStrategy) -> Vec<ModelPreset> {
         async move {
-            let catalog = self.raw_model_catalog(refresh_strategy).await;
-            self.build_available_models(catalog.models)
+            match self.list_models_result(refresh_strategy).await {
+                Ok(models) => models,
+                Err(err) => {
+                    error!("failed to refresh available models: {err}");
+                    self.build_available_models(self.get_remote_models().await)
+                }
+            }
         }
         .instrument(tracing::info_span!(
             "list_models",
@@ -99,8 +104,34 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         .await
     }
 
+    /// List models while preserving refresh errors for call sites that need to
+    /// distinguish "no models returned" from "model discovery failed".
+    async fn list_models_result(
+        &self,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<Vec<ModelPreset>> {
+        let catalog = self.raw_model_catalog_result(refresh_strategy).await?;
+        Ok(self.build_available_models(catalog.models))
+    }
+
     /// Return the active raw model catalog, refreshing according to the specified strategy.
-    async fn raw_model_catalog(&self, refresh_strategy: RefreshStrategy) -> ModelsResponse;
+    async fn raw_model_catalog(&self, refresh_strategy: RefreshStrategy) -> ModelsResponse {
+        match self.raw_model_catalog_result(refresh_strategy).await {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                error!("failed to refresh available models: {err}");
+                ModelsResponse {
+                    models: self.get_remote_models().await,
+                }
+            }
+        }
+    }
+
+    /// Return the active raw model catalog while preserving refresh errors.
+    async fn raw_model_catalog_result(
+        &self,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<ModelsResponse>;
 
     /// Return the current in-memory remote model catalog without refreshing or loading cache state.
     async fn get_remote_models(&self) -> Vec<ModelInfo>;
@@ -244,13 +275,14 @@ impl StaticModelsManager {
 
 #[async_trait]
 impl ModelsManager for OpenAiModelsManager {
-    async fn raw_model_catalog(&self, refresh_strategy: RefreshStrategy) -> ModelsResponse {
-        if let Err(err) = self.refresh_available_models(refresh_strategy).await {
-            error!("failed to refresh available models: {err}");
-        }
-        ModelsResponse {
+    async fn raw_model_catalog_result(
+        &self,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<ModelsResponse> {
+        self.refresh_available_models(refresh_strategy).await?;
+        Ok(ModelsResponse {
             models: self.get_remote_models().await,
-        }
+        })
     }
 
     async fn get_remote_models(&self) -> Vec<ModelInfo> {
@@ -402,10 +434,13 @@ impl OpenAiModelsManager {
 
 #[async_trait]
 impl ModelsManager for StaticModelsManager {
-    async fn raw_model_catalog(&self, _refresh_strategy: RefreshStrategy) -> ModelsResponse {
-        ModelsResponse {
+    async fn raw_model_catalog_result(
+        &self,
+        _refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<ModelsResponse> {
+        Ok(ModelsResponse {
             models: self.get_remote_models().await,
-        }
+        })
     }
 
     async fn get_remote_models(&self) -> Vec<ModelInfo> {

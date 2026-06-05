@@ -119,7 +119,7 @@ async fn process_spawn_returns_error_when_local_environment_is_disabled() -> Res
         .send_process_spawn_request(process_spawn_params(
             "disabled-process".to_string(),
             codex_home.path(),
-            vec!["sh".to_string(), "-lc".to_string(), "true".to_string()],
+            vec!["sh".to_string(), "-c".to_string(), "true".to_string()],
         )?)
         .await?;
     let error = mcp
@@ -147,7 +147,7 @@ async fn process_spawn_reports_buffered_output_cap_reached() -> Result<()> {
     } else {
         vec![
             "sh".to_string(),
-            "-lc".to_string(),
+            "-c".to_string(),
             "printf abcde; printf 12345 >&2".to_string(),
         ]
     };
@@ -194,7 +194,7 @@ async fn process_kill_terminates_running_process() -> Result<()> {
             "Start-Sleep -Seconds 30".to_string(),
         ]
     } else {
-        vec!["sh".to_string(), "-lc".to_string(), "sleep 30".to_string()]
+        vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()]
     };
     let spawn_request_id = mcp
         .send_process_spawn_request(process_spawn_params(

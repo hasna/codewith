@@ -1243,6 +1243,9 @@ pub enum EventMsg {
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
 
+    /// Updated user-facing name for the thread.
+    ThreadNameUpdated(ThreadNameUpdatedEvent),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 
@@ -3623,6 +3626,16 @@ pub struct ThreadGoalUpdatedEvent {
     #[ts(optional)]
     pub turn_id: Option<String>,
     pub goal: ThreadGoal,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadNameUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_name: Option<String>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

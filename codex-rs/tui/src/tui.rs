@@ -476,6 +476,10 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
+    /// The terminal/tab received focus.
+    FocusGained,
+    /// The terminal/tab lost focus.
+    FocusLost,
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without

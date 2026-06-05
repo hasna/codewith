@@ -8,6 +8,7 @@ use bytes::Bytes;
 use codex_api::ApiError;
 use codex_api::AuthError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsClient;
 use codex_api::Compression;
 use codex_api::Provider;
 use codex_api::ResponsesApiRequest;
@@ -286,6 +287,63 @@ async fn responses_client_uses_responses_path() -> Result<()> {
 
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/responses");
+    Ok(())
+}
+
+#[tokio::test]
+async fn chat_completions_client_maps_responses_request_to_chat_path() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ChatCompletionsClient::new(transport, provider("cerebras"), Arc::new(NoAuth));
+
+    let request = ResponsesApiRequest {
+        model: "gpt-oss-120b".into(),
+        instructions: "Be terse".into(),
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText { text: "hi".into() }],
+            phase: None,
+        }],
+        tools: Vec::new(),
+        tool_choice: "auto".into(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let _stream = client
+        .stream_request(
+            request,
+            ResponsesOptions {
+                compression: Compression::None,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_path_ends_with(&requests, "/chat/completions");
+    let body = requests[0]
+        .body
+        .as_ref()
+        .and_then(RequestBody::json)
+        .expect("request body should be json");
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([
+            {"role": "system", "content": "Be terse"},
+            {"role": "user", "content": "hi"}
+        ])
+    );
+    assert_eq!(body["model"], "gpt-oss-120b");
+    assert_eq!(body["stream"], true);
     Ok(())
 }
 

@@ -1,6 +1,8 @@
 use super::CoreShellActionProvider;
+use super::CoreShellCommandExecutor;
 use super::InterceptedExecPolicyContext;
 use super::ParsedShellCommand;
+use super::PrepareSandboxedExecParams;
 use super::commands_for_intercepted_exec_policy;
 use super::evaluate_intercepted_exec_policy;
 use super::extract_shell_script;
@@ -16,6 +18,13 @@ use codex_execpolicy::PolicyParser;
 use codex_execpolicy::RuleMatch;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
+use codex_network_proxy::ConfigReloader;
+use codex_network_proxy::ConfigState;
+use codex_network_proxy::NetworkProxy;
+use codex_network_proxy::NetworkProxyConfig;
+use codex_network_proxy::NetworkProxyConstraints;
+use codex_network_proxy::NetworkProxyState;
+use codex_network_proxy::PROXY_ENV_KEYS;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -36,6 +45,7 @@ use codex_shell_escalation::ResolvedPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +95,40 @@ fn denied_read_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
 
 fn test_sandbox_cwd() -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(host_absolute_path(&["workspace"])).unwrap()
+}
+
+struct StaticNetworkProxyReloader;
+
+#[async_trait::async_trait]
+impl ConfigReloader for StaticNetworkProxyReloader {
+    fn source_label(&self) -> String {
+        "test config state".to_string()
+    }
+
+    async fn maybe_reload(&self) -> anyhow::Result<Option<ConfigState>> {
+        Ok(None)
+    }
+
+    async fn reload_now(&self) -> anyhow::Result<ConfigState> {
+        Err(anyhow::anyhow!("force reload is not supported in tests"))
+    }
+}
+
+async fn test_network_proxy() -> anyhow::Result<NetworkProxy> {
+    let state = codex_network_proxy::build_config_state(
+        NetworkProxyConfig::default(),
+        NetworkProxyConstraints::default(),
+    )?;
+    NetworkProxy::builder()
+        .state(Arc::new(NetworkProxyState::with_reloader(
+            state,
+            Arc::new(StaticNetworkProxyReloader),
+        )))
+        .managed_by_codex(/*managed_by_codex*/ false)
+        .http_addr("127.0.0.1:43128".parse()?)
+        .socks_addr("127.0.0.1:48081".parse()?)
+        .build()
+        .await
 }
 
 #[test]
@@ -346,6 +390,50 @@ fn shell_request_escalation_execution_is_explicit() {
             ResolvedPermissionProfile { permission_profile },
         )),
     );
+}
+
+#[tokio::test]
+async fn zsh_nested_full_access_exec_drops_managed_network_proxy() -> anyhow::Result<()> {
+    let proxy = test_network_proxy().await?;
+    let permission_profile = PermissionProfile::Disabled;
+    let (file_system_sandbox_policy, network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
+    let workdir = test_sandbox_cwd();
+    let executor = CoreShellCommandExecutor {
+        command: vec![
+            "/bin/zsh".to_string(),
+            "-lc".to_string(),
+            "echo ok".to_string(),
+        ],
+        cwd: workdir.clone(),
+        permission_profile: permission_profile.clone(),
+        file_system_sandbox_policy,
+        network_sandbox_policy,
+        sandbox: SandboxType::None,
+        env: HashMap::new(),
+        network: Some(proxy),
+        windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel::Disabled,
+        arg0: None,
+        sandbox_policy_cwd: workdir.clone(),
+        windows_sandbox_workspace_roots: vec![workdir.clone()],
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+    };
+
+    let prepared = executor.prepare_sandboxed_exec(PrepareSandboxedExecParams {
+        command: vec!["/bin/echo".to_string(), "ok".to_string()],
+        workdir: &workdir,
+        env: HashMap::from([("CUSTOM_ENV".to_string(), "kept".to_string())]),
+        permission_profile: &permission_profile,
+        additional_permissions: None,
+    })?;
+
+    for key in PROXY_ENV_KEYS {
+        assert_eq!(prepared.env.get(*key), None, "{key} should be unset");
+    }
+    assert_eq!(prepared.env.get("CUSTOM_ENV"), Some(&"kept".to_string()));
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -106,6 +106,12 @@ pub(crate) enum SelectionRowDisplay {
 pub(crate) type SelectionAction = Box<dyn Fn(&AppEventSender) + Send + Sync>;
 pub(crate) type SelectionToggleAction = dyn Fn(bool, &AppEventSender) + Send + Sync;
 
+pub(crate) struct SelectionShortcutAction {
+    pub binding: KeyBinding,
+    pub action: SelectionAction,
+    pub dismiss_on_select: bool,
+}
+
 pub(crate) struct SelectionToggle {
     pub is_on: bool,
     pub action: Box<SelectionToggleAction>,
@@ -140,6 +146,7 @@ pub(crate) struct SelectionItem {
     pub is_default: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
+    pub shortcut_actions: Vec<SelectionShortcutAction>,
     pub dismiss_on_select: bool,
     pub dismiss_parent_on_child_accept: bool,
     pub search_value: Option<String>,
@@ -651,6 +658,31 @@ impl ListSelectionView {
         (toggle.action)(toggle.is_on, &app_event_tx);
     }
 
+    fn apply_selected_shortcut_action(&mut self, key_event: KeyEvent) -> bool {
+        let Some(actual_idx) = self.selected_actual_idx() else {
+            return false;
+        };
+        let Some(item) = self.active_items().get(actual_idx) else {
+            return false;
+        };
+        if !Self::item_is_enabled(item) {
+            return false;
+        }
+        let Some(shortcut_action) = item
+            .shortcut_actions
+            .iter()
+            .find(|shortcut_action| shortcut_action.binding.is_press(key_event))
+        else {
+            return false;
+        };
+
+        (shortcut_action.action)(&self.app_event_tx);
+        if shortcut_action.dismiss_on_select {
+            self.completion = Some(ViewCompletion::Accepted);
+        }
+        true
+    }
+
     fn move_up(&mut self) {
         let before = self.selected_actual_idx();
         let len = self.visible_len();
@@ -994,6 +1026,9 @@ impl BottomPaneView for ListSelectionView {
                 && !modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>
             {
+                if self.apply_selected_shortcut_action(key_event) {
+                    return;
+                }
                 if let Some(idx) = self.items.iter().position(|item| {
                     item.display_shortcut
                         .is_some_and(|shortcut| shortcut.is_press(key_event))

@@ -435,7 +435,10 @@ impl NetworkApprovalService {
             .await;
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
         };
-        if !permission_profile_allows_network_approval_flow(&turn_context.permission_profile()) {
+        let effective_turn_settings = session.effective_turn_settings(turn_context.as_ref()).await;
+        if !permission_profile_allows_network_approval_flow(
+            &effective_turn_settings.permission_profile,
+        ) {
             pending.set_decision(PendingApprovalDecision::Deny).await;
             self.pending_host_approvals.lock().await.remove(&key);
             self.record_outcome_for_single_active_call(NetworkApprovalOutcome::DeniedByPolicy(
@@ -444,7 +447,7 @@ impl NetworkApprovalService {
             .await;
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
         }
-        if !allows_network_approval_flow(turn_context.approval_policy.value()) {
+        if !allows_network_approval_flow(effective_turn_settings.approval_policy) {
             pending.set_decision(PendingApprovalDecision::Deny).await;
             self.pending_host_approvals.lock().await.remove(&key);
             self.record_outcome_for_single_active_call(NetworkApprovalOutcome::DeniedByPolicy(
@@ -475,8 +478,9 @@ impl NetworkApprovalService {
             match permission_request_decision {
                 PermissionRequestDecision::Allow => {
                     pending
-                        .set_decision(PendingApprovalDecision::AllowOnce)
+                        .set_decision(PendingApprovalDecision::AllowForSession)
                         .await;
+                    self.session_approved_hosts.lock().await.insert(key.clone());
                     let mut pending_approvals = self.pending_host_approvals.lock().await;
                     pending_approvals.remove(&key);
                     return NetworkDecision::Allow;

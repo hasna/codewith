@@ -272,8 +272,11 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             sandbox_permissions,
             ..req.clone()
         };
-        let managed_network =
-            managed_network_for_sandbox_permissions(req.network.as_ref(), req.sandbox_permissions);
+        let managed_network = if attempt.enforce_managed_network {
+            managed_network_for_sandbox_permissions(req.network.as_ref(), req.sandbox_permissions)
+        } else {
+            None
+        };
         let mut env = exec_env_for_sandbox_permissions(&req.env, req.sandbox_permissions);
         if let Some(network) = managed_network {
             network.apply_to_env(&mut env);

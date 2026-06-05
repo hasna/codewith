@@ -26,6 +26,7 @@ use codex_core::path_utils;
 use codex_core::path_utils::SymlinkWritePaths;
 use codex_core::path_utils::resolve_symlink_write_paths;
 use codex_core::path_utils::write_atomically;
+use codex_features::should_clear_user_config_feature_toggle;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -255,9 +256,10 @@ impl ConfigManager {
                 }
             }
             let original_value = value_at_path(&user_config, &segments).cloned();
-            let parsed_value = parse_value(value).map_err(|message| {
+            let mut parsed_value = parse_value(value).map_err(|message| {
                 ConfigManagerError::write(ConfigWriteErrorCode::ConfigValidationError, message)
             })?;
+            normalize_user_feature_toggle(&segments, &mut parsed_value);
 
             apply_merge(&mut user_config, &segments, parsed_value.as_ref(), strategy).map_err(
                 |err| match err {
@@ -413,6 +415,21 @@ fn parse_value(value: JsonValue) -> Result<Option<TomlValue>, String> {
     serde_json::from_value::<TomlValue>(value)
         .map(Some)
         .map_err(|err| format!("invalid value: {err}"))
+}
+
+fn normalize_user_feature_toggle(segments: &[String], value: &mut Option<TomlValue>) {
+    let [features, key] = segments else {
+        return;
+    };
+    if features != "features" {
+        return;
+    }
+    let Some(TomlValue::Boolean(enabled)) = value.as_ref() else {
+        return;
+    };
+    if should_clear_user_config_feature_toggle(key, *enabled) {
+        *value = None;
+    }
 }
 
 fn parse_key_path(path: &str) -> Result<Vec<String>, String> {

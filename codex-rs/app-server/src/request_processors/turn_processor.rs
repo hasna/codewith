@@ -2,6 +2,8 @@ use super::*;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
 
+const OPENAI_PROVIDER_ID: &str = "openai";
+
 #[derive(Clone)]
 pub(crate) struct TurnRequestProcessor {
     auth_manager: Arc<AuthManager>,
@@ -432,7 +434,7 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
-                    model_provider: None,
+                    model_provider: params.model_provider,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,
@@ -521,13 +523,9 @@ impl TurnRequestProcessor {
             ));
         }
 
-        let model_provider = model_provider.or_else(|| {
-            let (provider_id, _) = model.as_deref()?.split_once('/')?;
-            self.config
-                .model_providers
-                .contains_key(provider_id)
-                .then(|| provider_id.to_string())
-        });
+        let provider_prefixed_model = model
+            .as_deref()
+            .and_then(|model| model.split_once('/').map(|(provider_id, _)| provider_id));
 
         let collaboration_mode =
             collaboration_mode.map(|mode| self.normalize_collaboration_mode(mode));
@@ -535,11 +533,28 @@ impl TurnRequestProcessor {
         // `thread/settings/update` only acknowledges that the update was queued.
         // Clients that send dependent partial updates should wait for
         // `thread/settings/updated` or combine the fields in one request.
-        let snapshot = if permissions.is_some() || runtime_workspace_roots_request.is_some() {
+        let snapshot = if permissions.is_some()
+            || runtime_workspace_roots_request.is_some()
+            || (model_provider.is_none() && provider_prefixed_model.is_some())
+        {
             Some(thread.config_snapshot().await)
         } else {
             None
         };
+        let model_provider = model_provider.or_else(|| {
+            let provider_id = provider_prefixed_model?;
+            let current_provider = snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.model_provider_id.as_str())
+                .unwrap_or(self.config.model_provider_id.as_str());
+            if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
+                return None;
+            }
+            self.config
+                .model_providers
+                .contains_key(provider_id)
+                .then(|| provider_id.to_string())
+        });
 
         let has_any_overrides = cwd.is_some()
             || runtime_workspace_roots_request.is_some()

@@ -145,9 +145,6 @@ impl ChatWidget {
             mention_bindings,
         } = user_message;
 
-        let render_in_history = !self.turn_lifecycle.agent_turn_running;
-        let mut items: Vec<UserInput> = Vec::new();
-
         // Special-case: "!cmd" executes a local shell command instead of sending to the model.
         if shell_escape_policy == ShellEscapePolicy::Allow
             && let Some(stripped) = text.strip_prefix('!')
@@ -160,6 +157,27 @@ impl ChatWidget {
             };
             return (app_command.is_some(), app_command);
         }
+
+        let user_message = UserMessage {
+            text,
+            local_images,
+            remote_image_urls,
+            text_elements,
+            mention_bindings,
+        };
+        if self.maybe_auto_switch_auth_profile_before_user_turn(&user_message, &history_record) {
+            return (true, None);
+        }
+        let UserMessage {
+            text,
+            local_images,
+            remote_image_urls,
+            text_elements,
+            mention_bindings,
+        } = user_message;
+
+        let render_in_history = !self.turn_lifecycle.agent_turn_running;
+        let mut items: Vec<UserInput> = Vec::new();
 
         for image_url in &remote_image_urls {
             items.push(UserInput::Image {

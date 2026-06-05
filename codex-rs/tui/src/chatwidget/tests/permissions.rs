@@ -1091,6 +1091,7 @@ async fn permissions_selection_sends_approvals_reviewer_in_override_turn_context
             )),
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,

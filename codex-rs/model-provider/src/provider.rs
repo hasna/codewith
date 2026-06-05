@@ -7,12 +7,15 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::openai_models::ModelsResponse;
+use sha2::Digest as _;
+use sha2::Sha256;
 
 use crate::amazon_bedrock::AmazonBedrockModelProvider;
 use crate::auth::auth_manager_for_provider;
@@ -150,7 +153,16 @@ pub fn create_model_provider(
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> SharedModelProvider {
-    create_model_provider_with_id(provider_info.name.clone(), provider_info, auth_manager)
+    let provider_id = default_provider_id(&provider_info);
+    create_model_provider_with_id(provider_id, provider_info, auth_manager)
+}
+
+fn default_provider_id(provider_info: &ModelProviderInfo) -> String {
+    if provider_info.requires_openai_auth && provider_info.is_openai() {
+        OPENAI_PROVIDER_ID.to_string()
+    } else {
+        provider_info.name.clone()
+    }
 }
 
 /// Creates the default runtime model provider for configured provider metadata
@@ -192,6 +204,84 @@ impl ConfiguredModelProvider {
             auth_manager,
         }
     }
+}
+
+/// Return the provider-scoped model cache key used by runtime model managers.
+///
+/// The `auth_manager` argument should already be scoped to the provider. For
+/// providers that do not use an auth manager, pass `None` so the key is derived
+/// from provider-owned credentials.
+pub fn model_cache_key_for_provider(
+    provider_id: &str,
+    provider_info: &ModelProviderInfo,
+    auth_manager: Option<&AuthManager>,
+) -> String {
+    let auth_fragment = match auth_manager {
+        Some(auth_manager) => auth_manager_cache_key_fragment(auth_manager),
+        None => provider_credential_cache_key_fragment(provider_info),
+    };
+
+    format!("{provider_id}|{auth_fragment}")
+}
+
+fn auth_manager_cache_key_fragment(auth_manager: &AuthManager) -> String {
+    let profile_fragment = auth_manager
+        .selected_auth_profile()
+        .map(|profile| credential_cache_key_fragment("profile", &profile))
+        .unwrap_or_else(|| "profile:default".to_string());
+    let auth_fragment = match auth_manager.auth_cached() {
+        Some(auth) => auth_cache_key_fragment(&auth),
+        None if auth_manager.has_external_auth() => "auth:external".to_string(),
+        None => "auth:none".to_string(),
+    };
+
+    format!("{profile_fragment}|{auth_fragment}")
+}
+
+fn auth_cache_key_fragment(auth: &CodexAuth) -> String {
+    if auth.is_api_key_auth() {
+        auth.api_key()
+            .map(|api_key| credential_cache_key_fragment("auth:api-key", api_key))
+            .unwrap_or_else(|| "auth:api-key:missing".to_string())
+    } else {
+        let account_fragment = auth
+            .get_account_id()
+            .map(|account_id| credential_cache_key_fragment("account", &account_id))
+            .unwrap_or_else(|| "account:unknown".to_string());
+        let auth_mode = if auth.is_external_chatgpt_tokens() {
+            "chatgpt-auth-tokens"
+        } else if auth.is_chatgpt_auth() {
+            "chatgpt"
+        } else {
+            "agent-identity"
+        };
+        format!("auth:{auth_mode}:{account_fragment}")
+    }
+}
+
+fn provider_credential_cache_key_fragment(provider_info: &ModelProviderInfo) -> String {
+    if let Some(api_key) = provider_info.api_key_if_available() {
+        return credential_cache_key_fragment("provider-key", &api_key);
+    }
+    if let Some(token) = provider_info.experimental_bearer_token.as_deref() {
+        return credential_cache_key_fragment("provider-token", token);
+    }
+    if provider_info.env_key.is_some() {
+        return "provider-key:missing".to_string();
+    }
+
+    "auth:none".to_string()
+}
+
+fn credential_cache_key_fragment(prefix: &str, credential: &str) -> String {
+    format!("{prefix}:{}", credential_fingerprint(credential))
+}
+
+fn credential_fingerprint(credential: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"codewith-model-cache-key-v1\0");
+    hasher.update(credential.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[async_trait::async_trait]
@@ -271,14 +361,19 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));
-                let bundled_model_catalog = if self.info.is_openai() {
+                let bundled_model_catalog = if self.provider_id == OPENAI_PROVIDER_ID {
                     BundledModelCatalog::UseAsFallback
                 } else {
                     BundledModelCatalog::Disabled
                 };
+                let model_cache_key = model_cache_key_for_provider(
+                    &self.provider_id,
+                    &self.info,
+                    self.auth_manager.as_deref(),
+                );
                 Arc::new(OpenAiModelsManager::new(
                     codex_home,
-                    self.provider_id.clone(),
+                    model_cache_key,
                     bundled_model_catalog,
                     endpoint,
                     self.auth_manager.clone(),
@@ -430,6 +525,111 @@ mod tests {
             .expect("command auth provider should have an auth manager");
 
         assert!(auth_manager.has_external_auth());
+    }
+
+    #[test]
+    fn create_model_provider_uses_openai_auth_manager_for_openai_provider() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                "openai-api-key",
+            ))),
+        );
+
+        assert!(provider.auth_manager().is_some());
+    }
+
+    #[test]
+    fn create_model_provider_uses_openai_auth_manager_for_provider_that_requires_openai_auth() {
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                name: "OpenAI-compatible".to_string(),
+                base_url: Some("https://example.test/v1".to_string()),
+                wire_api: WireApi::Responses,
+                requires_openai_auth: true,
+                ..Default::default()
+            },
+            Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                "openai-api-key",
+            ))),
+        );
+
+        assert!(provider.auth_manager().is_some());
+    }
+
+    #[test]
+    fn create_model_provider_does_not_use_openai_auth_manager_for_builtin_external_key_providers() {
+        for provider_info in [
+            ModelProviderInfo::create_cerebras_provider(),
+            ModelProviderInfo::create_nvidia_provider(),
+            ModelProviderInfo::create_openrouter_provider(),
+        ] {
+            let provider = create_model_provider(
+                provider_info,
+                Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                    "openai-api-key",
+                ))),
+            );
+
+            assert!(provider.auth_manager().is_none());
+        }
+    }
+
+    #[test]
+    fn create_model_provider_does_not_use_openai_auth_manager_for_provider_named_openai() {
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                name: "OpenAI".to_string(),
+                base_url: Some("https://not-openai.example.test/v1".to_string()),
+                wire_api: WireApi::Responses,
+                requires_openai_auth: false,
+                ..Default::default()
+            },
+            Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                "openai-api-key",
+            ))),
+        );
+
+        assert!(provider.auth_manager().is_none());
+    }
+
+    #[test]
+    fn model_cache_key_uses_auth_profile_and_api_key_fingerprint() {
+        let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+        let first_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("first-openai-api-key"));
+        let second_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("second-openai-api-key"));
+
+        let first = model_cache_key_for_provider(
+            OPENAI_PROVIDER_ID,
+            &provider_info,
+            Some(first_auth_manager.as_ref()),
+        );
+        let second = model_cache_key_for_provider(
+            OPENAI_PROVIDER_ID,
+            &provider_info,
+            Some(second_auth_manager.as_ref()),
+        );
+
+        assert_ne!(first, second);
+        assert!(!first.contains("first-openai-api-key"));
+        assert!(!second.contains("second-openai-api-key"));
+    }
+
+    #[test]
+    fn model_cache_key_uses_provider_credential_fingerprint() {
+        let provider_info = ModelProviderInfo {
+            env_key: None,
+            experimental_bearer_token: Some("raw-provider-secret".to_string()),
+            ..ModelProviderInfo::create_openrouter_provider()
+        };
+
+        let key =
+            model_cache_key_for_provider("openrouter", &provider_info, /*auth_manager*/ None);
+
+        assert!(key.contains("provider-token:"));
+        assert!(!key.contains("raw-provider-secret"));
     }
 
     #[test]
@@ -622,6 +822,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_provider_named_openai_does_not_use_bundled_model_catalog() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(ModelsResponse { models: Vec::new() }),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider_info = ModelProviderInfo {
+            name: "OpenAI".to_string(),
+            experimental_bearer_token: Some("provider-token".to_string()),
+            ..provider_for(server.uri())
+        };
+        let provider = create_model_provider_with_id(
+            "custom-openai-name",
+            provider_info,
+            /*auth_manager*/ None,
+        );
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert_eq!(catalog.models, Vec::new());
+    }
+
+    #[tokio::test]
     async fn cerebras_provider_models_manager_preserves_authenticated_model_ids() {
         let server = MockServer::start().await;
 
@@ -723,6 +956,54 @@ mod tests {
                 "nvidia/llama-3.3-nemotron-super-49b-v1.5",
                 "openai/gpt-oss-120b"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn env_key_provider_allows_public_model_discovery_when_key_is_missing() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "public/model",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "public"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider_info = ModelProviderInfo {
+            base_url: Some(format!("{}/v1", server.uri())),
+            env_key: Some("CODEWITH_TEST_MISSING_PROVIDER_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            ..ModelProviderInfo::create_nvidia_provider()
+        };
+        let provider = create_model_provider_with_id(
+            "public-provider",
+            provider_info,
+            /*auth_manager*/ None,
+        );
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["public/model"]
         );
     }
 }

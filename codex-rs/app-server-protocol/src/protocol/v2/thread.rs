@@ -904,6 +904,28 @@ pub struct ThreadScheduleRun {
     pub completed_at: Option<i64>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadScheduleStats {
+    #[ts(type = "number")]
+    pub total_runs: i64,
+    #[ts(type = "number")]
+    pub leased_runs: i64,
+    #[ts(type = "number")]
+    pub running_runs: i64,
+    #[ts(type = "number")]
+    pub completed_runs: i64,
+    #[ts(type = "number")]
+    pub failed_runs: i64,
+    #[ts(type = "number | null")]
+    pub last_started_at: Option<i64>,
+    #[ts(type = "number | null")]
+    pub last_completed_at: Option<i64>,
+    #[ts(type = "string | null")]
+    pub last_error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -961,6 +983,7 @@ pub struct ThreadScheduleGetParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadScheduleGetResponse {
     pub schedule: Option<ThreadSchedule>,
+    pub stats: ThreadScheduleStats,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1177,6 +1200,22 @@ pub struct ThreadCompactStartParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRecapParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRecapResponse {
+    pub summary: String,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

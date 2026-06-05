@@ -230,6 +230,39 @@ supports_websockets = false
 }
 
 #[tokio::test]
+async fn thread_settings_update_openai_prefixed_model_preserves_non_openai_provider() -> Result<()>
+{
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+    let model = "openai/gpt-oss-120b";
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model: Some(model.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.model_provider, "mock_provider");
+    assert_eq!(updated.thread_settings.model, model);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_settings_update_auth_profile_updates_future_turns() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(vec![
         create_final_assistant_message_sse_response("done")?,

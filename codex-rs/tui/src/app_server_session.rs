@@ -200,7 +200,7 @@ pub(crate) enum ThreadParamsMode {
 }
 
 impl ThreadParamsMode {
-    fn model_provider_from_config(self, config: &Config) -> Option<String> {
+    pub(crate) fn model_provider_from_config(self, config: &Config) -> Option<String> {
         match self {
             Self::Embedded => Some(config.model_provider_id.clone()),
             Self::Remote => None,
@@ -731,6 +731,7 @@ impl AppServerSession {
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
         permissions_override: TurnPermissionsOverride,
         workspace_roots: &[AbsolutePathBuf],
+        model_provider: Option<String>,
         model: String,
         effort: Option<codex_protocol::openai_models::ReasoningEffort>,
         summary: Option<codex_protocol::config_types::ReasoningSummary>,
@@ -763,6 +764,7 @@ impl AppServerSession {
                     approvals_reviewer: Some(approvals_reviewer.into()),
                     sandbox_policy,
                     permissions,
+                    model_provider,
                     model: Some(model),
                     service_tier,
                     effort,

@@ -604,6 +604,9 @@ impl App {
                             approvals_reviewer,
                             permissions_override,
                             config.permissions.user_visible_workspace_roots(),
+                            app_server
+                                .thread_params_mode()
+                                .model_provider_from_config(config),
                             model.to_string(),
                             *effort,
                             *summary,

@@ -1,11 +1,14 @@
 use super::RealtimeHandoffState;
 use super::RealtimeSessionKind;
+use super::realtime_api_key;
 use super::realtime_delegation_from_handoff;
 use super::realtime_request_headers;
 use super::realtime_text_from_handoff_request;
 use super::wrap_realtime_delegation_input;
 use async_channel::bounded;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_login::CodexAuth;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::protocol::RealtimeHandoffRequested;
 use codex_protocol::protocol::RealtimeTranscriptEntry;
 use pretty_assertions::assert_eq;
@@ -163,4 +166,47 @@ fn omits_quicksilver_alpha_header_for_realtime_v2() {
             .expect("headers");
 
     assert!(headers.get("openai-alpha").is_none());
+}
+
+#[test]
+fn realtime_api_key_does_not_use_openai_auth_for_provider_named_openai() {
+    let provider = ModelProviderInfo {
+        name: "OpenAI".to_string(),
+        env_key: None,
+        experimental_bearer_token: None,
+        requires_openai_auth: false,
+        ..ModelProviderInfo::create_openrouter_provider()
+    };
+    let auth = CodexAuth::from_api_key("openai-api-key");
+
+    let err = realtime_api_key(
+        Some(&auth),
+        &provider,
+        /*allow_openai_api_key_auth*/ false,
+    )
+    .expect_err("OpenAI API key auth should not be used for custom providers");
+
+    assert_eq!(
+        err.to_string(),
+        "realtime conversation requires API key auth"
+    );
+}
+
+#[test]
+fn realtime_api_key_uses_openai_auth_when_allowed() {
+    let provider = ModelProviderInfo {
+        env_key: None,
+        experimental_bearer_token: None,
+        ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+    };
+    let auth = CodexAuth::from_api_key("openai-api-key");
+
+    let api_key = realtime_api_key(
+        Some(&auth),
+        &provider,
+        /*allow_openai_api_key_auth*/ true,
+    )
+    .expect("OpenAI API key auth should be allowed for OpenAI providers");
+
+    assert_eq!(api_key, "openai-api-key");
 }

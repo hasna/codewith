@@ -25,6 +25,7 @@ use codex_config::types::ToolSuggestDisabledTool;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
@@ -74,6 +75,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::CreateGoalHandler;
 use crate::tools::handlers::ExecCommandHandler;
+use crate::tools::handlers::RenameSessionHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::UpdateGoalHandler;
 use crate::tools::registry::ToolExecutor;
@@ -964,6 +966,190 @@ async fn danger_full_access_turns_do_not_expose_managed_network_proxy() -> anyho
 }
 
 #[tokio::test]
+async fn thread_settings_update_applies_full_access_to_active_turn_exec_policy()
+-> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("test setup should allow approval policy");
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::workspace_write())
+            .expect("test setup should allow permission profile");
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            approval_policy: Some(AskForApproval::Never),
+            permission_profile: Some(PermissionProfile::Disabled),
+            ..Default::default()
+        })
+        .await?;
+
+    let effective_settings = session.effective_turn_settings(turn_context.as_ref()).await;
+    assert_eq!(effective_settings.approval_policy, AskForApproval::Never);
+    assert_eq!(
+        effective_settings.permission_profile,
+        PermissionProfile::Disabled
+    );
+
+    let command = vec!["pwd".to_string()];
+    let file_system_sandbox_policy = effective_settings
+        .permission_profile
+        .file_system_sandbox_policy();
+    let requirement = session
+        .services
+        .exec_policy
+        .create_exec_approval_requirement_for_command(crate::exec_policy::ExecApprovalRequest {
+            command: &command,
+            approval_policy: effective_settings.approval_policy,
+            permission_profile: effective_settings.permission_profile,
+            file_system_sandbox_policy: &file_system_sandbox_policy,
+            #[allow(deprecated)]
+            sandbox_cwd: turn_context.cwd.as_path(),
+            sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
+            prefix_rule: None,
+        })
+        .await;
+
+    assert!(matches!(
+        requirement,
+        crate::tools::sandboxing::ExecApprovalRequirement::Skip { .. }
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_access_update_during_approval_applies_to_current_tool_attempt() -> anyhow::Result<()>
+{
+    #[derive(Default)]
+    struct ProbeToolRuntime {
+        attempts: Vec<(PermissionProfile, bool)>,
+    }
+
+    impl crate::tools::sandboxing::Approvable<()> for ProbeToolRuntime {
+        type ApprovalKey = String;
+
+        fn approval_keys(&self, _req: &()) -> Vec<Self::ApprovalKey> {
+            vec!["probe".to_string()]
+        }
+
+        fn exec_approval_requirement(
+            &self,
+            _req: &(),
+        ) -> Option<crate::tools::sandboxing::ExecApprovalRequirement> {
+            Some(
+                crate::tools::sandboxing::ExecApprovalRequirement::NeedsApproval {
+                    reason: Some("probe approval".to_string()),
+                    proposed_execpolicy_amendment: None,
+                },
+            )
+        }
+
+        fn start_approval_async<'a>(
+            &'a mut self,
+            _req: &'a (),
+            ctx: crate::tools::sandboxing::ApprovalCtx<'a>,
+        ) -> futures::future::BoxFuture<'a, ReviewDecision> {
+            Box::pin(async move {
+                ctx.session
+                    .update_settings(SessionSettingsUpdate {
+                        approval_policy: Some(AskForApproval::Never),
+                        permission_profile: Some(PermissionProfile::Disabled),
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("full-access update should apply");
+                ReviewDecision::Approved
+            })
+        }
+    }
+
+    impl crate::tools::sandboxing::Sandboxable for ProbeToolRuntime {
+        fn sandbox_preference(&self) -> codex_sandboxing::SandboxablePreference {
+            codex_sandboxing::SandboxablePreference::Auto
+        }
+    }
+
+    impl crate::tools::sandboxing::ToolRuntime<(), ()> for ProbeToolRuntime {
+        async fn run(
+            &mut self,
+            _req: &(),
+            attempt: &crate::tools::sandboxing::SandboxAttempt<'_>,
+            _ctx: &crate::tools::sandboxing::ToolCtx,
+        ) -> Result<(), crate::tools::sandboxing::ToolError> {
+            self.attempts.push((
+                (*attempt.permissions).clone(),
+                attempt.enforce_managed_network,
+            ));
+            Ok(())
+        }
+    }
+
+    let permission_profile = PermissionProfile::workspace_write();
+    let network_spec = crate::config::NetworkProxySpec::from_config_and_constraints(
+        NetworkProxyConfig::default(),
+        Some(NetworkConstraints {
+            enabled: Some(true),
+            ..Default::default()
+        }),
+        &permission_profile,
+    )?;
+
+    let session = make_session_with_config(move |config| {
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("test setup should allow approval policy");
+        config
+            .permissions
+            .set_permission_profile(permission_profile)
+            .expect("test setup should allow permission profile");
+        config.permissions.network = Some(network_spec);
+    })
+    .await?;
+    let turn = session.new_default_turn().await;
+    assert!(turn.network.is_some());
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    let mut orchestrator = crate::tools::orchestrator::ToolOrchestrator::new();
+    let mut tool = ProbeToolRuntime::default();
+    let tool_ctx = crate::tools::sandboxing::ToolCtx {
+        session: Arc::clone(&session),
+        turn: Arc::clone(&turn),
+        call_id: "probe-call".to_string(),
+        tool_name: codex_tools::ToolName::plain("probe"),
+    };
+
+    orchestrator
+        .run(
+            &mut tool,
+            &(),
+            &tool_ctx,
+            turn.as_ref(),
+            AskForApproval::OnRequest,
+            &turn.permission_profile(),
+        )
+        .await
+        .expect("probe runtime should succeed");
+
+    assert_eq!(
+        tool.attempts,
+        vec![(
+            PermissionProfile::Disabled,
+            /*enforce_managed_network*/ false
+        )]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> anyhow::Result<()> {
     #[derive(Default)]
     struct ProbeToolRuntime {
@@ -1067,6 +1253,7 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
             &tool_ctx,
             turn.as_ref(),
             AskForApproval::Never,
+            &turn.permission_profile(),
         )
         .await
         .expect("probe runtime should succeed");
@@ -3745,6 +3932,44 @@ async fn session_settings_provider_prefixed_model_update_changes_turn_provider()
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
 }
 
+#[tokio::test]
+async fn session_settings_provider_prefixed_model_keeps_non_openai_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let nvidia_provider = session_configuration
+        .original_config_do_not_use
+        .model_providers
+        .get(NVIDIA_PROVIDER_ID)
+        .cloned()
+        .expect("NVIDIA should be configured");
+
+    let nvidia_configuration = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider_id: Some(NVIDIA_PROVIDER_ID.to_string()),
+            ..Default::default()
+        })
+        .expect("model provider update should apply");
+    let model = "openai/gpt-oss-120b";
+
+    let updated = nvidia_configuration
+        .apply(&SessionSettingsUpdate {
+            collaboration_mode: Some(nvidia_configuration.collaboration_mode.with_updates(
+                Some(model.to_string()),
+                /*effort*/ None,
+                /*developer_instructions*/ None,
+            )),
+            ..Default::default()
+        })
+        .expect("model update should apply");
+
+    let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd.clone());
+    let snapshot = updated.thread_config_snapshot();
+    assert_eq!(updated.provider, nvidia_provider);
+    assert_eq!(snapshot.model_provider_id, NVIDIA_PROVIDER_ID);
+    assert_eq!(snapshot.model, model);
+    assert_eq!(per_turn_config.model_provider_id, NVIDIA_PROVIDER_ID);
+    assert_eq!(per_turn_config.model_provider, nvidia_provider);
+}
+
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
@@ -4588,7 +4813,13 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
 
 // todo: use online model info
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
-    let (tx_event, _rx_event) = async_channel::unbounded();
+    let (session, turn_context, _rx_event) = make_session_and_context_with_events().await;
+    (session, turn_context)
+}
+
+async fn make_session_and_context_with_events()
+-> (Session, TurnContext, async_channel::Receiver<Event>) {
+    let (tx_event, rx_event) = async_channel::unbounded();
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
@@ -4807,7 +5038,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         next_internal_sub_id: AtomicU64::new(0),
     };
 
-    (session, turn_context)
+    (session, turn_context, rx_event)
 }
 
 async fn make_session_with_config(
@@ -10064,6 +10295,141 @@ async fn sample_rollout(
         rollout_items,
         live_history.for_prompt(&reconstruction_turn.model_info.input_modalities),
     )
+}
+
+fn rename_session_invocation(
+    session: Arc<Session>,
+    turn: Arc<TurnContext>,
+    tracker: Arc<tokio::sync::Mutex<TurnDiffTracker>>,
+    call_id: &str,
+    arguments: serde_json::Value,
+) -> ToolInvocation {
+    ToolInvocation {
+        session,
+        turn,
+        cancellation_token: CancellationToken::new(),
+        tracker,
+        call_id: call_id.to_string(),
+        tool_name: codex_tools::ToolName::plain("rename_session"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: arguments.to_string(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn rename_session_tool_persists_metadata_and_emits_notification() {
+    let (mut session, turn_context, rx) = make_session_and_context_with_events().await;
+    attach_thread_persistence(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = RenameSessionHandler;
+
+    handler
+        .handle(rename_session_invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn_context),
+            tracker,
+            "rename-session-1",
+            serde_json::json!({ "name": "  Incident follow-up  " }),
+        ))
+        .await
+        .expect("rename_session should succeed");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("event channel should stay open");
+            if let EventMsg::ThreadNameUpdated(event) = event.msg {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("thread name update event should be emitted");
+    assert_eq!(event.thread_id, session.conversation_id);
+    assert_eq!(event.thread_name.as_deref(), Some("Incident follow-up"));
+
+    let codex_home = session.get_config().await.codex_home.to_path_buf();
+    let indexed_name =
+        codex_rollout::find_thread_name_by_id(codex_home.as_path(), &session.conversation_id)
+            .await
+            .expect("renamed thread metadata should be indexed");
+    assert_eq!(indexed_name.as_deref(), Some("Incident follow-up"));
+}
+
+#[tokio::test]
+async fn rename_session_tool_rejects_oversized_name_without_persisting() {
+    let (mut session, turn_context, _rx) = make_session_and_context_with_events().await;
+    attach_thread_persistence(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = RenameSessionHandler;
+
+    let response = handler
+        .handle(rename_session_invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn_context),
+            tracker,
+            "rename-session-1",
+            serde_json::json!({ "name": "x".repeat(121) }),
+        ))
+        .await;
+
+    let Err(err) = response else {
+        panic!("rename should reject oversized thread names");
+    };
+    assert!(
+        err.to_string()
+            .contains("thread name must be at most 120 characters")
+    );
+
+    let codex_home = session.get_config().await.codex_home.to_path_buf();
+    let indexed_name =
+        codex_rollout::find_thread_name_by_id(codex_home.as_path(), &session.conversation_id)
+            .await
+            .expect("thread metadata lookup should succeed");
+    assert_eq!(indexed_name, None);
+}
+
+#[tokio::test]
+async fn rename_session_tool_rejects_existing_name_without_explicit_overwrite() {
+    let (mut session, turn_context, _rx) = make_session_and_context_with_events().await;
+    attach_thread_persistence(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let handler = RenameSessionHandler;
+
+    handler
+        .handle(rename_session_invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn_context),
+            Arc::clone(&tracker),
+            "rename-session-1",
+            serde_json::json!({ "name": "Triage" }),
+        ))
+        .await
+        .expect("initial rename_session should succeed");
+    let response = handler
+        .handle(rename_session_invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn_context),
+            tracker,
+            "rename-session-2",
+            serde_json::json!({ "name": "Follow-up" }),
+        ))
+        .await;
+
+    let Err(err) = response else {
+        panic!("rename should reject accidental overwrite");
+    };
+    assert!(
+        err.to_string()
+            .contains("set overwrite_existing to true only when the user explicitly asked")
+    );
 }
 
 #[tokio::test]

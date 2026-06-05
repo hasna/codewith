@@ -107,7 +107,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 }
 
 #[test]
-fn test_deserialize_chat_wire_api_shows_helpful_error() {
+fn test_deserialize_chat_wire_api() {
     let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -115,8 +115,8 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-    let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-    assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    let provider = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
 }
 
 #[test]
@@ -340,15 +340,19 @@ fn test_merge_configured_model_providers_allows_cerebras_override() {
         name: "Cerebras Dedicated".to_string(),
         base_url: Some("https://dedicated.cerebras.example.com/v1".to_string()),
         env_key: Some("CEREBRAS_DEDICATED_API_KEY".to_string()),
+        wire_api: WireApi::Chat,
         ..ModelProviderInfo::default()
     };
-    let configured_model_providers = std::collections::HashMap::from([(
-        CEREBRAS_PROVIDER_ID.to_string(),
-        cerebras_provider.clone(),
-    )]);
+    let configured_model_providers =
+        std::collections::HashMap::from([(CEREBRAS_PROVIDER_ID.to_string(), cerebras_provider)]);
 
     let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    expected.insert(CEREBRAS_PROVIDER_ID.to_string(), cerebras_provider);
+    let mut expected_provider = ModelProviderInfo::create_cerebras_provider();
+    expected_provider.name = "Cerebras Dedicated".to_string();
+    expected_provider.base_url = Some("https://dedicated.cerebras.example.com/v1".to_string());
+    expected_provider.env_key = Some("CEREBRAS_DEDICATED_API_KEY".to_string());
+    expected_provider.env_key_instructions = None;
+    expected.insert(CEREBRAS_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
         merge_configured_model_providers(
@@ -365,15 +369,42 @@ fn test_merge_configured_model_providers_allows_nvidia_override() {
         name: "NVIDIA Dedicated".to_string(),
         base_url: Some("https://dedicated.nvidia.example.com/v1".to_string()),
         env_key: Some("NVIDIA_DEDICATED_API_KEY".to_string()),
+        wire_api: WireApi::Chat,
         ..ModelProviderInfo::default()
     };
-    let configured_model_providers = std::collections::HashMap::from([(
-        NVIDIA_PROVIDER_ID.to_string(),
-        nvidia_provider.clone(),
-    )]);
+    let configured_model_providers =
+        std::collections::HashMap::from([(NVIDIA_PROVIDER_ID.to_string(), nvidia_provider)]);
 
     let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    expected.insert(NVIDIA_PROVIDER_ID.to_string(), nvidia_provider);
+    let mut expected_provider = ModelProviderInfo::create_nvidia_provider();
+    expected_provider.name = "NVIDIA Dedicated".to_string();
+    expected_provider.base_url = Some("https://dedicated.nvidia.example.com/v1".to_string());
+    expected_provider.env_key = Some("NVIDIA_DEDICATED_API_KEY".to_string());
+    expected_provider.env_key_instructions = None;
+    expected.insert(NVIDIA_PROVIDER_ID.to_string(), expected_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_explicit_responses_wire_api_override() {
+    let cerebras_provider = ModelProviderInfo {
+        wire_api: WireApi::Responses,
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers =
+        std::collections::HashMap::from([(CEREBRAS_PROVIDER_ID.to_string(), cerebras_provider)]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    let mut expected_provider = ModelProviderInfo::create_cerebras_provider();
+    expected_provider.wire_api = WireApi::Responses;
+    expected.insert(CEREBRAS_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
         merge_configured_model_providers(
@@ -416,11 +447,75 @@ fn test_merge_configured_model_providers_allows_openrouter_override() {
     };
     let configured_model_providers = std::collections::HashMap::from([(
         OPENROUTER_PROVIDER_ID.to_string(),
-        openrouter_provider.clone(),
+        openrouter_provider,
     )]);
 
     let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    expected.insert(OPENROUTER_PROVIDER_ID.to_string(), openrouter_provider);
+    let mut expected_provider = ModelProviderInfo::create_openrouter_provider();
+    expected_provider.name = "OpenRouter Mirror".to_string();
+    expected_provider.base_url = Some("https://openrouter.example.com/api/v1".to_string());
+    expected_provider.env_key = Some("OPENROUTER_MIRROR_API_KEY".to_string());
+    expected_provider.env_key_instructions = None;
+    expected.insert(OPENROUTER_PROVIDER_ID.to_string(), expected_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_inherits_builtin_provider_auth_defaults() {
+    let configured_model_providers = std::collections::HashMap::from([(
+        OPENROUTER_PROVIDER_ID.to_string(),
+        ModelProviderInfo {
+            base_url: Some("https://openrouter.example.com/api/v1".to_string()),
+            ..ModelProviderInfo::default()
+        },
+    )]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    let mut expected_provider = ModelProviderInfo::create_openrouter_provider();
+    expected_provider.base_url = Some("https://openrouter.example.com/api/v1".to_string());
+    expected.insert(OPENROUTER_PROVIDER_ID.to_string(), expected_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_command_auth_override_clears_builtin_env_key() {
+    let base_dir = tempdir().expect("tempdir should be created");
+    let cwd = AbsolutePathBuf::resolve_path_against_base(".", base_dir.path());
+    let auth = ModelProviderAuthInfo {
+        command: "provider-token".to_string(),
+        args: Vec::new(),
+        cwd,
+        timeout_ms: NonZeroU64::new(1_000).expect("timeout should be non-zero"),
+        refresh_interval_ms: 60_000,
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        OPENROUTER_PROVIDER_ID.to_string(),
+        ModelProviderInfo {
+            auth: Some(auth.clone()),
+            ..ModelProviderInfo::default()
+        },
+    )]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    let mut expected_provider = ModelProviderInfo::create_openrouter_provider();
+    expected_provider.env_key = None;
+    expected_provider.env_key_instructions = None;
+    expected_provider.auth = Some(auth);
+    expected.insert(OPENROUTER_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
         merge_configured_model_providers(

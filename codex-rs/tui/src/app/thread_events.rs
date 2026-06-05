@@ -26,6 +26,7 @@ pub(super) enum ThreadBufferedEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FeedbackThreadEvent {
     pub(super) category: FeedbackCategory,
+    pub(super) reason: Option<String>,
     pub(super) include_logs: bool,
     pub(super) feedback_audience: FeedbackAudience,
     pub(super) result: Result<String, String>,

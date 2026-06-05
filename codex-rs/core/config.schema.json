@@ -2567,6 +2567,38 @@
       ],
       "type": "string"
     },
+    "SessionRecapToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enables background session recaps in interactive TUI sessions.",
+          "type": "boolean"
+        },
+        "fallback_model": {
+          "description": "Fallback model used when the preferred recap model is unavailable.",
+          "type": "string"
+        },
+        "idle_minutes": {
+          "description": "Minutes the terminal must stay unfocused after the last completed turn before Codewith prepares an automatic recap.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Preferred lightweight model for recap generation.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            }
+          ],
+          "description": "Reasoning effort requested for recap generation."
+        }
+      },
+      "type": "object"
+    },
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
@@ -4346,6 +4378,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "The OpenAI-compatible Chat Completions API exposed at `/v1/chat/completions`.",
+          "enum": [
+            "chat"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -5136,6 +5175,15 @@
     "service_tier": {
       "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
       "type": "string"
+    },
+    "session_recap": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SessionRecapToml"
+        }
+      ],
+      "default": null,
+      "description": "Lightweight recap generation for returning to interactive sessions."
     },
     "shell_environment_policy": {
       "allOf": [

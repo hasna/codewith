@@ -90,6 +90,27 @@ fn next_add_to_history_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEv
     }
 }
 
+fn next_session_recap_request_event(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> (ThreadId, Option<String>, bool) {
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::RequestSessionRecap {
+                thread_id,
+                prompt,
+                automatic,
+            }) => return (thread_id, prompt, automatic),
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => {
+                panic!("expected RequestSessionRecap event but queue was empty")
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!("expected RequestSessionRecap event but channel closed")
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn service_tier_commands_lowercase_catalog_names() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
@@ -721,6 +742,40 @@ async fn goal_slash_command_drops_attached_images() {
     assert!(chat.remote_image_urls().is_empty());
     assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
     assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn recap_slash_command_emits_recap_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/recap";
+
+    submit_composer_text(&mut chat, command);
+
+    let (actual_thread_id, prompt, automatic) = next_session_recap_request_event(&mut rx);
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(prompt, None);
+    assert!(!automatic);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn recap_slash_command_with_prompt_emits_recap_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/recap list unresolved blockers";
+
+    submit_composer_text(&mut chat, command);
+
+    let (actual_thread_id, prompt, automatic) = next_session_recap_request_event(&mut rx);
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(prompt, Some("list unresolved blockers".to_string()));
+    assert!(!automatic);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
 
 #[tokio::test]

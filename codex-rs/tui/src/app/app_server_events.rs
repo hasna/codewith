@@ -13,6 +13,7 @@ use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::TurnStatus;
 
 impl App {
     fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -121,6 +122,12 @@ impl App {
 
         match server_notification_thread_target(&notification) {
             ServerNotificationThreadTarget::Thread(thread_id) => {
+                if let ServerNotification::TurnCompleted(notification) = &notification
+                    && matches!(notification.turn.status, TurnStatus::Completed)
+                {
+                    self.note_session_recap_turn_completed(thread_id, &notification.turn);
+                }
+
                 let result = if self.primary_thread_id == Some(thread_id)
                     || self.primary_thread_id.is_none()
                 {

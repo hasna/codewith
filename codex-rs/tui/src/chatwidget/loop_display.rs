@@ -9,6 +9,7 @@ use codex_app_server_protocol::ThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadScheduleRun;
 use codex_app_server_protocol::ThreadScheduleRunStatus;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStats;
 use codex_app_server_protocol::ThreadScheduleStatus;
 
 impl ChatWidget {
@@ -75,6 +76,30 @@ impl ChatWidget {
             ThreadScheduleDisplayKind::Schedule,
             thread_id,
             schedule,
+        ));
+    }
+
+    pub(crate) fn show_loop_schedule_stats(
+        &mut self,
+        schedule: ThreadSchedule,
+        stats: ThreadScheduleStats,
+    ) {
+        self.add_plain_history_lines(thread_schedule_stats_lines(
+            ThreadScheduleDisplayKind::Loop,
+            &schedule,
+            &stats,
+        ));
+    }
+
+    pub(crate) fn show_schedule_stats(
+        &mut self,
+        schedule: ThreadSchedule,
+        stats: ThreadScheduleStats,
+    ) {
+        self.add_plain_history_lines(thread_schedule_stats_lines(
+            ThreadScheduleDisplayKind::Schedule,
+            &schedule,
+            &stats,
         ));
     }
 
@@ -300,6 +325,19 @@ impl ThreadScheduleDisplayKind {
         }
     }
 
+    fn open_stats_event(self, thread_id: ThreadId, schedule_id: String) -> AppEvent {
+        match self {
+            Self::Loop => AppEvent::OpenThreadLoopScheduleStats {
+                thread_id,
+                schedule_id,
+            },
+            Self::Schedule => AppEvent::OpenThreadScheduleStats {
+                thread_id,
+                schedule_id,
+            },
+        }
+    }
+
     fn update_prompt_event(
         self,
         thread_id: ThreadId,
@@ -487,6 +525,15 @@ fn thread_schedule_actions_params(
             format!("Expired {} cannot be edited", kind.plural_lower()),
         ),
         move || kind.open_editor_event(thread_id, Some(edit_schedule_id.clone())),
+    ));
+
+    let stats_schedule_id = schedule_id.clone();
+    items.push(loop_action_item(
+        "Stats",
+        "Show run counts and latest outcomes",
+        false,
+        None,
+        move || kind.open_stats_event(thread_id, stats_schedule_id.clone()),
     ));
 
     match schedule.status {
@@ -747,6 +794,45 @@ fn thread_schedule_summary_lines(
     lines
 }
 
+fn thread_schedule_stats_lines(
+    kind: ThreadScheduleDisplayKind,
+    schedule: &ThreadSchedule,
+    stats: &ThreadScheduleStats,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!("{} stats", kind.title_label()).bold())];
+    lines.push(Line::from(vec![
+        "ID: ".dim(),
+        schedule.schedule_id.clone().into(),
+        "  Status: ".dim(),
+        thread_schedule_status_label(schedule.status).into(),
+    ]));
+    lines.push(Line::from(vec![
+        "Runs: ".dim(),
+        pluralize_with_amount(stats.total_runs, "run").into(),
+        "  Completed: ".dim(),
+        stats.completed_runs.to_string().into(),
+        "  Failed: ".dim(),
+        stats.failed_runs.to_string().into(),
+        "  Running: ".dim(),
+        stats.running_runs.to_string().into(),
+        "  Leased: ".dim(),
+        stats.leased_runs.to_string().into(),
+    ]));
+    lines.push(Line::from(vec![
+        "Last started: ".dim(),
+        format_optional_relative_timestamp(stats.last_started_at).into(),
+        "  Last completed: ".dim(),
+        format_optional_relative_timestamp(stats.last_completed_at).into(),
+    ]));
+    if let Some(error) = stats.last_error.as_deref() {
+        lines.push(Line::from(vec![
+            "Last error: ".dim(),
+            truncate_text(error, 120).into(),
+        ]));
+    }
+    lines
+}
+
 fn thread_schedule_status_label(status: ThreadScheduleStatus) -> &'static str {
     match status {
         ThreadScheduleStatus::Active => "active",
@@ -803,6 +889,42 @@ fn format_schedule_timestamp(seconds: i64) -> String {
     utc.with_timezone(&Local)
         .format("%Y-%m-%d %H:%M")
         .to_string()
+}
+
+fn format_optional_relative_timestamp(seconds: Option<i64>) -> String {
+    seconds
+        .map(format_relative_schedule_timestamp)
+        .unwrap_or_else(|| "never".to_string())
+}
+
+fn format_relative_schedule_timestamp(seconds: i64) -> String {
+    format_relative_schedule_timestamp_at(seconds, Utc::now().timestamp())
+}
+
+fn format_relative_schedule_timestamp_at(seconds: i64, now_seconds: i64) -> String {
+    let is_past = seconds <= now_seconds;
+    let diff_seconds = if is_past {
+        now_seconds.saturating_sub(seconds)
+    } else {
+        seconds.saturating_sub(now_seconds)
+    };
+    let amount_minutes = (diff_seconds / 60).max(1);
+    let (amount, unit) = if amount_minutes < 60 {
+        (amount_minutes, pluralize(amount_minutes, "minute"))
+    } else {
+        let amount_hours = (amount_minutes / 60).max(1);
+        if amount_hours < 24 {
+            (amount_hours, pluralize(amount_hours, "hour"))
+        } else {
+            let amount_days = (amount_hours / 24).max(1);
+            (amount_days, pluralize(amount_days, "day"))
+        }
+    };
+    if is_past {
+        format!("{amount} {unit} ago")
+    } else {
+        format!("in {amount} {unit}")
+    }
 }
 
 #[cfg(test)]
@@ -951,6 +1073,7 @@ mod tests {
             vec![
                 "Run now".to_string(),
                 "Edit prompt".to_string(),
+                "Stats".to_string(),
                 "Resume".to_string(),
                 "Delete".to_string(),
                 "Back to loops".to_string(),
@@ -975,6 +1098,7 @@ mod tests {
             vec![
                 ("Run now", true),
                 ("Edit prompt", true),
+                ("Stats", false),
                 ("Resume", true),
                 ("Delete", false),
                 ("Back to loops", false),

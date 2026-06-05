@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::collections::btree_map::Entry;
 use std::fs;
 use std::io::Write;
 use std::io::{self};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
-use anyhow::anyhow;
 use codex_login::AuthEnvTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
@@ -32,13 +33,13 @@ pub const DOCTOR_REPORT_ATTACHMENT_FILENAME: &str = "codex-doctor-report.json";
 /// Filename used for the Windows sandbox log feedback attachment.
 pub const WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME: &str = "windows-sandbox.log";
 const DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
-const SENTRY_DSN: &str =
-    "https://ae32ed50620d7a7792c1ce5df38b3e3e@o33249.ingest.us.sentry.io/4510195390611458";
-const UPLOAD_TIMEOUT_SECS: u64 = 10;
 const FEEDBACK_TAGS_TARGET: &str = "feedback_tags";
+const FEEDBACK_REPORT_ROOT: &str = "codewith-feedback";
+const FEEDBACK_REPORT_METADATA_FILENAME: &str = "metadata.txt";
+const FEEDBACK_REPORT_ATTACHMENTS_DIR: &str = "attachments";
 const MAX_FEEDBACK_TAGS: usize = 64;
 
-/// Structured request/auth fields that should be attached to feedback uploads.
+/// Structured request/auth fields that should be attached to feedback reports.
 pub struct FeedbackRequestTags<'a> {
     pub endpoint: &'a str,
     pub auth_header_attached: bool,
@@ -203,14 +204,14 @@ impl CodexFeedback {
             .with_ansi(false)
             .with_target(false)
             // Capture everything, regardless of the caller's `RUST_LOG`, so feedback includes the
-            // full trace when the user uploads a report.
+            // full trace when the user prepares a report.
             .with_filter(Targets::new().with_default(Level::TRACE))
     }
 
     /// Returns a [`tracing_subscriber`] layer that collects structured metadata for feedback.
     ///
     /// Events with `target: "feedback_tags"` are treated as key/value tags to attach to feedback
-    /// uploads later.
+    /// reports later.
     pub fn metadata_layer<S>(&self) -> impl Layer<S> + Send + Sync + 'static
     where
         S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -344,44 +345,62 @@ pub struct FeedbackSnapshot {
 
 pub struct FeedbackAttachmentPath {
     pub path: PathBuf,
-    /// Optional filename to use for the uploaded attachment instead of `path`'s basename.
+    /// Optional filename to use for the prepared attachment instead of `path`'s basename.
     pub attachment_filename_override: Option<String>,
 }
 
-/// In-memory attachment to include in a feedback upload.
+/// In-memory attachment to include in a feedback report.
 ///
 /// Use this for generated diagnostics that should not be materialized on disk,
 /// such as the redacted doctor report. File-backed artifacts should use
-/// `FeedbackAttachmentPath` so upload-time read failures can be logged and
+/// `FeedbackAttachmentPath` so preparation-time read failures can be logged and
 /// skipped independently.
 pub struct FeedbackAttachment {
-    /// Attachment filename shown in Sentry and in the feedback consent UI.
+    /// Attachment filename shown in the feedback consent UI and prepared report.
     pub filename: String,
     /// Optional MIME type for consumers that render or classify attachments.
     pub content_type: Option<String>,
-    /// Attachment bytes captured before the upload starts.
+    /// Attachment bytes captured before feedback preparation starts.
     pub buffer: Vec<u8>,
 }
 
-/// Inputs that control one feedback upload to Sentry.
+/// Inputs that control one feedback report.
 ///
 /// The caller is responsible for applying any user-consent gate before setting
 /// `include_logs` or passing diagnostic attachments. This type only describes
-/// what to upload once that decision has been made.
+/// what to prepare once that decision has been made.
 pub struct FeedbackUploadOptions<'a> {
     pub classification: &'a str,
     pub reason: Option<&'a str>,
     pub tags: Option<&'a BTreeMap<String, String>>,
     pub include_logs: bool,
-    /// Generated attachments that are already buffered and safe to upload.
+    /// Generated attachments that are already buffered and safe to include.
     ///
     /// These are included after `codex-logs.log` and before path-backed rollout
     /// attachments. They are only passed by the caller after any user consent
-    /// gate has decided logs and diagnostics should be uploaded.
+    /// gate has decided logs and diagnostics should be included.
     pub extra_attachments: &'a [FeedbackAttachment],
     pub extra_attachment_paths: &'a [FeedbackAttachmentPath],
     pub session_source: Option<SessionSource>,
     pub logs_override: Option<Vec<u8>>,
+}
+
+struct PreparedFeedbackAttachment {
+    buffer: Vec<u8>,
+    filename: String,
+    content_type: Option<String>,
+}
+
+struct WrittenFeedbackAttachment {
+    filename: String,
+    content_type: Option<String>,
+    bytes: usize,
+}
+
+pub fn feedback_report_dir(thread_id: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join(FEEDBACK_REPORT_ROOT)
+        .join(sanitize_path_component(thread_id, "thread"))
 }
 
 impl FeedbackSnapshot {
@@ -414,75 +433,32 @@ impl FeedbackSnapshot {
         Ok(path)
     }
 
-    /// Upload feedback to Sentry with optional attachments.
+    /// Prepare feedback metadata and attachments for the Codewith feedback flow.
     pub fn upload_feedback(&self, options: FeedbackUploadOptions<'_>) -> Result<()> {
-        use std::str::FromStr;
-        use std::sync::Arc;
-
-        use sentry::Client;
-        use sentry::ClientOptions;
-        use sentry::protocol::Envelope;
-        use sentry::protocol::EnvelopeItem;
-        use sentry::protocol::Event;
-        use sentry::protocol::Level;
-        use sentry::transports::DefaultTransportFactory;
-        use sentry::types::Dsn;
-
-        // Build Sentry client
-        let client = Client::from_config(ClientOptions {
-            dsn: Some(Dsn::from_str(SENTRY_DSN).map_err(|e| anyhow!("invalid DSN: {e}"))?),
-            transport: Some(Arc::new(DefaultTransportFactory {})),
-            ..Default::default()
-        });
-
         let tags = self.upload_tags(
             options.classification,
             options.reason,
             options.tags,
             options.session_source.as_ref(),
         );
-
-        let level = match options.classification {
-            "bug" | "bad_result" | "safety_check" => Level::Error,
-            _ => Level::Info,
-        };
-
-        let mut envelope = Envelope::new();
-        let title = format!(
-            "[{}]: Codewith session {}",
-            display_classification(options.classification),
-            self.thread_id
-        );
-
-        let mut event = Event {
-            level,
-            message: Some(title.clone()),
-            tags,
-            ..Default::default()
-        };
-        if let Some(r) = options.reason {
-            use sentry::protocol::Exception;
-            use sentry::protocol::Values;
-
-            event.exception = Values::from(vec![Exception {
-                ty: title,
-                value: Some(r.to_string()),
-                ..Default::default()
-            }]);
-        }
-        envelope.add_item(EnvelopeItem::Event(event));
-
-        for attachment in self.feedback_attachments(
+        let attachments = self.feedback_attachments(
             options.include_logs,
             options.extra_attachments,
             options.extra_attachment_paths,
             options.logs_override,
-        ) {
-            envelope.add_item(EnvelopeItem::Attachment(attachment));
-        }
-
-        client.send_envelope(envelope);
-        client.flush(Some(Duration::from_secs(UPLOAD_TIMEOUT_SECS)));
+        );
+        let report_dir = self.write_prepared_report(&tags, options.include_logs, &attachments)?;
+        tracing::info!(
+            target: FEEDBACK_TAGS_TARGET,
+            feedback_destination = "hasna/codewith",
+            thread_id = %self.thread_id,
+            classification = options.classification,
+            include_logs = options.include_logs,
+            report_dir = %report_dir.display(),
+            attachment_count = attachments.len(),
+            tag_count = tags.len(),
+            "prepared Codewith feedback report"
+        );
         Ok(())
     }
 
@@ -541,33 +517,32 @@ impl FeedbackSnapshot {
         extra_attachments: &[FeedbackAttachment],
         extra_attachment_paths: &[FeedbackAttachmentPath],
         logs_override: Option<Vec<u8>>,
-    ) -> Vec<sentry::protocol::Attachment> {
-        use sentry::protocol::Attachment;
-
+    ) -> Vec<PreparedFeedbackAttachment> {
         let mut attachments = Vec::new();
 
         if include_logs {
-            attachments.push(Attachment {
+            attachments.push(PreparedFeedbackAttachment {
                 buffer: logs_override.unwrap_or_else(|| self.bytes.clone()),
                 filename: String::from("codex-logs.log"),
                 content_type: Some("text/plain".to_string()),
-                ty: None,
             });
         }
 
-        attachments.extend(extra_attachments.iter().map(|attachment| Attachment {
-            buffer: attachment.buffer.clone(),
-            filename: attachment.filename.clone(),
-            content_type: attachment.content_type.clone(),
-            ty: None,
-        }));
+        attachments.extend(
+            extra_attachments
+                .iter()
+                .map(|attachment| PreparedFeedbackAttachment {
+                    buffer: attachment.buffer.clone(),
+                    filename: attachment.filename.clone(),
+                    content_type: attachment.content_type.clone(),
+                }),
+        );
 
         if let Some(text) = self.feedback_diagnostics_attachment_text(include_logs) {
-            attachments.push(Attachment {
+            attachments.push(PreparedFeedbackAttachment {
                 buffer: text.into_bytes(),
                 filename: FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME.to_string(),
                 content_type: Some("text/plain".to_string()),
-                ty: None,
             });
         }
 
@@ -578,7 +553,7 @@ impl FeedbackSnapshot {
                     tracing::warn!(
                         path = %attachment_path.path.display(),
                         error = %err,
-                        "failed to read log attachment; skipping"
+                        "failed to read feedback attachment; skipping"
                     );
                     continue;
                 }
@@ -593,25 +568,239 @@ impl FeedbackSnapshot {
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| "extra-log.log".to_string())
                 });
-            attachments.push(Attachment {
+            attachments.push(PreparedFeedbackAttachment {
                 buffer: data,
                 filename,
                 content_type: Some("text/plain".to_string()),
-                ty: None,
             });
         }
 
         attachments
     }
+
+    fn write_prepared_report(
+        &self,
+        tags: &BTreeMap<String, String>,
+        include_logs: bool,
+        attachments: &[PreparedFeedbackAttachment],
+    ) -> Result<PathBuf> {
+        let report_dir = feedback_report_dir(&self.thread_id);
+        let attachments_dir = report_dir.join(FEEDBACK_REPORT_ATTACHMENTS_DIR);
+
+        if let Some(report_root) = report_dir.parent() {
+            ensure_directory(report_root).with_context(|| {
+                format!(
+                    "failed to create feedback report root {}",
+                    report_root.display()
+                )
+            })?;
+        }
+        ensure_directory(&report_dir).with_context(|| {
+            format!(
+                "failed to create feedback report directory {}",
+                report_dir.display()
+            )
+        })?;
+        reset_directory(&attachments_dir).with_context(|| {
+            format!(
+                "failed to reset feedback attachments directory {}",
+                attachments_dir.display()
+            )
+        })?;
+
+        let written_attachments = write_feedback_attachments(&attachments_dir, attachments)
+            .with_context(|| {
+                format!(
+                    "failed to write feedback attachments to {}",
+                    attachments_dir.display()
+                )
+            })?;
+        let metadata = feedback_report_metadata(tags, include_logs, &written_attachments);
+        write_private_file(
+            report_dir.join(FEEDBACK_REPORT_METADATA_FILENAME),
+            metadata.as_bytes(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to write feedback metadata in {}",
+                report_dir.display()
+            )
+        })?;
+
+        Ok(report_dir)
+    }
 }
 
-fn display_classification(classification: &str) -> String {
-    match classification {
-        "bug" => "Bug".to_string(),
-        "bad_result" => "Bad result".to_string(),
-        "good_result" => "Good result".to_string(),
-        "safety_check" => "Safety check".to_string(),
-        _ => "Other".to_string(),
+fn ensure_directory(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            fs::remove_file(path)?;
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    fs::create_dir_all(path)?;
+    restrict_directory_permissions(path)
+}
+
+fn reset_directory(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            fs::remove_file(path)?;
+        }
+        Ok(_) => {
+            fs::remove_dir_all(path)?;
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    fs::create_dir_all(path)?;
+    restrict_directory_permissions(path)
+}
+
+fn write_feedback_attachments(
+    attachments_dir: &Path,
+    attachments: &[PreparedFeedbackAttachment],
+) -> io::Result<Vec<WrittenFeedbackAttachment>> {
+    let mut used_filenames = HashSet::new();
+    let mut written_attachments = Vec::new();
+
+    for (index, attachment) in attachments.iter().enumerate() {
+        let filename = unique_attachment_filename(
+            &attachment.filename,
+            &mut used_filenames,
+            /*index*/ index + 1,
+        );
+        write_private_file(attachments_dir.join(&filename), &attachment.buffer)?;
+        written_attachments.push(WrittenFeedbackAttachment {
+            filename,
+            content_type: attachment.content_type.clone(),
+            bytes: attachment.buffer.len(),
+        });
+    }
+
+    Ok(written_attachments)
+}
+
+#[cfg(unix)]
+fn restrict_directory_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn restrict_directory_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn write_private_file(path: impl AsRef<Path>, buffer: &[u8]) -> io::Result<()> {
+    let path = path.as_ref();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(buffer)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, buffer)
+    }
+}
+
+fn feedback_report_metadata(
+    tags: &BTreeMap<String, String>,
+    include_logs: bool,
+    attachments: &[WrittenFeedbackAttachment],
+) -> String {
+    let mut metadata = String::new();
+    metadata.push_str("Codewith feedback report\n");
+    metadata.push_str("Destination: hasna/codewith\n");
+    metadata.push_str(&format!("Include logs: {include_logs}\n"));
+    metadata.push_str("\nTags:\n");
+    for (key, value) in tags {
+        metadata.push_str(&format!("- {key}: {value}\n"));
+    }
+
+    metadata.push_str("\nAttachments:\n");
+    if attachments.is_empty() {
+        metadata.push_str("- none\n");
+    } else {
+        for attachment in attachments {
+            metadata.push_str(&format!(
+                "- {}/{}",
+                FEEDBACK_REPORT_ATTACHMENTS_DIR, attachment.filename
+            ));
+            if let Some(content_type) = attachment.content_type.as_deref() {
+                metadata.push_str(&format!(" ({content_type}, {} bytes)", attachment.bytes));
+            } else {
+                metadata.push_str(&format!(" ({} bytes)", attachment.bytes));
+            }
+            metadata.push('\n');
+        }
+    }
+
+    metadata
+}
+
+fn unique_attachment_filename(
+    filename: &str,
+    used_filenames: &mut HashSet<String>,
+    index: usize,
+) -> String {
+    let raw_name = Path::new(filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(filename);
+    let sanitized = sanitize_path_component(raw_name, &format!("attachment-{index}.log"));
+    if used_filenames.insert(sanitized.clone()) {
+        return sanitized;
+    }
+
+    let path = Path::new(&sanitized);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("attachment");
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    for suffix in 2.. {
+        let candidate = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem}-{suffix}.{extension}"),
+            _ => format!("{stem}-{suffix}"),
+        };
+        if used_filenames.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded suffix search should always return");
+}
+
+fn sanitize_path_component(value: &str, fallback: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim_matches('.').is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -868,5 +1057,155 @@ mod tests {
             Some("from-client")
         );
         assert_eq!(upload_tags.get("model").map(String::as_str), Some("gpt-5"));
+    }
+
+    #[test]
+    fn upload_feedback_prepares_codewith_report_without_network_destination() {
+        let snapshot = CodexFeedback::new().snapshot(/*session_id*/ None);
+        let report_dir = feedback_report_dir(&snapshot.thread_id);
+        let _ = fs::remove_dir_all(&report_dir);
+
+        let result = snapshot.upload_feedback(FeedbackUploadOptions {
+            classification: "bug",
+            reason: Some("something broke"),
+            tags: None,
+            include_logs: false,
+            extra_attachments: &[],
+            extra_attachment_paths: &[],
+            session_source: Some(SessionSource::Cli),
+            logs_override: None,
+        });
+
+        assert!(result.is_ok());
+        let metadata = fs::read_to_string(report_dir.join(FEEDBACK_REPORT_METADATA_FILENAME))
+            .expect("metadata should be written");
+        assert!(metadata.contains("Destination: hasna/codewith"));
+        assert!(metadata.contains("Include logs: false"));
+        assert!(metadata.contains("- classification: bug"));
+        assert!(metadata.contains("- reason: something broke"));
+        assert!(metadata.contains("- none"));
+        fs::remove_dir_all(report_dir).expect("report directory should be removed");
+    }
+
+    #[test]
+    fn upload_feedback_writes_local_report_with_consented_attachments() {
+        let thread_id = ThreadId::new();
+        let feedback = CodexFeedback::new();
+        {
+            let mut writer = feedback.make_writer().make_writer();
+            writer
+                .write_all(b"ring buffer logs")
+                .expect("logs should be captured");
+        }
+        let snapshot = feedback.snapshot(Some(thread_id));
+        let report_dir = feedback_report_dir(&snapshot.thread_id);
+        let _ = fs::remove_dir_all(&report_dir);
+
+        let extra_filename = format!("codex-feedback-extra-{}.jsonl", ThreadId::new());
+        let extra_path = std::env::temp_dir().join(&extra_filename);
+        fs::write(&extra_path, "rollout").expect("extra attachment should be written");
+
+        snapshot
+            .upload_feedback(FeedbackUploadOptions {
+                classification: "bug",
+                reason: Some("something broke"),
+                tags: None,
+                include_logs: true,
+                extra_attachments: &[FeedbackAttachment {
+                    filename: DOCTOR_REPORT_ATTACHMENT_FILENAME.to_string(),
+                    content_type: Some("application/json".to_string()),
+                    buffer: b"{\"overallStatus\":\"ok\"}".to_vec(),
+                }],
+                extra_attachment_paths: &[FeedbackAttachmentPath {
+                    path: extra_path.clone(),
+                    attachment_filename_override: None,
+                }],
+                session_source: Some(SessionSource::Cli),
+                logs_override: None,
+            })
+            .expect("feedback report should be written");
+
+        let attachments_dir = report_dir.join(FEEDBACK_REPORT_ATTACHMENTS_DIR);
+        let metadata = fs::read_to_string(report_dir.join(FEEDBACK_REPORT_METADATA_FILENAME))
+            .expect("metadata should be written");
+        assert!(metadata.contains("Destination: hasna/codewith"));
+        assert!(metadata.contains("Include logs: true"));
+        assert!(metadata.contains("- session_source: cli"));
+        assert!(metadata.contains("attachments/codex-logs.log"));
+        assert!(metadata.contains(DOCTOR_REPORT_ATTACHMENT_FILENAME));
+        assert!(metadata.contains(extra_filename.as_str()));
+        assert_eq!(
+            fs::read(attachments_dir.join("codex-logs.log")).expect("logs should be written"),
+            b"ring buffer logs".to_vec()
+        );
+        assert_eq!(
+            fs::read(attachments_dir.join(DOCTOR_REPORT_ATTACHMENT_FILENAME))
+                .expect("doctor report should be written"),
+            b"{\"overallStatus\":\"ok\"}".to_vec()
+        );
+        assert_eq!(
+            fs::read(attachments_dir.join(&extra_filename)).expect("rollout should be written"),
+            b"rollout".to_vec()
+        );
+
+        fs::remove_file(extra_path).expect("extra attachment should be removed");
+        fs::remove_dir_all(report_dir).expect("report directory should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_feedback_writes_private_report_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let thread_id = ThreadId::new();
+        let feedback = CodexFeedback::new();
+        {
+            let mut writer = feedback.make_writer().make_writer();
+            writer
+                .write_all(b"private logs")
+                .expect("logs should be captured");
+        }
+        let snapshot = feedback.snapshot(Some(thread_id));
+        let report_dir = feedback_report_dir(&snapshot.thread_id);
+        let report_root = report_dir
+            .parent()
+            .expect("feedback report directory should have root");
+        let _ = fs::remove_dir_all(&report_dir);
+
+        snapshot
+            .upload_feedback(FeedbackUploadOptions {
+                classification: "bug",
+                reason: None,
+                tags: None,
+                include_logs: true,
+                extra_attachments: &[],
+                extra_attachment_paths: &[],
+                session_source: Some(SessionSource::Cli),
+                logs_override: None,
+            })
+            .expect("feedback report should be written");
+
+        let attachments_dir = report_dir.join(FEEDBACK_REPORT_ATTACHMENTS_DIR);
+        let metadata_path = report_dir.join(FEEDBACK_REPORT_METADATA_FILENAME);
+        let logs_path = attachments_dir.join("codex-logs.log");
+
+        for path in [report_root, report_dir.as_path(), attachments_dir.as_path()] {
+            let mode = fs::metadata(path)
+                .expect("directory metadata should be readable")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        for path in [metadata_path.as_path(), logs_path.as_path()] {
+            let mode = fs::metadata(path)
+                .expect("file metadata should be readable")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        fs::remove_dir_all(report_dir).expect("report directory should be removed");
     }
 }

@@ -244,8 +244,11 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             req.sandbox_permissions,
             &file_system_sandbox_policy,
         );
-        let managed_network =
-            managed_network_for_sandbox_permissions(req.network.as_ref(), sandbox_permissions);
+        let managed_network = if attempt.enforce_managed_network {
+            managed_network_for_sandbox_permissions(req.network.as_ref(), sandbox_permissions)
+        } else {
+            None
+        };
         let env = exec_env_for_sandbox_permissions(&req.env, sandbox_permissions);
         let explicit_env_overrides = req.explicit_env_overrides.clone();
         #[cfg(unix)]

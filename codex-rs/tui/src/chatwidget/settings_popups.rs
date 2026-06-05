@@ -171,6 +171,13 @@ impl ChatWidget {
                 Some(Box::new(|enabled| serde_json::json!(!enabled))),
             ),
             config_toggle_item(
+                "Session recap",
+                "Prepare a one-line summary while the terminal is unfocused.",
+                "session_recap.enabled",
+                self.config.session_recap.enabled,
+                None,
+            ),
+            config_toggle_item(
                 "Hide reasoning summaries",
                 "Hide agent reasoning events from the transcript.",
                 "hide_agent_reasoning",
@@ -277,6 +284,9 @@ impl ChatWidget {
             "disable_paste_burst" => {
                 self.config.disable_paste_burst = enabled;
                 self.bottom_pane.set_disable_paste_burst(enabled);
+            }
+            "session_recap.enabled" => {
+                self.config.session_recap.enabled = enabled;
             }
             "hide_agent_reasoning" => {
                 self.config.hide_agent_reasoning = enabled;

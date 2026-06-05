@@ -136,6 +136,11 @@ impl CodexThread {
         self.codex.submit(op).await
     }
 
+    /// Generate a lightweight, out-of-band recap of the current session.
+    pub async fn generate_session_recap(&self, prompt: Option<String>) -> CodexResult<String> {
+        crate::session_recap::generate_session_recap(self, prompt).await
+    }
+
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.codex.session.services.session_telemetry.clone()

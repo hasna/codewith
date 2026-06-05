@@ -5,6 +5,7 @@ mod models_endpoint;
 mod provider;
 
 pub use auth::auth_provider_from_auth;
+pub use auth::provider_api_key;
 pub use auth::unauthenticated_auth_provider;
 pub use bearer_auth_provider::BearerAuthProvider;
 pub use bearer_auth_provider::BearerAuthProvider as CoreAuthProvider;
@@ -18,3 +19,4 @@ pub use provider::ProviderCapabilities;
 pub use provider::SharedModelProvider;
 pub use provider::create_model_provider;
 pub use provider::create_model_provider_with_id;
+pub use provider::model_cache_key_for_provider;

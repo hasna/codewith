@@ -144,6 +144,57 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
     Ok(())
 }
 
+#[tokio::test]
+async fn full_access_attempt_drops_managed_network_for_default_permissions() -> anyhow::Result<()> {
+    let proxy = test_network_proxy().await?;
+    let dir = tempdir().expect("create temp dir");
+    let cwd = dir.path().abs();
+    let env = HashMap::from([("CUSTOM_ENV".to_string(), "kept".to_string())]);
+
+    let command = vec!["/bin/echo".to_string(), "ok".to_string()];
+    let command = build_sandbox_command(
+        &command,
+        &cwd,
+        &exec_env_for_sandbox_permissions(&env, SandboxPermissions::UseDefault),
+        /*additional_permissions*/ None,
+    )
+    .expect("build sandbox command");
+    let options = ExecOptions {
+        expiration: ExecExpiration::DefaultTimeout,
+        capture_policy: ExecCapturePolicy::ShellTool,
+    };
+    let permissions = PermissionProfile::Disabled;
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::None,
+        permissions: &permissions,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &cwd,
+        workspace_roots: std::slice::from_ref(&cwd),
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
+        network_denial_cancellation_token: None,
+    };
+
+    let exec_request = attempt
+        .env_for(command, options, Some(&proxy))
+        .expect("prepare exec request");
+
+    assert_eq!(exec_request.network, None);
+    for key in PROXY_ENV_KEYS {
+        assert_eq!(exec_request.env.get(*key), None, "{key} should be unset");
+    }
+    assert_eq!(
+        exec_request.env.get("CUSTOM_ENV"),
+        Some(&"kept".to_string())
+    );
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_zsh_fork_path_prepend_uses_shell_parent() {

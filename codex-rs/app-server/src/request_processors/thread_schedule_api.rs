@@ -276,6 +276,21 @@ pub(super) fn api_thread_schedule_run_from_state(
     }
 }
 
+pub(super) fn api_thread_schedule_stats_from_state(
+    stats: codex_state::ThreadScheduleStats,
+) -> ThreadScheduleStats {
+    ThreadScheduleStats {
+        total_runs: stats.total_runs,
+        leased_runs: stats.leased_runs,
+        running_runs: stats.running_runs,
+        completed_runs: stats.completed_runs,
+        failed_runs: stats.failed_runs,
+        last_started_at: stats.last_started_at.map(|datetime| datetime.timestamp()),
+        last_completed_at: stats.last_completed_at.map(|datetime| datetime.timestamp()),
+        last_error: stats.last_error,
+    }
+}
+
 fn thread_schedule_run_status_from_state(
     status: codex_state::ThreadScheduleRunStatus,
 ) -> ThreadScheduleRunStatus {

@@ -88,12 +88,7 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
     "codex": [
         "codex",
-        "codex-linux-x64",
         "codex-linux-arm64",
-        "codex-darwin-x64",
-        "codex-darwin-arm64",
-        "codex-win32-x64",
-        "codex-win32-arm64",
     ],
 }
 

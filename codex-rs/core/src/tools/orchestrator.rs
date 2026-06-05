@@ -34,6 +34,7 @@ use codex_otel::ToolDecisionSource;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::NetworkPolicyRuleAction;
 use codex_protocol::protocol::ReviewDecision;
@@ -134,6 +135,7 @@ impl ToolOrchestrator {
         tool_ctx: &ToolCtx,
         turn_ctx: &crate::session::turn_context::TurnContext,
         approval_policy: AskForApproval,
+        permission_profile: &PermissionProfile,
     ) -> Result<OrchestratorRunResult<Out>, ToolError>
     where
         T: ToolRuntime<Rq, Out>,
@@ -147,8 +149,7 @@ impl ToolOrchestrator {
         // 1) Approval
         let mut already_approved = false;
 
-        let file_system_sandbox_policy = turn_ctx.file_system_sandbox_policy();
-        let network_sandbox_policy = turn_ctx.network_sandbox_policy();
+        let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
         let requirement = tool.exec_approval_requirement(req).unwrap_or_else(|| {
             default_exec_approval_requirement(approval_policy, &file_system_sandbox_policy)
         });
@@ -216,13 +217,20 @@ impl ToolOrchestrator {
             }
         }
 
+        let refreshed_settings = tool_ctx.session.effective_turn_settings(turn_ctx).await;
+        let approval_policy = refreshed_settings.approval_policy;
+        let permission_profile = refreshed_settings.permission_profile;
+        let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
+        let network_sandbox_policy = permission_profile.network_sandbox_policy();
+
         // 2) First attempt under the selected sandbox.
         let sandbox_override = sandbox_override_for_first_attempt(
             tool.sandbox_permissions(req),
             &requirement,
             &file_system_sandbox_policy,
         );
-        let managed_network_active = turn_ctx.network.is_some();
+        let managed_network_active = turn_ctx.network.is_some()
+            && !matches!(permission_profile, PermissionProfile::Disabled);
         let initial_sandbox = match sandbox_override {
             SandboxOverride::BypassSandboxFirstAttempt => SandboxType::None,
             SandboxOverride::NoOverride => self.sandbox.select_initial(
@@ -241,7 +249,7 @@ impl ToolOrchestrator {
         let workspace_roots = turn_ctx.config.effective_workspace_roots();
         let initial_attempt = SandboxAttempt {
             sandbox: initial_sandbox,
-            permissions: &turn_ctx.permission_profile,
+            permissions: &permission_profile,
             enforce_managed_network: managed_network_active,
             manager: &self.sandbox,
             sandbox_cwd,
@@ -357,7 +365,8 @@ impl ToolOrchestrator {
                         &permission_request_run_id,
                         approval_ctx,
                         tool_ctx,
-                        /*evaluate_permission_request_hooks*/ !strict_auto_review,
+                        /*evaluate_permission_request_hooks*/
+                        !strict_auto_review && network_approval_context.is_none(),
                         &otel,
                     )
                     .await?;
@@ -384,7 +393,7 @@ impl ToolOrchestrator {
                 };
                 let retry_attempt = SandboxAttempt {
                     sandbox: retry_sandbox,
-                    permissions: &turn_ctx.permission_profile,
+                    permissions: &permission_profile,
                     enforce_managed_network: managed_network_active,
                     manager: &self.sandbox,
                     sandbox_cwd,

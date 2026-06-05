@@ -37,6 +37,7 @@ use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
+use crate::state::ActiveTurnSettingsOverride;
 use crate::turn_metadata::TurnMetadataState;
 use crate::turn_timing::now_unix_timestamp_ms;
 use async_channel::Receiver;
@@ -110,6 +111,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadNameUpdatedEvent;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
@@ -138,6 +140,7 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadEventPersistenceMode;
+use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -227,6 +230,13 @@ use self::turn_context::TurnContext;
 use self::turn_context::TurnSkillsContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
+
+pub(crate) struct EffectiveTurnSettings {
+    pub(crate) approval_policy: AskForApproval,
+    pub(crate) permission_profile: PermissionProfile,
+}
+
+const MAX_RENAME_THREAD_NAME_CHARS: usize = 120;
 
 #[derive(Debug, PartialEq)]
 pub enum SteerInputError {
@@ -1053,6 +1063,75 @@ impl Session {
         self.services.live_thread.as_ref()
     }
 
+    pub(crate) async fn rename_thread_from_tool(
+        &self,
+        turn_context: &TurnContext,
+        name: &str,
+        overwrite_existing: bool,
+    ) -> anyhow::Result<String> {
+        let Some(name) = crate::util::normalize_thread_name(name) else {
+            anyhow::bail!("thread name must not be empty");
+        };
+        if name.chars().count() > MAX_RENAME_THREAD_NAME_CHARS {
+            anyhow::bail!("thread name must be at most {MAX_RENAME_THREAD_NAME_CHARS} characters");
+        }
+
+        let existing_name = {
+            let state = self.state.lock().await;
+            if state
+                .session_configuration
+                .original_config_do_not_use
+                .ephemeral
+            {
+                anyhow::bail!("ephemeral sessions cannot be renamed");
+            }
+            if state.session_configuration.parent_thread_id.is_some()
+                || matches!(
+                    state.session_configuration.session_source,
+                    SessionSource::Internal(_) | SessionSource::SubAgent(_)
+                )
+            {
+                anyhow::bail!("derived sessions cannot be renamed");
+            }
+            state.session_configuration.thread_name.clone()
+        };
+        if existing_name.as_deref() == Some(name.as_str()) {
+            return Ok(name);
+        }
+        if let Some(existing_name) = existing_name
+            && !overwrite_existing
+        {
+            anyhow::bail!(
+                "thread is already named `{existing_name}`; set overwrite_existing to true only when the user explicitly asked to rename it"
+            );
+        }
+
+        let live_thread = self.live_thread_for_persistence("rename thread")?;
+        live_thread
+            .update_metadata(
+                ThreadMetadataPatch {
+                    name: Some(Some(name.clone())),
+                    ..Default::default()
+                },
+                /*include_archived*/ false,
+            )
+            .await?;
+        {
+            let mut state = self.state.lock().await;
+            state.session_configuration.thread_name = Some(name.clone());
+        }
+        self.send_event(
+            turn_context,
+            EventMsg::ThreadNameUpdated(ThreadNameUpdatedEvent {
+                thread_id: self.conversation_id,
+                thread_name: Some(name.clone()),
+            }),
+        )
+        .await;
+
+        Ok(name)
+    }
+
     /// Flush rollout writes and return the final durability-barrier result.
     pub(crate) async fn flush_rollout(&self) -> std::io::Result<()> {
         if let Some(live_thread) = self.live_thread() {
@@ -1387,6 +1466,7 @@ impl Session {
             next_cwd,
             codex_home,
             session_source,
+            active_turn_settings_override,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1406,6 +1486,14 @@ impl Session {
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
+            let active_turn_settings_override = ActiveTurnSettingsOverride {
+                approval_policy: updates
+                    .approval_policy
+                    .is_some()
+                    .then(|| updated.approval_policy.value()),
+                permission_profile: permission_profile_changed
+                    .then(|| updated_permission_profile.clone()),
+            };
             let next_cwd = updated.cwd.clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
@@ -1418,9 +1506,14 @@ impl Session {
                 next_cwd,
                 codex_home,
                 session_source,
+                active_turn_settings_override,
             )
         };
 
+        if active_turn_settings_override != ActiveTurnSettingsOverride::default() {
+            self.record_active_turn_settings_override(active_turn_settings_override)
+                .await;
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.maybe_refresh_shell_snapshot_for_cwd(
             &previous_cwd,
@@ -2447,6 +2540,53 @@ impl Session {
         let active = active.as_ref()?;
         let ts = active.turn_state.lock().await;
         ts.granted_permissions()
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn settings reads must stay consistent with the matching turn state"
+    )]
+    pub(crate) async fn effective_turn_settings(
+        &self,
+        turn_context: &TurnContext,
+    ) -> EffectiveTurnSettings {
+        let mut settings = EffectiveTurnSettings {
+            approval_policy: turn_context.approval_policy.value(),
+            permission_profile: turn_context.permission_profile(),
+        };
+        let active = self.active_turn.lock().await;
+        let Some(active) = active.as_ref() else {
+            return settings;
+        };
+        let applies_to_context = match active.task.as_ref() {
+            Some(task) => task.turn_context.sub_id == turn_context.sub_id,
+            None => true,
+        };
+        if !applies_to_context {
+            return settings;
+        }
+        let ts = active.turn_state.lock().await;
+        let override_settings = ts.settings_override();
+        if let Some(approval_policy) = override_settings.approval_policy {
+            settings.approval_policy = approval_policy;
+        }
+        if let Some(permission_profile) = override_settings.permission_profile {
+            settings.permission_profile = permission_profile;
+        }
+        settings
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn settings updates must stay consistent with the matching turn state"
+    )]
+    async fn record_active_turn_settings_override(&self, settings: ActiveTurnSettingsOverride) {
+        let active = self.active_turn.lock().await;
+        let Some(active) = active.as_ref() else {
+            return;
+        };
+        let mut ts = active.turn_state.lock().await;
+        ts.record_settings_override(settings);
     }
 
     #[expect(

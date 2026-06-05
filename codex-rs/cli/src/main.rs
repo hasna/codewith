@@ -74,6 +74,8 @@ use codex_core::config::find_codex_home;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_features::FEATURES;
 use codex_features::Stage;
+use codex_features::can_disable_feature_in_user_config;
+use codex_features::feature_for_key;
 use codex_features::is_known_feature_key;
 use codex_login::AuthManager;
 use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
@@ -1876,6 +1878,10 @@ async fn enable_feature_in_config(feature: &str) -> anyhow::Result<()> {
 
 async fn disable_feature_in_config(feature: &str) -> anyhow::Result<()> {
     FeatureToggles::validate_feature(feature)?;
+    let feature_id = feature_for_key(feature).expect("feature was already validated");
+    if !can_disable_feature_in_user_config(feature_id) {
+        anyhow::bail!("Feature `{feature}` cannot be disabled in config.toml.");
+    }
     let codex_home = find_codex_home()?;
     ConfigEditsBuilder::new(&codex_home)
         .set_feature_enabled(feature, /*enabled*/ false)
@@ -2016,8 +2022,9 @@ async fn run_debug_models_command(
             AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ true).await;
         let models_manager = build_models_manager(&config, auth_manager);
         models_manager
-            .raw_model_catalog(RefreshStrategy::OnlineIfUncached)
+            .raw_model_catalog_result(RefreshStrategy::OnlineIfUncached)
             .await
+            .map_err(anyhow::Error::msg)?
     };
 
     serde_json::to_writer(std::io::stdout(), &catalog)?;

@@ -175,6 +175,58 @@
         }
       ]
     },
+    "ThreadScheduleStats": {
+      "properties": {
+        "completedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "failedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastCompletedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastStartedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "leasedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "runningRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalRuns": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "completedRuns",
+        "failedRuns",
+        "leasedRuns",
+        "runningRuns",
+        "totalRuns"
+      ],
+      "type": "object"
+    },
     "ThreadScheduleStatus": {
       "enum": [
         "active",
@@ -194,8 +246,14 @@
           "type": "null"
         }
       ]
+    },
+    "stats": {
+      "$ref": "#/definitions/ThreadScheduleStats"
     }
   },
+  "required": [
+    "stats"
+  ],
   "title": "ThreadScheduleGetResponse",
   "type": "object"
 }

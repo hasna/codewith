@@ -266,9 +266,23 @@ impl ThreadScheduleRequestProcessor {
             .get_thread_schedule(schedule_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to read thread schedule: {err}")))?
-            .filter(|schedule| schedule.thread_id == thread_id)
-            .map(api_thread_schedule_from_state);
-        Ok(ThreadScheduleGetResponse { schedule })
+            .filter(|schedule| schedule.thread_id == thread_id);
+        let stats = if schedule.is_some() {
+            state_db
+                .thread_schedules()
+                .get_thread_schedule_stats(schedule_id.as_str())
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to read thread schedule stats: {err}"))
+                })
+                .map(api_thread_schedule_stats_from_state)?
+        } else {
+            ThreadScheduleStats::default()
+        };
+        Ok(ThreadScheduleGetResponse {
+            schedule: schedule.map(api_thread_schedule_from_state),
+            stats,
+        })
     }
 
     async fn thread_schedule_update_inner(

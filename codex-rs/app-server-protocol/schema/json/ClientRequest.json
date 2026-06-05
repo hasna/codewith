@@ -3567,6 +3567,23 @@
         }
       ]
     },
+    "ThreadRecapParams": {
+      "properties": {
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadResumeInitialTurnsPageParams": {
       "properties": {
         "itemsView": {
@@ -4360,6 +4377,13 @@
             "null"
           ]
         },
+        "modelProvider": {
+          "description": "Override the model provider for this turn and subsequent turns.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for this turn."
         },
@@ -5118,6 +5142,30 @@
         "params"
       ],
       "title": "Thread/compact/startRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/recap"
+          ],
+          "title": "Thread/recapRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRecapParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/recapRequest",
       "type": "object"
     },
     {

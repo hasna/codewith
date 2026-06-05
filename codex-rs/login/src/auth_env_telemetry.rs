@@ -86,4 +86,33 @@ mod tests {
             Some("configured".to_string())
         );
     }
+
+    #[test]
+    fn collect_auth_env_telemetry_checks_env_without_fetching_secret_value() {
+        let missing_env_key = format!("CODEWITH_TEST_MISSING_PROVIDER_KEY_{}", std::process::id());
+        let provider = ModelProviderInfo {
+            name: "Cerebras".to_string(),
+            base_url: None,
+            env_key: Some(missing_env_key),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let telemetry =
+            collect_auth_env_telemetry(&provider, /*codex_api_key_env_enabled*/ false);
+
+        assert_eq!(telemetry.provider_env_key_present, Some(false));
+    }
 }

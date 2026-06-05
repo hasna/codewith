@@ -1,11 +1,10 @@
 ---
 source: tui/src/bottom_pane/feedback_view.rs
-assertion_line: 716
 expression: rendered
 ---
-Upload logs?
+Include logs?
 
-The following files will be sent:
+The following files will be prepared locally:
   • codex-logs.log
   • codex-doctor-report.json
   • rollout.jsonl

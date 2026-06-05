@@ -583,6 +583,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadCompactStartResponse,
     },
+    ThreadRecap => "thread/recap" {
+        params: v2::ThreadRecapParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadRecapResponse,
+    },
     ThreadShellCommand => "thread/shellCommand" {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),

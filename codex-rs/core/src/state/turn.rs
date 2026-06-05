@@ -22,6 +22,8 @@ use crate::session::TurnInputQueue;
 use crate::session::turn_context::TurnContext;
 use crate::tasks::AnySessionTask;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TokenUsage;
 
@@ -90,11 +92,18 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
+    settings_override: ActiveTurnSettingsOverride,
     granted_permissions: Option<AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ActiveTurnSettingsOverride {
+    pub(crate) approval_policy: Option<AskForApproval>,
+    pub(crate) permission_profile: Option<PermissionProfile>,
 }
 
 pub(crate) struct PendingRequestPermissions {
@@ -211,6 +220,19 @@ impl TurnState {
 
     pub(crate) fn granted_permissions(&self) -> Option<AdditionalPermissionProfile> {
         self.granted_permissions.clone()
+    }
+
+    pub(crate) fn record_settings_override(&mut self, settings: ActiveTurnSettingsOverride) {
+        if settings.approval_policy.is_some() {
+            self.settings_override.approval_policy = settings.approval_policy;
+        }
+        if settings.permission_profile.is_some() {
+            self.settings_override.permission_profile = settings.permission_profile;
+        }
+    }
+
+    pub(crate) fn settings_override(&self) -> ActiveTurnSettingsOverride {
+        self.settings_override.clone()
     }
 
     pub(crate) fn enable_strict_auto_review(&mut self) {

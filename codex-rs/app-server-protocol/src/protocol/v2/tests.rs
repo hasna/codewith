@@ -3596,9 +3596,11 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
+        "modelProvider": "nvidia",
         "serviceTier": null
     }))
     .expect("params should deserialize");
+    assert_eq!(params.model_provider.as_deref(), Some("nvidia"));
     assert_eq!(params.service_tier, Some(None));
 
     let serialized = serde_json::to_value(&params).expect("params should serialize");
@@ -3620,6 +3622,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         approvals_reviewer: None,
         sandbox_policy: None,
         permissions: None,
+        model_provider: None,
         model: None,
         service_tier: None,
         effort: None,

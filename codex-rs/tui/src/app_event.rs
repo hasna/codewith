@@ -161,6 +161,26 @@ pub(crate) enum AppEvent {
         op: AppCommand,
     },
 
+    /// Generate a lightweight recap for the specified thread.
+    RequestSessionRecap {
+        thread_id: ThreadId,
+        prompt: Option<String>,
+        automatic: bool,
+    },
+
+    /// Start automatic recap if the thread is still eligible after the idle timer expires.
+    MaybeStartAutomaticSessionRecap {
+        thread_id: ThreadId,
+        turn_id: String,
+    },
+
+    /// Result of a background session recap request.
+    SessionRecapFinished {
+        thread_id: ThreadId,
+        automatic: bool,
+        result: Result<String, String>,
+    },
+
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
@@ -311,6 +331,12 @@ pub(crate) enum AppEvent {
         schedule_id: String,
     },
 
+    /// Show stats for a thread loop schedule.
+    OpenThreadLoopScheduleStats {
+        thread_id: ThreadId,
+        schedule_id: String,
+    },
+
     /// Create a recurring prompt schedule for the current thread.
     CreateThreadLoopSchedule {
         thread_id: ThreadId,
@@ -363,6 +389,12 @@ pub(crate) enum AppEvent {
 
     /// Open actions for a thread schedule.
     OpenThreadScheduleActions {
+        thread_id: ThreadId,
+        schedule_id: String,
+    },
+
+    /// Show stats for a thread schedule.
+    OpenThreadScheduleStats {
         thread_id: ThreadId,
         schedule_id: String,
     },
@@ -761,6 +793,28 @@ pub(crate) enum AppEvent {
     SwitchAuthProfile {
         profile: Option<String>,
         reason: AuthProfileSwitchReason,
+        resume_queued_input: bool,
+    },
+
+    /// Prompt for renaming a saved auth profile.
+    OpenAuthProfileRenamePrompt {
+        profile: String,
+    },
+
+    /// Prompt for confirming saved auth profile deletion.
+    OpenAuthProfileDeleteConfirm {
+        profile: String,
+    },
+
+    /// Rename a saved auth profile.
+    RenameAuthProfile {
+        old_name: String,
+        new_name: String,
+    },
+
+    /// Delete a saved auth profile.
+    DeleteAuthProfile {
+        profile: String,
     },
 
     /// Update the current personality in the running app and widget.
@@ -1075,6 +1129,7 @@ pub(crate) enum AppEvent {
     FeedbackSubmitted {
         origin_thread_id: Option<ThreadId>,
         category: FeedbackCategory,
+        reason: Option<String>,
         include_logs: bool,
         result: Result<String, String>,
     },

@@ -20,6 +20,7 @@ pub use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 pub use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -217,6 +218,26 @@ pub struct AuthProfileAutoSwitchToml {
 
     /// Switch when the weekly Codewith window reaches 100%.
     pub on_weekly_limit: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SessionRecapToml {
+    /// Enables background session recaps in interactive TUI sessions.
+    pub enabled: Option<bool>,
+
+    /// Minutes the terminal must stay unfocused after the last completed turn
+    /// before Codewith prepares an automatic recap.
+    pub idle_minutes: Option<u64>,
+
+    /// Preferred lightweight model for recap generation.
+    pub model: Option<String>,
+
+    /// Fallback model used when the preferred recap model is unavailable.
+    pub fallback_model: Option<String>,
+
+    /// Reasoning effort requested for recap generation.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema)]

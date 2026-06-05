@@ -28,7 +28,11 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
@@ -409,6 +413,104 @@ wire_api = "responses"
     assert!(next_cursor.is_none());
     assert_eq!(provider_a_mock.requests().len(), 0);
     assert_eq!(provider_b_mock.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_falls_back_for_cerebras_provider_discovery_failure() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "detail": "Not authenticated"
+        })))
+        .mount(&provider)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let provider_uri = provider.uri();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+[model_providers.cerebras]
+name = "Cerebras"
+base_url = "{provider_uri}/v1"
+env_key = "CEREBRAS_API_KEY"
+wire_api = "responses"
+"#
+        ),
+    )?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: Some("cerebras".to_string()),
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse { data, next_cursor } = to_response::<ModelListResponse>(response)?;
+    assert_eq!(
+        data.iter()
+            .map(|model| (model.id.as_str(), model.is_default))
+            .collect::<Vec<_>>(),
+        vec![("gpt-oss-120b", true)]
+    );
+    assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_for_custom_provider_discovery_failure_returns_cached_result() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&provider)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let provider_uri = provider.uri();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+[model_providers.provider-b]
+name = "Provider B"
+base_url = "{provider_uri}/v1"
+wire_api = "responses"
+"#
+        ),
+    )?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: Some("provider-b".to_string()),
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse { data, next_cursor } = to_response::<ModelListResponse>(response)?;
+    assert!(data.is_empty());
+    assert!(next_cursor.is_none());
     Ok(())
 }
 

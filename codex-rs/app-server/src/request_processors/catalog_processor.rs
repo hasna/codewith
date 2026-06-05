@@ -301,7 +301,7 @@ impl CatalogRequestProcessor {
                     })?
                     .clone();
                 let provider = create_model_provider_with_id(
-                    model_provider,
+                    model_provider.clone(),
                     provider_info,
                     Some(Arc::clone(&self.auth_manager)),
                 );
@@ -309,10 +309,60 @@ impl CatalogRequestProcessor {
                     config.codex_home.to_path_buf(),
                     config.model_catalog.clone(),
                 );
-                supported_models_from_manager(models_manager, include_hidden).await
+                if !provider_has_fallback_models(&model_provider) {
+                    return Self::paginated_model_list_response(
+                        supported_models_from_manager(models_manager, include_hidden).await,
+                        cursor,
+                        limit,
+                    );
+                }
+                match try_supported_models_from_manager(models_manager, include_hidden).await {
+                    Ok(models) => models,
+                    Err(err) => {
+                        let fallback_models =
+                            fallback_supported_models_for_provider(&model_provider, include_hidden);
+                        if fallback_models.is_empty() {
+                            return Err(internal_error(format!(
+                                "failed to list models for provider `{model_provider}`: {err}"
+                            )));
+                        }
+                        warn!(
+                            "failed to list models for provider `{model_provider}`; using fallback catalog: {err}"
+                        );
+                        fallback_models
+                    }
+                }
             }
-            None => supported_models(self.thread_manager.clone(), include_hidden).await,
+            None => {
+                let models = supported_models(self.thread_manager.clone(), include_hidden).await;
+                if models.is_empty() {
+                    let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+                    let fallback_models = fallback_supported_models_for_provider(
+                        &config.model_provider_id,
+                        include_hidden,
+                    );
+                    if fallback_models.is_empty() {
+                        models
+                    } else {
+                        warn!(
+                            "active provider `{}` returned no models; using fallback catalog",
+                            config.model_provider_id
+                        );
+                        fallback_models
+                    }
+                } else {
+                    models
+                }
+            }
         };
+        Self::paginated_model_list_response(models, cursor, limit)
+    }
+
+    fn paginated_model_list_response(
+        models: Vec<Model>,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<ModelListResponse, JSONRPCErrorError> {
         let total = models.len();
 
         if total == 0 {

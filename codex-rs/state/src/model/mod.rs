@@ -42,6 +42,7 @@ pub use thread_schedule::ThreadSchedulePromptSource;
 pub use thread_schedule::ThreadScheduleRun;
 pub use thread_schedule::ThreadScheduleRunStatus;
 pub use thread_schedule::ThreadScheduleSpec;
+pub use thread_schedule::ThreadScheduleStats;
 pub use thread_schedule::ThreadScheduleStatus;
 
 pub(crate) use agent_job::AgentJobItemRow;

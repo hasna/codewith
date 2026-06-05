@@ -54,6 +54,32 @@ fn rate_limit_snapshot_for_window(
     }
 }
 
+fn configure_test_session(chat: &mut ChatWidget) {
+    let rollout_file = NamedTempFile::new().unwrap();
+    chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
+        message_history: None,
+        network_proxy: None,
+        rollout_path: Some(rollout_file.path().to_path_buf()),
+    });
+}
+
 /// Receiving a token usage update without usage clears the context indicator.
 #[tokio::test]
 async fn token_count_none_resets_context_indicator() {
@@ -1254,13 +1280,19 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
     chat.config.auth_profile_auto_switch.enabled = true;
     chat.config.auth_profile_auto_switch.profiles =
         vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
 
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
     )));
 
     match rx.try_recv() {
-        Ok(AppEvent::SwitchAuthProfile { profile, reason }) => {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
                 reason,
@@ -1268,9 +1300,360 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
                     window: "5h".to_string()
                 }
             );
+            assert!(resume_queued_input);
         }
         other => panic!("expected auth profile switch event, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn cached_exhausted_limit_auto_switches_before_next_prompt_after_being_enabled() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = false;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "auto-switch should wait until enabled, got {event:?}"
+        );
+    }
+
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.submit_user_message(UserMessage::from("please continue"));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "5h".to_string()
+                }
+            );
+            assert!(resume_queued_input);
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.queued_user_message_texts(), vec!["please continue"]);
+
+    chat.set_auth_profile(Some("personal".to_string()));
+    assert!(chat.maybe_send_next_queued_input());
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "please continue".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected user turn after auth profile switch, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn exhausted_limit_before_session_configured_auto_switches_when_prompt_drains() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "auto-switch should wait for a configured session, got {event:?}"
+        );
+    }
+
+    chat.submit_user_message(UserMessage::from("queued before startup"));
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    assert!(chat.maybe_send_next_queued_input());
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "5h".to_string()
+                }
+            );
+            assert!(resume_queued_input);
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["queued before startup"]
+    );
+}
+
+#[tokio::test]
+async fn auth_profile_auto_switch_without_alternate_does_not_consume_cached_trigger() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "auto-switch should not emit without an alternate profile, got {event:?}"
+        );
+    }
+
+    save_test_auth_profile(&chat, "personal");
+    chat.submit_user_message(UserMessage::from("retry after adding profile"));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "5h".to_string()
+                }
+            );
+            assert!(resume_queued_input);
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["retry after adding profile"]
+    );
+}
+
+#[tokio::test]
+async fn cached_exhausted_limit_respects_window_toggle_before_next_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = false;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "auto-switch should wait until enabled, got {event:?}"
+        );
+    }
+
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.on_5h_limit = false;
+    chat.submit_user_message(UserMessage::from("send without switching"));
+
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "5h auto-switch should honor the disabled window toggle"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "send without switching".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected user turn without auth profile switch, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn exhausted_weekly_limit_auto_switches_to_next_auth_profile() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 10_080, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "weekly".to_string()
+                }
+            );
+            assert!(resume_queued_input);
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn exhausted_auto_switch_uses_enabled_window_when_earlier_exhausted_window_is_disabled() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.on_5h_limit = false;
+    chat.config.auth_profile_auto_switch.on_weekly_limit = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        secondary: Some(RateLimitWindow {
+            used_percent: 100,
+            window_duration_mins: Some(300),
+            resets_at: Some(123),
+        }),
+        primary: Some(RateLimitWindow {
+            used_percent: 100,
+            window_duration_mins: Some(10_080),
+            resets_at: Some(456),
+        }),
+        credits: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "weekly".to_string()
+                }
+            );
+            assert!(resume_queued_input);
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_queues_while_matching_auth_profile_auto_switch_is_pending() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { .. }) => {}
+        other => panic!("expected pending auth profile switch event, got {other:?}"),
+    }
+
+    chat.submit_user_message(UserMessage::from("wait for switch"));
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.queued_user_message_texts(), vec!["wait for switch"]);
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "prompt should wait for the already pending auto-switch event"
+    );
+}
+
+#[tokio::test]
+async fn late_matching_snapshot_after_auto_switch_does_not_switch_back() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+    let exhausted = rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    );
+
+    chat.on_rate_limit_snapshot(Some(exhausted.clone()));
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+
+    chat.set_auth_profile(Some("personal".to_string()));
+    chat.on_rate_limit_snapshot(Some(exhausted));
+
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "late duplicate exhausted snapshot should not switch back to the previous profile"
+    );
 }
 
 #[tokio::test]

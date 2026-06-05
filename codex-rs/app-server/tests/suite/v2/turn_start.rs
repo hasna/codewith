@@ -66,6 +66,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use core_test_support::responses;
@@ -2202,6 +2203,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
                 exclude_slash_tmp: true,
             }),
             permissions: None,
+            model_provider: None,
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
@@ -2241,6 +2243,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             approvals_reviewer: None,
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             permissions: None,
+            model_provider: None,
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
@@ -3421,6 +3424,12 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
     std::fs::create_dir(&codex_home)?;
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir(&workspace)?;
+    if linux_namespace_sandbox_unavailable(workspace.as_path()) {
+        eprintln!(
+            "skipping turn_start_file_change_approval_accept_for_session_persists_v2: Linux sandbox namespace setup is unavailable"
+        );
+        return Ok(());
+    }
 
     let patch_1 = r#"*** Begin Patch
 *** Add File: README.md
@@ -4021,4 +4030,83 @@ fn write_test_skill(codex_home: &Path, name: &str) -> std::io::Result<()> {
         skill_dir.join("SKILL.md"),
         format!("---\nname: {name}\ndescription: {name} description\n---\n\n# Body\n"),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_namespace_sandbox_unavailable(cwd: &Path) -> bool {
+    if system_bwrap_namespace_unavailable() {
+        return true;
+    }
+
+    let sandbox_exe = match codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+        Ok(sandbox_exe) => sandbox_exe,
+        Err(err) => {
+            eprintln!("codex-linux-sandbox binary unavailable for preflight: {err}");
+            return false;
+        }
+    };
+    let permission_profile = match serde_json::to_string(&PermissionProfile::read_only()) {
+        Ok(permission_profile) => permission_profile,
+        Err(err) => {
+            eprintln!("failed to serialize read-only permission profile for preflight: {err}");
+            return false;
+        }
+    };
+    let output = match std::process::Command::new(sandbox_exe)
+        .arg("--sandbox-policy-cwd")
+        .arg(cwd)
+        .arg("--permission-profile")
+        .arg(permission_profile)
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("true")
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("failed to run codex-linux-sandbox preflight: {err}");
+            return false;
+        }
+    };
+    if output.status.success() {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    is_linux_namespace_sandbox_error(stderr.as_ref())
+}
+
+#[cfg(target_os = "linux")]
+fn system_bwrap_namespace_unavailable() -> bool {
+    let output = match std::process::Command::new("bwrap")
+        .arg("--unshare-net")
+        .arg("true")
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+    if output.status.success() {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    is_linux_namespace_sandbox_error(stderr.as_ref())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_namespace_sandbox_unavailable(_cwd: &Path) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn is_linux_namespace_sandbox_error(stderr: &str) -> bool {
+    [
+        "bubblewrap is unavailable",
+        "loopback: Failed RTM_NEWADDR",
+        "loopback: Failed RTM_NEWLINK",
+        "setting up uid map: Permission denied",
+        "No permissions to create a new namespace",
+    ]
+    .iter()
+    .any(|snippet| stderr.contains(snippet))
 }

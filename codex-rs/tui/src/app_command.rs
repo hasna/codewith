@@ -59,6 +59,7 @@ pub(crate) enum AppCommand {
         active_permission_profile: Option<ActivePermissionProfile>,
         auth_profile: Option<Option<String>>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
+        model_provider: Option<String>,
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
@@ -179,6 +180,7 @@ impl AppCommand {
             active_permission_profile: None,
             auth_profile: Some(auth_profile),
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -211,12 +213,37 @@ impl AppCommand {
             active_permission_profile,
             auth_profile: None,
             windows_sandbox_level,
+            model_provider: None,
             model,
             effort,
             summary,
             service_tier,
             collaboration_mode,
             personality,
+        }
+    }
+
+    pub(crate) fn override_turn_context_model_provider(
+        model_provider: String,
+        model: String,
+        effort: Option<ReasoningEffortConfig>,
+        collaboration_mode: Option<CollaborationMode>,
+    ) -> Self {
+        Self::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            permission_profile: None,
+            active_permission_profile: None,
+            auth_profile: None,
+            windows_sandbox_level: None,
+            model_provider: Some(model_provider),
+            model: Some(model),
+            effort: Some(effort),
+            summary: None,
+            service_tier: None,
+            collaboration_mode,
+            personality: None,
         }
     }
 

@@ -15,6 +15,8 @@ use codex_app_server_protocol::MarketplaceRemoveParams;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
+use codex_app_server_protocol::ThreadRecapParams;
+use codex_app_server_protocol::ThreadRecapResponse;
 
 use codex_app_server_protocol::RequestId;
 
@@ -74,6 +76,27 @@ impl App {
                 .await
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::RateLimitsLoaded { origin, result });
+        });
+    }
+
+    pub(super) fn request_session_recap(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+        prompt: Option<String>,
+        automatic: bool,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = fetch_session_recap(request_handle, thread_id, prompt)
+                .await
+                .map_err(|err| format!("{err:#}"));
+            app_event_tx.send(AppEvent::SessionRecapFinished {
+                thread_id,
+                automatic,
+                result,
+            });
         });
     }
 
@@ -442,7 +465,7 @@ impl App {
             origin_thread_id,
             rollout_path,
             category,
-            reason,
+            reason.clone(),
             turn_id,
             include_logs,
         );
@@ -454,6 +477,7 @@ impl App {
             app_event_tx.send(AppEvent::FeedbackSubmitted {
                 origin_thread_id,
                 category,
+                reason,
                 include_logs,
                 result,
             });
@@ -466,6 +490,7 @@ impl App {
                 self.chat_widget
                     .add_to_history(crate::bottom_pane::feedback_success_cell(
                         event.category,
+                        event.reason.as_deref(),
                         event.include_logs,
                         &thread_id,
                         event.feedback_audience,
@@ -474,7 +499,7 @@ impl App {
             Err(err) => self
                 .chat_widget
                 .add_to_history(history_cell::new_error_event(format!(
-                    "Failed to upload feedback: {err}"
+                    "Failed to prepare feedback: {err}"
                 ))),
         }
     }
@@ -526,11 +551,13 @@ impl App {
         &mut self,
         origin_thread_id: Option<ThreadId>,
         category: FeedbackCategory,
+        reason: Option<String>,
         include_logs: bool,
         result: Result<String, String>,
     ) {
         let event = FeedbackThreadEvent {
             category,
+            reason,
             include_logs,
             feedback_audience: self.feedback_audience,
             result,
@@ -579,6 +606,37 @@ impl App {
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
                 &statuses, detail,
             ));
+    }
+
+    pub(super) fn handle_session_recap_finished(
+        &mut self,
+        thread_id: ThreadId,
+        automatic: bool,
+        result: Result<String, String>,
+    ) {
+        self.mark_session_recap_finished(thread_id, automatic, result.is_ok());
+
+        if Some(thread_id) != self.current_displayed_thread_id() {
+            return;
+        }
+
+        match result {
+            Ok(summary) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_info_event(
+                        format!("Recap: {summary}"),
+                        /*hint*/ None,
+                    ));
+            }
+            Err(err) => {
+                if automatic {
+                    tracing::warn!(%thread_id, error = %err, "automatic recap failed");
+                } else {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to generate recap: {err}"));
+                }
+            }
+        }
     }
 
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
@@ -644,6 +702,25 @@ pub(super) async fn fetch_account_rate_limits(
         .wrap_err("account/rateLimits/read failed in TUI")?;
 
     Ok(app_server_rate_limit_snapshots(response))
+}
+
+pub(super) async fn fetch_session_recap(
+    request_handle: AppServerRequestHandle,
+    thread_id: ThreadId,
+    prompt: Option<String>,
+) -> Result<String> {
+    let request_id = RequestId::String(format!("session-recap-{}", Uuid::new_v4()));
+    let response: ThreadRecapResponse = request_handle
+        .request_typed(ClientRequest::ThreadRecap {
+            request_id,
+            params: ThreadRecapParams {
+                thread_id: thread_id.to_string(),
+                prompt,
+            },
+        })
+        .await
+        .wrap_err("thread/recap failed in TUI")?;
+    Ok(response.summary)
 }
 
 pub(super) async fn send_add_credits_nudge_email(

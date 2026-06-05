@@ -89,33 +89,59 @@ fn exhausted_auto_switch_window(
     config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
     is_codex_limit: bool,
 ) -> Option<AuthProfileAutoSwitchWindow> {
-    if !is_codex_limit || !config.enabled {
+    if !config.enabled {
+        return None;
+    }
+
+    if !is_codex_limit {
         return None;
     }
 
     [snapshot.secondary.as_ref(), snapshot.primary.as_ref()]
         .into_iter()
         .flatten()
-        .find_map(|window| exhausted_auto_switch_window_for_limit(window, config))
+        .filter_map(exhausted_auto_switch_window_for_limit)
+        .find(|window| auth_profile_auto_switch_window_enabled(window, config))
+}
+
+fn exhausted_auto_switch_window_for_snapshot(
+    snapshot: &RateLimitSnapshot,
+    is_codex_limit: bool,
+) -> Option<AuthProfileAutoSwitchWindow> {
+    if !is_codex_limit {
+        return None;
+    }
+
+    [snapshot.secondary.as_ref(), snapshot.primary.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(exhausted_auto_switch_window_for_limit)
 }
 
 fn exhausted_auto_switch_window_for_limit(
     window: &RateLimitWindow,
-    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
 ) -> Option<AuthProfileAutoSwitchWindow> {
     if window.used_percent < 100 {
         return None;
     }
     let label = get_limits_duration(window.window_duration_mins?)?;
-    let enabled = match label.as_str() {
+    matches!(label.as_str(), FIVE_HOUR_LIMIT_LABEL | WEEKLY_LIMIT_LABEL).then_some(
+        AuthProfileAutoSwitchWindow {
+            label,
+            resets_at: window.resets_at,
+        },
+    )
+}
+
+fn auth_profile_auto_switch_window_enabled(
+    window: &AuthProfileAutoSwitchWindow,
+    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
+) -> bool {
+    match window.label.as_str() {
         FIVE_HOUR_LIMIT_LABEL => config.on_5h_limit,
         WEEKLY_LIMIT_LABEL => config.on_weekly_limit,
         _ => false,
-    };
-    enabled.then_some(AuthProfileAutoSwitchWindow {
-        label,
-        resets_at: window.resets_at,
-    })
+    }
 }
 
 fn auto_switch_trigger_key(limit_id: &str, window: &AuthProfileAutoSwitchWindow) -> String {
@@ -334,6 +360,7 @@ impl ChatWidget {
                 self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
             }
 
+            self.update_auth_profile_auto_switch_snapshot(&limit_id, &snapshot, is_codex_limit);
             self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
 
             let display =
@@ -349,9 +376,25 @@ impl ChatWidget {
             }
         } else {
             self.rate_limit_snapshots_by_limit_id.clear();
+            self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
             self.codex_rate_limit_reached_type = None;
         }
         self.refresh_status_line();
+    }
+
+    fn update_auth_profile_auto_switch_snapshot(
+        &mut self,
+        limit_id: &str,
+        snapshot: &RateLimitSnapshot,
+        is_codex_limit: bool,
+    ) {
+        if exhausted_auto_switch_window_for_snapshot(snapshot, is_codex_limit).is_some() {
+            self.auth_profile_auto_switch_snapshots_by_limit_id
+                .insert(limit_id.to_string(), snapshot.clone());
+        } else {
+            self.auth_profile_auto_switch_snapshots_by_limit_id
+                .remove(limit_id);
+        }
     }
 
     fn maybe_auto_switch_auth_profile_for_rate_limit(
@@ -366,9 +409,73 @@ impl ChatWidget {
         ) else {
             return;
         };
-        let trigger_key = auto_switch_trigger_key(limit_id, &window);
-        if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
+        if !self.is_session_configured() {
             return;
+        }
+        let Some((next_profile, trigger_key)) =
+            self.auth_profile_auto_switch_target(limit_id, &window)
+        else {
+            return;
+        };
+        self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
+    }
+
+    pub(super) fn maybe_auto_switch_auth_profile_before_user_turn(
+        &mut self,
+        user_message: &UserMessage,
+        history_record: &UserMessageHistoryRecord,
+    ) -> bool {
+        let Some((limit_id, window)) = self
+            .auth_profile_auto_switch_snapshots_by_limit_id
+            .iter()
+            .find_map(|(limit_id, snapshot)| {
+                exhausted_auto_switch_window(
+                    snapshot,
+                    &self.config.auth_profile_auto_switch,
+                    limit_id.eq_ignore_ascii_case("codex"),
+                )
+                .map(|window| (limit_id.clone(), window))
+            })
+        else {
+            return false;
+        };
+        let trigger_key = auto_switch_trigger_key(&limit_id, &window);
+        if self.pending_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
+            self.queue_user_message_for_auth_profile_auto_switch(user_message, history_record);
+            return true;
+        }
+        let Some((next_profile, trigger_key)) =
+            self.auth_profile_auto_switch_target(&limit_id, &window)
+        else {
+            return false;
+        };
+        self.queue_user_message_for_auth_profile_auto_switch(user_message, history_record);
+        self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
+        true
+    }
+
+    fn queue_user_message_for_auth_profile_auto_switch(
+        &mut self,
+        user_message: &UserMessage,
+        history_record: &UserMessageHistoryRecord,
+    ) {
+        self.input_queue
+            .queued_user_messages
+            .push_front(QueuedUserMessage::from(user_message.clone()));
+        self.input_queue
+            .queued_user_message_history_records
+            .push_front(history_record.clone());
+        self.refresh_pending_input_preview();
+    }
+
+    fn auth_profile_auto_switch_target(
+        &mut self,
+        limit_id: &str,
+        window: &AuthProfileAutoSwitchWindow,
+    ) -> Option<(String, String)> {
+        let trigger_key = auto_switch_trigger_key(limit_id, window);
+        if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
+            return None;
         }
 
         let profiles = match list_auth_profiles(
@@ -378,29 +485,40 @@ impl ChatWidget {
             Ok(profiles) => profiles,
             Err(err) => {
                 self.add_error_message(format!("Failed to load auth profiles: {err}"));
-                return;
+                return None;
             }
         };
-        let Some(next_profile) = next_auth_profile_for_auto_switch(
+        let next_profile = next_auth_profile_for_auto_switch(
             self.config.selected_auth_profile.as_deref(),
             &self.config.auth_profile_auto_switch.profiles,
             &profiles,
-        ) else {
-            self.add_info_message(
-                "Auth profile auto-switch is enabled, but no alternate profile is available."
-                    .to_string(),
-                /*hint*/ None,
-            );
-            self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
-            return;
-        };
+        );
+        if let Some(next_profile) = next_profile {
+            return Some((next_profile, trigger_key));
+        }
 
+        self.add_info_message(
+            "Auth profile auto-switch is enabled, but no alternate profile is available."
+                .to_string(),
+            /*hint*/ None,
+        );
+        None
+    }
+
+    fn send_auth_profile_auto_switch(
+        &mut self,
+        next_profile: String,
+        trigger_key: String,
+        window: AuthProfileAutoSwitchWindow,
+    ) {
+        self.pending_auth_profile_auto_switch_trigger = Some(trigger_key.clone());
         self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
         self.app_event_tx.send(AppEvent::SwitchAuthProfile {
             profile: Some(next_profile),
             reason: crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
                 window: window.label,
             },
+            resume_queued_input: true,
         });
     }
 

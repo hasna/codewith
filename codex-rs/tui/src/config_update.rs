@@ -16,7 +16,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_config::loader::project_trust_key;
-use codex_features::FEATURES;
+use codex_features::should_clear_user_config_feature_toggle;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -144,14 +144,10 @@ pub(crate) fn build_windows_sandbox_mode_edits(elevated_enabled: bool) -> Vec<Co
 
 pub(crate) fn build_feature_enabled_edit(feature_key: &str, enabled: bool) -> ConfigEdit {
     let key_path = format!("features.{feature_key}");
-    let is_default_false_feature = FEATURES
-        .iter()
-        .find(|spec| spec.key == feature_key)
-        .is_some_and(|spec| !spec.default_enabled);
-    if enabled || !is_default_false_feature {
-        replace_config_value(key_path, serde_json::json!(enabled))
-    } else {
+    if should_clear_user_config_feature_toggle(feature_key, enabled) {
         clear_config_value(key_path)
+    } else {
+        replace_config_value(key_path, serde_json::json!(enabled))
     }
 }
 

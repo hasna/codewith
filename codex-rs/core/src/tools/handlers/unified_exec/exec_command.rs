@@ -150,6 +150,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
         let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
+        let effective_turn_settings = session.effective_turn_settings(turn.as_ref()).await;
 
         let ExecCommandArgs {
             tty,
@@ -183,11 +184,11 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             .requests_sandbox_override()
             && !effective_additional_permissions.permissions_preapproved
             && !matches!(
-                context.turn.approval_policy.value(),
+                effective_turn_settings.approval_policy,
                 codex_protocol::protocol::AskForApproval::OnRequest
             )
         {
-            let approval_policy = context.turn.approval_policy.value();
+            let approval_policy = effective_turn_settings.approval_policy;
             manager.release_process_id(process_id).await;
             return Err(FunctionCallError::RespondToModel(format!(
                 "approval policy is {approval_policy:?}; reject command — you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
@@ -203,7 +204,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             || {
                 normalize_and_validate_additional_permissions(
                     additional_permissions_allowed,
-                    context.turn.approval_policy.value(),
+                    effective_turn_settings.approval_policy,
                     effective_additional_permissions.sandbox_permissions,
                     effective_additional_permissions.additional_permissions,
                     effective_additional_permissions.permissions_preapproved,

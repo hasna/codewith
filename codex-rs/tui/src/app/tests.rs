@@ -1800,6 +1800,7 @@ default_permissions = "locked-down"
             active_permission_profile: app.config.permissions.active_permission_profile(),
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -1895,6 +1896,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             active_permission_profile: Some(auto_review.active_permission_profile.clone()),
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -1991,6 +1993,7 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
             active_permission_profile: None,
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -2073,6 +2076,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             active_permission_profile: Some(auto_review.active_permission_profile.clone()),
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -2134,6 +2138,7 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
             active_permission_profile: None,
             auth_profile: None,
             windows_sandbox_level: None,
+            model_provider: None,
             model: None,
             effort: None,
             summary: None,
@@ -3916,6 +3921,7 @@ async fn make_test_app() -> App {
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
+        session_recap: SessionRecapScheduler::default(),
         pending_startup_thread_start: false,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
@@ -3979,6 +3985,7 @@ async fn make_test_app_with_channels() -> (
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
+            session_recap: SessionRecapScheduler::default(),
             pending_startup_thread_start: false,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
@@ -4340,6 +4347,7 @@ async fn feedback_submission_without_thread_emits_error_history_cell() {
     app.handle_feedback_submitted(
         /*origin_thread_id*/ None,
         FeedbackCategory::Bug,
+        /*reason*/ None,
         /*include_logs*/ true,
         Err("boom".to_string()),
     )
@@ -4351,7 +4359,7 @@ async fn feedback_submission_without_thread_emits_error_history_cell() {
     };
     assert_eq!(
         lines_to_single_string(&cell.display_lines(/*width*/ 120)),
-        "■ Failed to upload feedback: boom"
+        "■ Failed to prepare feedback: boom"
     );
 }
 
@@ -4385,8 +4393,9 @@ async fn feedback_submission_for_inactive_thread_replays_into_origin_thread() {
     app.handle_feedback_submitted(
         Some(origin_thread_id),
         FeedbackCategory::Bug,
+        Some("please investigate".to_string()),
         /*include_logs*/ true,
-        Ok("uploaded-thread".to_string()),
+        Ok("prepared-thread".to_string()),
     )
     .await;
 
@@ -4417,8 +4426,10 @@ async fn feedback_submission_for_inactive_thread_replays_into_origin_thread() {
         }
     }
     assert!(rendered_cells.iter().any(|cell| {
-        cell.contains("• Feedback uploaded. Please open an issue using the following URL:")
-            && cell.contains("uploaded-thread")
+        cell.contains(
+            "• Feedback prepared with logs. Please open a Codewith issue using the following URL:",
+        ) && cell.contains("prepared-thread")
+            && cell.contains("please%20investigate")
     }));
 }
 

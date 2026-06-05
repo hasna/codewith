@@ -47,6 +47,7 @@ use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_config::types::SessionPickerViewMode;
+use codex_config::types::SessionRecapToml;
 use codex_config::types::ToolSuggestConfig;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverable;
@@ -204,6 +205,31 @@ impl Default for AuthProfileAutoSwitchConfig {
     }
 }
 
+pub const DEFAULT_SESSION_RECAP_MODEL: &str = "zai-org/GLM-5.1";
+pub const DEFAULT_SESSION_RECAP_FALLBACK_MODEL: &str = "gpt-5.5";
+pub const DEFAULT_SESSION_RECAP_IDLE_MINUTES: u64 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecapConfig {
+    pub enabled: bool,
+    pub idle_minutes: u64,
+    pub model: String,
+    pub fallback_model: String,
+    pub reasoning_effort: ReasoningEffort,
+}
+
+impl Default for SessionRecapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            idle_minutes: DEFAULT_SESSION_RECAP_IDLE_MINUTES,
+            model: DEFAULT_SESSION_RECAP_MODEL.to_string(),
+            fallback_model: DEFAULT_SESSION_RECAP_FALLBACK_MODEL.to_string(),
+            reasoning_effort: ReasoningEffort::Low,
+        }
+    }
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -339,6 +365,39 @@ fn resolve_auth_profile_auto_switch_config(
         on_5h_limit: config.on_5h_limit.unwrap_or(true),
         on_weekly_limit: config.on_weekly_limit.unwrap_or(true),
     })
+}
+
+fn resolve_session_recap_config(config: Option<SessionRecapToml>) -> SessionRecapConfig {
+    let defaults = SessionRecapConfig::default();
+    let Some(config) = config else {
+        return defaults;
+    };
+
+    let model = config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .unwrap_or(defaults.model);
+    let fallback_model = config
+        .fallback_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .unwrap_or(defaults.fallback_model);
+
+    SessionRecapConfig {
+        enabled: config.enabled.unwrap_or(defaults.enabled),
+        idle_minutes: config
+            .idle_minutes
+            .filter(|idle_minutes| *idle_minutes > 0)
+            .unwrap_or(defaults.idle_minutes),
+        model,
+        fallback_model,
+        reasoning_effort: config.reasoning_effort.unwrap_or(defaults.reasoning_effort),
+    }
 }
 
 fn resolve_cli_auth_credentials_store_mode(
@@ -882,6 +941,9 @@ pub struct Config {
 
     /// Runtime auth-profile failover behavior for exhausted rate-limit windows.
     pub auth_profile_auto_switch: AuthProfileAutoSwitchConfig,
+
+    /// Lightweight recap behavior for returning to interactive TUI sessions.
+    pub session_recap: SessionRecapConfig,
 
     /// Definition for MCP servers that Codewith can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
@@ -2682,6 +2744,7 @@ impl Config {
         let selected_auth_profile = resolve_selected_auth_profile(auth_profile)?;
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
+        let session_recap = resolve_session_recap_config(cfg.session_recap.clone());
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -3037,7 +3100,10 @@ impl Config {
                 Vec::new(),
             )
         };
-        if enable_network_proxy && permission_profile.network_sandbox_policy().is_enabled() {
+        if enable_network_proxy
+            && permission_profile.network_sandbox_policy().is_enabled()
+            && profile_allows_configured_network_proxy(&permission_profile)
+        {
             if let Some(network_proxy) = network_proxy_toml_config(cfg.features.as_ref()) {
                 apply_network_proxy_feature_config(
                     &mut configured_network_proxy_config,
@@ -3538,6 +3604,7 @@ impl Config {
             ),
             selected_auth_profile,
             auth_profile_auto_switch,
+            session_recap,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.

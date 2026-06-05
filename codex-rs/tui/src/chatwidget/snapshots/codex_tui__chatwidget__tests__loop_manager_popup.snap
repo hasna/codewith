@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/loop_menu.rs
-assertion_line: 46
 expression: "render_bottom_popup(&chat, 100)"
 ---
   Loops

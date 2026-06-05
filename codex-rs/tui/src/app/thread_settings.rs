@@ -36,21 +36,7 @@ impl App {
         })
     }
 
-    pub(super) async fn sync_active_thread_model_provider_setting(
-        &mut self,
-        app_server: &mut AppServerSession,
-        model_provider: String,
-        model: String,
-        effort: Option<codex_protocol::openai_models::ReasoningEffort>,
-    ) {
-        let Some(params) =
-            self.active_thread_model_provider_setting_update_params(model_provider, model, effort)
-        else {
-            return;
-        };
-        self.send_thread_settings_update(app_server, params).await;
-    }
-
+    #[cfg(test)]
     pub(super) fn active_thread_model_provider_setting_update_params(
         &self,
         model_provider: String,
@@ -137,6 +123,7 @@ impl App {
             active_permission_profile,
             auth_profile,
             windows_sandbox_level: _,
+            model_provider,
             model,
             effort,
             summary,
@@ -157,6 +144,7 @@ impl App {
                 .as_ref()
                 .map(|profile| profile.id.clone()),
             auth_profile: auth_profile.clone(),
+            model_provider: model_provider.clone(),
             model: model.clone(),
             effort: effort.unwrap_or_default(),
             summary: *summary,

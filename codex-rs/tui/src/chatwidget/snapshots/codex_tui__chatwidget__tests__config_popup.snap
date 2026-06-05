@@ -17,11 +17,11 @@ expression: popup
                                           exhausted.
   [*] Paste burst detection               Detect fast pasted input before inserting it
                                           into the composer.
+  [*] Session recap                       Prepare a one-line summary while the terminal
+                                          is unfocused.
   [ ] Hide reasoning summaries            Hide agent reasoning events from the
                                           transcript.
   [ ] Show raw reasoning                  Show raw reasoning content when the model
                                           emits it.
-  [*] Environment context                 Include the environment_context block in
-                                          model-visible context.
 
   Press space to toggle; esc to close

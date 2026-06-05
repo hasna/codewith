@@ -62,14 +62,31 @@ async fn features_disable_writes_feature_flag_to_config() -> Result<()> {
     let codex_home = TempDir::new()?;
 
     let mut cmd = codex_command(codex_home.path())?;
-    cmd.args(["features", "disable", "shell_tool"])
+    cmd.args(["features", "disable", "personality"])
         .assert()
         .success()
-        .stdout(contains("Disabled feature `shell_tool` in config.toml."));
+        .stdout(contains("Disabled feature `personality` in config.toml."));
 
     let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
     assert!(config.contains("[features]"));
-    assert!(config.contains("shell_tool = false"));
+    assert!(config.contains("personality = false"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn features_disable_rejects_shell_tool() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["features", "disable", "shell_tool"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "Feature `shell_tool` cannot be disabled in config.toml.",
+        ));
+
+    assert!(!codex_home.path().join("config.toml").exists());
 
     Ok(())
 }

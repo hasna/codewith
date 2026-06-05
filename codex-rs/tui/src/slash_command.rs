@@ -38,6 +38,7 @@ pub enum SlashCommand {
     Fork,
     Init,
     Compact,
+    Recap,
     Plan,
     Goal,
     Loop,
@@ -85,10 +86,11 @@ impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
-            SlashCommand::Feedback => "send logs to maintainers",
+            SlashCommand::Feedback => "prepare Codewith feedback",
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create .codewith/CODEWITH.md with instructions for Codewith",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Recap => "show a one-line summary or answer a session recap question",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
@@ -165,6 +167,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
+                | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
@@ -220,6 +223,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Recap
             | SlashCommand::Rename
             | SlashCommand::Mention
             | SlashCommand::Skills
@@ -334,6 +338,7 @@ mod tests {
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
+        assert!(SlashCommand::Recap.supports_inline_args());
     }
 
     #[test]

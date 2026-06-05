@@ -171,6 +171,10 @@ impl ThreadState {
         self.scheduled_runs_by_turn_id.remove(turn_id)
     }
 
+    pub(crate) fn has_scheduled_run(&self, turn_id: &str) -> bool {
+        self.scheduled_runs_by_turn_id.contains_key(turn_id)
+    }
+
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;

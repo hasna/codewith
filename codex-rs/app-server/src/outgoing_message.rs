@@ -143,6 +143,18 @@ impl ThreadScopedOutgoingMessageSender {
             .await
     }
 
+    pub(crate) fn has_connections(&self) -> bool {
+        !self.connection_ids.is_empty()
+    }
+
+    pub(crate) async fn fail_request_with_error(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) {
+        self.outgoing.notify_client_error(request_id, error).await;
+    }
+
     pub(crate) fn track_effective_permissions_approval_response(
         &self,
         request_id: RequestId,

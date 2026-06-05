@@ -57,6 +57,7 @@ pub use model::ThreadSchedulePromptSource;
 pub use model::ThreadScheduleRun;
 pub use model::ThreadScheduleRunStatus;
 pub use model::ThreadScheduleSpec;
+pub use model::ThreadScheduleStats;
 pub use model::ThreadScheduleStatus;
 pub use model::ThreadsPage;
 pub use runtime::GoalAccountingMode;

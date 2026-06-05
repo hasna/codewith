@@ -262,6 +262,59 @@ WHERE run_id = ?
             .transpose()
     }
 
+    pub async fn get_thread_schedule_stats(
+        &self,
+        schedule_id: &str,
+    ) -> anyhow::Result<crate::ThreadScheduleStats> {
+        let row = sqlx::query(
+            r#"
+SELECT
+    COUNT(*) AS total_runs,
+    COALESCE(SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END), 0) AS leased_runs,
+    COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running_runs,
+    COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_runs,
+    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_runs,
+    MAX(started_at_ms) AS last_started_at_ms,
+    MAX(completed_at_ms) AS last_completed_at_ms
+FROM thread_schedule_runs
+WHERE schedule_id = ?
+            "#,
+        )
+        .bind(schedule_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        let last_error = sqlx::query_scalar(
+            r#"
+SELECT error
+FROM thread_schedule_runs
+WHERE schedule_id = ?
+  AND error IS NOT NULL
+  AND TRIM(error) != ''
+ORDER BY completed_at_ms DESC, started_at_ms DESC
+LIMIT 1
+            "#,
+        )
+        .bind(schedule_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(crate::ThreadScheduleStats {
+            total_runs: row.try_get("total_runs")?,
+            leased_runs: row.try_get("leased_runs")?,
+            running_runs: row.try_get("running_runs")?,
+            completed_runs: row.try_get("completed_runs")?,
+            failed_runs: row.try_get("failed_runs")?,
+            last_started_at: row
+                .try_get::<Option<i64>, _>("last_started_at_ms")?
+                .map(epoch_millis_to_datetime)
+                .transpose()?,
+            last_completed_at: row
+                .try_get::<Option<i64>, _>("last_completed_at_ms")?
+                .map(epoch_millis_to_datetime)
+                .transpose()?,
+            last_error,
+        })
+    }
+
     pub async fn claim_due_thread_schedule(
         &self,
         now: DateTime<Utc>,
@@ -1192,6 +1245,20 @@ mod tests {
             after_complete.last_run_at
         );
         assert_eq!(0, after_complete.failure_count);
+        assert_eq!(
+            crate::ThreadScheduleStats {
+                total_runs: 1,
+                completed_runs: 1,
+                last_started_at: Some(now),
+                last_completed_at: Some(now + chrono::Duration::seconds(5)),
+                ..crate::ThreadScheduleStats::default()
+            },
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(&completed_schedule.schedule_id)
+                .await
+                .expect("completed run stats should load")
+        );
         assert!(
             runtime
                 .thread_schedules()
@@ -1246,6 +1313,21 @@ mod tests {
             .expect("schedule should exist");
         assert_eq!(None, after_failure.lease_id);
         assert_eq!(1, after_failure.failure_count);
+        assert_eq!(
+            crate::ThreadScheduleStats {
+                total_runs: 1,
+                failed_runs: 1,
+                last_started_at: Some(now),
+                last_completed_at: Some(now + chrono::Duration::seconds(10)),
+                last_error: Some("model unavailable".to_string()),
+                ..crate::ThreadScheduleStats::default()
+            },
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(&failed_schedule.schedule_id)
+                .await
+                .expect("failed run stats should load")
+        );
 
         let failed_run_status: (String, String) =
             sqlx::query_as("SELECT status, error FROM thread_schedule_runs WHERE run_id = ?")

@@ -13,9 +13,15 @@ pub fn create_manage_loop_tool() -> ToolSpec {
         (
             "action".to_string(),
             JsonSchema::string_enum(
-                vec![json!("list"), json!("stop"), json!("resume"), json!("clear")],
+                vec![
+                    json!("create"),
+                    json!("list"),
+                    json!("stop"),
+                    json!("resume"),
+                    json!("clear"),
+                ],
                 Some(
-                    "Required. Use list to inspect current /loop schedules, stop to pause future runs, resume to reactivate a paused loop, and clear to delete a loop."
+                    "Required. Use create to add a new /loop schedule, list to inspect current /loop schedules, stop to pause future runs, resume to reactivate a paused loop, and clear to delete a loop."
                         .to_string(),
                 ),
             ),
@@ -27,12 +33,41 @@ pub fn create_manage_loop_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "prompt".to_string(),
+            JsonSchema::string(Some(
+                "Prompt to run. Required for create.".to_string(),
+            )),
+        ),
+        ("schedule".to_string(), loop_schedule_spec_schema()),
+        (
+            "timezone".to_string(),
+            JsonSchema::string(Some(
+                "IANA timezone name such as UTC or America/Los_Angeles. Defaults to the local timezone."
+                    .to_string(),
+            )),
+        ),
+        (
+            "next_run_at".to_string(),
+            JsonSchema::integer(Some(
+                "Optional Unix timestamp in seconds for the next run. Omit to calculate from the schedule."
+                    .to_string(),
+            )),
+        ),
+        (
+            "expires_at".to_string(),
+            JsonSchema::integer(Some(
+                "Optional Unix timestamp in seconds when the loop expires. Defaults to seven days from creation."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_LOOP_TOOL_NAME.to_string(),
         description: r#"Manage recurring `/loop` schedules for the current thread.
 Use `list` before mutating when the user did not name a specific loop.
+`create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence.
 `stop` pauses future scheduled runs; it does not abort an already running turn.
 `clear` deletes the selected loop schedule.
 The tool is scoped to the current thread and rejects schedule ids from other threads."#
@@ -46,6 +81,72 @@ The tool is scoped to the current thread and rejects schedule ids from other thr
         ),
         output_schema: None,
     })
+}
+
+fn loop_schedule_spec_schema() -> JsonSchema {
+    JsonSchema::any_of(
+        vec![
+            JsonSchema::object(
+                BTreeMap::from([(
+                    "type".to_string(),
+                    JsonSchema::string_enum(
+                        vec![json!("dynamic")],
+                        Some("Use the default dynamic cadence.".to_string()),
+                    ),
+                )]),
+                Some(vec!["type".to_string()]),
+                Some(false.into()),
+            ),
+            JsonSchema::object(
+                BTreeMap::from([
+                    (
+                        "type".to_string(),
+                        JsonSchema::string_enum(
+                            vec![json!("interval")],
+                            Some("Use a fixed interval.".to_string()),
+                        ),
+                    ),
+                    (
+                        "amount".to_string(),
+                        JsonSchema::integer(Some("Positive interval amount.".to_string())),
+                    ),
+                    (
+                        "unit".to_string(),
+                        JsonSchema::string_enum(
+                            vec![json!("minutes"), json!("hours"), json!("days")],
+                            Some("Interval unit.".to_string()),
+                        ),
+                    ),
+                ]),
+                Some(vec![
+                    "type".to_string(),
+                    "amount".to_string(),
+                    "unit".to_string(),
+                ]),
+                Some(false.into()),
+            ),
+            JsonSchema::object(
+                BTreeMap::from([
+                    (
+                        "type".to_string(),
+                        JsonSchema::string_enum(
+                            vec![json!("cron")],
+                            Some("Use a five-field cron expression.".to_string()),
+                        ),
+                    ),
+                    (
+                        "expression".to_string(),
+                        JsonSchema::string(Some(
+                            "Standard five-field cron expression such as */5 * * * *.".to_string(),
+                        )),
+                    ),
+                ]),
+                Some(vec!["type".to_string(), "expression".to_string()]),
+                Some(false.into()),
+            ),
+        ],
+        Some("Loop schedule spec for create.".to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -68,6 +169,7 @@ mod tests {
         assert_eq!(
             action.enum_values,
             Some(vec![
+                json!("create"),
                 json!("list"),
                 json!("stop"),
                 json!("resume"),

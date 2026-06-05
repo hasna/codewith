@@ -56,13 +56,23 @@ impl App {
                 self.chat_widget.set_model_catalog(model_catalog);
                 self.chat_widget.set_model(&model);
                 self.on_update_reasoning_effort(effort);
-                self.sync_active_thread_model_provider_setting(
-                    app_server,
-                    provider_id.clone(),
-                    model.clone(),
-                    effort,
-                )
-                .await;
+                if self.active_thread_id.is_some() {
+                    let op = AppCommand::override_turn_context_model_provider(
+                        provider_id.clone(),
+                        model.clone(),
+                        effort,
+                        Some(self.chat_widget.effective_collaboration_mode()),
+                    );
+                    if let Err(err) = self.submit_active_thread_op(app_server, op).await {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to apply model provider selection to active thread"
+                        );
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to update active thread provider: {err}"
+                        ));
+                    }
+                }
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
                 self.chat_widget.add_info_message(
@@ -417,6 +427,24 @@ impl App {
             }
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_thread_op(app_server, thread_id, op).await?;
+            }
+            AppEvent::RequestSessionRecap {
+                thread_id,
+                prompt,
+                automatic,
+            } => {
+                self.request_session_recap(app_server, thread_id, prompt, automatic);
+            }
+            AppEvent::MaybeStartAutomaticSessionRecap { thread_id, turn_id } => {
+                self.maybe_start_automatic_session_recap(app_server, thread_id, turn_id)
+                    .await;
+            }
+            AppEvent::SessionRecapFinished {
+                thread_id,
+                automatic,
+                result,
+            } => {
+                self.handle_session_recap_finished(thread_id, automatic, result);
             }
             AppEvent::ThreadHistoryEntryResponse { thread_id, event } => {
                 self.enqueue_thread_history_entry_response(thread_id, event)
@@ -787,6 +815,13 @@ impl App {
                 self.open_thread_loop_schedule_actions(app_server, thread_id, schedule_id)
                     .await;
             }
+            AppEvent::OpenThreadLoopScheduleStats {
+                thread_id,
+                schedule_id,
+            } => {
+                self.open_thread_loop_schedule_stats(app_server, thread_id, schedule_id)
+                    .await;
+            }
             AppEvent::CreateThreadLoopSchedule {
                 thread_id,
                 prompt,
@@ -854,6 +889,13 @@ impl App {
                 schedule_id,
             } => {
                 self.open_thread_schedule_actions(app_server, thread_id, schedule_id)
+                    .await;
+            }
+            AppEvent::OpenThreadScheduleStats {
+                thread_id,
+                schedule_id,
+            } => {
+                self.open_thread_schedule_stats(app_server, thread_id, schedule_id)
                     .await;
             }
             AppEvent::CreateThreadSchedule {
@@ -1038,7 +1080,11 @@ impl App {
                 )
                 .await;
             }
-            AppEvent::SwitchAuthProfile { profile, reason } => {
+            AppEvent::SwitchAuthProfile {
+                profile,
+                reason,
+                resume_queued_input,
+            } => {
                 self.config.selected_auth_profile = profile.clone();
                 self.chat_widget.set_auth_profile(profile.clone());
                 let submitted =
@@ -1047,6 +1093,8 @@ impl App {
                             profile.clone(),
                         ));
                 if submitted {
+                    let queued_input_will_resume =
+                        resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
                     let label = profile
                         .as_deref()
                         .map(str::to_string)
@@ -1056,14 +1104,33 @@ impl App {
                             format!("Profile changed to {label} for this session")
                         }
                         crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
-                            format!(
-                                "Profile changed to {label} after the {window} limit was exhausted"
-                            )
+                            let mut message = format!(
+                                "Auto-switching auth profile to {label} because the {window} limit is exhausted."
+                            );
+                            if queued_input_will_resume {
+                                message.push_str(" Your prompt will continue with that account.");
+                            }
+                            message
                         }
                     };
                     self.chat_widget.add_info_message(message, /*hint*/ None);
                     self.refresh_status_line();
+                    if resume_queued_input {
+                        self.chat_widget.maybe_send_next_queued_input();
+                    }
                 }
+            }
+            AppEvent::OpenAuthProfileRenamePrompt { profile } => {
+                self.chat_widget.open_auth_profile_rename_prompt(profile);
+            }
+            AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
+                self.chat_widget.open_auth_profile_delete_confirm(profile);
+            }
+            AppEvent::RenameAuthProfile { old_name, new_name } => {
+                self.rename_auth_profile(old_name, new_name);
+            }
+            AppEvent::DeleteAuthProfile { profile } => {
+                self.delete_auth_profile(profile);
             }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
@@ -1146,11 +1213,18 @@ impl App {
             AppEvent::FeedbackSubmitted {
                 origin_thread_id,
                 category,
+                reason,
                 include_logs,
                 result,
             } => {
-                self.handle_feedback_submitted(origin_thread_id, category, include_logs, result)
-                    .await;
+                self.handle_feedback_submitted(
+                    origin_thread_id,
+                    category,
+                    reason,
+                    include_logs,
+                    result,
+                )
+                .await;
             }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {

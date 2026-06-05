@@ -7,6 +7,8 @@
 //!
 //! The built-in picker surface is intentionally small: OpenAI, Cerebras, NVIDIA, and OpenRouter.
 
+mod provider_credentials;
+
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
 use codex_api::is_azure_responses_provider;
@@ -54,7 +56,6 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -65,12 +66,15 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// The OpenAI-compatible Chat Completions API exposed at `/v1/chat/completions`.
+    Chat,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            Self::Chat => "chat",
         };
         f.write_str(value)
     }
@@ -84,8 +88,11 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            "chat" => Ok(Self::Chat),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat"],
+            )),
         }
     }
 }
@@ -279,24 +286,29 @@ impl ModelProviderInfo {
     }
 
     /// If `env_key` is Some, returns the API key for this provider if present
-    /// (and non-empty) in the environment. If `env_key` is required but
-    /// cannot be found, returns an error.
+    /// (and non-empty) in a supported runtime credential source. If `env_key`
+    /// is required but cannot be found, returns an error.
     pub fn api_key(&self) -> CodexResult<Option<String>> {
         match &self.env_key {
             Some(env_key) => {
-                let api_key = std::env::var(env_key)
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-                    .ok_or_else(|| {
-                        CodexErr::EnvVar(EnvVarError {
-                            var: env_key.clone(),
-                            instructions: self.env_key_instructions.clone(),
-                        })
-                    })?;
+                let api_key = self.api_key_if_available().ok_or_else(|| {
+                    CodexErr::EnvVar(EnvVarError {
+                        var: env_key.clone(),
+                        instructions: self.env_key_instructions.clone(),
+                    })
+                })?;
                 Ok(Some(api_key))
             }
             None => Ok(None),
         }
+    }
+
+    /// If `env_key` is Some, returns the API key when it is present in a
+    /// supported runtime credential source. Missing keys are allowed.
+    pub fn api_key_if_available(&self) -> Option<String> {
+        self.env_key
+            .as_deref()
+            .and_then(provider_credentials::provider_key_from_env_or_secret)
     }
 
     /// Effective maximum number of request retries for this provider.
@@ -398,7 +410,7 @@ impl ModelProviderInfo {
             experimental_bearer_token: None,
             auth: None,
             aws: None,
-            wire_api: WireApi::Responses,
+            wire_api: WireApi::Chat,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -420,7 +432,7 @@ impl ModelProviderInfo {
             experimental_bearer_token: None,
             auth: None,
             aws: None,
-            wire_api: WireApi::Responses,
+            wire_api: WireApi::Chat,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -545,13 +557,101 @@ pub fn merge_configured_model_providers(
             || key == CEREBRAS_PROVIDER_ID
             || key == NVIDIA_PROVIDER_ID
         {
-            model_providers.insert(key, provider);
+            if let Some(built_in_provider) = model_providers.get_mut(&key) {
+                apply_provider_override(built_in_provider, provider);
+            } else {
+                model_providers.insert(key, provider);
+            }
         } else {
             model_providers.entry(key).or_insert(provider);
         }
     }
 
     Ok(model_providers)
+}
+
+fn apply_provider_override(
+    built_in_provider: &mut ModelProviderInfo,
+    provider_override: ModelProviderInfo,
+) {
+    let ModelProviderInfo {
+        name,
+        base_url,
+        env_key,
+        env_key_instructions,
+        experimental_bearer_token,
+        auth,
+        aws,
+        wire_api,
+        query_params,
+        http_headers,
+        env_http_headers,
+        request_max_retries,
+        stream_max_retries,
+        stream_idle_timeout_ms,
+        websocket_connect_timeout_ms,
+        requires_openai_auth,
+        supports_websockets,
+    } = provider_override;
+    let has_env_key_override = env_key.is_some();
+    let has_env_key_instructions_override = env_key_instructions.is_some();
+
+    if !name.is_empty() {
+        built_in_provider.name = name;
+    }
+    if let Some(base_url) = base_url {
+        built_in_provider.base_url = Some(base_url);
+    }
+    if let Some(env_key) = env_key {
+        built_in_provider.env_key = Some(env_key);
+        if !has_env_key_instructions_override {
+            built_in_provider.env_key_instructions = None;
+        }
+    }
+    if let Some(env_key_instructions) = env_key_instructions {
+        built_in_provider.env_key_instructions = Some(env_key_instructions);
+    }
+    if let Some(experimental_bearer_token) = experimental_bearer_token {
+        built_in_provider.experimental_bearer_token = Some(experimental_bearer_token);
+    }
+    if let Some(auth) = auth {
+        built_in_provider.auth = Some(auth);
+        if !has_env_key_override {
+            built_in_provider.env_key = None;
+            built_in_provider.env_key_instructions = None;
+        }
+    }
+    if let Some(aws) = aws {
+        built_in_provider.aws = Some(aws);
+    }
+    built_in_provider.wire_api = wire_api;
+    if let Some(query_params) = query_params {
+        built_in_provider.query_params = Some(query_params);
+    }
+    if let Some(http_headers) = http_headers {
+        built_in_provider.http_headers = Some(http_headers);
+    }
+    if let Some(env_http_headers) = env_http_headers {
+        built_in_provider.env_http_headers = Some(env_http_headers);
+    }
+    if let Some(request_max_retries) = request_max_retries {
+        built_in_provider.request_max_retries = Some(request_max_retries);
+    }
+    if let Some(stream_max_retries) = stream_max_retries {
+        built_in_provider.stream_max_retries = Some(stream_max_retries);
+    }
+    if let Some(stream_idle_timeout_ms) = stream_idle_timeout_ms {
+        built_in_provider.stream_idle_timeout_ms = Some(stream_idle_timeout_ms);
+    }
+    if let Some(websocket_connect_timeout_ms) = websocket_connect_timeout_ms {
+        built_in_provider.websocket_connect_timeout_ms = Some(websocket_connect_timeout_ms);
+    }
+    if requires_openai_auth {
+        built_in_provider.requires_openai_auth = true;
+    }
+    if supports_websockets {
+        built_in_provider.supports_websockets = true;
+    }
 }
 
 pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {

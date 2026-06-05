@@ -1176,7 +1176,7 @@ fn auth_check(config: &Config) -> DoctorCheck {
         config.model_provider.env_key.as_deref(),
         config.model_provider.env_key_instructions.as_deref(),
         details.clone(),
-        env_var_present,
+        |_| config.model_provider.api_key_if_available().is_some(),
     ) {
         return check;
     }
@@ -1252,7 +1252,7 @@ fn provider_specific_auth_check(
     provider_env_key: Option<&str>,
     provider_env_key_instructions: Option<&str>,
     mut details: Vec<String>,
-    env_var_present: impl Fn(&str) -> bool,
+    provider_key_present: impl FnOnce(&str) -> bool,
 ) -> Option<DoctorCheck> {
     details.push(format!(
         "model provider requires OpenAI auth: {requires_openai_auth}"
@@ -1262,8 +1262,8 @@ fn provider_specific_auth_check(
     }
 
     match provider_env_key {
-        Some(env_key) if env_var_present(env_key) => {
-            details.push(format!("provider auth env var: {env_key} (present)"));
+        Some(env_key) if provider_key_present(env_key) => {
+            details.push(format!("provider auth credential: {env_key} (present)"));
             Some(
                 DoctorCheck::new(
                     "auth.credentials",
@@ -1275,7 +1275,7 @@ fn provider_specific_auth_check(
             )
         }
         Some(env_key) => {
-            details.push(format!("provider auth env var: {env_key} (missing)"));
+            details.push(format!("provider auth credential: {env_key} (missing)"));
             let remediation = provider_env_key_instructions
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("Set {env_key} for the active model provider."));
@@ -1284,7 +1284,7 @@ fn provider_specific_auth_check(
                     "auth.credentials",
                     "auth",
                     CheckStatus::Fail,
-                    "active model provider auth env var is missing",
+                    "active model provider auth credential is missing",
                 )
                 .details(details)
                 .remediation(remediation),
@@ -3386,11 +3386,29 @@ mod tests {
         assert_eq!(check.status, CheckStatus::Fail);
         assert_eq!(
             check.summary,
-            "active model provider auth env var is missing"
+            "active model provider auth credential is missing"
         );
         assert_eq!(
             check.remediation,
             Some("Set PROVIDER_API_KEY before running Codewith.".to_string())
+        );
+    }
+
+    #[test]
+    fn provider_specific_auth_allows_provider_key_from_non_env_source() {
+        let check = provider_specific_auth_check(
+            /*requires_openai_auth*/ false,
+            Some("PROVIDER_API_KEY"),
+            Some("Set PROVIDER_API_KEY before running Codewith."),
+            Vec::new(),
+            |_| true,
+        )
+        .expect("non-OpenAI provider should produce a provider-specific check");
+
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert_eq!(
+            check.summary,
+            "auth is provided by the active model provider"
         );
     }
 

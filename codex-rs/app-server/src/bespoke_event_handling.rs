@@ -52,6 +52,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadNameUpdatedNotification;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 use codex_app_server_protocol::ThreadRealtimeItemAddedNotification;
@@ -509,9 +510,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 reason: event.reason.clone(),
                 grant_root: event.grant_root.clone(),
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::FileChangeRequestApproval(params))
-                .await;
+            let (pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                &event.turn_id,
+                ServerRequestPayload::FileChangeRequestApproval(params),
+            )
+            .await;
             tokio::spawn(async move {
                 on_file_change_request_approval_response(
                     item_id,
@@ -623,11 +628,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 proposed_network_policy_amendments: proposed_network_policy_amendments_v2,
                 available_decisions: Some(available_decisions),
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
-                    params,
-                ))
-                .await;
+            let (pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                &turn_id,
+                ServerRequestPayload::CommandExecutionRequestApproval(params),
+            )
+            .await;
             tokio::spawn(async move {
                 on_command_execution_request_approval_response(
                     event_turn_id,
@@ -669,15 +676,20 @@ pub(crate) async fn apply_bespoke_event_handling(
                     }),
                 })
                 .collect();
+            let request_turn_id = request.turn_id.clone();
             let params = ToolRequestUserInputParams {
                 thread_id: conversation_id.to_string(),
                 turn_id: request.turn_id,
                 item_id: request.call_id,
                 questions,
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::ToolRequestUserInput(params))
-                .await;
+            let (pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                &request_turn_id,
+                ServerRequestPayload::ToolRequestUserInput(params),
+            )
+            .await;
             tokio::spawn(async move {
                 on_request_user_input_response(
                     event_turn_id,
@@ -726,15 +738,20 @@ pub(crate) async fn apply_bespoke_event_handling(
                     return;
                 }
             };
+            let request_turn_id = turn_id.clone();
             let params = McpServerElicitationRequestParams {
                 thread_id: conversation_id.to_string(),
                 turn_id,
                 server_name: request.server_name.clone(),
                 request: request_body,
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::McpServerElicitationRequest(params))
-                .await;
+            let (pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                request_turn_id.as_deref().unwrap_or(&event_turn_id),
+                ServerRequestPayload::McpServerElicitationRequest(params),
+            )
+            .await;
             tokio::spawn(async move {
                 on_mcp_server_elicitation_response(
                     request.server_name,
@@ -766,9 +783,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 reason: request.reason,
                 permissions: request.permissions.into(),
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::PermissionsRequestApproval(params))
-                .await;
+            let (pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                &request.turn_id,
+                ServerRequestPayload::PermissionsRequestApproval(params),
+            )
+            .await;
             let pending_response = PendingRequestPermissionsResponse {
                 call_id: request.call_id,
                 requested_permissions,
@@ -815,9 +836,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 tool: tool.clone(),
                 arguments: arguments.clone(),
             };
-            let (_pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::DynamicToolCall(params))
-                .await;
+            let (_pending_request_id, rx) = send_request_for_turn(
+                &outgoing,
+                &thread_state,
+                &turn_id,
+                ServerRequestPayload::DynamicToolCall(params),
+            )
+            .await;
             tokio::spawn(async move {
                 crate::dynamic_tools::on_call_response(call_id, rx, conversation).await;
             });
@@ -1202,6 +1227,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ))
                 .await;
         }
+        EventMsg::ThreadNameUpdated(thread_name_event) => {
+            let notification = ThreadNameUpdatedNotification {
+                thread_id: thread_name_event.thread_id.to_string(),
+                thread_name: thread_name_event.thread_name,
+            };
+            outgoing
+                .send_global_server_notification(ServerNotification::ThreadNameUpdated(
+                    notification,
+                ))
+                .await;
+        }
         EventMsg::ThreadSettingsApplied(thread_settings_event) => {
             let thread_settings =
                 thread_settings_from_core_snapshot(thread_settings_event.thread_settings);
@@ -1240,6 +1276,28 @@ pub(crate) async fn apply_bespoke_event_handling(
 
         _ => {}
     }
+}
+
+async fn send_request_for_turn(
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+    turn_id: &str,
+    payload: ServerRequestPayload,
+) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+    let fail_unattended_scheduled_request =
+        !outgoing.has_connections() && thread_state.lock().await.has_scheduled_run(turn_id);
+    let (request_id, rx) = outgoing.send_request(payload).await;
+    if fail_unattended_scheduled_request {
+        outgoing
+            .fail_request_with_error(
+                request_id.clone(),
+                invalid_request(
+                    "scheduled loop cannot wait for a client response without an attached client",
+                ),
+            )
+            .await;
+    }
+    (request_id, rx)
 }
 
 async fn handle_turn_diff(
@@ -2112,6 +2170,7 @@ mod tests {
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::UserMessageEvent;
@@ -2145,6 +2204,126 @@ mod tests {
             OutgoingEnvelope::Broadcast { message } => Ok(message),
             OutgoingEnvelope::ToConnection { message, .. } => Ok(message),
         }
+    }
+
+    #[tokio::test]
+    async fn thread_name_update_event_emits_global_notification() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager.start_thread(config).await?;
+        let thread_state = new_thread_state();
+        let thread_watch_manager = ThreadWatchManager::new();
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::ThreadNameUpdated(ThreadNameUpdatedEvent {
+                    thread_id: conversation_id,
+                    thread_name: Some("Release follow-up".to_string()),
+                }),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            thread_state,
+            thread_watch_manager,
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        let msg = recv_broadcast_message(&mut rx).await?;
+        match msg {
+            OutgoingMessage::AppServerNotification(ServerNotification::ThreadNameUpdated(
+                notification,
+            )) => assert_eq!(
+                notification,
+                ThreadNameUpdatedNotification {
+                    thread_id: conversation_id.to_string(),
+                    thread_name: Some("Release follow-up".to_string()),
+                }
+            ),
+            other => bail!("unexpected message: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unattended_scheduled_turn_request_fails_instead_of_waiting() -> Result<()> {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing =
+            ThreadScopedOutgoingMessageSender::new(outgoing.clone(), Vec::new(), thread_id);
+        let thread_state = new_thread_state();
+        let temp_dir = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp_dir.path().to_path_buf(), "test-provider".into())
+                .await?;
+        thread_state.lock().await.track_scheduled_run(
+            "turn-1".to_string(),
+            crate::thread_state::ScheduledThreadScheduleRun {
+                schedule_id: "schedule-1".to_string(),
+                run_id: "run-1".to_string(),
+                lease_id: "lease-1".to_string(),
+                state_db,
+            },
+        );
+
+        let (_request_id, rx) = send_request_for_turn(
+            &thread_outgoing,
+            &thread_state,
+            "turn-1",
+            ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                questions: Vec::new(),
+            }),
+        )
+        .await;
+
+        let error = rx
+            .await
+            .expect("callback should resolve")
+            .expect_err("request should fail without waiting for a client");
+        assert_eq!(
+            error.message,
+            "scheduled loop cannot wait for a client response without an attached client"
+        );
+        assert!(
+            outgoing
+                .pending_requests_for_thread(thread_id)
+                .await
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]

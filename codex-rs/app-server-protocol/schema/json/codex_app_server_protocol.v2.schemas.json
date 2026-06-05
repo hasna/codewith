@@ -1463,6 +1463,30 @@
             },
             "method": {
               "enum": [
+                "thread/recap"
+              ],
+              "title": "Thread/recapRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRecapParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/recapRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/shellCommand"
               ],
               "title": "Thread/shellCommandRequestMethod",
@@ -15462,6 +15486,38 @@
       "title": "ThreadRealtimeTranscriptDoneNotification",
       "type": "object"
     },
+    "ThreadRecapParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadRecapParams",
+      "type": "object"
+    },
+    "ThreadRecapResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "ThreadRecapResponse",
+      "type": "object"
+    },
     "ThreadResumeInitialTurnsPageParams": {
       "properties": {
         "itemsView": {
@@ -15924,8 +15980,14 @@
               "type": "null"
             }
           ]
+        },
+        "stats": {
+          "$ref": "#/definitions/ThreadScheduleStats"
         }
       },
+      "required": [
+        "stats"
+      ],
       "title": "ThreadScheduleGetResponse",
       "type": "object"
     },
@@ -16247,6 +16309,58 @@
           "type": "object"
         }
       ]
+    },
+    "ThreadScheduleStats": {
+      "properties": {
+        "completedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "failedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastCompletedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastStartedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "leasedRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "runningRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalRuns": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "completedRuns",
+        "failedRuns",
+        "leasedRuns",
+        "runningRuns",
+        "totalRuns"
+      ],
+      "type": "object"
     },
     "ThreadScheduleStatus": {
       "enum": [
@@ -17349,6 +17463,13 @@
         },
         "model": {
           "description": "Override the model for this turn and subsequent turns.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "description": "Override the model provider for this turn and subsequent turns.",
           "type": [
             "string",
             "null"

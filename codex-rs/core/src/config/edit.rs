@@ -5,7 +5,7 @@ use codex_config::CONFIG_TOML_FILE;
 use codex_config::types::McpServerConfig;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::ToolSuggestDisabledTool;
-use codex_features::FEATURES;
+use codex_features::should_clear_user_config_feature_toggle;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
@@ -883,17 +883,13 @@ impl ConfigEditsBuilder {
     /// graduates to globally enabled.
     pub fn set_feature_enabled(mut self, key: &str, enabled: bool) -> Self {
         let segments = vec!["features".to_string(), key.to_string()];
-        let is_default_false_feature = FEATURES
-            .iter()
-            .find(|spec| spec.key == key)
-            .is_some_and(|spec| !spec.default_enabled);
-        if enabled || !is_default_false_feature {
+        if should_clear_user_config_feature_toggle(key, enabled) {
+            self.edits.push(ConfigEdit::ClearPath { segments });
+        } else {
             self.edits.push(ConfigEdit::SetPath {
                 segments,
                 value: value(enabled),
             });
-        } else {
-            self.edits.push(ConfigEdit::ClearPath { segments });
         }
         self
     }

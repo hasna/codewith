@@ -175,6 +175,18 @@ pub struct ThreadScheduleRun {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ThreadScheduleStats {
+    pub total_runs: i64,
+    pub leased_runs: i64,
+    pub running_runs: i64,
+    pub completed_runs: i64,
+    pub failed_runs: i64,
+    pub last_started_at: Option<DateTime<Utc>>,
+    pub last_completed_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
 pub(crate) struct ThreadScheduleRow {
     pub thread_id: String,
     pub schedule_id: String,

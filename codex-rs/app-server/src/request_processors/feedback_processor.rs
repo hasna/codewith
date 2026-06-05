@@ -45,9 +45,7 @@ impl FeedbackRequestProcessor {
         params: FeedbackUploadParams,
     ) -> Result<FeedbackUploadResponse, JSONRPCErrorError> {
         if !self.config.feedback_enabled {
-            return Err(invalid_request(
-                "sending feedback is disabled by configuration",
-            ));
+            return Err(invalid_request("feedback is disabled by configuration"));
         }
 
         let FeedbackUploadParams {
@@ -195,7 +193,7 @@ impl FeedbackRequestProcessor {
                 attachment_paths.push(sandbox_log_attachment);
             }
         }
-        if let Some(extra_log_files) = extra_log_files {
+        if include_logs && let Some(extra_log_files) = extra_log_files {
             for extra_log_file in extra_log_files {
                 if seen_attachment_paths.insert(extra_log_file.clone()) {
                     attachment_paths.push(FeedbackAttachmentPath {
@@ -238,12 +236,13 @@ impl FeedbackRequestProcessor {
             Ok(result) => result,
             Err(join_err) => {
                 return Err(internal_error(format!(
-                    "failed to upload feedback: {join_err}"
+                    "failed to prepare feedback: {join_err}"
                 )));
             }
         };
 
-        upload_result.map_err(|err| internal_error(format!("failed to upload feedback: {err}")))?;
+        upload_result
+            .map_err(|err| internal_error(format!("failed to prepare feedback: {err}")))?;
         Ok(FeedbackUploadResponse { thread_id })
     }
 

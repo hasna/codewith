@@ -244,7 +244,11 @@ impl OpenAiCompatibleModel {
             max_context_window,
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
-            experimental_supported_tools: Vec::new(),
+            experimental_supported_tools: if supports_tools {
+                vec!["tools".to_string()]
+            } else {
+                Vec::new()
+            },
             input_modalities: input_modalities_from_openai_compatible_architecture(architecture),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
@@ -626,7 +630,7 @@ mod tests {
                 max_context_window: Some(1_048_576),
                 auto_compact_token_limit: None,
                 effective_context_window_percent: 95,
-                experimental_supported_tools: Vec::new(),
+                experimental_supported_tools: vec!["tools".to_string()],
                 input_modalities: vec![InputModality::Text, InputModality::Image],
                 used_fallback_model_metadata: false,
                 supports_search_tool: false,
@@ -727,6 +731,7 @@ mod tests {
             vec![ReasoningEffort::None, ReasoningEffort::Medium]
         );
         assert!(!model.supports_parallel_tool_calls);
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
         assert_eq!(model.context_window, Some(131072));
         assert_eq!(model.max_context_window, Some(131072));
         assert_eq!(model.input_modalities, vec![InputModality::Text]);

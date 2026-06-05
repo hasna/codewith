@@ -84,6 +84,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
                 text_elements: Vec::new(),
             }],
             cwd: Some(working_directory.clone()),
+            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             ..Default::default()
         })
         .await?;

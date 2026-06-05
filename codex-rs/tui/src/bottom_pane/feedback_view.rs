@@ -2,6 +2,7 @@ use codex_feedback::DOCTOR_REPORT_ATTACHMENT_FILENAME;
 use codex_feedback::FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME;
 use codex_feedback::FeedbackDiagnostics;
 use codex_feedback::WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME;
+use codex_feedback::feedback_report_dir;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -30,12 +31,10 @@ use super::textarea::TextAreaState;
 
 const BASE_CLI_BUG_ISSUE_URL: &str =
     "https://github.com/hasna/codewith/issues/new?template=3-cli.yml";
-/// Internal routing link for employee feedback follow-ups. This must not be shown to external users.
-const CODEX_FEEDBACK_INTERNAL_URL: &str = "http://go/codex-feedback-internal";
 
 /// The target audience for feedback follow-up instructions.
 ///
-/// This is used strictly for messaging/links after feedback upload completes. It
+/// This is used strictly for messaging/links after feedback preparation completes. It
 /// must not change feedback upload behavior itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FeedbackAudience {
@@ -310,86 +309,68 @@ pub(crate) fn feedback_classification(category: FeedbackCategory) -> &'static st
 
 pub(crate) fn feedback_success_cell(
     category: FeedbackCategory,
+    reason: Option<&str>,
     include_logs: bool,
     thread_id: &str,
-    feedback_audience: FeedbackAudience,
+    _feedback_audience: FeedbackAudience,
 ) -> history_cell::WebHyperlinkHistoryCell {
     let prefix = if include_logs {
-        "• Feedback uploaded."
+        "• Feedback prepared with logs."
     } else {
-        "• Feedback recorded (no logs)."
+        "• Feedback prepared (no logs)."
     };
-    let issue_url = issue_url_for_category(category, thread_id, feedback_audience);
-    let mut lines = vec![Line::from(match issue_url.as_ref() {
-        Some(_) if feedback_audience == FeedbackAudience::OpenAiEmployee => {
-            format!("{prefix} Please report this in #codex-feedback:")
-        }
-        Some(_) => format!("{prefix} Please open an issue using the following URL:"),
-        None => format!("{prefix} Thanks for the feedback!"),
-    })];
-    match issue_url {
-        Some(url) if feedback_audience == FeedbackAudience::OpenAiEmployee => {
-            lines.extend([
-                "".into(),
-                Line::from(vec!["  ".into(), url.cyan().underlined()]),
-                "".into(),
-                Line::from("  Share this and add some info about your problem:"),
-                Line::from(vec![
-                    "    ".into(),
-                    format!("https://go/codex-feedback/{thread_id}").bold(),
-                ]),
-            ]);
-        }
-        Some(url) => {
-            lines.extend([
-                "".into(),
-                Line::from(vec!["  ".into(), url.cyan().underlined()]),
-                "".into(),
-                Line::from(vec![
-                    "  Or mention your thread ID ".into(),
-                    thread_id.to_string().bold(),
-                    " in an existing issue.".into(),
-                ]),
-            ]);
-        }
-        None => {
-            lines.extend([
-                "".into(),
-                Line::from(vec!["  Thread ID: ".into(), thread_id.to_string().bold()]),
-            ]);
-        }
+    let issue_url = issue_url_for_category(category, thread_id, reason);
+    let mut lines = vec![Line::from(format!(
+        "{prefix} Please open a Codewith issue using the following URL:"
+    ))];
+    lines.extend([
+        "".into(),
+        Line::from(vec!["  ".into(), issue_url.cyan().underlined()]),
+    ]);
+    if include_logs {
+        append_prepared_files_lines(&mut lines, thread_id);
     }
+    lines.extend([
+        "".into(),
+        Line::from(vec![
+            "  Or mention your thread ID ".into(),
+            thread_id.to_string().bold(),
+            " in an existing issue.".into(),
+        ]),
+    ]);
     history_cell::WebHyperlinkHistoryCell::new(lines)
+}
+
+fn append_prepared_files_lines(lines: &mut Vec<Line<'static>>, thread_id: &str) {
+    lines.extend([
+        "".into(),
+        Line::from("  Prepared files:"),
+        Line::from(vec![
+            "    ".into(),
+            feedback_report_dir(thread_id).display().to_string().bold(),
+        ]),
+    ]);
 }
 
 fn issue_url_for_category(
     category: FeedbackCategory,
     thread_id: &str,
-    feedback_audience: FeedbackAudience,
-) -> Option<String> {
-    // Only certain categories provide a follow-up link. We intentionally keep
-    // the external GitHub behavior identical while routing internal users to
-    // the internal go link.
-    match category {
-        FeedbackCategory::Bug
-        | FeedbackCategory::BadResult
-        | FeedbackCategory::SafetyCheck
-        | FeedbackCategory::Other => Some(match feedback_audience {
-            FeedbackAudience::OpenAiEmployee => slack_feedback_url(thread_id),
-            FeedbackAudience::External => {
-                format!("{BASE_CLI_BUG_ISSUE_URL}&steps=Uploaded%20thread:%20{thread_id}")
-            }
-        }),
-        FeedbackCategory::GoodResult => None,
+    reason: Option<&str>,
+) -> String {
+    let mut steps = format!(
+        "Codewith thread: {thread_id}\nFeedback type: {}",
+        feedback_classification(category)
+    );
+    if let Some(reason) = reason
+        && !reason.trim().is_empty()
+    {
+        steps.push_str("\n\nFeedback note:\n");
+        steps.push_str(reason.trim());
     }
-}
-
-/// Build the internal follow-up URL.
-///
-/// We accept a `thread_id` so the call site stays symmetric with the external
-/// path, but we currently point to a fixed channel without prefilling text.
-fn slack_feedback_url(_thread_id: &str) -> String {
-    CODEX_FEEDBACK_INTERNAL_URL.to_string()
+    format!(
+        "{BASE_CLI_BUG_ISSUE_URL}&steps={}",
+        urlencoding::encode(&steps)
+    )
 }
 
 // Build the selection popup params for feedback categories.
@@ -437,7 +418,7 @@ pub(crate) fn feedback_selection_params(
 /// Build the selection popup params shown when feedback is disabled.
 pub(crate) fn feedback_disabled_params() -> super::SelectionViewParams {
     super::SelectionViewParams {
-        title: Some("Sending feedback is disabled".to_string()),
+        title: Some("Feedback is disabled".to_string()),
         subtitle: Some("This action is disabled by configuration.".to_string()),
         footer_hint: Some(standard_popup_hint_line()),
         items: vec![super::SelectionItem {
@@ -499,11 +480,11 @@ pub(crate) fn feedback_upload_consent_params(
         }
     });
 
-    // Build header listing files that would be sent if user consents.
+    // Build header listing files that will be prepared if user consents.
     let mut header_lines: Vec<Box<dyn crate::render::renderable::Renderable>> = vec![
-        Line::from("Upload logs?".bold()).into(),
+        Line::from("Include logs?".bold()).into(),
         Line::from("").into(),
-        Line::from("The following files will be sent:".dim()).into(),
+        Line::from("The following files will be prepared locally:".dim()).into(),
         Line::from(vec!["  • ".into(), "codex-logs.log".into()]).into(),
         Line::from(vec![
             "  • ".into(),
@@ -555,7 +536,7 @@ pub(crate) fn feedback_upload_consent_params(
             super::SelectionItem {
                 name: "Yes".to_string(),
                 description: Some(
-                    "Share the current Codewith session logs and diagnostics with the team for troubleshooting."
+                    "Prepare the current Codewith session logs and diagnostics for troubleshooting."
                         .to_string(),
                 ),
                 actions: vec![yes_action],
@@ -815,55 +796,38 @@ mod tests {
     }
 
     #[test]
-    fn issue_url_available_for_bug_bad_result_safety_check_and_other() {
+    fn issue_url_prefills_category_thread_and_note_for_all_categories() {
         let bug_url = issue_url_for_category(
             FeedbackCategory::Bug,
             "thread-1",
-            FeedbackAudience::OpenAiEmployee,
+            Some("the terminal froze"),
         );
-        let expected_slack_url = "http://go/codex-feedback-internal".to_string();
-        assert_eq!(bug_url.as_deref(), Some(expected_slack_url.as_str()));
+        assert!(bug_url.starts_with(BASE_CLI_BUG_ISSUE_URL));
+        assert!(bug_url.contains("Codewith%20thread%3A%20thread-1"));
+        assert!(bug_url.contains("Feedback%20type%3A%20bug"));
+        assert!(bug_url.contains("Feedback%20note%3A%0Athe%20terminal%20froze"));
 
-        let bad_result_url = issue_url_for_category(
-            FeedbackCategory::BadResult,
-            "thread-2",
-            FeedbackAudience::OpenAiEmployee,
-        );
-        assert!(bad_result_url.is_some());
+        let bad_result_url = issue_url_for_category(FeedbackCategory::BadResult, "thread-2", None);
+        assert!(bad_result_url.contains("Feedback%20type%3A%20bad_result"));
 
-        let other_url = issue_url_for_category(
-            FeedbackCategory::Other,
-            "thread-3",
-            FeedbackAudience::OpenAiEmployee,
-        );
-        assert!(other_url.is_some());
+        let other_url = issue_url_for_category(FeedbackCategory::Other, "thread-3", None);
+        assert!(other_url.contains("Feedback%20type%3A%20other"));
 
-        let safety_check_url = issue_url_for_category(
-            FeedbackCategory::SafetyCheck,
-            "thread-4",
-            FeedbackAudience::OpenAiEmployee,
-        );
-        assert!(safety_check_url.is_some());
+        let safety_check_url =
+            issue_url_for_category(FeedbackCategory::SafetyCheck, "thread-4", None);
+        assert!(safety_check_url.contains("Feedback%20type%3A%20safety_check"));
 
-        assert!(
-            issue_url_for_category(
-                FeedbackCategory::GoodResult,
-                "t",
-                FeedbackAudience::OpenAiEmployee
-            )
-            .is_none()
-        );
-        let bug_url_non_employee =
-            issue_url_for_category(FeedbackCategory::Bug, "t", FeedbackAudience::External);
-        let expected_external_url = "https://github.com/hasna/codewith/issues/new?template=3-cli.yml&steps=Uploaded%20thread:%20t";
-        assert_eq!(bug_url_non_employee.as_deref(), Some(expected_external_url));
+        let good_result_url = issue_url_for_category(FeedbackCategory::GoodResult, "t", None);
+        assert!(good_result_url.contains("Feedback%20type%3A%20good_result"));
     }
 
     #[test]
     fn feedback_success_cell_matches_external_bug_copy() {
+        let report_dir = feedback_report_dir("thread-1").display().to_string();
         let rendered = render_cell(
             &feedback_success_cell(
                 FeedbackCategory::Bug,
+                Some("the terminal froze"),
                 /*include_logs*/ true,
                 "thread-1",
                 FeedbackAudience::External,
@@ -872,15 +836,19 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "• Feedback uploaded. Please open an issue using the following URL:\n\n  https://github.com/hasna/codewith/issues/new?template=3-cli.yml&steps=Uploaded%20thread:%20thread-1\n\n  Or mention your thread ID thread-1 in an existing issue."
+            format!(
+                "• Feedback prepared with logs. Please open a Codewith issue using the following URL:\n\n  https://github.com/hasna/codewith/issues/new?template=3-cli.yml&steps=Codewith%20thread%3A%20thread-1%0AFeedback%20type%3A%20bug%0A%0AFeedback%20note%3A%0Athe%20terminal%20froze\n\n  Prepared files:\n    {report_dir}\n\n  Or mention your thread ID thread-1 in an existing issue."
+            )
         );
     }
 
     #[test]
-    fn feedback_success_cell_matches_employee_bug_copy() {
+    fn feedback_success_cell_routes_employee_feedback_to_codewith_issue() {
+        let report_dir = feedback_report_dir("thread-2").display().to_string();
         let rendered = render_cell(
             &feedback_success_cell(
                 FeedbackCategory::Bug,
+                None,
                 /*include_logs*/ true,
                 "thread-2",
                 FeedbackAudience::OpenAiEmployee,
@@ -889,15 +857,18 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "• Feedback uploaded. Please report this in #codex-feedback:\n\n  http://go/codex-feedback-internal\n\n  Share this and add some info about your problem:\n    https://go/codex-feedback/thread-2"
+            format!(
+                "• Feedback prepared with logs. Please open a Codewith issue using the following URL:\n\n  https://github.com/hasna/codewith/issues/new?template=3-cli.yml&steps=Codewith%20thread%3A%20thread-2%0AFeedback%20type%3A%20bug\n\n  Prepared files:\n    {report_dir}\n\n  Or mention your thread ID thread-2 in an existing issue."
+            )
         );
     }
 
     #[test]
-    fn feedback_success_cell_matches_good_result_copy() {
+    fn feedback_success_cell_routes_good_result_to_codewith_issue() {
         let rendered = render_cell(
             &feedback_success_cell(
                 FeedbackCategory::GoodResult,
+                Some("worked well"),
                 /*include_logs*/ false,
                 "thread-3",
                 FeedbackAudience::External,
@@ -906,7 +877,7 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "• Feedback recorded (no logs). Thanks for the feedback!\n\n  Thread ID: thread-3"
+            "• Feedback prepared (no logs). Please open a Codewith issue using the following URL:\n\n  https://github.com/hasna/codewith/issues/new?template=3-cli.yml&steps=Codewith%20thread%3A%20thread-3%0AFeedback%20type%3A%20good_result%0A%0AFeedback%20note%3A%0Aworked%20well\n\n  Or mention your thread ID thread-3 in an existing issue."
         );
     }
 
@@ -920,13 +891,14 @@ mod tests {
             let rendered = render_cell(
                 &feedback_success_cell(
                     category,
+                    None,
                     /*include_logs*/ false,
                     "thread-4",
                     FeedbackAudience::External,
                 ),
                 /*width*/ 120,
             );
-            assert!(rendered.contains("Please open an issue using the following URL:"));
+            assert!(rendered.contains("Please open a Codewith issue using the following URL:"));
             assert!(rendered.contains("thread-4"));
         }
     }

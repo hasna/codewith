@@ -215,13 +215,14 @@ pub(super) async fn try_run_zsh_fork(
         req.sandbox_permissions,
         req.additional_permissions_preapproved,
     );
+    let effective_turn_settings = ctx.session.effective_turn_settings(ctx.turn.as_ref()).await;
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
         session: Arc::clone(&ctx.session),
         turn: Arc::clone(&ctx.turn),
         call_id: ctx.call_id.clone(),
         tool_name: GuardianCommandSource::Shell,
-        approval_policy: ctx.turn.approval_policy.value(),
+        approval_policy: effective_turn_settings.approval_policy,
         permission_profile: command_executor.permission_profile.clone(),
         file_system_sandbox_policy: command_executor.file_system_sandbox_policy.clone(),
         sandbox_policy_cwd: command_executor.sandbox_policy_cwd.clone(),
@@ -288,13 +289,14 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
     };
+    let effective_turn_settings = ctx.session.effective_turn_settings(ctx.turn.as_ref()).await;
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
         session: Arc::clone(&ctx.session),
         turn: Arc::clone(&ctx.turn),
         call_id: ctx.call_id.clone(),
         tool_name: GuardianCommandSource::UnifiedExec,
-        approval_policy: ctx.turn.approval_policy.value(),
+        approval_policy: effective_turn_settings.approval_policy,
         permission_profile: exec_request.permission_profile.clone(),
         file_system_sandbox_policy: exec_request.file_system_sandbox_policy.clone(),
         sandbox_policy_cwd: exec_request.windows_sandbox_policy_cwd.clone(),
@@ -926,13 +928,15 @@ impl CoreShellCommandExecutor {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("prepared command must not be empty"))?;
+        let enforce_managed_network =
+            self.network.is_some() && !matches!(permission_profile, PermissionProfile::Disabled);
         let sandbox_manager = SandboxManager::new();
         let sandbox = sandbox_manager.select_initial(
             &file_system_sandbox_policy,
             network_sandbox_policy,
             SandboxablePreference::Auto,
             self.windows_sandbox_level,
-            self.network.is_some(),
+            enforce_managed_network,
         );
         let command = SandboxCommand {
             program: program.clone().into(),
@@ -945,12 +949,17 @@ impl CoreShellCommandExecutor {
             expiration: ExecExpiration::DefaultTimeout,
             capture_policy: ExecCapturePolicy::ShellTool,
         };
+        let managed_network = if enforce_managed_network {
+            self.network.as_ref()
+        } else {
+            None
+        };
         let exec_request = sandbox_manager.transform(SandboxTransformRequest {
             command,
             permissions: permission_profile,
             sandbox,
-            enforce_managed_network: self.network.is_some(),
-            network: self.network.as_ref(),
+            enforce_managed_network,
+            network: managed_network,
             sandbox_policy_cwd: &self.sandbox_policy_cwd,
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.as_deref(),
             use_legacy_landlock: self.use_legacy_landlock,

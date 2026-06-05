@@ -308,11 +308,12 @@ impl ChatWidget {
             has_chatgpt_account,
         );
         self.rate_limit_snapshots_by_limit_id.clear();
+        self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
         self.refreshing_status_outputs.clear();
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
-        self.last_auth_profile_auto_switch_trigger = None;
+        self.pending_auth_profile_auto_switch_trigger = None;
         self.refresh_status_line();
     }
 

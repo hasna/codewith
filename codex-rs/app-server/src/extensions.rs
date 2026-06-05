@@ -3,6 +3,7 @@ use std::sync::Weak;
 
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
+use codex_app_server_protocol::ThreadNameUpdatedNotification;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
@@ -59,6 +60,15 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                         },
                     ));
             }
+            EventMsg::ThreadNameUpdated(thread_name_event) => {
+                self.outgoing
+                    .try_send_server_notification(ServerNotification::ThreadNameUpdated(
+                        ThreadNameUpdatedNotification {
+                            thread_id: thread_name_event.thread_id.to_string(),
+                            thread_name: thread_name_event.thread_name,
+                        },
+                    ));
+            }
             msg => {
                 tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");
             }
@@ -95,6 +105,7 @@ mod tests {
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
+    use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
@@ -159,6 +170,47 @@ mod tests {
                     created_at: 7,
                     updated_at: 8,
                 },
+            },
+            notification
+        );
+    }
+
+    #[tokio::test]
+    async fn app_server_event_sink_forwards_thread_name_updates() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let sink = app_server_extension_event_sink(outgoing);
+        let thread_id = ThreadId::default();
+
+        sink.emit(Event {
+            id: "call-1".to_string(),
+            msg: EventMsg::ThreadNameUpdated(ThreadNameUpdatedEvent {
+                thread_id,
+                thread_name: Some("Release follow-up".to_string()),
+            }),
+        });
+
+        let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for forwarded extension event")
+            .expect("outgoing channel closed unexpectedly");
+        let OutgoingEnvelope::Broadcast { message } = envelope else {
+            panic!("expected broadcast notification");
+        };
+        let OutgoingMessage::AppServerNotification(ServerNotification::ThreadNameUpdated(
+            notification,
+        )) = message
+        else {
+            panic!("expected thread name updated notification");
+        };
+
+        assert_eq!(
+            ThreadNameUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                thread_name: Some("Release follow-up".to_string()),
             },
             notification
         );

@@ -2726,6 +2726,37 @@ async fn default_permissions_can_select_builtin_full_access_profile() -> std::io
 }
 
 #[tokio::test]
+async fn default_permissions_full_access_does_not_start_network_proxy_feature()
+-> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            features: Some(toml::from_str("network_proxy = true").expect("valid features")),
+            default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::Disabled
+    );
+    assert!(
+        config.permissions.network.is_none(),
+        "full-access profile should not start the managed network proxy"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_danger_no_sandbox_is_rejected() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;

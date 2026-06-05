@@ -284,6 +284,9 @@ impl ChatWidget {
                 }
                 self.app_event_tx.compact();
             }
+            SlashCommand::Recap => {
+                self.dispatch_recap_slash_command(/*prompt*/ None);
+            }
             SlashCommand::Review => {
                 self.open_review_popup();
             }
@@ -918,6 +921,9 @@ impl ChatWidget {
                 };
                 self.dispatch_schedule_slash_command(command, trimmed, source);
             }
+            SlashCommand::Recap if !trimmed.is_empty() => {
+                self.dispatch_recap_slash_command(Some(trimmed.to_string()));
+            }
             SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
                     let command = cmd.command();
@@ -965,6 +971,21 @@ impl ChatWidget {
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
             self.bottom_pane.drain_pending_submission_state();
         }
+    }
+
+    fn dispatch_recap_slash_command(&mut self, prompt: Option<String>) {
+        let Some(thread_id) = self.thread_id else {
+            self.add_error_message(
+                "'/recap' is unavailable before the session starts.".to_string(),
+            );
+            return;
+        };
+        self.add_info_message("Generating recap...".to_string(), /*hint*/ None);
+        self.app_event_tx.send(AppEvent::RequestSessionRecap {
+            thread_id,
+            prompt,
+            automatic: false,
+        });
     }
 
     fn dispatch_loop_slash_command(
@@ -1297,6 +1318,7 @@ impl ChatWidget {
             | SlashCommand::Raw
             | SlashCommand::Vim
             | SlashCommand::Diff
+            | SlashCommand::Recap
             | SlashCommand::Rename
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Feedback

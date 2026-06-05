@@ -71,6 +71,37 @@ impl App {
         }
     }
 
+    pub(super) async fn open_thread_loop_schedule_stats(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) {
+        let result = app_server
+            .thread_schedule_get(thread_id, schedule_id.clone())
+            .await;
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
+
+        match result {
+            Ok(response) => {
+                if let Some(schedule) = response.schedule {
+                    self.chat_widget
+                        .show_loop_schedule_stats(schedule, response.stats);
+                } else {
+                    self.chat_widget.add_info_message(
+                        "No matching loop".to_string(),
+                        Some(format!("Could not find loop {schedule_id}.")),
+                    );
+                }
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to read loop stats: {err}")),
+        }
+    }
+
     pub(super) async fn open_thread_loop_editor(
         &mut self,
         app_server: &mut AppServerSession,

@@ -5,7 +5,11 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::TimeZone;
 use chrono::Utc;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_model_provider::model_cache_key_for_provider;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::client_version_to_whole;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ReasoningSummary;
@@ -159,14 +163,16 @@ async fn uses_cache_when_version_matches() -> Result<()> {
     )
     .await;
 
-    let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
             let cache = ModelsCache {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(client_version_to_whole()),
-                provider_cache_key: Some("openai".to_string()),
+                provider_cache_key: Some(provider_cache_key),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -207,14 +213,16 @@ async fn refreshes_when_cache_version_missing() -> Result<()> {
     )
     .await;
 
-    let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
             let cache = ModelsCache {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: None,
-                provider_cache_key: Some("openai".to_string()),
+                provider_cache_key: Some(provider_cache_key),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -255,7 +263,9 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
         models_mocks.push(responses::mount_models_once(&server, models_response.clone()).await);
     }
 
-    let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
             let client_version = client_version_to_whole();
@@ -263,7 +273,7 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(format!("{client_version}-diff")),
-                provider_cache_key: Some("openai".to_string()),
+                provider_cache_key: Some(provider_cache_key),
                 models: vec![cached_model],
             };
             let cache_path = home.join(CACHE_FILE);
@@ -317,6 +327,16 @@ fn write_cache_sync(path: &Path, cache: &ModelsCache) -> Result<()> {
     let contents = serde_json::to_vec_pretty(cache)?;
     std::fs::write(path, contents)?;
     Ok(())
+}
+
+fn openai_provider_cache_key_for_auth(auth: &CodexAuth) -> String {
+    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+    model_cache_key_for_provider(
+        OPENAI_PROVIDER_ID,
+        &provider_info,
+        Some(auth_manager.as_ref()),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

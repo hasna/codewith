@@ -70,6 +70,37 @@ impl App {
         }
     }
 
+    pub(super) async fn open_thread_schedule_stats(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        schedule_id: String,
+    ) {
+        let result = app_server
+            .thread_schedule_get(thread_id, schedule_id.clone())
+            .await;
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
+
+        match result {
+            Ok(response) => {
+                if let Some(schedule) = response.schedule.filter(is_one_time_schedule) {
+                    self.chat_widget
+                        .show_schedule_stats(schedule, response.stats);
+                } else {
+                    self.chat_widget.add_info_message(
+                        "No matching schedule".to_string(),
+                        Some(format!("Could not find schedule {schedule_id}.")),
+                    );
+                }
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to read schedule stats: {err}")),
+        }
+    }
+
     pub(super) async fn open_thread_schedule_editor(
         &mut self,
         app_server: &mut AppServerSession,

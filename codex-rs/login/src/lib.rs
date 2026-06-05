@@ -56,6 +56,7 @@ pub use auth::logout_with_revoke;
 pub use auth::read_codex_access_token_from_env;
 pub use auth::read_openai_api_key_from_env;
 pub use auth::remove_auth_profile;
+pub use auth::rename_auth_profile;
 pub use auth::save_auth;
 pub use auth::save_auth_profile;
 pub use auth::save_current_auth_profile;

@@ -461,6 +461,9 @@ impl Features {
                     if matches!(feat, Feature::TuiAppServer) {
                         continue;
                     }
+                    if !*v && !can_disable_feature_in_user_config(feat) {
+                        continue;
+                    }
                     if k != feat.key() {
                         self.record_legacy_usage(k.as_str(), feat);
                     }
@@ -589,6 +592,21 @@ pub fn canonical_feature_for_key(key: &str) -> Option<Feature> {
 /// Returns `true` if the provided string matches a known feature toggle key.
 pub fn is_known_feature_key(key: &str) -> bool {
     feature_for_key(key).is_some()
+}
+
+/// Returns whether a user-owned config file is allowed to disable `feature`.
+pub fn can_disable_feature_in_user_config(feature: Feature) -> bool {
+    !matches!(feature, Feature::ShellTool)
+}
+
+/// Returns whether a persisted user config toggle should be cleared instead of written.
+pub fn should_clear_user_config_feature_toggle(key: &str, enabled: bool) -> bool {
+    FEATURES
+        .iter()
+        .find(|spec| spec.key == key)
+        .is_some_and(|spec| {
+            !can_disable_feature_in_user_config(spec.id) || (!enabled && !spec.default_enabled)
+        })
 }
 
 /// Deserializable features table for TOML.

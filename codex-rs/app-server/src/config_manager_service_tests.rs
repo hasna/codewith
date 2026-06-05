@@ -107,6 +107,44 @@ personality = true
 }
 
 #[tokio::test]
+async fn write_value_clears_shell_tool_disable_instead_of_persisting_it() -> Result<()> {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(
+        &path,
+        r#"[features]
+shell_tool = false
+unified_exec = true
+"#,
+    )?;
+
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+    service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(path.display().to_string()),
+            key_path: "features.shell_tool".to_string(),
+            value: serde_json::json!(false),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await
+        .expect("write succeeds");
+
+    let updated = std::fs::read_to_string(&path).expect("read config");
+    let config: TomlValue = toml::from_str(&updated).expect("parse config");
+    let features = config
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .expect("features table");
+    assert_eq!(features.get("shell_tool"), None);
+    assert_eq!(
+        features.get("unified_exec").and_then(toml::Value::as_bool),
+        Some(true)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn clear_missing_nested_config_is_noop() -> Result<()> {
     let tmp = tempdir().expect("tempdir");
     let path = tmp.path().join(CONFIG_TOML_FILE);

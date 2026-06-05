@@ -476,7 +476,7 @@ async fn run_session_picker_with_loader(
                     TuiEvent::Paste(pasted) => {
                         state.handle_paste(pasted);
                     }
-                    TuiEvent::Draw | TuiEvent::Resize => {
+                    TuiEvent::Draw | TuiEvent::Resize | TuiEvent::FocusGained => {
                         if let Ok(size) = alt.tui.terminal.size() {
                             let list_height =
                                 size.height.saturating_sub(PICKER_CHROME_HEIGHT) as usize;
@@ -488,6 +488,7 @@ async fn run_session_picker_with_loader(
                             state.open_pending_transcript_if_ready();
                         }
                     }
+                    TuiEvent::FocusLost => {}
                 }
             }
             Some(event) = background_events.next() => {

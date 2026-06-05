@@ -560,6 +560,15 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_recap(
+        &self,
+        params: ThreadRecapParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_recap_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &self,
         request_id: &ConnectionRequestId,
@@ -1723,6 +1732,20 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
         Ok(ThreadCompactStartResponse {})
+    }
+
+    async fn thread_recap_inner(
+        &self,
+        params: ThreadRecapParams,
+    ) -> Result<ThreadRecapResponse, JSONRPCErrorError> {
+        let ThreadRecapParams { thread_id, prompt } = params;
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        let summary = thread
+            .generate_session_recap(prompt)
+            .await
+            .map_err(|err| internal_error(format!("failed to generate recap: {err}")))?;
+        Ok(ThreadRecapResponse { summary })
     }
 
     async fn thread_background_terminals_clean_inner(

@@ -1,6 +1,9 @@
 use chrono::DateTime;
 use chrono::Utc;
 use codex_core::test_support::all_model_presets;
+use codex_model_provider::model_cache_key_for_provider;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::client_version_to_whole;
 use codex_protocol::config_types::ReasoningSummary;
@@ -114,11 +117,26 @@ fn append_mock_model_alias(models: &mut Vec<ModelInfo>) {
 /// The cache will be treated as fresh (within TTL) and used instead of fetching from the network.
 /// Uses bundled-catalog-derived presets, converted to ModelInfo format.
 pub fn write_models_cache(codex_home: &Path) -> std::io::Result<()> {
-    write_models_cache_for_provider(codex_home, "openai")
+    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let provider_cache_key = model_cache_key_for_provider(
+        OPENAI_PROVIDER_ID,
+        &provider_info,
+        /*auth_manager*/ None,
+    );
+    write_models_cache_for_provider(codex_home, &provider_cache_key)
 }
 
 pub fn write_mock_provider_models_cache(codex_home: &Path) -> std::io::Result<()> {
-    write_models_cache_for_provider(codex_home, "mock_provider")
+    let provider_cache_key = mock_provider_cache_key();
+    write_models_cache_for_provider(codex_home, &provider_cache_key)
+}
+
+fn mock_provider_cache_key() -> String {
+    let provider_info = ModelProviderInfo {
+        name: "mock_provider".to_string(),
+        ..Default::default()
+    };
+    model_cache_key_for_provider("mock_provider", &provider_info, /*auth_manager*/ None)
 }
 
 /// Write a models_cache.json file for a specific provider cache key.
@@ -155,7 +173,7 @@ pub fn write_models_cache_for_provider(
         })
         .collect();
     let mut models = models;
-    if provider_cache_key == "mock_provider" {
+    if provider_cache_key == mock_provider_cache_key() {
         append_mock_model_alias(&mut models);
     }
 
@@ -168,7 +186,13 @@ pub fn write_models_cache_with_models(
     codex_home: &Path,
     models: Vec<ModelInfo>,
 ) -> std::io::Result<()> {
-    write_models_cache_with_models_for_provider(codex_home, models, "openai")
+    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let provider_cache_key = model_cache_key_for_provider(
+        OPENAI_PROVIDER_ID,
+        &provider_info,
+        /*auth_manager*/ None,
+    );
+    write_models_cache_with_models_for_provider(codex_home, models, &provider_cache_key)
 }
 
 /// Write a models_cache.json file with specific models and provider cache key.

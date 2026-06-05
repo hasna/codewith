@@ -286,6 +286,7 @@ use crate::bottom_pane::QUIT_SHORTCUT_TIMEOUT;
 use crate::bottom_pane::QueuedInputAction;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionShortcutAction;
 use crate::bottom_pane::SelectionToggle;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
@@ -551,6 +552,7 @@ pub(crate) struct ChatWidget {
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
+    auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
@@ -559,6 +561,7 @@ pub(crate) struct ChatWidget {
     warning_display_state: WarningDisplayState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
+    pending_auth_profile_auto_switch_trigger: Option<String>,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,
     // Stream lifecycle controller
