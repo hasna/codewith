@@ -45,7 +45,7 @@ use self::www_authenticate::insufficient_scope_challenge;
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
-const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 8_192;
+const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 512;
 
 #[derive(Clone)]
 pub(crate) struct StreamableHttpClientAdapter {
@@ -355,7 +355,20 @@ impl StreamableHttpClientAdapter {
 }
 
 fn body_preview(body: impl Into<String>) -> String {
-    let mut body_preview = body.into();
+    let body = body.into();
+    let mut body_preview = if looks_like_html(&body) {
+        strip_html_tags(&body)
+    } else {
+        body
+    };
+    body_preview = body_preview
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if body_preview.is_empty() {
+        return "<empty>".to_string();
+    }
+
     let body_len = body_preview.len();
     if body_len > NON_JSON_RESPONSE_BODY_PREVIEW_BYTES {
         let mut boundary = NON_JSON_RESPONSE_BODY_PREVIEW_BYTES;
@@ -369,6 +382,31 @@ fn body_preview(body: impl Into<String>) -> String {
         ));
     }
     body_preview
+}
+
+fn looks_like_html(body: &str) -> bool {
+    let trimmed = body.trim_start().to_ascii_lowercase();
+    trimmed.starts_with("<!doctype html")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<head")
+        || trimmed.starts_with("<body")
+}
+
+fn strip_html_tags(body: &str) -> String {
+    let mut text = String::with_capacity(body.len());
+    let mut in_tag = false;
+    for ch in body.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    text
 }
 
 fn client_jsonrpc_message_fields(
@@ -489,4 +527,36 @@ fn sse_stream_from_body(
         }
     }))
     .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_preview_strips_html_tags_and_collapses_whitespace() {
+        let preview = body_preview(
+            r#"<!doctype html><html><head><title>Example Domain</title></head>
+            <body><h1>Example Domain</h1><p>This domain is for examples.</p></body></html>"#,
+        );
+
+        assert_eq!(
+            preview,
+            "Example Domain Example Domain This domain is for examples."
+        );
+        assert!(!preview.contains("<html"));
+    }
+
+    #[test]
+    fn body_preview_truncates_long_text() {
+        let preview = body_preview("a".repeat(NON_JSON_RESPONSE_BODY_PREVIEW_BYTES + 20));
+
+        assert!(preview.starts_with(&"a".repeat(NON_JSON_RESPONSE_BODY_PREVIEW_BYTES)));
+        assert!(preview.ends_with("... (truncated 20 bytes)"));
+    }
+
+    #[test]
+    fn body_preview_marks_empty_after_compaction() {
+        assert_eq!(body_preview(" \n\t "), "<empty>");
+    }
 }

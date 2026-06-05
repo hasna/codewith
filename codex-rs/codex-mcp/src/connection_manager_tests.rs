@@ -1213,6 +1213,76 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
     cancel_token.cancel();
 }
 
+#[tokio::test]
+async fn required_startup_failures_use_mcp_error_display() {
+    let server_name = "github";
+    let failed_client = futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Err(
+        anyhow::anyhow!(
+            "handshaking with MCP server failed: Unexpected content type: Some(\"text/html; body: <!doctype html><html>Example Domain</html>\")"
+        )
+        .into(),
+    ))
+    .boxed()
+    .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionManager::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    manager.auth_entries.insert(
+        server_name.to_string(),
+        McpAuthStatusEntry {
+            config: Some(McpServerConfig {
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "https://example.com/mcp".to_string(),
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+                enabled: true,
+                required: true,
+                supports_parallel_tool_calls: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            }),
+            auth_status: McpAuthStatus::Unsupported,
+        },
+    );
+    manager.clients.insert(
+        server_name.to_string(),
+        AsyncManagedClient {
+            client: failed_client,
+            cached_tool_info_snapshot: None,
+            cached_server_info: None,
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let failures = manager
+        .required_startup_failures(&[server_name.to_string()])
+        .await;
+
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].server, server_name);
+    assert_eq!(
+        failures[0].error,
+        "MCP server `github` at `https://example.com/mcp` did not return an MCP Streamable HTTP response during startup. The server returned `text/html`. Verify `[mcp_servers.github].url` points to an MCP endpoint or disable this MCP server:\n[mcp_servers.github]\nenabled = false"
+    );
+}
+
 #[test]
 fn elicitation_capability_uses_2025_06_18_shape_for_form_only_support() {
     let capability = Some(ElicitationCapability::default());
@@ -1270,7 +1340,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
     let display = mcp_init_error_display(server_name, Some(&entry), &err);
 
     let expected = format!(
-        "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_name}]\nbearer_token_env_var = CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
+        "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_name}]\nbearer_token_env_var = CODEWITH_GITHUB_PERSONAL_ACCESS_TOKEN"
     );
 
     assert_eq!(expected, display);
@@ -1284,10 +1354,169 @@ fn mcp_init_error_display_prompts_for_login_when_auth_required() {
     let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
 
     let expected = format!(
-        "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
+        "The {server_name} MCP server is not logged in. Run `codewith mcp login {server_name}`."
     );
 
     assert_eq!(expected, display);
+}
+
+#[test]
+fn mcp_init_error_display_explains_missing_bearer_token_env_var() {
+    let server_name = "issues";
+    let entry = McpAuthStatusEntry {
+        config: Some(McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://mcp.example.test".to_string(),
+                bearer_token_env_var: Some("GITHUB_TOKEN".to_string()),
+                http_headers: None,
+                env_http_headers: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+        auth_status: McpAuthStatus::Unsupported,
+    };
+    let err: StartupOutcomeError =
+        anyhow::anyhow!("Environment variable GITHUB_TOKEN for MCP server 'issues' is not set")
+            .into();
+
+    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+
+    assert_eq!(
+        "MCP server `issues` needs environment variable `GITHUB_TOKEN` for its bearer token, but `GITHUB_TOKEN` is not set. Set it before starting Codewith or disable this MCP server:\n[mcp_servers.issues]\nenabled = false",
+        display
+    );
+}
+
+#[test]
+fn mcp_init_error_display_explains_missing_stdio_command() {
+    let server_name = "docs";
+    let entry = McpAuthStatusEntry {
+        config: Some(McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+        auth_status: McpAuthStatus::Unsupported,
+    };
+    let err: StartupOutcomeError = anyhow::anyhow!("No such file or directory (os error 2)").into();
+
+    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+
+    assert_eq!(
+        "MCP server `docs` could not start command `docs-server` because it was not found. Install the command, update `[mcp_servers.docs].command`, or disable this MCP server:\n[mcp_servers.docs]\nenabled = false",
+        display
+    );
+}
+
+#[test]
+fn mcp_init_error_display_explains_stdio_cwd_or_command_failure() {
+    let server_name = "docs";
+    let entry = McpAuthStatusEntry {
+        config: Some(McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: Some(PathBuf::from("/missing/cwd")),
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+        auth_status: McpAuthStatus::Unsupported,
+    };
+    let err: StartupOutcomeError = anyhow::anyhow!("No such file or directory (os error 2)").into();
+
+    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+
+    assert_eq!(
+        "MCP server `docs` could not start command `docs-server` from cwd `/missing/cwd`. Verify the cwd exists and the command is installed, update `[mcp_servers.docs]`, or disable this MCP server:\n[mcp_servers.docs]\nenabled = false",
+        display
+    );
+}
+
+#[test]
+fn mcp_init_error_display_explains_non_mcp_http_response() {
+    let server_name = "github";
+    let entry = McpAuthStatusEntry {
+        config: Some(McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+        auth_status: McpAuthStatus::Unsupported,
+    };
+    let err: StartupOutcomeError = anyhow::anyhow!(
+        "handshaking with MCP server failed: Unexpected content type: Some(\"text/html; body: Example Domain\")"
+    )
+    .into();
+
+    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+
+    assert_eq!(
+        "MCP server `github` at `https://example.com/mcp` did not return an MCP Streamable HTTP response during startup. The server returned `text/html`. Verify `[mcp_servers.github].url` points to an MCP endpoint or disable this MCP server:\n[mcp_servers.github]\nenabled = false",
+        display
+    );
 }
 
 #[test]

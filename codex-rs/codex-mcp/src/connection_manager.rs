@@ -105,6 +105,7 @@ pub fn tool_is_model_visible(tool: &ToolInfo) -> bool {
 pub struct McpConnectionManager {
     clients: HashMap<String, AsyncManagedClient>,
     server_metadata: HashMap<String, McpServerMetadata>,
+    auth_entries: HashMap<String, McpAuthStatusEntry>,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
     host_owned_codex_apps_enabled: bool,
     prefix_mcp_tool_names: bool,
@@ -133,6 +134,7 @@ impl McpConnectionManager {
         Self {
             clients: HashMap::new(),
             server_metadata: HashMap::new(),
+            auth_entries: HashMap::new(),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             host_owned_codex_apps_enabled: false,
             prefix_mcp_tool_names,
@@ -327,12 +329,13 @@ impl McpConnectionManager {
                 )
                 .await;
 
-                (server_name, outcome)
+                (server_name, outcome, auth_entry)
             });
         }
         let manager = Self {
             clients,
             server_metadata,
+            auth_entries,
             tool_plugin_provenance,
             host_owned_codex_apps_enabled,
             prefix_mcp_tool_names,
@@ -342,16 +345,18 @@ impl McpConnectionManager {
         tokio::spawn(async move {
             let outcomes = join_set.join_all().await;
             let mut summary = McpStartupCompleteEvent::default();
-            for (server_name, outcome) in outcomes {
+            for (server_name, outcome, auth_entry) in outcomes {
                 match outcome {
                     Ok(_) => summary.ready.push(server_name),
                     Err(StartupOutcomeError::Cancelled) => summary.cancelled.push(server_name),
-                    Err(StartupOutcomeError::Failed { error }) => {
-                        summary.failed.push(McpStartupFailure {
-                            server: server_name,
-                            error,
-                        })
-                    }
+                    Err(error) => summary.failed.push(McpStartupFailure {
+                        error: mcp_init_error_display(
+                            server_name.as_str(),
+                            auth_entry.as_ref(),
+                            &error,
+                        ),
+                        server: server_name,
+                    }),
                 }
             }
             let _ = tx_event
@@ -403,8 +408,12 @@ impl McpConnectionManager {
             match async_managed_client.client().await {
                 Ok(_) => {}
                 Err(error) => failures.push(McpStartupFailure {
+                    error: mcp_init_error_display(
+                        server_name,
+                        self.auth_entries.get(server_name),
+                        &error,
+                    ),
                     server: server_name.clone(),
-                    error: startup_outcome_error_message(error),
                 }),
             }
         }
@@ -813,22 +822,37 @@ fn mcp_init_error_display(
     entry: Option<&McpAuthStatusEntry>,
     err: &StartupOutcomeError,
 ) -> String {
+    let transport = entry.and_then(|entry| entry.config.as_ref().map(|config| &config.transport));
     if let Some(McpServerTransportConfig::StreamableHttp {
         url,
         bearer_token_env_var,
         http_headers,
         ..
-    }) = entry.and_then(|entry| entry.config.as_ref().map(|config| &config.transport))
+    }) = transport
         && url == "https://api.githubcopilot.com/mcp/"
         && bearer_token_env_var.is_none()
         && http_headers.as_ref().map(HashMap::is_empty).unwrap_or(true)
     {
         format!(
-            "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_name}]\nbearer_token_env_var = CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
+            "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_name}]\nbearer_token_env_var = CODEWITH_GITHUB_PERSONAL_ACCESS_TOKEN"
         )
+    } else if let Some(message) = missing_bearer_token_env_var_message(server_name, transport, err)
+    {
+        message
+    } else if let Some(message) =
+        stdio_cwd_or_command_not_found_message(server_name, transport, err)
+    {
+        message
+    } else if let Some(message) = stdio_command_not_found_message(server_name, transport, err) {
+        message
+    } else if let Some(message) = unexpected_http_content_type_message(server_name, transport, err)
+    {
+        message
+    } else if let Some(message) = local_stdio_environment_message(err) {
+        message
     } else if is_mcp_client_auth_required_error(err) {
         format!(
-            "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
+            "The {server_name} MCP server is not logged in. Run `codewith mcp login {server_name}`."
         )
     } else if is_mcp_client_startup_timeout_error(err) {
         let startup_timeout_secs = match entry {
@@ -851,10 +875,132 @@ fn mcp_init_error_display(
     }
 }
 
-fn startup_outcome_error_message(error: StartupOutcomeError) -> String {
-    match error {
-        StartupOutcomeError::Cancelled => "MCP startup cancelled".to_string(),
-        StartupOutcomeError::Failed { error } => error,
+fn missing_bearer_token_env_var_message(
+    server_name: &str,
+    transport: Option<&McpServerTransportConfig>,
+    err: &StartupOutcomeError,
+) -> Option<String> {
+    let Some(McpServerTransportConfig::StreamableHttp {
+        bearer_token_env_var: Some(env_var),
+        ..
+    }) = transport
+    else {
+        return None;
+    };
+    let error = startup_outcome_error_str(err)?;
+    let expected_prefix = format!("Environment variable {env_var} ");
+    if !error.contains(&expected_prefix) {
+        return None;
+    }
+
+    let state = if error.contains(" is not set") {
+        "not set"
+    } else if error.contains(" is empty") {
+        "empty"
+    } else if error.contains(" contains invalid Unicode") {
+        "not valid Unicode"
+    } else {
+        return None;
+    };
+
+    Some(format!(
+        "MCP server `{server_name}` needs environment variable `{env_var}` for its bearer token, but `{env_var}` is {state}. Set it before starting Codewith or disable this MCP server:\n[mcp_servers.{server_name}]\nenabled = false"
+    ))
+}
+
+fn local_stdio_environment_message(err: &StartupOutcomeError) -> Option<String> {
+    let error = startup_outcome_error_str(err)?;
+    if error.starts_with("local stdio MCP server ")
+        && error.ends_with(" requires a local environment")
+    {
+        return Some(error.to_string());
+    }
+    None
+}
+
+fn stdio_cwd_or_command_not_found_message(
+    server_name: &str,
+    transport: Option<&McpServerTransportConfig>,
+    err: &StartupOutcomeError,
+) -> Option<String> {
+    let Some(McpServerTransportConfig::Stdio {
+        command,
+        cwd: Some(cwd),
+        ..
+    }) = transport
+    else {
+        return None;
+    };
+    let error = startup_outcome_error_str(err)?;
+    if !(error.contains("No such file or directory") || error.contains("os error 2")) {
+        return None;
+    }
+
+    Some(format!(
+        "MCP server `{server_name}` could not start command `{command}` from cwd `{}`. Verify the cwd exists and the command is installed, update `[mcp_servers.{server_name}]`, or disable this MCP server:\n[mcp_servers.{server_name}]\nenabled = false",
+        cwd.display()
+    ))
+}
+
+fn stdio_command_not_found_message(
+    server_name: &str,
+    transport: Option<&McpServerTransportConfig>,
+    err: &StartupOutcomeError,
+) -> Option<String> {
+    let Some(McpServerTransportConfig::Stdio { command, .. }) = transport else {
+        return None;
+    };
+    let error = startup_outcome_error_str(err)?;
+    if !(error.contains("No such file or directory") || error.contains("os error 2")) {
+        return None;
+    }
+
+    Some(format!(
+        "MCP server `{server_name}` could not start command `{command}` because it was not found. Install the command, update `[mcp_servers.{server_name}].command`, or disable this MCP server:\n[mcp_servers.{server_name}]\nenabled = false"
+    ))
+}
+
+fn unexpected_http_content_type_message(
+    server_name: &str,
+    transport: Option<&McpServerTransportConfig>,
+    err: &StartupOutcomeError,
+) -> Option<String> {
+    let Some(McpServerTransportConfig::StreamableHttp { url, .. }) = transport else {
+        return None;
+    };
+    let error = startup_outcome_error_str(err)?;
+    if !error.contains("Unexpected content type") {
+        return None;
+    }
+
+    let returned_content_type = unexpected_http_content_type_returned(error)
+        .map(|returned| format!(" The server returned {returned}."))
+        .unwrap_or_default();
+    Some(format!(
+        "MCP server `{server_name}` at `{url}` did not return an MCP Streamable HTTP response during startup.{returned_content_type} Verify `[mcp_servers.{server_name}].url` points to an MCP endpoint or disable this MCP server:\n[mcp_servers.{server_name}]\nenabled = false"
+    ))
+}
+
+fn unexpected_http_content_type_returned(error: &str) -> Option<String> {
+    let detail = error.split("Unexpected content type: ").nth(1)?.trim();
+    if detail.starts_with("None") {
+        return Some("no Content-Type header".to_string());
+    }
+
+    let detail = detail.strip_prefix("Some(\"")?;
+    let detail = detail.split("\")").next().unwrap_or(detail);
+    let content_type = detail.split("; body:").next().unwrap_or(detail).trim();
+    if content_type.is_empty() {
+        return None;
+    }
+
+    Some(format!("`{content_type}`"))
+}
+
+fn startup_outcome_error_str(err: &StartupOutcomeError) -> Option<&str> {
+    match err {
+        StartupOutcomeError::Failed { error } => Some(error.as_str()),
+        StartupOutcomeError::Cancelled => None,
     }
 }
 
