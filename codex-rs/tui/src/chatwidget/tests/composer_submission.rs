@@ -52,10 +52,15 @@ async fn submission_preserves_text_elements_and_local_images() {
         .set_composer_text(text.clone(), text_elements.clone(), local_images.clone());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    let items = match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => items,
+    let (items, model_provider) = match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            model_provider,
+            ..
+        } => (items, model_provider),
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
+    assert_eq!(model_provider, "test-provider");
     assert_eq!(items.len(), 2);
     assert_eq!(
         items[0],

@@ -3,7 +3,7 @@ source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.1.16 -> 9.9.9                                                                       │
+│ ✨ Update available! 0.1.17 -> 9.9.9                                                                       │
 │ Run powershell -ExecutionPolicy Bypass -c '$env:CODEX_NON_INTERACTIVE=1; irm                               │
 │ https://raw.githubusercontent.com/hasna/codewith/main/scripts/install/install.ps1 | iex' to update.        │
 │                                                                                                            │

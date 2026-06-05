@@ -3,7 +3,7 @@ source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 ╭─────────────────────────────────────╮
-│ >_ Hasna Codewith (v0.1.16)         │
+│ >_ Hasna Codewith (v0.1.17)         │
 │                                     │
 │ model:     gpt-5   /model to change │
 │ directory: /tmp/project             │

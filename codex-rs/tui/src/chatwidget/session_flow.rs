@@ -74,6 +74,15 @@ impl ChatWidget {
         }
         self.config.approvals_reviewer = session.approvals_reviewer;
         self.config.personality = session.personality;
+        self.config.model_provider_id = session.model_provider_id.clone();
+        if let Some(provider) = self
+            .config
+            .model_providers
+            .get(&session.model_provider_id)
+            .cloned()
+        {
+            self.config.model_provider = provider;
+        }
         self.status_line_project_root_name_cache = None;
         let forked_from_id = session.forked_from_id;
         let default_model = session.model.clone();

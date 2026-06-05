@@ -511,6 +511,7 @@ impl App {
                 approval_policy,
                 approvals_reviewer,
                 active_permission_profile,
+                model_provider,
                 model,
                 effort,
                 summary,
@@ -604,9 +605,7 @@ impl App {
                             approvals_reviewer,
                             permissions_override,
                             config.permissions.user_visible_workspace_roots(),
-                            app_server
-                                .thread_params_mode()
-                                .model_provider_from_config(config),
+                            Some(model_provider.clone()),
                             model.to_string(),
                             *effort,
                             *summary,
