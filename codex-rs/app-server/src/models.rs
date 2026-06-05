@@ -5,6 +5,7 @@ use codex_app_server_protocol::ModelServiceTier;
 use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_core::ThreadManager;
+use codex_known_provider_models as known_provider_models;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::error::Result as CoreResult;
@@ -12,9 +13,6 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
-
-const CEREBRAS_PROVIDER_ID: &str = "cerebras";
-const NVIDIA_PROVIDER_ID: &str = "nvidia";
 
 pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
@@ -56,36 +54,17 @@ pub async fn supported_models_from_manager(
 }
 
 pub fn provider_has_fallback_models(provider_id: &str) -> bool {
-    matches!(provider_id, CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID)
+    !known_provider_models::fallback_models_for_provider(provider_id).is_empty()
 }
 
 pub fn fallback_supported_models_for_provider(
     provider_id: &str,
     include_hidden: bool,
 ) -> Vec<Model> {
-    let models = match provider_id {
-        CEREBRAS_PROVIDER_ID => vec![fallback_model(
-            "gpt-oss-120b",
-            "gpt-oss-120b",
-            "Cerebras default model. Requires CEREBRAS_API_KEY for turns.",
-            /*is_default*/ true,
-        )],
-        NVIDIA_PROVIDER_ID => vec![
-            fallback_model(
-                "openai/gpt-oss-120b",
-                "openai/gpt-oss-120b",
-                "NVIDIA hosted OpenAI gpt-oss model. Requires NVIDIA_API_KEY for turns.",
-                /*is_default*/ true,
-            ),
-            fallback_model(
-                "deepseek-ai/deepseek-v4-flash",
-                "deepseek-ai/deepseek-v4-flash",
-                "NVIDIA hosted DeepSeek model. Requires NVIDIA_API_KEY for turns.",
-                /*is_default*/ false,
-            ),
-        ],
-        _ => Vec::new(),
-    };
+    let models = known_provider_models::fallback_models_for_provider(provider_id)
+        .iter()
+        .map(|model| fallback_model(provider_id, model))
+        .collect::<Vec<_>>();
 
     if include_hidden {
         models
@@ -94,25 +73,42 @@ pub fn fallback_supported_models_for_provider(
     }
 }
 
-fn fallback_model(id: &str, display_name: &str, description: &str, is_default: bool) -> Model {
+fn fallback_model(
+    provider_id: &str,
+    model: &known_provider_models::KnownProviderFallbackModel,
+) -> Model {
+    let (default_reasoning_effort, supported_reasoning_efforts) =
+        fallback_reasoning_efforts(provider_id, model.id);
     Model {
-        id: id.to_string(),
-        model: id.to_string(),
+        id: model.id.to_string(),
+        model: model.id.to_string(),
         upgrade: None,
         upgrade_info: None,
         availability_nux: None,
-        display_name: display_name.to_string(),
-        description: description.to_string(),
+        display_name: model.display_name.to_string(),
+        description: model.description.to_string(),
         hidden: false,
-        supported_reasoning_efforts: Vec::new(),
-        default_reasoning_effort: ReasoningEffort::None,
+        supported_reasoning_efforts,
+        default_reasoning_effort,
         input_modalities: vec![InputModality::Text],
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
-        is_default,
+        is_default: model.is_default,
     }
+}
+
+fn fallback_reasoning_efforts(
+    provider_id: &str,
+    id: &str,
+) -> (ReasoningEffort, Vec<ReasoningEffortOption>) {
+    let (default_effort, presets) =
+        known_provider_models::reasoning_levels_for_local_fallback(Some(provider_id), id);
+    (
+        default_effort.unwrap_or(ReasoningEffort::None),
+        reasoning_efforts_from_preset(presets),
+    )
 }
 
 fn model_from_preset(preset: ModelPreset) -> Model {
@@ -169,14 +165,30 @@ mod tests {
 
     #[test]
     fn cerebras_fallback_models_include_selectable_default() {
-        let models = fallback_supported_models_for_provider(
-            CEREBRAS_PROVIDER_ID,
-            /*include_hidden*/ false,
-        );
+        let models =
+            fallback_supported_models_for_provider("cerebras", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 1);
+        assert_eq!(models.len(), 2);
         assert_eq!(models[0].model, "gpt-oss-120b");
+        assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
         assert!(models[0].is_default);
         assert!(!models[0].hidden);
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(
+            models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.reasoning_effort)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+        );
+        assert_eq!(models[1].model, "zai-glm-4.7");
+        assert_eq!(models[1].display_name, "Z.ai GLM 4.7");
+        assert!(!models[1].is_default);
+        assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::Medium);
     }
 }

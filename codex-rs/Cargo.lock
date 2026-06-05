@@ -1885,6 +1885,7 @@ dependencies = [
  "bytes",
  "chrono",
  "codex-client",
+ "codex-known-provider-models",
  "codex-protocol",
  "codex-utils-rustls-provider",
  "eventsource-stream",
@@ -1942,6 +1943,7 @@ dependencies = [
  "codex-guardian",
  "codex-hooks",
  "codex-image-generation-extension",
+ "codex-known-provider-models",
  "codex-login",
  "codex-mcp",
  "codex-memories-extension",
@@ -3084,6 +3086,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-known-provider-models"
+version = "0.1.18"
+dependencies = [
+ "codex-protocol",
+]
+
+[[package]]
 name = "codex-linux-sandbox"
 version = "0.1.18"
 dependencies = [
@@ -3357,6 +3366,7 @@ dependencies = [
  "chrono",
  "codex-app-server-protocol",
  "codex-collaboration-mode-templates",
+ "codex-known-provider-models",
  "codex-login",
  "codex-otel",
  "codex-protocol",

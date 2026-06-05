@@ -268,12 +268,12 @@ impl ChatWidget {
         for preset in presets.into_iter() {
             let description = short_picker_description_optional(&preset.description);
             let is_current = preset.model.as_str() == self.current_model();
-            let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
+            let direct_effort_selection = preset.supported_reasoning_efforts.len() <= 1;
             let should_prompt_plan_mode_scope = self.should_prompt_plan_mode_reasoning_scope(
                 preset.model.as_str(),
                 Some(preset.default_reasoning_effort),
             );
-            let actions: Vec<SelectionAction> = if single_supported_effort {
+            let actions: Vec<SelectionAction> = if direct_effort_selection {
                 Self::model_selection_actions(
                     preset.model.clone(),
                     Some(preset.default_reasoning_effort),
@@ -296,8 +296,8 @@ impl ChatWidget {
                 is_current,
                 is_default: preset.is_default,
                 actions,
-                dismiss_on_select: single_supported_effort,
-                dismiss_parent_on_child_accept: !single_supported_effort,
+                dismiss_on_select: direct_effort_selection,
+                dismiss_parent_on_child_accept: !direct_effort_selection,
                 ..Default::default()
             });
         }

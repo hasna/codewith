@@ -1,0 +1,16 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-known-provider-models"
+version.workspace = true
+
+[lib]
+doctest = false
+name = "codex_known_provider_models"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-protocol = { workspace = true }

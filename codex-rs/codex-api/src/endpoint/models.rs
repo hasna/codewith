@@ -4,6 +4,7 @@ use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
+use codex_known_provider_models as known_provider_models;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -23,19 +24,31 @@ use std::sync::Arc;
 
 pub struct ModelsClient<T: HttpTransport> {
     session: EndpointSession<T>,
+    provider_id: Option<String>,
 }
 
 impl<T: HttpTransport> ModelsClient<T> {
     pub fn new(transport: T, provider: Provider, auth: SharedAuthProvider) -> Self {
         Self {
             session: EndpointSession::new(transport, provider, auth),
+            provider_id: None,
         }
     }
 
     pub fn with_telemetry(self, request: Option<Arc<dyn RequestTelemetry>>) -> Self {
+        let Self {
+            session,
+            provider_id,
+        } = self;
         Self {
-            session: self.session.with_request_telemetry(request),
+            session: session.with_request_telemetry(request),
+            provider_id,
         }
+    }
+
+    pub fn with_provider_id(mut self, provider_id: Option<String>) -> Self {
+        self.provider_id = provider_id;
+        self
     }
 
     fn path() -> &'static str {
@@ -71,7 +84,14 @@ impl<T: HttpTransport> ModelsClient<T> {
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
 
-        let models = decode_models_response(&resp.body).map_err(|e| {
+        let provider = self.session.provider();
+        let models = decode_models_response(
+            &resp.body,
+            self.provider_id.as_deref(),
+            Some(provider.name.as_str()),
+            Some(provider.base_url.as_str()),
+        )
+        .map_err(|e| {
             ApiError::Stream(format!(
                 "failed to decode models response: {e}; body: {}",
                 String::from_utf8_lossy(&resp.body)
@@ -148,35 +168,68 @@ enum OpenAiCompatibleSupportedParameters {
 }
 
 impl OpenAiCompatibleSupportedParameters {
-    fn supports(&self, parameter: &str) -> bool {
-        self.support_state(parameter).unwrap_or(false)
-    }
-
     fn support_state(&self, parameter: &str) -> Option<bool> {
         match self {
-            Self::List(parameters) => parameters
-                .iter()
-                .any(|value| value == parameter)
-                .then_some(true),
+            Self::List(parameters) => Some(parameters.iter().any(|value| value == parameter)),
             Self::Flags(parameters) => parameters.get(parameter).copied(),
+        }
+    }
+
+    fn supports_any(&self, parameters: &[&str]) -> Option<bool> {
+        match self {
+            Self::List(supported_parameters) => Some(parameters.iter().any(|parameter| {
+                supported_parameters
+                    .iter()
+                    .any(|supported_parameter| supported_parameter == *parameter)
+            })),
+            Self::Flags(supported_parameters) => {
+                let mut saw_parameter = false;
+                for parameter in parameters {
+                    if let Some(supported) = supported_parameters.get(*parameter) {
+                        if *supported {
+                            return Some(true);
+                        }
+                        saw_parameter = true;
+                    }
+                }
+                saw_parameter.then_some(false)
+            }
         }
     }
 }
 
-fn decode_models_response(body: &[u8]) -> Result<Vec<ModelInfo>, serde_json::Error> {
+fn decode_models_response(
+    body: &[u8],
+    provider_id: Option<&str>,
+    provider_name: Option<&str>,
+    provider_base_url: Option<&str>,
+) -> Result<Vec<ModelInfo>, serde_json::Error> {
     let response = serde_json::from_slice::<ModelsEndpointResponse>(body)?;
     Ok(match response {
         ModelsEndpointResponse::Codex(ModelsResponse { models }) => models,
         ModelsEndpointResponse::OpenAiCompatible(OpenAiCompatibleModelsResponse { data }) => data
             .into_iter()
             .enumerate()
-            .map(|(index, model)| model.into_model_info(i32::try_from(index).unwrap_or(i32::MAX)))
+            .map(|(index, model)| {
+                model.into_model_info(
+                    i32::try_from(index).unwrap_or(i32::MAX),
+                    provider_id,
+                    provider_name,
+                    provider_base_url,
+                )
+            })
             .collect(),
     })
 }
 
 impl OpenAiCompatibleModel {
-    fn into_model_info(self, priority: i32) -> ModelInfo {
+    fn into_model_info(
+        self,
+        priority: i32,
+        provider_id: Option<&str>,
+        provider_name: Option<&str>,
+        provider_base_url: Option<&str>,
+    ) -> ModelInfo {
         let OpenAiCompatibleModel {
             id,
             name,
@@ -189,13 +242,26 @@ impl OpenAiCompatibleModel {
             top_provider,
             supported_parameters,
         } = self;
+        let known_metadata = known_provider_models::metadata_for_openai_compatible_response(
+            provider_id,
+            provider_name,
+            provider_base_url,
+            &id,
+        );
         let supports_tools = supported_parameters
             .as_ref()
-            .is_some_and(|params| params.supports("tools"))
-            || capabilities.as_ref().is_some_and(|capabilities| {
-                capabilities.tools.unwrap_or(false)
-                    || capabilities.function_calling.unwrap_or(false)
-            });
+            .and_then(|params| params.supports_any(&["tools", "function_calling"]))
+            .or_else(|| {
+                capabilities.as_ref().and_then(|capabilities| {
+                    (capabilities.tools.is_some() || capabilities.function_calling.is_some()).then(
+                        || {
+                            capabilities.tools.unwrap_or(false)
+                                || capabilities.function_calling.unwrap_or(false)
+                        },
+                    )
+                })
+            })
+            .unwrap_or_else(|| known_metadata.is_some_and(|metadata| metadata.supports_tools));
         let supports_parallel_tool_calls = supported_parameters
             .as_ref()
             .and_then(|params| params.support_state("parallel_tool_calls"))
@@ -204,19 +270,40 @@ impl OpenAiCompatibleModel {
                     .as_ref()
                     .and_then(|capabilities| capabilities.parallel_tool_calls)
             })
+            .or_else(|| known_metadata.map(|metadata| metadata.supports_parallel_tool_calls))
             .unwrap_or(supports_tools)
             && supports_tools;
         let provider_context_length = top_provider.and_then(|provider| provider.context_length);
         let limits_context_length = limits.and_then(|limits| limits.max_context_length);
         let effective_context_length = provider_context_length
             .or(context_length)
-            .or(limits_context_length);
+            .or(limits_context_length)
+            .or_else(|| known_metadata.map(|metadata| metadata.context_window));
         let max_context_window = context_length.or(effective_context_length);
+        let supports_reasoning = capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning)
+            .unwrap_or_else(|| known_metadata.is_some_and(|metadata| metadata.supports_reasoning));
+        let supports_reasoning_requests = supports_reasoning
+            && known_provider_models::openai_compatible_provider_supports_reasoning_effort(
+                provider_id,
+                provider_base_url,
+            );
         let (default_reasoning_level, supported_reasoning_levels) =
-            reasoning_levels_for_openai_compatible_model(&id, capabilities.as_ref());
+            reasoning_levels_for_openai_compatible_model(
+                &id,
+                provider_id,
+                provider_name,
+                provider_base_url,
+                supports_reasoning_requests,
+            );
         ModelInfo {
             slug: id.clone(),
-            display_name: name.unwrap_or_else(|| id.clone()),
+            display_name: name.unwrap_or_else(|| {
+                known_metadata
+                    .map(|metadata| metadata.display_name.to_string())
+                    .unwrap_or_else(|| id.clone())
+            }),
             description: with_pricing_description(description, pricing.as_ref()),
             default_reasoning_level,
             supported_reasoning_levels,
@@ -231,7 +318,7 @@ impl OpenAiCompatibleModel {
             upgrade: None,
             base_instructions: String::new(),
             model_messages: None,
-            supports_reasoning_summaries: false,
+            supports_reasoning_summaries: supports_reasoning_requests,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
             default_verbosity: None,
@@ -259,40 +346,21 @@ impl OpenAiCompatibleModel {
 
 fn reasoning_levels_for_openai_compatible_model(
     id: &str,
-    capabilities: Option<&OpenAiCompatibleCapabilities>,
+    provider_id: Option<&str>,
+    provider_name: Option<&str>,
+    provider_base_url: Option<&str>,
+    supports_reasoning: bool,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
-    if !capabilities
-        .and_then(|capabilities| capabilities.reasoning)
-        .unwrap_or(false)
-    {
+    if !supports_reasoning {
         return (None, Vec::new());
     }
 
-    match id {
-        "gpt-oss-120b" => (
-            Some(ReasoningEffort::Medium),
-            vec![
-                reasoning_preset(ReasoningEffort::Low, "Minimal reasoning"),
-                reasoning_preset(ReasoningEffort::Medium, "Moderate reasoning"),
-                reasoning_preset(ReasoningEffort::High, "Extensive reasoning"),
-            ],
-        ),
-        "zai-glm-4.7" => (
-            Some(ReasoningEffort::Medium),
-            vec![
-                reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
-                reasoning_preset(ReasoningEffort::Medium, "Reasoning enabled"),
-            ],
-        ),
-        _ => (None, Vec::new()),
-    }
-}
-
-fn reasoning_preset(effort: ReasoningEffort, description: &str) -> ReasoningEffortPreset {
-    ReasoningEffortPreset {
-        effort,
-        description: description.to_string(),
-    }
+    known_provider_models::reasoning_levels_for_openai_compatible_response(
+        provider_id,
+        provider_name,
+        provider_base_url,
+        id,
+    )
 }
 
 fn with_pricing_description(
@@ -592,6 +660,9 @@ mod tests {
             }))
             .unwrap()
             .as_bytes(),
+            Some("openrouter"),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1"),
         )
         .expect("OpenAI-compatible model response should decode");
 
@@ -624,7 +695,7 @@ mod tests {
                 apply_patch_tool_type: None,
                 web_search_tool_type: WebSearchToolType::Text,
                 truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-                supports_parallel_tool_calls: true,
+                supports_parallel_tool_calls: false,
                 supports_image_detail_original: false,
                 context_window: Some(524_288),
                 max_context_window: Some(1_048_576),
@@ -640,11 +711,199 @@ mod tests {
     }
 
     #[test]
+    fn openai_compatible_explicit_tool_flags_override_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "deepseek/deepseek-v4-flash",
+                        "name": "DeepSeek V4 Flash",
+                        "supported_parameters": {
+                            "tools": false,
+                            "parallel_tool_calls": true
+                        }
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("openrouter"),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.slug, "deepseek/deepseek-v4-flash");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+        assert!(!model.supports_parallel_tool_calls);
+    }
+
+    #[test]
+    fn openai_compatible_function_calling_capability_enables_tools() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "custom-model",
+                        "capabilities": {
+                            "tools": false,
+                            "function_calling": true
+                        }
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("custom"),
+            Some("Custom Provider"),
+            Some("https://models.example.com/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.slug, "custom-model");
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    }
+
+    #[test]
+    fn openrouter_sparse_deepseek_response_uses_openrouter_slug_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "deepseek/deepseek-v4-flash"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("openrouter"),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "DeepSeek V4 Flash");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.max_context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(!model.supports_parallel_tool_calls);
+    }
+
+    #[test]
+    fn renamed_openrouter_provider_uses_base_url_for_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "deepseek/deepseek-v4-flash"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            None,
+            Some("OpenRouter Mirror"),
+            Some("https://openrouter.ai/api/v1/"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "DeepSeek V4 Flash");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    }
+
+    #[test]
+    fn unknown_provider_does_not_use_unqualified_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "gpt-oss-120b"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("custom"),
+            Some("Custom Provider"),
+            Some("https://models.example.com/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "gpt-oss-120b");
+        assert_eq!(model.context_window, None);
+        assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+        assert!(!model.supports_reasoning_summaries);
+    }
+
+    #[test]
+    fn custom_provider_name_does_not_select_known_provider_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "gpt-oss-120b"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("custom"),
+            Some("Cerebras"),
+            Some("https://models.example.com/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "gpt-oss-120b");
+        assert_eq!(model.context_window, None);
+        assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+        assert!(!model.supports_reasoning_summaries);
+    }
+
+    #[test]
+    fn dedicated_cerebras_provider_id_uses_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "gpt-oss-120b"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("cerebras"),
+            Some("Cerebras Dedicated"),
+            Some("https://dedicated.cerebras.example.com/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(model.context_window, Some(131_072));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(model.supports_reasoning_summaries);
+    }
+
+    #[test]
     fn parses_cerebras_authenticated_models_response() {
         let models = decode_models_response(
             serde_json::to_string(&json!({
                 "object": "list",
                 "data": [
+                    {
+                        "id": "gpt-oss-120b",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Cerebras"
+                    },
                     {
                         "id": "zai-glm-4.7",
                         "object": "model",
@@ -661,6 +920,9 @@ mod tests {
             }))
             .unwrap()
             .as_bytes(),
+            Some("cerebras"),
+            Some("cerebras"),
+            Some("https://api.cerebras.ai/v1"),
         )
         .expect("Cerebras authenticated model response should decode");
 
@@ -669,10 +931,30 @@ mod tests {
                 .iter()
                 .map(|model| model.slug.as_str())
                 .collect::<Vec<_>>(),
-            vec!["zai-glm-4.7", "account-scoped-model"]
+            vec!["gpt-oss-120b", "zai-glm-4.7", "account-scoped-model"]
         );
-        assert_eq!(models[1].display_name, "account-scoped-model");
-        assert_eq!(models[1].input_modalities, vec![InputModality::Text]);
+        assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(models[0].context_window, Some(131_072));
+        assert_eq!(models[0].max_context_window, Some(131_072));
+        assert_eq!(models[0].experimental_supported_tools, vec!["tools"]);
+        assert!(!models[0].supports_parallel_tool_calls);
+        assert_eq!(
+            models[0].default_reasoning_level,
+            Some(ReasoningEffort::Medium)
+        );
+        assert!(models[0].supports_reasoning_summaries);
+        assert_eq!(models[1].display_name, "Z.ai GLM 4.7");
+        assert_eq!(models[1].context_window, Some(131_072));
+        assert_eq!(models[1].max_context_window, Some(131_072));
+        assert_eq!(models[1].experimental_supported_tools, vec!["tools"]);
+        assert!(models[1].supports_parallel_tool_calls);
+        assert_eq!(
+            models[1].default_reasoning_level,
+            Some(ReasoningEffort::Medium)
+        );
+        assert!(models[1].supports_reasoning_summaries);
+        assert_eq!(models[2].display_name, "account-scoped-model");
+        assert_eq!(models[2].input_modalities, vec![InputModality::Text]);
     }
 
     #[test]
@@ -714,6 +996,9 @@ mod tests {
             }))
             .unwrap()
             .as_bytes(),
+            Some("cerebras"),
+            Some("cerebras"),
+            Some("https://api.cerebras.ai/v1"),
         )
         .expect("Cerebras detailed model response should decode");
 
@@ -731,10 +1016,42 @@ mod tests {
             vec![ReasoningEffort::None, ReasoningEffort::Medium]
         );
         assert!(!model.supports_parallel_tool_calls);
+        assert!(model.supports_reasoning_summaries);
         assert_eq!(model.experimental_supported_tools, vec!["tools"]);
         assert_eq!(model.context_window, Some(131072));
         assert_eq!(model.max_context_window, Some(131072));
         assert_eq!(model.input_modalities, vec![InputModality::Text]);
+    }
+
+    #[test]
+    fn explicit_reasoning_false_overrides_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "zai-glm-4.7",
+                        "capabilities": {
+                            "tools": true,
+                            "reasoning": false
+                        }
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("cerebras"),
+            Some("cerebras"),
+            Some("https://api.cerebras.ai/v1"),
+        )
+        .expect("Cerebras detailed model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "Z.ai GLM 4.7");
+        assert_eq!(model.context_window, Some(131_072));
+        assert_eq!(model.default_reasoning_level, None);
+        assert_eq!(model.supported_reasoning_levels, Vec::new());
+        assert!(!model.supports_reasoning_summaries);
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     }
 
     #[test]
@@ -760,11 +1077,20 @@ mod tests {
                         "object": "model",
                         "created": 735790403,
                         "owned_by": "openai"
+                    },
+                    {
+                        "id": "deepseek-ai/deepseek-v4-flash",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "deepseek-ai"
                     }
                 ]
             }))
             .unwrap()
             .as_bytes(),
+            Some("nvidia"),
+            Some("nvidia"),
+            Some("https://integrate.api.nvidia.com/v1"),
         )
         .expect("NVIDIA hosted model response should decode");
 
@@ -776,9 +1102,23 @@ mod tests {
             vec![
                 "nvidia/llama-3.3-nemotron-super-49b-v1.5",
                 "qwen/qwen3-coder-480b-a35b-instruct",
-                "openai/gpt-oss-120b"
+                "openai/gpt-oss-120b",
+                "deepseek-ai/deepseek-v4-flash"
             ]
         );
+        let gpt_oss = &models[2];
+        assert_eq!(gpt_oss.display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(gpt_oss.context_window, Some(131_072));
+        assert_eq!(gpt_oss.max_context_window, Some(131_072));
+        assert_eq!(gpt_oss.experimental_supported_tools, vec!["tools"]);
+        assert!(!gpt_oss.supports_parallel_tool_calls);
+        assert!(gpt_oss.supports_reasoning_summaries);
+        let deepseek = &models[3];
+        assert_eq!(deepseek.display_name, "DeepSeek V4 Flash");
+        assert_eq!(deepseek.context_window, Some(1_048_576));
+        assert_eq!(deepseek.max_context_window, Some(1_048_576));
+        assert_eq!(deepseek.experimental_supported_tools, vec!["tools"]);
+        assert!(!deepseek.supports_parallel_tool_calls);
     }
 
     #[tokio::test]

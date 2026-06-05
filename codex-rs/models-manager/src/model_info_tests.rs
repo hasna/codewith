@@ -26,6 +26,91 @@ fn fallback_model_instructions_name_selected_model() {
 }
 
 #[test]
+fn known_provider_model_uses_local_metadata() {
+    let model = model_info_from_slug("gpt-oss-120b");
+
+    assert_eq!(model.display_name, "OpenAI GPT OSS 120B");
+    assert_eq!(model.context_window, Some(131_072));
+    assert_eq!(model.max_context_window, Some(131_072));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(model.supports_reasoning_summaries);
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort)
+            .collect::<Vec<_>>(),
+        vec![
+            codex_protocol::openai_models::ReasoningEffort::Low,
+            codex_protocol::openai_models::ReasoningEffort::Medium,
+            codex_protocol::openai_models::ReasoningEffort::High,
+        ]
+    );
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_provider_glm_model_uses_local_metadata() {
+    let model = model_info_from_slug("zai-glm-4.7");
+
+    assert_eq!(model.display_name, "Z.ai GLM 4.7");
+    assert_eq!(model.context_window, Some(131_072));
+    assert_eq!(model.max_context_window, Some(131_072));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert!(model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_nvidia_deepseek_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("deepseek-ai/deepseek-v4-flash", Some("nvidia"));
+
+    assert_eq!(model.display_name, "DeepSeek V4 Flash");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn stale_openrouter_deepseek_slug_uses_unknown_fallback() {
+    let model =
+        model_info_from_slug_for_provider("deepseek-ai/deepseek-v4-flash", Some("openrouter"));
+
+    assert_eq!(model.display_name, "deepseek-ai/deepseek-v4-flash");
+    assert_eq!(model.context_window, Some(272_000));
+    assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+    assert!(model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_openrouter_deepseek_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("deepseek/deepseek-v4-flash", Some("openrouter"));
+
+    assert_eq!(model.display_name, "DeepSeek V4 Flash");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-4.7", Some("openrouter"));
+
+    assert_eq!(model.display_name, "Z.ai GLM 4.7");
+    assert_eq!(model.context_window, Some(202_752));
+    assert_eq!(model.default_reasoning_level, None);
+    assert_eq!(model.supported_reasoning_levels, Vec::new());
+    assert!(!model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn personality_template_does_not_claim_gpt_5_base() {
     let model = model_info_from_slug("gpt-5.2-codex");
     let template = model

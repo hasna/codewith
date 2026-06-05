@@ -358,6 +358,7 @@ impl ModelProvider for ConfiguredModelProvider {
             )),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
+                    self.provider_id.clone(),
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));

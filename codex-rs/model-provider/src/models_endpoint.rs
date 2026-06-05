@@ -34,16 +34,19 @@ const MODELS_ENDPOINT: &str = "/models";
 /// Provider-owned OpenAI-compatible `/models` endpoint.
 #[derive(Debug)]
 pub(crate) struct OpenAiModelsEndpoint {
+    provider_id: String,
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
 }
 
 impl OpenAiModelsEndpoint {
     pub(crate) fn new(
+        provider_id: impl Into<String>,
         provider_info: ModelProviderInfo,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
         Self {
+            provider_id: provider_id.into(),
             provider_info,
             auth_manager,
         }
@@ -100,6 +103,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
             auth_env: self.auth_env(),
         });
         let client = ModelsClient::new(transport, api_provider, api_auth)
+            .with_provider_id(Some(self.provider_id.clone()))
             .with_telemetry(Some(request_telemetry));
 
         timeout(
@@ -231,6 +235,7 @@ mod tests {
     #[test]
     fn command_auth_provider_reports_provider_auth_without_cached_auth() {
         let endpoint = OpenAiModelsEndpoint::new(
+            "test-provider",
             provider_info_with_command_auth(),
             /*auth_manager*/ None,
         );
@@ -241,6 +246,7 @@ mod tests {
     #[test]
     fn env_key_provider_reports_provider_auth_without_cached_auth() {
         let endpoint = OpenAiModelsEndpoint::new(
+            "test-provider",
             ModelProviderInfo {
                 env_key: Some("OPENROUTER_API_KEY".to_string()),
                 ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
@@ -254,6 +260,7 @@ mod tests {
     #[test]
     fn provider_without_provider_auth_reports_no_provider_auth() {
         let endpoint = OpenAiModelsEndpoint::new(
+            "test-provider",
             ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             /*auth_manager*/ None,
         );

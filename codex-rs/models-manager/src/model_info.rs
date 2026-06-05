@@ -1,3 +1,4 @@
+use codex_known_provider_models as known_provider_models;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
@@ -64,6 +65,61 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
+    model_info_from_slug_for_provider(slug, None)
+}
+
+pub(crate) fn model_info_from_slug_for_provider(
+    slug: &str,
+    provider_id: Option<&str>,
+) -> ModelInfo {
+    if let Some(metadata) = known_provider_models::metadata_for_local_fallback(provider_id, slug) {
+        let base_instructions = fallback_base_instructions_for_slug(slug);
+        let (default_reasoning_level, supported_reasoning_levels) =
+            known_provider_models::reasoning_levels_for_local_fallback(provider_id, slug);
+        let supports_reasoning_summaries =
+            metadata.supports_reasoning && fallback_supports_reasoning_summaries(provider_id);
+        return ModelInfo {
+            slug: slug.to_string(),
+            display_name: metadata.display_name.to_string(),
+            description: None,
+            default_reasoning_level,
+            supported_reasoning_levels,
+            shell_type: ConfigShellToolType::Default,
+            visibility: ModelVisibility::None,
+            supported_in_api: true,
+            priority: 99,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            availability_nux: None,
+            upgrade: None,
+            base_instructions,
+            model_messages: local_personality_messages_for_slug(slug),
+            supports_reasoning_summaries,
+            default_reasoning_summary: ReasoningSummary::Auto,
+            support_verbosity: false,
+            default_verbosity: None,
+            apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+            supports_parallel_tool_calls: metadata.supports_parallel_tool_calls,
+            supports_image_detail_original: false,
+            context_window: Some(metadata.context_window),
+            max_context_window: Some(metadata.context_window),
+            auto_compact_token_limit: None,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: if metadata.supports_tools {
+                vec!["tools".to_string()]
+            } else {
+                Vec::new()
+            },
+            input_modalities: default_input_modalities(),
+            used_fallback_model_metadata: false,
+            supports_search_tool: false,
+            tool_mode: None,
+        };
+    }
+
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
     let base_instructions = fallback_base_instructions_for_slug(slug);
     ModelInfo {
@@ -101,6 +157,15 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
         tool_mode: None,
+    }
+}
+
+fn fallback_supports_reasoning_summaries(provider_id: Option<&str>) -> bool {
+    match provider_id {
+        Some(provider_id) => {
+            known_provider_models::provider_supports_reasoning_effort(Some(provider_id))
+        }
+        None => true,
     }
 }
 

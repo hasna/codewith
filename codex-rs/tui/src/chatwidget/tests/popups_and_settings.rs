@@ -2567,6 +2567,38 @@ async fn current_provider_model_selection_sends_provider_and_model() {
 }
 
 #[tokio::test]
+async fn current_provider_model_selection_without_reasoning_options_closes_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openrouter".to_string();
+    let mut preset =
+        provider_picker_preset("deepseek/deepseek-v4-flash", ReasoningEffortConfig::None);
+    preset.supported_reasoning_efforts.clear();
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openrouter".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectModelProviderModel {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::None),
+            } if provider_id == "openrouter" && model == "deepseek/deepseek-v4-flash"
+        )),
+        "expected provider-scoped model selection event; events: {events:?}"
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
