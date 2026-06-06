@@ -12,6 +12,7 @@ use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
 use crate::session::turn::built_tools;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_otel::STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC;
 use codex_otel::STARTUP_PREWARM_DURATION_METRIC;
 use codex_otel::SessionTelemetry;
@@ -44,6 +45,10 @@ impl SessionStartupPrewarmHandle {
             started_at,
             timeout,
         }
+    }
+
+    pub(crate) fn abort(self) {
+        self.task.abort();
     }
 
     async fn resolve(
@@ -173,7 +178,21 @@ impl SessionStartupPrewarmHandle {
 impl Session {
     pub(crate) async fn schedule_startup_prewarm(self: &Arc<Self>, base_instructions: String) {
         let session_telemetry = self.services.session_telemetry.clone();
-        let websocket_connect_timeout = self.provider().await.websocket_connect_timeout();
+        let provider = self.provider().await;
+        let config = self.get_config().await;
+        let model_client = self.runtime_model_client();
+        if config.model_provider_id != OPENAI_PROVIDER_ID
+            || !model_client.responses_websocket_enabled()
+        {
+            session_telemetry.record_startup_phase(
+                "startup_prewarm_total",
+                Duration::ZERO,
+                Some("not_scheduled"),
+            );
+            return;
+        }
+
+        let websocket_connect_timeout = provider.websocket_connect_timeout();
         let started_at = Instant::now();
         let startup_prewarm_session = Arc::clone(self);
         let startup_prewarm = tokio::spawn(async move {
@@ -256,11 +275,11 @@ async fn schedule_startup_prewarm_inner(
         build_prompt_started_at.elapsed(),
         /*status*/ None,
     );
-    let window_id = session.services.model_client.current_window_id();
+    let window_id = session.runtime_model_client().current_window_id();
     let startup_turn_metadata_header = startup_turn_context
         .turn_metadata_state
         .current_header_value_for_prewarm(&window_id);
-    let mut client_session = session.services.model_client.new_session();
+    let mut client_session = session.runtime_model_client().new_session();
     let websocket_warmup_started_at = Instant::now();
     client_session
         .prewarm_websocket(

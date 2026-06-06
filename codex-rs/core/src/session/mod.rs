@@ -919,6 +919,38 @@ impl Session {
         }
     }
 
+    pub(crate) fn runtime_model_client(&self) -> Arc<ModelClient> {
+        self.services.model_client.load_full()
+    }
+
+    fn rebuild_model_client_for_configuration(&self, session_configuration: &SessionConfiguration) {
+        let config = session_configuration.original_config_do_not_use.as_ref();
+        let current_client = self.runtime_model_client();
+        let window_generation = current_client.current_window_generation();
+        let next_client = ModelClient::new(
+            Some(Arc::clone(&self.services.auth_manager)),
+            self.session_id(),
+            self.thread_id(),
+            self.installation_id.clone(),
+            session_configuration.provider.clone(),
+            session_configuration.session_source.clone(),
+            session_configuration.parent_thread_id,
+            config.model_verbosity,
+            config.features.enabled(Feature::EnableRequestCompression),
+            config.features.enabled(Feature::RuntimeMetrics),
+            Self::build_model_client_beta_features_header(config),
+            self.services.attestation_provider.clone(),
+        )
+        .with_prompt_cache_key_override(
+            crate::guardian::prompt_cache_key_override_for_review_session(
+                &session_configuration.session_source,
+                session_configuration.parent_thread_id,
+            ),
+        );
+        next_client.set_window_generation(window_generation);
+        self.services.model_client.store(Arc::new(next_client));
+    }
+
     async fn start_managed_network_proxy(
         spec: &crate::config::NetworkProxySpec,
         exec_policy: &codex_execpolicy::Policy,
@@ -1467,6 +1499,7 @@ impl Session {
             codex_home,
             session_source,
             active_turn_settings_override,
+            model_runtime_configuration,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1497,6 +1530,15 @@ impl Session {
             let next_cwd = updated.cwd.clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
+            let previous_model_provider_id = state
+                .session_configuration
+                .original_config_do_not_use
+                .model_provider_id
+                .clone();
+            let model_provider_changed =
+                previous_model_provider_id != updated.original_config_do_not_use.model_provider_id;
+            let model_runtime_configuration =
+                (model_provider_changed || updates.auth_profile.is_some()).then(|| updated.clone());
             state.session_configuration = updated;
             (
                 previous_config,
@@ -1507,8 +1549,16 @@ impl Session {
                 codex_home,
                 session_source,
                 active_turn_settings_override,
+                model_runtime_configuration,
             )
         };
+
+        if let Some(model_runtime_configuration) = model_runtime_configuration.as_ref() {
+            if let Some(startup_prewarm) = self.take_session_startup_prewarm().await {
+                startup_prewarm.abort();
+            }
+            self.rebuild_model_client_for_configuration(model_runtime_configuration);
+        }
 
         if active_turn_settings_override != ActiveTurnSettingsOverride::default() {
             self.record_active_turn_settings_override(active_turn_settings_override)
@@ -2754,7 +2804,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
-        self.services.model_client.advance_window_generation();
+        self.runtime_model_client().advance_window_generation();
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {

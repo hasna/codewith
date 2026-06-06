@@ -1083,6 +1083,12 @@ mod tests {
                         "object": "model",
                         "created": 735790403,
                         "owned_by": "deepseek-ai"
+                    },
+                    {
+                        "id": "z-ai/glm-5.1",
+                        "object": "model",
+                        "created": 735790403,
+                        "owned_by": "z-ai"
                     }
                 ]
             }))
@@ -1103,7 +1109,8 @@ mod tests {
                 "nvidia/llama-3.3-nemotron-super-49b-v1.5",
                 "qwen/qwen3-coder-480b-a35b-instruct",
                 "openai/gpt-oss-120b",
-                "deepseek-ai/deepseek-v4-flash"
+                "deepseek-ai/deepseek-v4-flash",
+                "z-ai/glm-5.1"
             ]
         );
         let gpt_oss = &models[2];
@@ -1119,6 +1126,15 @@ mod tests {
         assert_eq!(deepseek.max_context_window, Some(1_048_576));
         assert_eq!(deepseek.experimental_supported_tools, vec!["tools"]);
         assert!(!deepseek.supports_parallel_tool_calls);
+        let glm = &models[4];
+        assert_eq!(glm.display_name, "Z.ai GLM 5.1");
+        assert_eq!(glm.context_window, Some(131_072));
+        assert_eq!(glm.max_context_window, Some(131_072));
+        assert_eq!(glm.experimental_supported_tools, vec!["tools"]);
+        assert!(!glm.supports_parallel_tool_calls);
+        assert_eq!(glm.default_reasoning_level, None);
+        assert_eq!(glm.supported_reasoning_levels, Vec::new());
+        assert!(!glm.supports_reasoning_summaries);
     }
 
     #[tokio::test]

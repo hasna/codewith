@@ -4,6 +4,7 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 
 const MAX_PICKER_DESCRIPTION_WORDS: usize = 8;
 
@@ -269,11 +270,16 @@ impl ChatWidget {
             let description = short_picker_description_optional(&preset.description);
             let is_current = preset.model.as_str() == self.current_model();
             let direct_effort_selection = preset.supported_reasoning_efforts.len() <= 1;
+            let select_model_directly = direct_effort_selection
+                || self
+                    .model_catalog
+                    .provider_id()
+                    .is_some_and(|provider_id| provider_id != OPENAI_PROVIDER_ID);
             let should_prompt_plan_mode_scope = self.should_prompt_plan_mode_reasoning_scope(
                 preset.model.as_str(),
                 Some(preset.default_reasoning_effort),
             );
-            let actions: Vec<SelectionAction> = if direct_effort_selection {
+            let actions: Vec<SelectionAction> = if select_model_directly {
                 Self::model_selection_actions(
                     preset.model.clone(),
                     Some(preset.default_reasoning_effort),
@@ -296,8 +302,8 @@ impl ChatWidget {
                 is_current,
                 is_default: preset.is_default,
                 actions,
-                dismiss_on_select: direct_effort_selection,
-                dismiss_parent_on_child_accept: !direct_effort_selection,
+                dismiss_on_select: select_model_directly,
+                dismiss_parent_on_child_accept: !select_model_directly,
                 ..Default::default()
             });
         }

@@ -614,7 +614,7 @@ async fn prepare_realtime_start(
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let config = sess.get_config().await;
     let provider = config.model_provider.clone();
-    let auth_manager = sess.services.model_client.auth_manager().or_else(|| {
+    let auth_manager = sess.runtime_model_client().auth_manager().or_else(|| {
         provider
             .requires_openai_auth
             .then(|| Arc::clone(&sess.services.auth_manager))
@@ -806,7 +806,7 @@ async fn handle_start_inner(
         api_provider,
         extra_headers,
         session_config,
-        model_client: sess.services.model_client.clone(),
+        model_client: (*sess.runtime_model_client()).clone(),
         sdp,
     };
     let start_output = sess.conversation.start(start).await?;

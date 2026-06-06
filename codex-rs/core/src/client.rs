@@ -462,6 +462,10 @@ impl ModelClient {
         self.state.provider.auth_manager()
     }
 
+    pub(crate) fn current_window_generation(&self) -> u64 {
+        self.state.window_generation.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn set_window_generation(&self, window_generation: u64) {
         self.state
             .window_generation

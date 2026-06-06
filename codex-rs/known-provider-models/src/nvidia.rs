@@ -18,6 +18,12 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "NVIDIA hosted DeepSeek V4 Flash model. Requires NVIDIA_API_KEY for turns.",
         false,
     ),
+    KnownProviderFallbackModel::new(
+        "z-ai/glm-5.1",
+        "Z.ai GLM 5.1",
+        "NVIDIA hosted Z.ai GLM 5.1 model. Requires NVIDIA_API_KEY for turns.",
+        false,
+    ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
@@ -46,6 +52,13 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
         "deepseek-ai/deepseek-v4-pro" => Some(KnownProviderModelMetadata::new(
             "DeepSeek V4 Pro",
             1_048_576,
+            true,
+            false,
+            false,
+        )),
+        "z-ai/glm-5.1" => Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.1",
+            131_072,
             true,
             false,
             false,

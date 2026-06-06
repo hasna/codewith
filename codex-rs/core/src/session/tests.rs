@@ -3897,8 +3897,76 @@ async fn session_settings_model_provider_update_changes_turn_provider() {
     let snapshot = updated.thread_config_snapshot();
     assert_eq!(updated.provider, openrouter_provider);
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
+    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
     assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
+}
+
+#[tokio::test]
+async fn session_settings_model_provider_update_replaces_stale_provider_model() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let nvidia_configuration = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider_id: Some(NVIDIA_PROVIDER_ID.to_string()),
+            ..Default::default()
+        })
+        .expect("model provider update should apply");
+    let stale_nvidia_model_configuration = nvidia_configuration
+        .apply(&SessionSettingsUpdate {
+            collaboration_mode: Some(nvidia_configuration.collaboration_mode.with_updates(
+                Some("deepseek-ai/deepseek-v4-flash".to_string()),
+                Some(None),
+                /*developer_instructions*/ None,
+            )),
+            ..Default::default()
+        })
+        .expect("NVIDIA model update should apply");
+
+    let updated = stale_nvidia_model_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider_id: Some(OPENROUTER_PROVIDER_ID.to_string()),
+            ..Default::default()
+        })
+        .expect("OpenRouter provider update should apply");
+
+    let snapshot = updated.thread_config_snapshot();
+    assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
+    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
+    assert_eq!(updated.collaboration_mode.reasoning_effort(), None);
+}
+
+#[tokio::test]
+async fn thread_settings_provider_only_update_uses_provider_default_model() -> anyhow::Result<()> {
+    let (session, _rx_event) = make_session_with_config_and_rx(|_config| {}).await?;
+
+    handlers::update_thread_settings(
+        &session,
+        "sub-1".to_string(),
+        ThreadSettingsOverrides {
+            model_provider: Some(OPENROUTER_PROVIDER_ID.to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let state = session.state.lock().await;
+    let snapshot = state.session_configuration.thread_config_snapshot();
+    assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
+    assert_eq!(
+        state.session_configuration.collaboration_mode.model(),
+        "openai/gpt-oss-120b"
+    );
+    assert_eq!(
+        state
+            .session_configuration
+            .collaboration_mode
+            .reasoning_effort(),
+        None
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -3966,8 +4034,54 @@ async fn session_settings_provider_prefixed_model_keeps_non_openai_provider() {
     assert_eq!(updated.provider, nvidia_provider);
     assert_eq!(snapshot.model_provider_id, NVIDIA_PROVIDER_ID);
     assert_eq!(snapshot.model, model);
+    assert_eq!(updated.collaboration_mode.model(), model);
     assert_eq!(per_turn_config.model_provider_id, NVIDIA_PROVIDER_ID);
     assert_eq!(per_turn_config.model_provider, nvidia_provider);
+}
+
+#[tokio::test]
+async fn update_settings_model_provider_rebuilds_runtime_model_client() -> anyhow::Result<()> {
+    let session = make_session_with_config(|_config| {}).await?;
+    let initial = session.runtime_model_client();
+    initial.set_window_generation(7);
+    assert!(initial.responses_websocket_enabled());
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            model_provider_id: Some(NVIDIA_PROVIDER_ID.to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let updated = session.runtime_model_client();
+    assert!(!Arc::ptr_eq(&initial, &updated));
+    assert_eq!(updated.current_window_generation(), 7);
+    assert!(!updated.responses_websocket_enabled());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_prewarm_is_not_scheduled_for_non_openai_provider() -> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let nvidia_provider = config
+            .model_providers
+            .get(NVIDIA_PROVIDER_ID)
+            .cloned()
+            .expect("NVIDIA provider should be configured");
+        config.model_provider_id = NVIDIA_PROVIDER_ID.to_string();
+        config.model_provider = nvidia_provider;
+        config.model = Some("openai/gpt-oss-120b".to_string());
+    })
+    .await?;
+
+    session
+        .schedule_startup_prewarm("base instructions".to_string())
+        .await;
+
+    assert!(session.take_session_startup_prewarm().await.is_none());
+
+    Ok(())
 }
 
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
@@ -4965,7 +5079,7 @@ async fn make_session_and_context_with_events()
             /*state_db*/ None,
         )),
         attestation_provider: None,
-        model_client: ModelClient::new(
+        model_client: arc_swap::ArcSwap::from_pointee(ModelClient::new(
             Some(auth_manager.clone()),
             thread_id.into(),
             thread_id,
@@ -4978,7 +5092,7 @@ async fn make_session_and_context_with_events()
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*attestation_provider*/ None,
-        ),
+        )),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(),
         environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     };
@@ -6813,7 +6927,7 @@ where
             state_db,
         )),
         attestation_provider: None,
-        model_client: ModelClient::new(
+        model_client: arc_swap::ArcSwap::from_pointee(ModelClient::new(
             Some(Arc::clone(&auth_manager)),
             thread_id.into(),
             thread_id,
@@ -6826,7 +6940,7 @@ where
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*attestation_provider*/ None,
-        ),
+        )),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(),
         environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     };

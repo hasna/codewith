@@ -52,6 +52,30 @@ fn provider_picker_preset(
     }
 }
 
+fn provider_picker_preset_with_reasoning(
+    slug: &str,
+    default_reasoning_effort: ReasoningEffortConfig,
+    supported_reasoning_efforts: &[ReasoningEffortConfig],
+) -> ModelPreset {
+    let mut preset = provider_picker_preset(slug, default_reasoning_effort);
+    preset.supported_reasoning_efforts = supported_reasoning_efforts
+        .iter()
+        .map(|effort| ReasoningEffortPreset {
+            effort: *effort,
+            description: match effort {
+                ReasoningEffortConfig::None => "none",
+                ReasoningEffortConfig::Minimal => "minimal",
+                ReasoningEffortConfig::Low => "low",
+                ReasoningEffortConfig::Medium => "medium",
+                ReasoningEffortConfig::High => "high",
+                ReasoningEffortConfig::XHigh => "extra high",
+            }
+            .to_string(),
+        })
+        .collect();
+    preset
+}
+
 fn save_popup_auth_profile(chat: &ChatWidget, name: &str) {
     save_auth_profile(
         &chat.config.codex_home,
@@ -2594,6 +2618,50 @@ async fn current_provider_model_selection_without_reasoning_options_closes_picke
             } if provider_id == "openrouter" && model == "deepseek/deepseek-v4-flash"
         )),
         "expected provider-scoped model selection event; events: {events:?}"
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn non_openai_provider_model_selection_with_multiple_reasoning_options_closes_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openrouter".to_string();
+    let preset = provider_picker_preset_with_reasoning(
+        "z-ai/glm-5.1",
+        ReasoningEffortConfig::Medium,
+        &[
+            ReasoningEffortConfig::Low,
+            ReasoningEffortConfig::Medium,
+            ReasoningEffortConfig::High,
+        ],
+    );
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openrouter".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectModelProviderModel {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::Medium),
+            } if provider_id == "openrouter" && model == "z-ai/glm-5.1"
+        )),
+        "expected provider-scoped model selection event; events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::OpenReasoningPopup { .. })),
+        "provider-scoped model selection should not open the reasoning picker; events: {events:?}"
     );
     assert!(chat.bottom_pane.no_modal_or_popup_active());
 }

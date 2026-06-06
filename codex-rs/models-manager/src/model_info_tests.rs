@@ -76,6 +76,21 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_nvidia_glm_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.1", Some("nvidia"));
+
+    assert_eq!(model.display_name, "Z.ai GLM 5.1");
+    assert_eq!(model.context_window, Some(131_072));
+    assert_eq!(model.max_context_window, Some(131_072));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.default_reasoning_level, None);
+    assert!(model.supported_reasoning_levels.is_empty());
+    assert!(!model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn stale_openrouter_deepseek_slug_uses_unknown_fallback() {
     let model =
         model_info_from_slug_for_provider("deepseek-ai/deepseek-v4-flash", Some("openrouter"));
@@ -95,6 +110,21 @@ fn known_openrouter_deepseek_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_openrouter_glm_5_1_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.1", Some("openrouter"));
+
+    assert_eq!(model.display_name, "Z.ai GLM 5.1");
+    assert_eq!(model.context_window, Some(202_752));
+    assert_eq!(model.max_context_window, Some(202_752));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert_eq!(model.default_reasoning_level, None);
+    assert!(model.supported_reasoning_levels.is_empty());
+    assert!(!model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 

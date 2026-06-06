@@ -605,6 +605,14 @@ impl Session {
                     });
                     let new_config = notify_config_contributors
                         .then(|| Self::build_effective_session_config(&next));
+                    let previous_model_provider_id = state
+                        .session_configuration
+                        .original_config_do_not_use
+                        .model_provider_id
+                        .clone();
+                    let model_provider_changed = previous_model_provider_id
+                        != next.original_config_do_not_use.model_provider_id;
+                    let model_runtime_configuration = model_provider_changed.then(|| next.clone());
                     state.session_configuration = next.clone();
                     Ok((
                         next,
@@ -615,6 +623,7 @@ impl Session {
                         session_source,
                         previous_config,
                         new_config,
+                        model_runtime_configuration,
                     ))
                 }
                 Err(err) => Err(CodexErr::InvalidRequest(err.to_string())),
@@ -630,6 +639,7 @@ impl Session {
             session_source,
             previous_config,
             new_config,
+            model_runtime_configuration,
         ) = match update_result {
             Ok(update) => update,
             Err(err) => {
@@ -645,6 +655,13 @@ impl Session {
                 return Err(CodexErr::InvalidRequest(message));
             }
         };
+
+        if let Some(model_runtime_configuration) = model_runtime_configuration.as_ref() {
+            if let Some(startup_prewarm) = self.take_session_startup_prewarm().await {
+                startup_prewarm.abort();
+            }
+            self.rebuild_model_client_for_configuration(model_runtime_configuration);
+        }
 
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.maybe_refresh_shell_snapshot_for_cwd(

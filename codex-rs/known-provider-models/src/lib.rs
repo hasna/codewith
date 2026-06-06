@@ -188,6 +188,9 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     if provider_id_matches(Some(provider_id), "nvidia") {
         return nvidia::FALLBACK_MODELS;
     }
+    if provider_id_matches(Some(provider_id), "openrouter") {
+        return openrouter::FALLBACK_MODELS;
+    }
 
     &[]
 }

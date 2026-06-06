@@ -4,7 +4,10 @@ use crate::config::ConstraintError;
 use crate::goals::GoalRuntimeState;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
+use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -261,6 +264,18 @@ impl SessionConfiguration {
             });
         if let Some(model_provider_id) = &inferred_model_provider_id {
             apply_model_provider_id(&mut next_configuration, model_provider_id)?;
+            if updates.model_provider_id.is_some()
+                && updates.collaboration_mode.is_none()
+                && let Some(default_model) =
+                    default_model_for_provider_id(model_provider_id.as_str())
+            {
+                next_configuration.collaboration_mode =
+                    next_configuration.collaboration_mode.with_updates(
+                        Some(default_model.to_string()),
+                        Some(None),
+                        /*developer_instructions*/ None,
+                    );
+            }
         }
         if let Some(auth_profile) = updates.auth_profile.clone() {
             if let Some(name) = auth_profile.as_deref() {
@@ -482,6 +497,20 @@ fn apply_model_provider_id(
     next_configuration.provider = provider;
     next_configuration.original_config_do_not_use = Arc::new(config);
     Ok(())
+}
+
+fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str> {
+    if model_provider_id.eq_ignore_ascii_case(OPENAI_PROVIDER_ID) {
+        Some("gpt-5.2-codex")
+    } else if model_provider_id.eq_ignore_ascii_case(CEREBRAS_PROVIDER_ID) {
+        Some("gpt-oss-120b")
+    } else if model_provider_id.eq_ignore_ascii_case(NVIDIA_PROVIDER_ID)
+        || model_provider_id.eq_ignore_ascii_case(OPENROUTER_PROVIDER_ID)
+    {
+        Some("openai/gpt-oss-120b")
+    } else {
+        None
+    }
 }
 
 #[derive(Default, Clone)]
@@ -1104,7 +1133,7 @@ impl Session {
                 live_thread: live_thread_init.as_ref().cloned(),
                 thread_store: Arc::clone(&thread_store),
                 attestation_provider: attestation_provider.clone(),
-                model_client: ModelClient::new(
+                model_client: arc_swap::ArcSwap::from_pointee(ModelClient::new(
                     Some(Arc::clone(&auth_manager)),
                     session_id,
                     thread_id,
@@ -1123,12 +1152,13 @@ impl Session {
                         &session_configuration.session_source,
                         session_configuration.parent_thread_id,
                     ),
-                ),
+                )),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(),
                 environment_manager,
             };
             services
                 .model_client
+                .load()
                 .set_window_generation(window_generation);
             let (out_of_band_elicitation_paused, _out_of_band_elicitation_paused_rx) =
                 watch::channel(false);
