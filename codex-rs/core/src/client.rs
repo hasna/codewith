@@ -835,9 +835,10 @@ impl ModelClient {
                 .experimental_supported_tools
                 .iter()
                 .any(|tool| matches!(tool.as_str(), "tools" | "function_calling"));
-        let openrouter_plain_dialogue_model =
-            provider.is_openrouter_endpoint() && !model_supports_tools;
-        if openrouter_plain_dialogue_model {
+        let provider_uses_model_tool_metadata = provider.is_openrouter_endpoint()
+            || provider.name.eq_ignore_ascii_case("nvidia")
+            || provider.name.eq_ignore_ascii_case("cerebras");
+        if provider_uses_model_tool_metadata && !model_supports_tools {
             tools.clear();
             move_instruction_messages_to_instructions(&mut instructions, &mut input);
         }

@@ -202,8 +202,8 @@ mod tests {
         assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
         assert!(models[0].is_default);
         assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::Medium);
-        assert_eq!(models[1].model, "deepseek-ai/deepseek-v4-flash");
-        assert_eq!(models[1].display_name, "DeepSeek V4 Flash");
+        assert_eq!(models[1].model, "z-ai/glm-5.1");
+        assert_eq!(models[1].display_name, "Z.ai GLM 5.1");
         assert!(!models[1].is_default);
         assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::None);
     }

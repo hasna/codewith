@@ -1124,7 +1124,7 @@ mod tests {
         assert_eq!(deepseek.display_name, "DeepSeek V4 Flash");
         assert_eq!(deepseek.context_window, Some(1_048_576));
         assert_eq!(deepseek.max_context_window, Some(1_048_576));
-        assert_eq!(deepseek.experimental_supported_tools, vec!["tools"]);
+        assert_eq!(deepseek.experimental_supported_tools, Vec::<String>::new());
         assert!(!deepseek.supports_parallel_tool_calls);
         let glm = &models[4];
         assert_eq!(glm.display_name, "Z.ai GLM 5.1");

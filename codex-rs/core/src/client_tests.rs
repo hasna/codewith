@@ -341,12 +341,14 @@ fn nvidia_responses_request_omits_unsupported_advanced_tools() {
         ],
         ..Default::default()
     };
+    let mut model_info = test_model_info();
+    model_info.experimental_supported_tools = vec!["tools".to_string()];
 
     let request = client
         .build_responses_request(
             &api_provider("nvidia", "https://integrate.api.nvidia.com/v1"),
             &prompt,
-            &test_model_info(),
+            &model_info,
             /*effort*/ None,
             ReasoningSummary::Auto,
             /*service_tier*/ None,
@@ -368,6 +370,28 @@ fn nvidia_responses_request_omits_unsupported_advanced_tools() {
             }
         })]
     );
+}
+
+#[test]
+fn nvidia_responses_request_omits_tools_for_models_without_tool_support() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Function(test_function_tool("exec_command"))],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("nvidia", "https://integrate.api.nvidia.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(request.tools, Vec::<serde_json::Value>::new());
 }
 
 #[test]
