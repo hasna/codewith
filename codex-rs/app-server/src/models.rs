@@ -193,11 +193,11 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_fallback_models_include_deepseek_and_glm() {
+    fn nvidia_fallback_models_include_valid_live_smoke_models() {
         let models =
             fallback_supported_models_for_provider("nvidia", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 2);
         assert_eq!(models[0].model, "openai/gpt-oss-120b");
         assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
         assert!(models[0].is_default);
@@ -206,10 +206,6 @@ mod tests {
         assert_eq!(models[1].display_name, "DeepSeek V4 Flash");
         assert!(!models[1].is_default);
         assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::None);
-        assert_eq!(models[2].model, "z-ai/glm-5.1");
-        assert_eq!(models[2].display_name, "Z.ai GLM 5.1");
-        assert!(!models[2].is_default);
-        assert_eq!(models[2].default_reasoning_effort, ReasoningEffort::None);
     }
 
     #[test]
