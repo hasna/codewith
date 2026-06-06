@@ -110,12 +110,12 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 tokio::spawn(async move {
                     outgoing
                         .send_server_notification(ServerNotification::ThreadNameUpdated(
-                        ThreadNameUpdatedNotification {
-                            thread_id: thread_name_event.thread_id.to_string(),
-                            thread_name: thread_name_event.thread_name,
-                        },
-                    ))
-                    .await;
+                            ThreadNameUpdatedNotification {
+                                thread_id: thread_name_event.thread_id.to_string(),
+                                thread_name: thread_name_event.thread_name,
+                            },
+                        ))
+                        .await;
                 });
             }
             msg => {
@@ -155,6 +155,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
+
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
 
     use super::*;
 
@@ -232,7 +235,7 @@ mod tests {
             outgoing_tx,
             AnalyticsEventsClient::disabled(),
         ));
-        let sink = app_server_extension_event_sink(outgoing);
+        let sink = app_server_extension_event_sink(outgoing, ThreadStateManager::new());
         let thread_id = ThreadId::default();
 
         sink.emit(Event {

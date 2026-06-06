@@ -2581,7 +2581,7 @@ async fn chat_wire_api_posts_to_chat_completions() {
     config.model_provider = provider.clone();
     config.model = Some("gpt-oss-120b".to_string());
     let effort = config.model_reasoning_effort.clone();
-    let summary = config.model_reasoning_summary.clone();
+    let summary = config.model_reasoning_summary;
     let config = Arc::new(config);
     let model_info =
         codex_core::test_support::construct_model_info_offline("gpt-oss-120b", &config);

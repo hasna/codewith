@@ -654,6 +654,7 @@ fn api_key_auth(api_key: &str) -> AuthDotJson {
         tokens: None,
         last_refresh: None,
         agent_identity: None,
+        personal_access_token: None,
     }
 }
 

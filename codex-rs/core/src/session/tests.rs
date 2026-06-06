@@ -10068,10 +10068,9 @@ async fn rename_session_tool_persists_metadata_and_emits_notification() {
     assert_eq!(event.thread_name.as_deref(), Some("Incident follow-up"));
 
     let codex_home = session.get_config().await.codex_home.to_path_buf();
-    let indexed_name =
-        codex_rollout::find_thread_name_by_id(codex_home.as_path(), &thread_id)
-            .await
-            .expect("renamed thread metadata should be indexed");
+    let indexed_name = codex_rollout::find_thread_name_by_id(codex_home.as_path(), &thread_id)
+        .await
+        .expect("renamed thread metadata should be indexed");
     assert_eq!(indexed_name.as_deref(), Some("Incident follow-up"));
 }
 
@@ -10104,10 +10103,9 @@ async fn rename_session_tool_rejects_oversized_name_without_persisting() {
 
     let codex_home = session.get_config().await.codex_home.to_path_buf();
     let thread_id = session.thread_id();
-    let indexed_name =
-        codex_rollout::find_thread_name_by_id(codex_home.as_path(), &thread_id)
-            .await
-            .expect("thread metadata lookup should succeed");
+    let indexed_name = codex_rollout::find_thread_name_by_id(codex_home.as_path(), &thread_id)
+        .await
+        .expect("thread metadata lookup should succeed");
     assert_eq!(indexed_name, None);
 }
 

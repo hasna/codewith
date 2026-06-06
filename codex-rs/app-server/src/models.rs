@@ -178,7 +178,7 @@ mod tests {
             models[0]
                 .supported_reasoning_efforts
                 .iter()
-                .map(|effort| effort.reasoning_effort)
+                .map(|effort| effort.reasoning_effort.clone())
                 .collect::<Vec<_>>(),
             vec![
                 ReasoningEffort::Low,
