@@ -191,7 +191,7 @@ fn chat_request_from_responses(request: ResponsesApiRequest) -> Result<ChatReque
         body["tool_choice"] = Value::String(request.tool_choice);
     }
     if let Some(reasoning_effort) = chat_reasoning_effort(request.reasoning.as_ref()) {
-        body["reasoning_effort"] = Value::String(reasoning_effort.to_string());
+        body["reasoning_effort"] = Value::String(reasoning_effort);
     }
     if let Some(service_tier) = request.service_tier {
         body["service_tier"] = Value::String(service_tier);
@@ -206,13 +206,14 @@ fn chat_request_from_responses(request: ResponsesApiRequest) -> Result<ChatReque
     })
 }
 
-fn chat_reasoning_effort(reasoning: Option<&crate::common::Reasoning>) -> Option<&'static str> {
-    let effort = reasoning.and_then(|reasoning| reasoning.effort)?;
+fn chat_reasoning_effort(reasoning: Option<&crate::common::Reasoning>) -> Option<String> {
+    let effort = reasoning.and_then(|reasoning| reasoning.effort.as_ref())?;
     match effort {
-        ReasoningEffort::None => Some("none"),
-        ReasoningEffort::Minimal | ReasoningEffort::Low => Some("low"),
-        ReasoningEffort::Medium => Some("medium"),
-        ReasoningEffort::High | ReasoningEffort::XHigh => Some("high"),
+        ReasoningEffort::None => Some("none".to_string()),
+        ReasoningEffort::Minimal | ReasoningEffort::Low => Some("low".to_string()),
+        ReasoningEffort::Medium => Some("medium".to_string()),
+        ReasoningEffort::High | ReasoningEffort::XHigh => Some("high".to_string()),
+        ReasoningEffort::Custom(effort) => Some(effort.clone()),
     }
 }
 
@@ -366,6 +367,7 @@ fn chat_messages_from_responses(
                 }));
             }
             ResponseItem::Reasoning { .. }
+            | ResponseItem::AgentMessage { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
@@ -851,6 +853,7 @@ mod tests {
             reasoning: Some(Reasoning {
                 effort: Some(ReasoningEffort::Minimal),
                 summary: None,
+                context: None,
             }),
             store: false,
             stream: true,

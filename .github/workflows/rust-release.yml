@@ -487,61 +487,6 @@ jobs:
             --entrypoint-dir "target/${TARGET}/release" \
             --archive-dir "dist/${TARGET}"
 
-      - name: Build Python runtime wheel
-        if: ${{ matrix.bundle == 'primary' && (runner.os != 'macOS' || env.SIGN_MACOS == 'true') }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin)
-              platform_tag="macosx_11_0_arm64"
-              ;;
-            x86_64-apple-darwin)
-              platform_tag="macosx_10_9_x86_64"
-              ;;
-            aarch64-unknown-linux-musl)
-              platform_tag="manylinux_2_17_aarch64"
-              ;;
-            x86_64-unknown-linux-musl)
-              platform_tag="manylinux_2_17_x86_64"
-              ;;
-            *)
-              echo "No Python runtime wheel platform tag for ${{ matrix.target }}"
-              exit 1
-              ;;
-          esac
-
-          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          # Do not install into the runner's system Python; macOS runners mark
-          # the Homebrew Python as externally managed under PEP 668.
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
-
-          stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
-          wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"
-          codex_version="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            codex_version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
-          fi
-          stage_runtime_args=(
-            "${GITHUB_WORKSPACE}/sdk/python/scripts/update_sdk_artifacts.py"
-            stage-runtime
-            "$stage_dir"
-            "dist/${{ matrix.target }}/codex-package-${{ matrix.target }}.tar.gz"
-            --codex-version "$codex_version"
-            --platform-tag "$platform_tag"
-          )
-          python3 "${stage_runtime_args[@]}"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
-
-      - name: Upload Python runtime wheel
-        if: ${{ matrix.bundle == 'primary' && (runner.os != 'macOS' || env.SIGN_MACOS == 'true') }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: python-runtime-wheel-${{ matrix.target }}
-          path: python-runtime-dist/${{ matrix.target }}/*.whl
-          if-no-files-found: error
-
       - name: Compress artifacts
         if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
         shell: bash
@@ -738,7 +683,7 @@ jobs:
           # distribute DMGs from this release path. Keep the branch here so the
           # handoff can opt back in by flipping matrix.build_dmg if needed.
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
-            dmg_name="codex-${target}.dmg"
+            dmg_name="codewith-${target}.dmg"
             dmg_source="${source_dir}/${dmg_name}"
             if [[ ! -f "$dmg_source" ]]; then
               echo "Signed macOS handoff is missing ${dmg_name} for ${artifact_name}"
@@ -763,51 +708,6 @@ jobs:
             --entrypoint-dir "dist/${TARGET}" \
             --archive-dir "dist/${TARGET}" \
             --target-suffixed-entrypoint
-
-      - name: Build Python runtime wheel
-        if: ${{ matrix.bundle == 'primary' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin)
-              platform_tag="macosx_11_0_arm64"
-              ;;
-            x86_64-apple-darwin)
-              platform_tag="macosx_10_9_x86_64"
-              ;;
-            *)
-              echo "No Python runtime wheel platform tag for ${{ matrix.target }}"
-              exit 1
-              ;;
-          esac
-
-          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
-
-          stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
-          wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"
-          codex_version="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            codex_version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
-          fi
-          python3 \
-            "${GITHUB_WORKSPACE}/sdk/python/scripts/update_sdk_artifacts.py" \
-            stage-runtime \
-            "$stage_dir" \
-            "dist/${{ matrix.target }}/codex-package-${{ matrix.target }}.tar.gz" \
-            --codex-version "$codex_version" \
-            --platform-tag "$platform_tag"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
-
-      - name: Upload Python runtime wheel
-        if: ${{ matrix.bundle == 'primary' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: python-runtime-wheel-${{ matrix.target }}
-          path: python-runtime-dist/${{ matrix.target }}/*.whl
-          if-no-files-found: error
 
       - name: Compress artifacts
         shell: bash
@@ -911,7 +811,6 @@ jobs:
       sign_macos: ${{ steps.release_mode.outputs.sign_macos }}
       should_publish_npm: ${{ steps.npm_publish_settings.outputs.should_publish }}
       npm_tag: ${{ steps.npm_publish_settings.outputs.npm_tag }}
-      should_publish_python_runtime: ${{ steps.python_runtime_publish_settings.outputs.should_publish }}
 
     steps:
       - name: Checkout repository
@@ -1133,27 +1032,6 @@ jobs:
           else
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Determine Python runtime publish settings
-        id: python_runtime_publish_settings
-        env:
-          VERSION: ${{ steps.release_name.outputs.name }}
-        run: |
-          set -euo pipefail
-          version="${VERSION}"
-
-          if [[ "${SIGN_MACOS}" != "true" ]]; then
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup pnpm
@@ -1420,82 +1298,6 @@ jobs:
             exit "${publish_status}"
           done
 
-  # Publish the platform-specific Python runtime wheels using PyPI trusted publishing.
-  # PyPI project configuration must trust this workflow and job. Keep this
-  # non-blocking while the Python runtime publishing path is new; failures still
-  # need release follow-up, but should not invalidate the Rust release itself.
-  publish-python-runtime:
-    # Publish to PyPI for stable releases and alpha pre-releases with numeric suffixes.
-    if: >-
-      ${{
-        !cancelled() &&
-        needs.release.result == 'success' &&
-        needs.release.outputs.should_publish_python_runtime == 'true'
-      }}
-    name: publish-python-runtime
-    needs: release
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    environment: pypi
-    permissions:
-      id-token: write # Required for PyPI trusted publishing.
-      contents: read
-
-    steps:
-      - name: Download Python runtime wheels from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          python_version="$RELEASE_VERSION"
-          python_version="${python_version/-alpha./a}"
-          python_version="${python_version/-beta./b}"
-          python_version="${python_version/-rc./rc}"
-
-          mkdir -p dist/python-runtime
-          gh release download "$RELEASE_TAG" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "openai_codex_cli_bin-${python_version}-*.whl" \
-            --dir dist/python-runtime
-          ls -lh dist/python-runtime
-
-      - name: Publish Python runtime wheels to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
-        with:
-          packages-dir: dist/python-runtime
-          skip-existing: true
-
-  deploy-dev-website:
-    name: Trigger developers.openai.com deploy
-    needs: release
-    # Only trigger the deploy for a stable signed release.
-    # The deploy updates developers.openai.com with the new config schema json file.
-    if: >-
-      ${{
-        !cancelled() &&
-        needs.release.result == 'success' &&
-        needs.release.outputs.sign_macos == 'true' &&
-        !contains(needs.release.outputs.version, '-')
-      }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions: {}
-    environment:
-      name: dev-website-vercel-deploy
-
-    steps:
-      - name: Trigger developers.openai.com deploy
-        continue-on-error: true
-        env:
-          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
-        run: |
-          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
-            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
   winget:
     name: winget
     needs: release
@@ -1522,7 +1324,7 @@ jobs:
           version: ${{ needs.release.outputs.version }}
           release-tag: ${{ needs.release.outputs.tag }}
           fork-user: openai-oss-forks
-          installers-regex: '^codex-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
+          installers-regex: '^codewith-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
           token: ${{ secrets.WINGET_PUBLISH_PAT }}
 
   update-branch:

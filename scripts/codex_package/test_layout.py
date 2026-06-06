@@ -51,7 +51,9 @@ class PackageLayoutTest(unittest.TestCase):
             self.assertTrue((package_dir / "bin" / "codewith").is_file())
             self.assertTrue((package_dir / "codewith-path" / "rg").is_file())
             self.assertTrue((package_dir / "codewith-resources" / "bwrap").is_file())
-            self.assertEqual((package_dir / "LICENSE").read_text(), repo_file("LICENSE"))
+            self.assertEqual(
+                (package_dir / "LICENSE").read_text(), repo_file("LICENSE")
+            )
             self.assertEqual((package_dir / "NOTICE").read_text(), repo_file("NOTICE"))
             self.assertEqual(
                 (package_dir / "MODIFICATIONS.md").read_text(),

@@ -1002,7 +1002,7 @@ impl UnifiedExecProcessManager {
         let mut env = local_policy_env.clone();
         env.insert(
             CODEX_THREAD_ID_ENV_VAR.to_string(),
-            context.session.conversation_id.to_string(),
+            context.session.thread_id.to_string(),
         );
         let env = apply_unified_exec_env(env);
         let exec_server_env_config = ExecServerEnvConfig {
@@ -1010,15 +1010,11 @@ impl UnifiedExecProcessManager {
             local_policy_env,
         };
         let mut orchestrator = ToolOrchestrator::new();
-        let mut runtime =
-            UnifiedExecRuntime::new(self, context.turn.unified_exec_shell_mode.clone());
+        let mut runtime = UnifiedExecRuntime::new(self, request.shell_mode.clone());
         let effective_turn_settings = context
             .session
             .effective_turn_settings(context.turn.as_ref())
             .await;
-        let file_system_sandbox_policy = effective_turn_settings
-            .permission_profile
-            .file_system_sandbox_policy();
         let exec_approval_requirement = context
             .session
             .services
@@ -1027,10 +1023,7 @@ impl UnifiedExecProcessManager {
                 command: &request.command,
                 approval_policy: effective_turn_settings.approval_policy,
                 permission_profile: effective_turn_settings.permission_profile.clone(),
-                file_system_sandbox_policy: &file_system_sandbox_policy,
-                // The process cwd may be model-controlled. Policy resolution
-                // stays anchored to the selected turn environment cwd instead.
-                sandbox_cwd: request.sandbox_cwd.as_path(),
+                windows_sandbox_level: context.turn.windows_sandbox_level,
                 sandbox_permissions: if request.additional_permissions_preapproved {
                     crate::sandboxing::SandboxPermissions::UseDefault
                 } else {
@@ -1041,7 +1034,7 @@ impl UnifiedExecProcessManager {
             .await;
         let req = UnifiedExecToolRequest {
             command: request.command.clone(),
-            shell_type: request.shell_type.clone(),
+            shell_type: request.shell_type,
             hook_command: request.hook_command.clone(),
             process_id: request.process_id,
             cwd,

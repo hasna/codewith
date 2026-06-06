@@ -102,6 +102,7 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
         &AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("work-key".to_string()),
+            personal_access_token: None,
             tokens: None,
             last_refresh: None,
             agent_identity: None,

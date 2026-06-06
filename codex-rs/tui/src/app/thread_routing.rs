@@ -310,6 +310,7 @@ impl App {
                     thread_id,
                     thread_label,
                     call_id: params.item_id.clone(),
+                    environment_id: params.environment_id.clone(),
                     reason: params.reason.clone(),
                     permissions: params.permissions.clone().into(),
                 }),
@@ -497,7 +498,7 @@ impl App {
         op: &AppCommand,
     ) -> Result<bool> {
         match op {
-            AppCommand::Interrupt => {
+            AppCommand::Interrupt { .. } => {
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     app_server.turn_interrupt(thread_id, turn_id).await?;
                 } else {
@@ -607,7 +608,7 @@ impl App {
                             config.permissions.user_visible_workspace_roots(),
                             Some(model_provider.clone()),
                             model.to_string(),
-                            *effort,
+                            effort.clone(),
                             *summary,
                             service_tier.clone(),
                             collaboration_mode.clone(),
@@ -1343,6 +1344,7 @@ impl App {
     pub(super) fn handle_skills_list_response(&mut self, response: SkillsListResponse) {
         let cwd = self.chat_widget.config_ref().cwd.clone();
         let errors = errors_for_cwd(&cwd, &response);
+        let errors = self.skill_load_warnings.newly_active_errors(&errors);
         emit_skill_load_warnings(&self.app_event_tx, &errors);
         self.chat_widget.handle_skills_list_response(response);
     }

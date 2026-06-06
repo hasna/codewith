@@ -58,7 +58,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                 },
                 "packageManager": PACKAGE_MANAGER,
                 "optionalDependencies": {
-                    "@hasna/codewith-linux-arm64": "1.2.3",
+                    platform_config["npm_name"]: "1.2.3"
+                    for platform_config in build_npm_package.CODEX_PLATFORM_PACKAGES.values()
                 },
             },
         )
@@ -110,10 +111,7 @@ class BuildNpmPackageTest(unittest.TestCase):
     def test_codex_expansion_matches_configured_native_release_artifacts(self) -> None:
         self.assertEqual(
             build_npm_package.PACKAGE_EXPANSIONS["codex"],
-            [
-                "codex",
-                "codex-linux-arm64",
-            ],
+            ["codex", *build_npm_package.CODEX_PLATFORM_PACKAGES.keys()],
         )
         self.assertEqual(
             build_npm_package.CODEX_PLATFORM_PACKAGES["codex-linux-arm64"],

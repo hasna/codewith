@@ -218,7 +218,7 @@ runs:
 
         source "$GITHUB_ACTION_PATH/notary_helpers.sh"
 
-        dmg_name="codex-${TARGET}.dmg"
+        dmg_name="codewith-${TARGET}.dmg"
         dmg_path="codex-rs/target/${TARGET}/release/${dmg_name}"
 
         if [[ ! -f "$dmg_path" ]]; then

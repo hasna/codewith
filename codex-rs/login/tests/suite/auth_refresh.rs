@@ -59,6 +59,7 @@ async fn refresh_token_succeeds_updates_storage() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -120,6 +121,7 @@ async fn refresh_token_with_selected_profile_updates_profile_not_root() -> Resul
     let root_auth = AuthDotJson {
         auth_mode: Some(AuthMode::ApiKey),
         openai_api_key: Some("sk-root".to_string()),
+        personal_access_token: None,
         tokens: None,
         last_refresh: None,
         agent_identity: None,
@@ -136,6 +138,7 @@ async fn refresh_token_with_selected_profile_updates_profile_not_root() -> Resul
     let profile_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        personal_access_token: None,
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -211,6 +214,7 @@ async fn refresh_token_refreshes_when_auth_is_unchanged() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -276,6 +280,7 @@ async fn auth_refreshes_when_access_token_is_near_expiry() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -326,6 +331,7 @@ async fn auth_skips_access_token_outside_refresh_window() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -362,6 +368,7 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
         tokens: Some(initial_tokens),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -372,6 +379,7 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -427,6 +435,7 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -438,6 +447,7 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
         tokens: Some(disk_tokens),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -497,6 +507,7 @@ async fn returns_fresh_tokens_as_is() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(stale_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -545,6 +556,7 @@ async fn refreshes_token_when_access_token_is_expired() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -595,6 +607,7 @@ async fn auth_reloads_disk_auth_when_cached_auth_is_stale() -> Result<()> {
         tokens: Some(initial_tokens),
         last_refresh: Some(stale_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -606,6 +619,7 @@ async fn auth_reloads_disk_auth_when_cached_auth_is_stale() -> Result<()> {
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -658,6 +672,7 @@ async fn auth_reloads_disk_auth_without_calling_expired_refresh_token() -> Resul
         tokens: Some(initial_tokens),
         last_refresh: Some(stale_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -669,6 +684,7 @@ async fn auth_reloads_disk_auth_without_calling_expired_refresh_token() -> Resul
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -719,6 +735,7 @@ async fn refresh_token_returns_permanent_error_for_expired_refresh_token() -> Re
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -772,6 +789,7 @@ async fn refresh_token_does_not_retry_after_permanent_failure() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -839,6 +857,7 @@ async fn refresh_token_does_not_retry_after_bad_request_reused_failure() -> Resu
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -906,6 +925,7 @@ async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -928,6 +948,7 @@ async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -987,6 +1008,7 @@ async fn refresh_token_returns_transient_error_on_server_failure() -> Result<()>
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -1040,6 +1062,7 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -1050,6 +1073,7 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -1134,6 +1158,7 @@ async fn unauthorized_recovery_errors_on_account_mismatch() -> Result<()> {
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&initial_auth).await?;
 
@@ -1145,6 +1170,7 @@ async fn unauthorized_recovery_errors_on_account_mismatch() -> Result<()> {
         tokens: Some(disk_tokens),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
+        personal_access_token: None,
     };
     save_auth(
         ctx.codex_home.path(),
@@ -1203,6 +1229,7 @@ async fn unauthorized_recovery_requires_chatgpt_auth() -> Result<()> {
         tokens: None,
         last_refresh: None,
         agent_identity: None,
+        personal_access_token: None,
     };
     ctx.write_auth(&auth).await?;
 

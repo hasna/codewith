@@ -339,7 +339,10 @@ impl OpenAiCompatibleModel {
             input_modalities: input_modalities_from_openai_compatible_architecture(architecture),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            use_responses_lite: false,
+            auto_review_model_override: None,
             tool_mode: None,
+            multi_agent_version: None,
         }
     }
 }
@@ -705,7 +708,10 @@ mod tests {
                 input_modalities: vec![InputModality::Text, InputModality::Image],
                 used_fallback_model_metadata: false,
                 supports_search_tool: false,
+                use_responses_lite: false,
+                auto_review_model_override: None,
                 tool_mode: None,
+                multi_agent_version: None,
             }]
         );
     }
@@ -1011,7 +1017,7 @@ mod tests {
             model
                 .supported_reasoning_levels
                 .iter()
-                .map(|preset| preset.effort)
+                .map(|preset| preset.effort.clone())
                 .collect::<Vec<_>>(),
             vec![ReasoningEffort::None, ReasoningEffort::Medium]
         );

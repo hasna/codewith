@@ -65,7 +65,6 @@ use codex_shell_escalation::ShellCommandExecutor;
 use codex_shell_escalation::Stopwatch;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -225,7 +224,6 @@ pub(super) async fn try_run_zsh_fork(
         approval_policy: effective_turn_settings.approval_policy,
         permission_profile: command_executor.permission_profile.clone(),
         file_system_sandbox_policy: command_executor.file_system_sandbox_policy.clone(),
-        sandbox_policy_cwd: command_executor.sandbox_policy_cwd.clone(),
         sandbox_permissions: req.sandbox_permissions,
         approval_sandbox_permissions,
         prompt_permissions: req.additional_permissions.clone(),
@@ -299,7 +297,6 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         approval_policy: effective_turn_settings.approval_policy,
         permission_profile: exec_request.permission_profile.clone(),
         file_system_sandbox_policy: exec_request.file_system_sandbox_policy.clone(),
-        sandbox_policy_cwd: exec_request.windows_sandbox_policy_cwd.clone(),
         sandbox_permissions: req.sandbox_permissions,
         approval_sandbox_permissions: approval_sandbox_permissions(
             req.sandbox_permissions,
@@ -334,7 +331,6 @@ struct CoreShellActionProvider {
     approval_policy: AskForApproval,
     permission_profile: PermissionProfile,
     file_system_sandbox_policy: FileSystemSandboxPolicy,
-    sandbox_policy_cwd: AbsolutePathBuf,
     sandbox_permissions: SandboxPermissions,
     approval_sandbox_permissions: SandboxPermissions,
     prompt_permissions: Option<AdditionalPermissionProfile>,
@@ -624,8 +620,7 @@ impl EscalationPolicy for CoreShellActionProvider {
                 InterceptedExecPolicyContext {
                     approval_policy: self.approval_policy,
                     permission_profile: self.permission_profile.clone(),
-                    file_system_sandbox_policy: &self.file_system_sandbox_policy,
-                    sandbox_cwd: self.sandbox_policy_cwd.as_path(),
+                    windows_sandbox_level: self.turn.windows_sandbox_level,
                     sandbox_permissions: self.approval_sandbox_permissions,
                     enable_shell_wrapper_parsing:
                         ENABLE_INTERCEPTED_EXEC_POLICY_SHELL_WRAPPER_PARSING,
@@ -674,13 +669,12 @@ fn evaluate_intercepted_exec_policy(
     policy: &Policy,
     program: &AbsolutePathBuf,
     argv: &[String],
-    context: InterceptedExecPolicyContext<'_>,
+    context: InterceptedExecPolicyContext,
 ) -> Evaluation {
     let InterceptedExecPolicyContext {
         approval_policy,
         permission_profile,
-        file_system_sandbox_policy,
-        sandbox_cwd,
+        windows_sandbox_level,
         sandbox_permissions,
         enable_shell_wrapper_parsing,
     } = context;
@@ -707,8 +701,7 @@ fn evaluate_intercepted_exec_policy(
             crate::exec_policy::UnmatchedCommandContext {
                 approval_policy,
                 permission_profile: &permission_profile,
-                file_system_sandbox_policy,
-                sandbox_cwd,
+                windows_sandbox_level,
                 sandbox_permissions,
                 used_complex_parsing,
                 command_origin: crate::exec_policy::ExecPolicyCommandOrigin::Generic,
@@ -726,11 +719,10 @@ fn evaluate_intercepted_exec_policy(
 }
 
 #[derive(Clone)]
-struct InterceptedExecPolicyContext<'a> {
+struct InterceptedExecPolicyContext {
     approval_policy: AskForApproval,
     permission_profile: PermissionProfile,
-    file_system_sandbox_policy: &'a FileSystemSandboxPolicy,
-    sandbox_cwd: &'a Path,
+    windows_sandbox_level: WindowsSandboxLevel,
     sandbox_permissions: SandboxPermissions,
     enable_shell_wrapper_parsing: bool,
 }

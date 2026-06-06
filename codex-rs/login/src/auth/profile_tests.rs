@@ -10,6 +10,7 @@ fn auth_with_key(key: &str) -> AuthDotJson {
     AuthDotJson {
         auth_mode: Some(AuthMode::ApiKey),
         openai_api_key: Some(key.to_string()),
+        personal_access_token: None,
         tokens: None,
         last_refresh: Some(Utc::now()),
         agent_identity: None,

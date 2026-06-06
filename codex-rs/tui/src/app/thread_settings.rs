@@ -146,7 +146,7 @@ impl App {
             auth_profile: auth_profile.clone(),
             model_provider: model_provider.clone(),
             model: model.clone(),
-            effort: effort.unwrap_or_default(),
+            effort: effort.clone().unwrap_or_default(),
             summary: *summary,
             service_tier: service_tier.clone(),
             collaboration_mode: collaboration_mode.clone(),
@@ -194,7 +194,7 @@ impl App {
 fn apply_thread_settings_to_session(session: &mut ThreadSessionState, settings: &ThreadSettings) {
     if settings.collaboration_mode.mode == ModeKind::Default {
         session.model = settings.model.clone();
-        session.reasoning_effort = settings.effort;
+        session.reasoning_effort = settings.effort.clone();
     }
     session.model_provider_id = settings.model_provider.clone();
     session.service_tier = settings.service_tier.clone();
@@ -212,7 +212,7 @@ fn apply_thread_settings_to_session(session: &mut ThreadSessionState, settings: 
         .settings
         .model
         .clone_from(&settings.model);
-    collaboration_mode.settings.reasoning_effort = settings.effort;
+    collaboration_mode.settings.reasoning_effort = settings.effort.clone();
     session.collaboration_mode = Some(Box::new(collaboration_mode));
 }
 

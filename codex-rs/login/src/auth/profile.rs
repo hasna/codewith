@@ -460,7 +460,7 @@ fn auth_profile_metadata(
     auth: &AuthDotJson,
 ) -> (Option<String>, Option<String>, Option<String>) {
     match auth_mode {
-        AuthMode::ApiKey => (None, None, None),
+        AuthMode::ApiKey | AuthMode::PersonalAccessToken => (None, None, None),
         AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => {
             let Some(tokens) = auth.tokens.as_ref() else {
                 return (None, None, None);

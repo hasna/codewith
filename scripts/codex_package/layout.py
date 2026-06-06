@@ -26,7 +26,9 @@ THIRD_PARTY_LICENSE_FILES = {
     "ripgrep-LICENSE-MIT.txt": (
         REPO_ROOT / "third_party_licenses" / "ripgrep-LICENSE-MIT.txt"
     ),
-    "ripgrep-UNLICENSE.txt": REPO_ROOT / "third_party_licenses" / "ripgrep-UNLICENSE.txt",
+    "ripgrep-UNLICENSE.txt": REPO_ROOT
+    / "third_party_licenses"
+    / "ripgrep-UNLICENSE.txt",
     "zsh-LICENCE.txt": REPO_ROOT / "third_party_licenses" / "zsh-LICENCE.txt",
 }
 
@@ -34,7 +36,9 @@ THIRD_PARTY_LICENSE_FILES = {
 def prepare_package_dir(package_dir: Path, *, force: bool) -> None:
     if package_dir.exists():
         if not package_dir.is_dir():
-            raise RuntimeError(f"Package output exists and is not a directory: {package_dir}")
+            raise RuntimeError(
+                f"Package output exists and is not a directory: {package_dir}"
+            )
         if any(package_dir.iterdir()):
             if not force:
                 raise RuntimeError(

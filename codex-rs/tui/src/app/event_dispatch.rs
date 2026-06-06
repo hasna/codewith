@@ -5,6 +5,7 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::config_update::format_config_error;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -35,14 +36,14 @@ impl App {
             profile.as_deref(),
             provider_id.as_str(),
             model.as_str(),
-            effort,
+            effort.as_ref(),
         );
         match crate::config_update::write_config_batch(app_server.request_handle(), edits).await {
             Ok(_) => {
                 self.config.model_provider_id = provider_id.clone();
                 self.config.model_provider = provider_info.clone();
                 self.config.model = Some(model.clone());
-                self.config.model_reasoning_effort = effort;
+                self.config.model_reasoning_effort = effort.clone();
                 let model_catalog =
                     Arc::new(ModelCatalog::new_for_provider(provider_id.clone(), models));
                 self.model_catalog = model_catalog.clone();
@@ -55,12 +56,12 @@ impl App {
                 );
                 self.chat_widget.set_model_catalog(model_catalog);
                 self.chat_widget.set_model(&model);
-                self.on_update_reasoning_effort(effort);
+                self.on_update_reasoning_effort(effort.clone());
                 if self.active_thread_id.is_some() {
                     let op = AppCommand::override_turn_context_model_provider(
                         provider_id.clone(),
                         model.clone(),
-                        effort,
+                        effort.clone(),
                         Some(self.chat_widget.effective_collaboration_mode()),
                     );
                     if let Err(err) = self.submit_active_thread_op(app_server, op).await {
@@ -400,7 +401,11 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                self.chat_widget.prepare_local_op_submission(&op);
                 self.submit_active_thread_op(app_server, op).await?;
+            }
+            AppEvent::RestoreCancelledTurn(prompt) => {
+                self.apply_cancelled_turn_edit(prompt);
             }
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
@@ -492,6 +497,9 @@ impl App {
             }
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
+            }
+            AppEvent::OpenDesktopThread { thread_id } => {
+                self.open_desktop_thread(thread_id);
             }
             AppEvent::PetSelected { pet_id } => {
                 self.handle_pet_selected(tui, pet_id);
@@ -1017,7 +1025,7 @@ impl App {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
             AppEvent::UpdateReasoningEffort(effort) => {
-                self.on_update_reasoning_effort(effort);
+                self.on_update_reasoning_effort(effort.clone());
                 self.sync_active_thread_reasoning_setting(app_server, effort)
                     .await;
             }
@@ -1710,23 +1718,24 @@ impl App {
                     crate::config_update::build_model_selection_edits(
                         profile.as_deref(),
                         model.as_str(),
-                        effort,
+                        effort.as_ref(),
                     ),
                 )
                 .await
                 {
                     Ok(_) => {
                         self.config.model = Some(model.clone());
-                        self.config.model_reasoning_effort = effort;
+                        self.config.model_reasoning_effort = effort.clone();
                         self.refresh_status_line();
                         let effort_label = effort
-                            .map(|selected_effort| selected_effort.to_string())
+                            .as_ref()
+                            .map(std::string::ToString::to_string)
                             .unwrap_or_else(|| "default".to_string());
                         tracing::info!("Selected model: {model}, Selected effort: {effort_label}");
                         let mut message = format!("Model changed to {model}");
-                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                        if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
                             message.push(' ');
-                            message.push_str(label);
+                            message.push_str(&label);
                         }
                         if let Some(profile) = &profile {
                             message.push_str(" for ");
@@ -1736,17 +1745,19 @@ impl App {
                         self.chat_widget.add_info_message(message, /*hint*/ None);
                     }
                     Err(err) => {
+                        let error = format_config_error(&err);
                         tracing::error!(
-                            error = %err,
+                            error = %error,
                             "failed to persist model selection"
                         );
                         if let Some(profile) = &profile {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save model for profile `{profile}`: {err}"
+                                "Failed to save model for profile `{profile}`: {error}"
                             ));
                         } else {
-                            self.chat_widget
-                                .add_error_message(format!("Failed to save default model: {err}"));
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default model: {error}"
+                            ));
                         }
                     }
                 }
@@ -2045,7 +2056,7 @@ impl App {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
-                self.config.plan_mode_reasoning_effort = effort;
+                self.config.plan_mode_reasoning_effort = effort.clone();
                 self.chat_widget.set_plan_mode_reasoning_effort(effort);
                 self.sync_active_thread_plan_mode_reasoning_setting(app_server)
                     .await;
@@ -2297,12 +2308,20 @@ impl App {
                     ));
                 }
                 ApprovalRequest::Permissions {
+                    environment_id,
                     permissions,
                     reason,
                     ..
                 } => {
                     let _ = tui.enter_alt_screen();
                     let mut lines = Vec::new();
+                    if let Some(environment_id) = environment_id {
+                        lines.push(Line::from(vec![
+                            "Environment: ".into(),
+                            environment_id.bold(),
+                        ]));
+                        lines.push(Line::from(""));
+                    }
                     if let Some(reason) = reason {
                         lines.push(Line::from(vec!["Reason: ".into(), reason.italic()]));
                         lines.push(Line::from(""));
@@ -2371,9 +2390,10 @@ impl App {
                         self.chat_widget.setup_status_line(items, use_theme_colors);
                     }
                     Err(err) => {
-                        tracing::error!(error = %err, "failed to persist status line settings; keeping previous selection");
+                        let error = format_config_error(&err);
+                        tracing::error!(error = %error, "failed to persist status line settings; keeping previous selection");
                         self.chat_widget.add_error_message(format!(
-                            "Failed to save status line settings: {err}"
+                            "Failed to save status line settings: {error}"
                         ));
                     }
                 }

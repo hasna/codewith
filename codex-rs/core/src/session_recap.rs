@@ -99,7 +99,7 @@ async fn recap_turn_context(
     let mut recap_context = turn_context
         .with_model(model.to_string(), &sess.services.models_manager)
         .await;
-    recap_context.reasoning_effort = Some(config.reasoning_effort);
+    recap_context.reasoning_effort = Some(config.reasoning_effort.clone());
     recap_context.reasoning_summary = ReasoningSummary::None;
     recap_context
 }
@@ -168,7 +168,7 @@ async fn drain_recap_summary(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
-            turn_context.reasoning_effort,
+            turn_context.reasoning_effort.clone(),
             turn_context.reasoning_summary,
             turn_context.config.service_tier.clone(),
             /*turn_metadata_header*/ None,

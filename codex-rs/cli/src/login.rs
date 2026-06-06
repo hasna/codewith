@@ -508,6 +508,10 @@ pub async fn run_login_status(
                 print_logged_in_status(auth_profile_name.as_deref(), "using access token");
                 std::process::exit(0);
             }
+            AuthMode::PersonalAccessToken => {
+                eprintln!("Logged in using personal access token");
+                std::process::exit(0);
+            }
         },
         Ok(None) => {
             eprintln!("Not logged in");

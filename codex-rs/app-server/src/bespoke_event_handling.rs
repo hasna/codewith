@@ -76,6 +76,7 @@ use codex_app_server_protocol::TurnDiffUpdatedNotification;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnModerationMetadataNotification;
 use codex_app_server_protocol::TurnPlanStep;
 use codex_app_server_protocol::TurnPlanUpdatedNotification;
 use codex_app_server_protocol::TurnStartedNotification;
@@ -336,6 +337,16 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::ModelVerification(notification))
+                .await;
+        }
+        EventMsg::TurnModerationMetadata(event) => {
+            let notification = TurnModerationMetadataNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.clone(),
+                metadata: event.metadata,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::TurnModerationMetadata(notification))
                 .await;
         }
         EventMsg::RealtimeConversationStarted(event) => {
@@ -778,6 +789,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: request.turn_id.clone(),
                 item_id: request.call_id.clone(),
+                environment_id: request.environment_id.clone(),
                 started_at_ms: request.started_at_ms,
                 cwd: request_cwd.clone(),
                 reason: request.reason,
@@ -3725,6 +3737,7 @@ mod tests {
                 unlimited: false,
                 balance: Some("5".to_string()),
             }),
+            individual_limit: None,
             plan_type: None,
             rate_limit_reached_type: None,
         };

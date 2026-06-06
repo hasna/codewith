@@ -111,6 +111,7 @@ fn auth_mode_label(auth_mode: AuthMode) -> &'static str {
         AuthMode::Chatgpt => "chatgpt",
         AuthMode::ChatgptAuthTokens => "chatgpt_auth_tokens",
         AuthMode::AgentIdentity => "agent_identity",
+        AuthMode::PersonalAccessToken => "personal_access_token",
     }
 }
 

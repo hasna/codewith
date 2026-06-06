@@ -177,6 +177,10 @@ impl SessionStartupPrewarmHandle {
 
 impl Session {
     pub(crate) async fn schedule_startup_prewarm(self: &Arc<Self>, base_instructions: String) {
+        if !self.runtime_model_client().responses_websocket_enabled() {
+            return;
+        }
+
         let session_telemetry = self.services.session_telemetry.clone();
         let provider = self.provider().await;
         let config = self.get_config().await;
@@ -241,7 +245,7 @@ async fn schedule_startup_prewarm_inner(
 ) -> CodexResult<ModelClientSession> {
     let prewarm_started_at = Instant::now();
     let startup_turn_context = session
-        .new_default_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())
+        .new_startup_prewarm_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())
         .await;
     startup_turn_context.session_telemetry.record_startup_phase(
         "startup_prewarm_create_turn_context",
@@ -286,7 +290,7 @@ async fn schedule_startup_prewarm_inner(
             &startup_prompt,
             &startup_turn_context.model_info,
             &startup_turn_context.session_telemetry,
-            startup_turn_context.reasoning_effort,
+            startup_turn_context.reasoning_effort.clone(),
             startup_turn_context.reasoning_summary,
             startup_turn_context.config.service_tier.clone(),
             startup_turn_metadata_header.as_deref(),

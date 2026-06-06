@@ -329,7 +329,6 @@ impl ThreadScheduleRuntime {
                 config,
                 initial_history,
                 Arc::clone(&self.auth_manager),
-                /*persist_extended_history*/ false,
                 /*parent_trace*/ None,
             )
             .await

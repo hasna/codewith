@@ -39,7 +39,7 @@ fn known_provider_model_uses_local_metadata() {
         model
             .supported_reasoning_levels
             .iter()
-            .map(|preset| preset.effort)
+            .map(|preset| preset.effort.clone())
             .collect::<Vec<_>>(),
         vec![
             codex_protocol::openai_models::ReasoningEffort::Low,

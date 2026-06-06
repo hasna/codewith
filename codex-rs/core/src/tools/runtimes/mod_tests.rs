@@ -8,6 +8,7 @@ use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::ConfigReloader;
 use codex_network_proxy::ConfigState;
 use codex_network_proxy::NetworkProxy;
@@ -134,6 +135,9 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
     for key in PROXY_ENV_KEYS {
         assert_eq!(exec_request.env.get(*key), None, "{key} should be unset");
     }
+    for key in CUSTOM_CA_ENV_KEYS {
+        assert_eq!(exec_request.env.get(key), None, "{key} should be unset");
+    }
     #[cfg(target_os = "macos")]
     assert_eq!(exec_request.env.get(PROXY_GIT_SSH_COMMAND_ENV_KEY), None);
     assert_eq!(
@@ -195,23 +199,124 @@ async fn full_access_attempt_drops_managed_network_for_default_permissions() -> 
     Ok(())
 }
 
+#[test]
+fn explicit_escalation_preserves_user_ca_env() {
+    let env = HashMap::from([
+        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+        (
+            "SSL_CERT_FILE".to_string(),
+            "/tmp/custom-ca.pem".to_string(),
+        ),
+    ]);
+
+    let env = exec_env_for_sandbox_permissions(&env, SandboxPermissions::RequireEscalated);
+
+    assert_eq!(
+        env.get("SSL_CERT_FILE"),
+        Some(&"/tmp/custom-ca.pem".to_string())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_path_prepends_records_runtime_path_prepend() {
+    let mut env = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+
+    runtime_path_prepends.prepend(&mut env, PathBuf::from("/package/codex-path").as_path());
+
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/package/codex-path:/usr/bin:/bin"),
+        "runtime PATH prepend should update the live exec environment"
+    );
+    assert_eq!(
+        runtime_path_prepends.entries,
+        vec!["/package/codex-path"],
+        "runtime PATH prepend should be recorded for snapshot replay"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_path_prepends_drops_empty_path_entries() {
+    let mut env = HashMap::from([(
+        "PATH".to_string(),
+        ":/usr/bin:/package/codex-path::/bin:".to_string(),
+    )]);
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+
+    runtime_path_prepends.prepend(&mut env, PathBuf::from("/package/codex-path").as_path());
+
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/package/codex-path:/usr/bin:/bin"),
+        "empty PATH entries should be dropped instead of preserving current-directory lookup"
+    );
+    assert_eq!(
+        runtime_path_prepends.entries,
+        vec!["/package/codex-path"],
+        "deduped runtime PATH prepend should still be recorded once"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_path_prepends_ignores_empty_path_entry() {
+    let mut env = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+
+    runtime_path_prepends.prepend(&mut env, PathBuf::new().as_path());
+
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/usr/bin:/bin"),
+        "empty runtime PATH prepend should leave PATH unchanged"
+    );
+    assert_eq!(
+        runtime_path_prepends,
+        RuntimePathPrepends::default(),
+        "empty runtime PATH prepend should not be recorded for snapshot replay"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn prepend_zsh_fork_bin_to_path_ignores_empty_parent() {
+    let mut env = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+
+    let result = prepend_zsh_fork_bin_to_path(&mut env, PathBuf::from("zsh").as_path());
+
+    assert_eq!(
+        result, None,
+        "zsh fork helper should not report a PATH update for an empty parent"
+    );
+    assert_eq!(
+        env.get("PATH").map(String::as_str),
+        Some("/usr/bin:/bin"),
+        "zsh fork helper should leave PATH unchanged when the parent is empty"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_zsh_fork_path_prepend_uses_shell_parent() {
     let mut env = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
-    let mut explicit_env_overrides = HashMap::new();
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
 
     apply_zsh_fork_path_prepend(
         &mut env,
-        &mut explicit_env_overrides,
+        &mut runtime_path_prepends,
         PathBuf::from("/package/codewith-resources/zsh/bin/zsh").as_path(),
     );
 
     let expected = "/package/codewith-resources/zsh/bin:/usr/bin:/bin";
     assert_eq!(env.get("PATH").map(String::as_str), Some(expected));
     assert_eq!(
-        explicit_env_overrides.get("PATH").map(String::as_str),
-        Some(expected)
+        runtime_path_prepends,
+        RuntimePathPrepends {
+            entries: vec!["/package/codewith-resources/zsh/bin".to_string()]
+        }
     );
 }
 
@@ -223,17 +328,23 @@ fn apply_zsh_fork_path_prepend_moves_existing_shell_parent_to_front() {
         "/usr/bin:/package/codewith-resources/zsh/bin:/bin:/package/codewith-resources/zsh/bin"
             .to_string(),
     )]);
-    let mut explicit_env_overrides = HashMap::new();
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
 
     apply_zsh_fork_path_prepend(
         &mut env,
-        &mut explicit_env_overrides,
+        &mut runtime_path_prepends,
         PathBuf::from("/package/codewith-resources/zsh/bin/zsh").as_path(),
     );
 
     assert_eq!(
         env.get("PATH").map(String::as_str),
         Some("/package/codewith-resources/zsh/bin:/usr/bin:/bin")
+    );
+    assert_eq!(
+        runtime_path_prepends,
+        RuntimePathPrepends {
+            entries: vec!["/package/codewith-resources/zsh/bin".to_string()]
+        }
     );
 }
 
@@ -279,6 +390,7 @@ fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert_eq!(rewritten[0], "/bin/zsh");
@@ -310,6 +422,7 @@ fn maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert!(rewritten[2].contains(r#"exec '/bin/bash' -c 'echo '"'"'hello'"'"''"#));
@@ -338,6 +451,7 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert_eq!(rewritten[0], "/bin/bash");
@@ -369,6 +483,7 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert_eq!(rewritten[0], "/bin/sh");
@@ -402,6 +517,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert!(
@@ -437,6 +553,7 @@ fn maybe_wrap_shell_lc_with_snapshot_skips_when_cwd_mismatch() {
         &command_cwd.abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert_eq!(rewritten, command);
@@ -466,6 +583,7 @@ fn maybe_wrap_shell_lc_with_snapshot_accepts_dot_alias_cwd() {
         &command_cwd.abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     assert_eq!(rewritten[0], "/bin/zsh");
@@ -502,6 +620,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_explicit_override_precedence() {
         &dir.path().abs(),
         &explicit_env_overrides,
         &HashMap::from([("TEST_ENV_SNAPSHOT".to_string(), "worktree".to_string())]),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -542,6 +661,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_thread_id_from_env() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::from([("CODEX_THREAD_ID".to_string(), "nested-thread".to_string())]),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -584,6 +704,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -641,6 +762,7 @@ fn maybe_wrap_shell_lc_with_snapshot_refreshes_codex_proxy_git_ssh_command() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -686,6 +808,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_custom_git_ssh_command() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -732,6 +855,7 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_codex_git_ssh_command_without_
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -769,6 +893,7 @@ fn maybe_wrap_shell_lc_with_snapshot_keeps_user_proxy_env_when_proxy_inactive() 
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let mut command = Command::new(&rewritten[0]);
     command.args(&rewritten[1..]);
@@ -822,6 +947,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_live_env_when_snapshot_proxy_activ
             "HTTP_PROXY".to_string(),
             "http://user.proxy:8080".to_string(),
         )]),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -864,6 +990,7 @@ fn maybe_wrap_shell_lc_with_snapshot_keeps_snapshot_path_without_override() {
         &dir.path().abs(),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -901,6 +1028,7 @@ fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
         &dir.path().abs(),
         &explicit_env_overrides,
         &HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -910,6 +1038,84 @@ fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
 
     assert!(output.status.success(), "command failed: {output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "/worktree/bin");
+}
+
+#[cfg(unix)]
+#[test]
+fn maybe_wrap_shell_lc_with_snapshot_preserves_package_path_prepend() -> anyhow::Result<()> {
+    let (stdout, package_path_dir) =
+        run_snapshot_path_probe_with_runtime_path_prepend(HashMap::new())?;
+
+    assert_eq!(
+        stdout,
+        format!("{}:/snapshot/bin", package_path_dir.display()),
+        "package path prepend should replay ahead of snapshot PATH"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn maybe_wrap_shell_lc_with_snapshot_applies_runtime_path_prepend_after_explicit_path_override()
+-> anyhow::Result<()> {
+    let (stdout, package_path_dir) = run_snapshot_path_probe_with_runtime_path_prepend(
+        HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]),
+    )?;
+
+    assert_eq!(
+        stdout,
+        format!("{}:/worktree/bin", package_path_dir.display()),
+        "explicit PATH override should suppress snapshot PATH while preserving runtime prepend"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_snapshot_path_probe_with_runtime_path_prepend(
+    explicit_env_overrides: HashMap<String, String>,
+) -> anyhow::Result<(String, PathBuf)> {
+    let dir = tempdir()?;
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(
+        &snapshot_path,
+        "# Snapshot file\nexport PATH='/snapshot/bin'\n",
+    )?;
+    let session_shell = shell_with_snapshot(
+        ShellType::Bash,
+        "/bin/bash",
+        snapshot_path.abs(),
+        dir.path().abs(),
+    );
+    let command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        "printf '%s' \"$PATH\"".to_string(),
+    ];
+    let package_path_dir = dir.path().join("codex-path");
+    let mut env = HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]);
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+    runtime_path_prepends.prepend(&mut env, package_path_dir.as_path());
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        &dir.path().abs(),
+        &explicit_env_overrides,
+        &env,
+        &runtime_path_prepends,
+    );
+    let path = env
+        .get("PATH")
+        .ok_or_else(|| anyhow::anyhow!("PATH should be set"))?;
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env("PATH", path)
+        .output()?;
+
+    assert!(output.status.success(), "command failed: {output:?}");
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        package_path_dir,
+    ))
 }
 
 #[cfg(unix)]
@@ -941,14 +1147,16 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_zsh_fork_path_prepend() {
         .join("zsh");
     let zsh_bin_dir = zsh_path.parent().expect("zsh path should have parent");
     let mut env = HashMap::from([("PATH".to_string(), "/worktree/bin".to_string())]);
-    let mut explicit_env_overrides = HashMap::new();
-    apply_zsh_fork_path_prepend(&mut env, &mut explicit_env_overrides, zsh_path.as_path());
+    let explicit_env_overrides = HashMap::new();
+    let mut runtime_path_prepends = RuntimePathPrepends::default();
+    apply_zsh_fork_path_prepend(&mut env, &mut runtime_path_prepends, zsh_path.as_path());
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
         &dir.path().abs(),
         &explicit_env_overrides,
         &env,
+        &runtime_path_prepends,
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -959,7 +1167,8 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_zsh_fork_path_prepend() {
     assert!(output.status.success(), "command failed: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("{}:/worktree/bin", zsh_bin_dir.display())
+        format!("{}:/snapshot/bin", zsh_bin_dir.display()),
+        "zsh fork path prepend should replay ahead of snapshot PATH"
     );
 }
 
@@ -996,6 +1205,7 @@ fn maybe_wrap_shell_lc_with_snapshot_does_not_embed_override_values_in_argv() {
             "OPENAI_API_KEY".to_string(),
             "super-secret-value".to_string(),
         )]),
+        &RuntimePathPrepends::default(),
     );
 
     assert!(!rewritten[2].contains("super-secret-value"));
@@ -1041,6 +1251,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
         &dir.path().abs(),
         &explicit_env_overrides,
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
 
     let output = Command::new(&rewritten[0])
