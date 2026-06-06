@@ -2367,6 +2367,11 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("work"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_selection_popup_profile_actions", popup);
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_matches!(
@@ -2379,6 +2384,14 @@ async fn profile_selection_popup_snapshot_and_selection() {
             if profile.as_deref() == Some("personal")
                 && reason == crate::app_event::AuthProfileSwitchReason::Manual
                 && !resume_queued_input
+    );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ReloginAuthProfile { profile }) if profile == "personal"
     );
 
     chat.open_profile_popup();

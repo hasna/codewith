@@ -63,6 +63,18 @@ impl ChatWidget {
             ServerNotification::ThreadScheduleRunUpdated(notification) => {
                 self.on_thread_schedule_run_updated(notification.run);
             }
+            ServerNotification::ThreadMonitorUpdated(notification) => {
+                self.on_thread_monitor_updated(notification.monitor);
+            }
+            ServerNotification::ThreadMonitorDeleted(notification) => {
+                self.on_thread_monitor_deleted(
+                    notification.thread_id.as_str(),
+                    notification.monitor_id.as_str(),
+                );
+            }
+            ServerNotification::ThreadMonitorEvent(notification) => {
+                self.on_thread_monitor_event(notification.monitor, notification.event);
+            }
             ServerNotification::ThreadSettingsUpdated(notification) => {
                 self.on_thread_settings_updated(notification);
             }

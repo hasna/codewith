@@ -100,6 +100,12 @@ pub(super) enum QueueDrain {
     Stop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QueueInsertionPosition {
+    Front,
+    Back,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct ThreadComposerState {
     pub(super) text: String,

@@ -893,6 +893,9 @@ ON CONFLICT(id) DO UPDATE SET
             self.thread_schedules
                 .delete_thread_schedules_for_thread(thread_id)
                 .await?;
+            self.thread_monitors
+                .delete_thread_monitors_for_thread(thread_id)
+                .await?;
         }
         Ok(rows_affected)
     }

@@ -43,6 +43,7 @@ pub enum SlashCommand {
     Goal,
     Loop,
     Schedule,
+    Monitor,
     Agent,
     Side,
     Btw,
@@ -128,6 +129,7 @@ impl SlashCommand {
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
+            SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -167,6 +169,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
+                | SlashCommand::Monitor
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -235,6 +238,7 @@ impl SlashCommand {
             | SlashCommand::Goal
             | SlashCommand::Loop
             | SlashCommand::Schedule
+            | SlashCommand::Monitor
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

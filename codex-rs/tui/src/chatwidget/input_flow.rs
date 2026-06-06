@@ -113,7 +113,7 @@ impl ChatWidget {
             };
             match queued_message.action {
                 QueuedInputAction::Plain => {
-                    submitted_follow_up = self.submit_user_message_with_history_record(
+                    submitted_follow_up = self.resubmit_queued_user_message_with_history_record(
                         queued_message.into_user_message(),
                         history_record,
                     );

@@ -439,9 +439,45 @@ pub(crate) enum AppEvent {
         schedule_id: Option<String>,
     },
 
+    /// Open the current thread monitor manager.
+    OpenThreadMonitorManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open actions for a thread monitor.
+    OpenThreadMonitorActions {
+        thread_id: ThreadId,
+        monitor_id: String,
+    },
+
+    /// Show recent output for a thread monitor.
+    ReadThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Stop a thread monitor.
+    StopThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Restart a thread monitor.
+    RestartThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Delete a thread monitor.
+    DeleteThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
+        auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
 
@@ -804,6 +840,17 @@ pub(crate) enum AppEvent {
     /// Prompt for confirming saved auth profile deletion.
     OpenAuthProfileDeleteConfirm {
         profile: String,
+    },
+
+    /// Start ChatGPT relogin for a saved auth profile.
+    ReloginAuthProfile {
+        profile: String,
+    },
+
+    /// Result of ChatGPT relogin for a saved auth profile.
+    AuthProfileReloginFinished {
+        profile: String,
+        result: Result<(), String>,
     },
 
     /// Rename a saved auth profile.

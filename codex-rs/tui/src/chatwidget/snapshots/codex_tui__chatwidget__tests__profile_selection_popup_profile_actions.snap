@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 2347
+expression: popup
+---
+  Select Profile
+  Switch auth for this session.
+
+  1. default (current)  Root login
+› 2. personal           Enter switch / l relogin / r rename / d delete
+  3. work               ApiKey
+
+  Press enter to confirm or esc to go back

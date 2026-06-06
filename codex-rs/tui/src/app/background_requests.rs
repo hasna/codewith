@@ -71,11 +71,16 @@ impl App {
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        let auth_profile = self.config.selected_auth_profile.clone();
         tokio::spawn(async move {
             let result = fetch_account_rate_limits(request_handle)
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::RateLimitsLoaded { origin, result });
+            app_event_tx.send(AppEvent::RateLimitsLoaded {
+                origin,
+                auth_profile,
+                result,
+            });
         });
     }
 
@@ -623,10 +628,7 @@ impl App {
         match result {
             Ok(summary) => {
                 self.chat_widget
-                    .add_to_history(history_cell::new_info_event(
-                        format!("Recap: {summary}"),
-                        /*hint*/ None,
-                    ));
+                    .add_to_history(history_cell::new_session_recap_event(summary));
             }
             Err(err) => {
                 if automatic {

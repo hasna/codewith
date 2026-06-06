@@ -58,12 +58,7 @@ class BuildNpmPackageTest(unittest.TestCase):
                 },
                 "packageManager": PACKAGE_MANAGER,
                 "optionalDependencies": {
-                    "@hasna/codewith-linux-x64": "1.2.3",
                     "@hasna/codewith-linux-arm64": "1.2.3",
-                    "@hasna/codewith-darwin-x64": "1.2.3",
-                    "@hasna/codewith-darwin-arm64": "1.2.3",
-                    "@hasna/codewith-win32-x64": "1.2.3",
-                    "@hasna/codewith-win32-arm64": "1.2.3",
                 },
             },
         )
@@ -112,17 +107,12 @@ class BuildNpmPackageTest(unittest.TestCase):
         self.assertEqual(compliance_files, repo_compliance_files())
         self.assertEqual(third_party_license_files, repo_third_party_license_files())
 
-    def test_linux_alias_uses_musl_target_for_upstream_release_artifacts(self) -> None:
+    def test_codex_expansion_matches_configured_native_release_artifacts(self) -> None:
         self.assertEqual(
             build_npm_package.PACKAGE_EXPANSIONS["codex"],
             [
                 "codex",
-                "codex-linux-x64",
                 "codex-linux-arm64",
-                "codex-darwin-x64",
-                "codex-darwin-arm64",
-                "codex-win32-x64",
-                "codex-win32-arm64",
             ],
         )
         self.assertEqual(

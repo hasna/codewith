@@ -81,7 +81,17 @@ impl ChatWidget {
         })];
         let rename_profile_name = profile.name.clone();
         let delete_profile_name = profile.name.clone();
+        let relogin_profile_name = profile.name.clone();
         let shortcut_actions = vec![
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char('l')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::ReloginAuthProfile {
+                        profile: relogin_profile_name.clone(),
+                    });
+                }),
+                dismiss_on_select: true,
+            },
             SelectionShortcutAction {
                 binding: key_hint::plain(KeyCode::Char('r')),
                 action: Box::new(move |tx| {
@@ -104,7 +114,9 @@ impl ChatWidget {
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: Some("Enter switch / r rename / d delete".to_string()),
+            selected_description: Some(
+                "Enter switch / l relogin / r rename / d delete".to_string(),
+            ),
             is_current: current == Some(profile.name.as_str()),
             actions,
             shortcut_actions,

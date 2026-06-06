@@ -62,6 +62,7 @@ mod backfill;
 mod goals;
 mod logs;
 mod memories;
+mod monitors;
 mod remote_control;
 mod schedules;
 #[cfg(test)]
@@ -73,6 +74,10 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
+pub use monitors::MonitorStore;
+pub use monitors::ThreadMonitorCreateParams;
+pub use monitors::ThreadMonitorEventCreateParams;
+pub use monitors::ThreadMonitorUpdate;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
@@ -152,6 +157,7 @@ pub struct StateRuntime {
     logs_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
+    thread_monitors: MonitorStore,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
@@ -261,6 +267,7 @@ impl StateRuntime {
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
+            thread_monitors: MonitorStore::new(Arc::clone(&pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -288,6 +295,10 @@ impl StateRuntime {
 
     pub fn thread_schedules(&self) -> &ScheduleStore {
         &self.thread_schedules
+    }
+
+    pub fn thread_monitors(&self) -> &MonitorStore {
+        &self.thread_monitors
     }
 
     pub fn memories(&self) -> &MemoryStore {

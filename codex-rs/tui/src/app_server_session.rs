@@ -73,6 +73,16 @@ use codex_app_server_protocol::ThreadMemoryModeSetResponse;
 use codex_app_server_protocol::ThreadMetadataGitInfoUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateResponse;
+use codex_app_server_protocol::ThreadMonitorDeleteParams;
+use codex_app_server_protocol::ThreadMonitorDeleteResponse;
+use codex_app_server_protocol::ThreadMonitorListParams;
+use codex_app_server_protocol::ThreadMonitorListResponse;
+use codex_app_server_protocol::ThreadMonitorReadParams;
+use codex_app_server_protocol::ThreadMonitorReadResponse;
+use codex_app_server_protocol::ThreadMonitorRestartParams;
+use codex_app_server_protocol::ThreadMonitorRestartResponse;
+use codex_app_server_protocol::ThreadMonitorStopParams;
+use codex_app_server_protocol::ThreadMonitorStopResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -973,6 +983,98 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/schedule/list failed in TUI")
+    }
+
+    pub(crate) async fn thread_monitor_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadMonitorListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMonitorList {
+                request_id,
+                params: ThreadMonitorListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("thread/monitor/list failed in TUI")
+    }
+
+    pub(crate) async fn thread_monitor_read(
+        &mut self,
+        thread_id: ThreadId,
+        monitor_id: String,
+    ) -> Result<ThreadMonitorReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMonitorRead {
+                request_id,
+                params: ThreadMonitorReadParams {
+                    thread_id: thread_id.to_string(),
+                    monitor_id,
+                    cursor: None,
+                    limit: Some(50),
+                },
+            })
+            .await
+            .wrap_err("thread/monitor/read failed in TUI")
+    }
+
+    pub(crate) async fn thread_monitor_stop(
+        &mut self,
+        thread_id: ThreadId,
+        monitor_id: String,
+    ) -> Result<ThreadMonitorStopResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMonitorStop {
+                request_id,
+                params: ThreadMonitorStopParams {
+                    thread_id: thread_id.to_string(),
+                    monitor_id,
+                },
+            })
+            .await
+            .wrap_err("thread/monitor/stop failed in TUI")
+    }
+
+    pub(crate) async fn thread_monitor_restart(
+        &mut self,
+        thread_id: ThreadId,
+        monitor_id: String,
+    ) -> Result<ThreadMonitorRestartResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMonitorRestart {
+                request_id,
+                params: ThreadMonitorRestartParams {
+                    thread_id: thread_id.to_string(),
+                    monitor_id,
+                },
+            })
+            .await
+            .wrap_err("thread/monitor/restart failed in TUI")
+    }
+
+    pub(crate) async fn thread_monitor_delete(
+        &mut self,
+        thread_id: ThreadId,
+        monitor_id: String,
+    ) -> Result<ThreadMonitorDeleteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMonitorDelete {
+                request_id,
+                params: ThreadMonitorDeleteParams {
+                    thread_id: thread_id.to_string(),
+                    monitor_id,
+                },
+            })
+            .await
+            .wrap_err("thread/monitor/delete failed in TUI")
     }
 
     pub(crate) async fn thread_schedule_get(

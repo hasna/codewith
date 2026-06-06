@@ -35,6 +35,7 @@ use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
@@ -52,6 +53,8 @@ use codex_app_server_protocol::NetworkPolicyRuleAction as AppServerNetworkPolicy
 use codex_app_server_protocol::NonSteerableTurnKind as AppServerNonSteerableTurnKind;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
+use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::RateLimitWindow;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
@@ -78,6 +81,9 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::UserInput as AppServerUserInput;
 use codex_app_server_protocol::WarningNotification;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
+use codex_login::save_auth_profile;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
@@ -3993,6 +3999,123 @@ async fn make_test_app_with_channels() -> (
         rx,
         op_rx,
     )
+}
+
+#[test]
+fn auth_profile_auto_switch_message_explains_profile_and_queued_prompt_resume() {
+    assert_eq!(
+        super::event_dispatch::auth_profile_switch_message(
+            Some("personal"),
+            &crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                window: "5h".to_string(),
+            },
+            /*queued_input_will_resume*/ true,
+        ),
+        "Auto-switching auth profile to personal because the 5h limit is exhausted. Your prompt will continue with that account."
+    );
+    assert_eq!(
+        super::event_dispatch::auth_profile_switch_message(
+            None,
+            &crate::app_event::AuthProfileSwitchReason::Manual,
+            /*queued_input_will_resume*/ false,
+        ),
+        "Profile changed to default for this session"
+    );
+}
+
+#[tokio::test]
+async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch_back() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    save_test_auth_profile_for_app(&app, "work");
+    save_test_auth_profile_for_app(&app, "personal");
+    app.config.selected_auth_profile = Some("personal".to_string());
+    app.config.auth_profile_auto_switch.enabled = true;
+    app.chat_widget
+        .set_auth_profile(Some("personal".to_string()));
+    app.chat_widget.apply_config_popup_value(
+        "auth_profile_auto_switch.enabled",
+        &serde_json::Value::Bool(true),
+    );
+    app.chat_widget.handle_thread_session(test_thread_session(
+        ThreadId::new(),
+        test_path_buf("/tmp/project"),
+    ));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let stale_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::StartupPrefetch,
+        Some("work".to_string()),
+        Ok(vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )]),
+    );
+
+    assert_eq!(
+        stale_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+    assert!(
+        !matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::SwitchAuthProfile { .. })
+        ),
+        "stale work-profile limits must not switch the current personal profile back to work"
+    );
+
+    let current_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::StartupPrefetch,
+        Some("personal".to_string()),
+        Ok(vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )]),
+    );
+
+    assert_eq!(
+        current_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::ScheduleFrame
+    );
+    match app_event_rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("work"));
+        }
+        other => panic!("expected current-profile rate limits to auto-switch, got {other:?}"),
+    }
+}
+
+fn save_test_auth_profile_for_app(app: &App, name: &str) {
+    save_auth_profile(
+        &app.config.codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some(format!("{name}-key")),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+        },
+    )
+    .expect("save auth profile");
+}
+
+fn rate_limit_snapshot_for_window(
+    used_percent: i32,
+    window_duration_mins: i64,
+    resets_at: i64,
+) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent,
+            window_duration_mins: Some(window_duration_mins),
+            resets_at: Some(resets_at),
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }
 }
 
 fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {

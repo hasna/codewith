@@ -79,7 +79,10 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
         .filter(|(_, cmd)| {
             flags.scheduled_tasks_command_enabled
-                || !matches!(*cmd, SlashCommand::Loop | SlashCommand::Schedule)
+                || !matches!(
+                    *cmd,
+                    SlashCommand::Loop | SlashCommand::Schedule | SlashCommand::Monitor
+                )
         })
         .filter(|(_, cmd)| flags.personality_command_enabled || *cmd != SlashCommand::Personality)
         .filter(|(_, cmd)| flags.realtime_conversation_enabled || *cmd != SlashCommand::Realtime)

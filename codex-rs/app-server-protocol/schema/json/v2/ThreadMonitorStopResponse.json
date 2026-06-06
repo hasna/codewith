@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadMonitor": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastEventAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processId": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "routing": {
+          "$ref": "#/definitions/ThreadMonitorRouting"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadMonitorStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "createdAt",
+        "generation",
+        "monitorId",
+        "name",
+        "prompt",
+        "routing",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorRouting": {
+      "enum": [
+        "stream",
+        "file",
+        "both"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorStatus": {
+      "enum": [
+        "running",
+        "stopped",
+        "failed"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "monitor": {
+      "$ref": "#/definitions/ThreadMonitor"
+    }
+  },
+  "required": [
+    "monitor"
+  ],
+  "title": "ThreadMonitorStopResponse",
+  "type": "object"
+}

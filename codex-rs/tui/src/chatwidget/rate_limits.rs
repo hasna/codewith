@@ -1,6 +1,7 @@
 //! Rate-limit warning, prompt, and notice surfaces for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::user_messages::QueueInsertionPosition;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_login::AuthProfile;
@@ -424,6 +425,7 @@ impl ChatWidget {
         &mut self,
         user_message: &UserMessage,
         history_record: &UserMessageHistoryRecord,
+        queue_position: QueueInsertionPosition,
     ) -> bool {
         let Some((limit_id, window)) = self
             .auth_profile_auto_switch_snapshots_by_limit_id
@@ -441,7 +443,11 @@ impl ChatWidget {
         };
         let trigger_key = auto_switch_trigger_key(&limit_id, &window);
         if self.pending_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
-            self.queue_user_message_for_auth_profile_auto_switch(user_message, history_record);
+            self.queue_user_message_for_auth_profile_auto_switch(
+                user_message,
+                history_record,
+                queue_position,
+            );
             return true;
         }
         let Some((next_profile, trigger_key)) =
@@ -449,7 +455,11 @@ impl ChatWidget {
         else {
             return false;
         };
-        self.queue_user_message_for_auth_profile_auto_switch(user_message, history_record);
+        self.queue_user_message_for_auth_profile_auto_switch(
+            user_message,
+            history_record,
+            queue_position,
+        );
         self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
         true
     }
@@ -458,13 +468,26 @@ impl ChatWidget {
         &mut self,
         user_message: &UserMessage,
         history_record: &UserMessageHistoryRecord,
+        queue_position: QueueInsertionPosition,
     ) {
-        self.input_queue
-            .queued_user_messages
-            .push_front(QueuedUserMessage::from(user_message.clone()));
-        self.input_queue
-            .queued_user_message_history_records
-            .push_front(history_record.clone());
+        match queue_position {
+            QueueInsertionPosition::Front => {
+                self.input_queue
+                    .queued_user_messages
+                    .push_front(QueuedUserMessage::from(user_message.clone()));
+                self.input_queue
+                    .queued_user_message_history_records
+                    .push_front(history_record.clone());
+            }
+            QueueInsertionPosition::Back => {
+                self.input_queue
+                    .queued_user_messages
+                    .push_back(QueuedUserMessage::from(user_message.clone()));
+                self.input_queue
+                    .queued_user_message_history_records
+                    .push_back(history_record.clone());
+            }
+        }
         self.refresh_pending_input_preview();
     }
 

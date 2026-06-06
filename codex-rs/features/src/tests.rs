@@ -335,6 +335,16 @@ fn tool_call_mcp_elicitation_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn skill_mcp_dependency_install_is_stable_and_disabled_by_default() {
+    assert_eq!(Feature::SkillMcpDependencyInstall.stage(), Stage::Stable);
+    assert_eq!(Feature::SkillMcpDependencyInstall.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("skill_mcp_dependency_install"),
+        Some(Feature::SkillMcpDependencyInstall)
+    );
+}
+
+#[test]
 fn auth_elicitation_is_under_development() {
     assert_eq!(Feature::AuthElicitation.stage(), Stage::UnderDevelopment);
     assert_eq!(Feature::AuthElicitation.default_enabled(), false);

@@ -1085,7 +1085,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::SkillMcpDependencyInstall,
         key: "skill_mcp_dependency_install",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::SkillEnvVarDependencyPrompt,

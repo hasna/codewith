@@ -951,6 +951,45 @@ impl App {
                 self.run_thread_schedule_now(app_server, thread_id, schedule_id)
                     .await;
             }
+            AppEvent::OpenThreadMonitorManager { thread_id } => {
+                self.open_thread_monitor_manager(app_server, thread_id)
+                    .await;
+            }
+            AppEvent::OpenThreadMonitorActions {
+                thread_id,
+                monitor_id,
+            } => {
+                self.open_thread_monitor_actions(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::ReadThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.read_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::StopThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.stop_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::RestartThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.restart_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::DeleteThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.delete_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget
@@ -963,29 +1002,17 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
-            AppEvent::RateLimitsLoaded { origin, result } => match result {
-                Ok(snapshots) => {
-                    for snapshot in snapshots {
-                        self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
-                    }
-                    match origin {
-                        RateLimitRefreshOrigin::StartupPrefetch => {
-                            tui.frame_requester().schedule_frame();
-                        }
-                        RateLimitRefreshOrigin::StatusCommand { request_id } => {
-                            self.chat_widget
-                                .finish_status_rate_limit_refresh(request_id);
-                        }
-                    }
+            AppEvent::RateLimitsLoaded {
+                origin,
+                auth_profile,
+                result,
+            } => {
+                if self.apply_rate_limits_loaded(origin, auth_profile, result)
+                    == RateLimitRefreshCompletion::ScheduleFrame
+                {
+                    tui.frame_requester().schedule_frame();
                 }
-                Err(err) => {
-                    tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
-                    if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
-                        self.chat_widget
-                            .finish_status_rate_limit_refresh(request_id);
-                    }
-                }
-            },
+            }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
@@ -1095,24 +1122,11 @@ impl App {
                 if submitted {
                     let queued_input_will_resume =
                         resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
-                    let label = profile
-                        .as_deref()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| "default".to_string());
-                    let message = match reason {
-                        crate::app_event::AuthProfileSwitchReason::Manual => {
-                            format!("Profile changed to {label} for this session")
-                        }
-                        crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
-                            let mut message = format!(
-                                "Auto-switching auth profile to {label} because the {window} limit is exhausted."
-                            );
-                            if queued_input_will_resume {
-                                message.push_str(" Your prompt will continue with that account.");
-                            }
-                            message
-                        }
-                    };
+                    let message = auth_profile_switch_message(
+                        profile.as_deref(),
+                        &reason,
+                        queued_input_will_resume,
+                    );
                     self.chat_widget.add_info_message(message, /*hint*/ None);
                     self.refresh_status_line();
                     if resume_queued_input {
@@ -1125,6 +1139,12 @@ impl App {
             }
             AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
                 self.chat_widget.open_auth_profile_delete_confirm(profile);
+            }
+            AppEvent::ReloginAuthProfile { profile } => {
+                self.relogin_auth_profile(profile);
+            }
+            AppEvent::AuthProfileReloginFinished { profile, result } => {
+                self.finish_auth_profile_relogin(profile, result);
             }
             AppEvent::RenameAuthProfile { old_name, new_name } => {
                 self.rename_auth_profile(old_name, new_name);
@@ -2646,6 +2666,84 @@ impl App {
                     .add_error_message(format!("Failed to archive current thread: {err}"));
                 AppRunControl::Continue
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RateLimitRefreshCompletion {
+    None,
+    ScheduleFrame,
+}
+
+impl App {
+    pub(super) fn apply_rate_limits_loaded(
+        &mut self,
+        origin: RateLimitRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<Vec<RateLimitSnapshot>, String>,
+    ) -> RateLimitRefreshCompletion {
+        if auth_profile != self.config.selected_auth_profile {
+            tracing::debug!(
+                request_auth_profile = ?auth_profile,
+                current_auth_profile = ?self.config.selected_auth_profile,
+                "discarding stale account/rateLimits/read result after auth profile change"
+            );
+            if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                self.chat_widget
+                    .finish_status_rate_limit_refresh(request_id);
+            }
+            return RateLimitRefreshCompletion::None;
+        }
+
+        match result {
+            Ok(snapshots) => {
+                for snapshot in snapshots {
+                    self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
+                }
+                match origin {
+                    RateLimitRefreshOrigin::StartupPrefetch => {
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::StatusCommand { request_id } => {
+                        self.chat_widget
+                            .finish_status_rate_limit_refresh(request_id);
+                        RateLimitRefreshCompletion::None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
+                if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                    self.chat_widget
+                        .finish_status_rate_limit_refresh(request_id);
+                }
+                RateLimitRefreshCompletion::None
+            }
+        }
+    }
+}
+
+pub(super) fn auth_profile_switch_message(
+    profile: Option<&str>,
+    reason: &crate::app_event::AuthProfileSwitchReason,
+    queued_input_will_resume: bool,
+) -> String {
+    let label = profile
+        .map(str::to_string)
+        .unwrap_or_else(|| "default".to_string());
+    match reason {
+        crate::app_event::AuthProfileSwitchReason::Manual => {
+            format!("Profile changed to {label} for this session")
+        }
+        crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
+            let mut message = format!(
+                "Auto-switching auth profile to {label} because the {window} limit is exhausted."
+            );
+            if queued_input_will_resume {
+                message.push_str(" Your prompt will continue with that account.");
+            }
+            message
         }
     }
 }
