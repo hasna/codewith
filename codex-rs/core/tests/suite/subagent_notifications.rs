@@ -651,7 +651,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     )
     .await;
 
-    let _turn1_followup = mount_sse_once_match(
+    let turn1_followup = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
         sse(vec![
@@ -695,6 +695,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&first_child_request).await?;
     let _ = wait_for_requests(&second_child_request).await?;
+    let _ = wait_for_requests(&turn1_followup).await?;
 
     let subagent_stop_inputs = wait_for_hook_log(
         test.codex_home_path(),

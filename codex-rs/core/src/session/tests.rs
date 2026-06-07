@@ -3271,6 +3271,37 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 }
 
 #[tokio::test]
+async fn thread_rollback_allows_completed_turn_placeholder_before_cleanup() {
+    let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("session should not have additional references"),
+    )
+    .await;
+
+    let initial_context = sess.build_initial_context(tc.as_ref()).await;
+    let turn_1 = vec![user_message("turn 1 user")];
+    let mut full_history = Vec::new();
+    full_history.extend(initial_context.clone());
+    full_history.extend(turn_1);
+    sess.replace_history(full_history.clone(), Some(tc.to_turn_context_item()))
+        .await;
+    let rollout_items: Vec<RolloutItem> = full_history
+        .into_iter()
+        .map(RolloutItem::ResponseItem)
+        .collect();
+    sess.persist_rollout_items(&rollout_items).await;
+
+    *sess.active_turn.lock().await = Some(ActiveTurn::default());
+    handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+
+    let rollback_event = wait_for_thread_rolled_back(&rx).await;
+    assert_eq!(rollback_event.num_turns, 1);
+
+    let history = sess.clone_history().await;
+    assert_eq!(initial_context, history.raw_items());
+}
+
+#[tokio::test]
 async fn thread_rollback_fails_when_turn_in_progress() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
@@ -3278,7 +3309,15 @@ async fn thread_rollback_fails_when_turn_in_progress() {
     sess.record_conversation_items(tc.as_ref(), &initial_context)
         .await;
 
-    *sess.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
     handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
 
     let error_event = wait_for_thread_rollback_failed(&rx).await;
@@ -3289,6 +3328,8 @@ async fn thread_rollback_fails_when_turn_in_progress() {
 
     let history = sess.clone_history().await;
     assert_eq!(initial_context, history.raw_items());
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]

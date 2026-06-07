@@ -529,7 +529,14 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         return;
     }
 
-    let has_active_turn = { sess.active_turn.lock().await.is_some() };
+    let has_active_turn = {
+        sess.active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|active_turn| active_turn.task.as_ref())
+            .is_some()
+    };
     if has_active_turn {
         sess.send_event_raw(Event {
             id: sub_id,
