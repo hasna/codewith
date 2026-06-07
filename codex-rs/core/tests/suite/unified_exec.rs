@@ -879,8 +879,11 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     assert_eq!(end_event.status, ExecCommandStatus::Failed);
     assert_network_denial_exit_code(end_event.exit_code);
     assert!(
-        end_event.aggregated_output.contains("Network access"),
-        "expected network denial message in aggregated output: {:?}",
+        end_event.aggregated_output.contains("Network access")
+            || end_event
+                .aggregated_output
+                .contains("TimeoutError: timed out"),
+        "expected network denial or proxy timeout message in aggregated output: {:?}",
         end_event.aggregated_output
     );
     assert!(

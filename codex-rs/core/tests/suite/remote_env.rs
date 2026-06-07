@@ -409,8 +409,9 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
         scope: PermissionGrantScope::Turn,
         strict_auto_review: false,
     };
+    let remote_target_path_for_command = remote_target_path.display();
     let command = format!(
-        "printf 'remote-request-permissions-ok' > {relative_target_path} && cat {relative_target_path}"
+        "printf 'remote-request-permissions-ok' > {remote_target_path_for_command} && cat {remote_target_path_for_command}"
     );
     let response_mock = mount_sse_sequence(
         &server,
