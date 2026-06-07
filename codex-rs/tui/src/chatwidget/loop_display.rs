@@ -2,7 +2,6 @@
 
 use super::*;
 use chrono::DateTime;
-use chrono::Local;
 use chrono::Utc;
 use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit;
@@ -886,9 +885,7 @@ fn format_schedule_timestamp(seconds: i64) -> String {
     let Some(utc) = DateTime::<Utc>::from_timestamp(seconds, 0) else {
         return seconds.to_string();
     };
-    utc.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M")
-        .to_string()
+    utc.format("%Y-%m-%d %H:%M").to_string()
 }
 
 fn format_optional_relative_timestamp(seconds: Option<i64>) -> String {

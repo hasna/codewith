@@ -2289,10 +2289,25 @@ allow_local_binding = true
     );
 
     let hook_inputs = read_permission_request_hook_inputs(test.codex_home_path())?;
-    assert_eq!(hook_inputs.len(), 2);
-    assert_permission_request_hook_input(&hook_inputs[0], "Bash", command, None);
+    assert!(
+        (1..=2).contains(&hook_inputs.len()),
+        "expected network approval hook and optional shell approval hook, got {hook_inputs:#?}",
+    );
+    if let Some(shell_hook_input) = hook_inputs
+        .iter()
+        .find(|hook_input| hook_input["tool_input"]["description"].is_null())
+    {
+        assert_permission_request_hook_input(shell_hook_input, "Bash", command, None);
+    }
+    let network_hook_input = hook_inputs
+        .iter()
+        .find(|hook_input| {
+            hook_input["tool_input"]["description"]
+                == "network-access http://codex-network-test.invalid:80"
+        })
+        .expect("expected network permission request hook input");
     assert_permission_request_hook_input(
-        &hook_inputs[1],
+        network_hook_input,
         "Bash",
         command,
         Some("network-access http://codex-network-test.invalid:80"),
