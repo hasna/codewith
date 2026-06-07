@@ -82,6 +82,10 @@ pub fn shell_type_for_model_and_features(
     model_info: &ModelInfo,
     features: &Features,
 ) -> ConfigShellToolType {
+    if matches!(model_info.shell_type, ConfigShellToolType::Disabled) {
+        return ConfigShellToolType::Disabled;
+    }
+
     let unified_exec_feature_mode = unified_exec_feature_mode_for_features(features);
     let unified_exec_disabled =
         matches!(unified_exec_feature_mode, UnifiedExecFeatureMode::Disabled);

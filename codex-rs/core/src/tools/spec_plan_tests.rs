@@ -464,6 +464,18 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
 }
 
 #[tokio::test]
+async fn shell_family_respects_model_disabled_with_unified_exec_enabled() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        turn.model_info.shell_type = ConfigShellToolType::Disabled;
+    })
+    .await;
+
+    plan.assert_visible_lacks(&["exec_command", "write_stdin", "shell_command"]);
+    plan.assert_registered_lacks(&["exec_command", "write_stdin", "shell_command"]);
+}
+
+#[tokio::test]
 async fn shell_zsh_fork_stays_standalone_until_unified_exec_composition_is_enabled() {
     let standalone = probe(|turn| {
         set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);

@@ -37,6 +37,7 @@ use wiremock::matchers::path_regex;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
+const INTERNAL_ERROR_CODE: i64 = -32603;
 
 fn model_from_preset(preset: &ModelPreset) -> Model {
     Model {
@@ -438,9 +439,7 @@ async fn list_models_falls_back_for_cerebras_provider_discovery_failure() -> Res
     let provider = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path_regex(".*/models$"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-            "detail": "Not authenticated"
-        })))
+        .respond_with(ResponseTemplate::new(500).set_body_string("catalog down"))
         .mount(&provider)
         .await;
 
@@ -453,7 +452,7 @@ async fn list_models_falls_back_for_cerebras_provider_discovery_failure() -> Res
 [model_providers.cerebras]
 name = "Cerebras"
 base_url = "{provider_uri}/v1"
-env_key = "CEREBRAS_API_KEY"
+experimental_bearer_token = "test-token"
 wire_api = "responses"
 "#
         ),
@@ -483,6 +482,61 @@ wire_api = "responses"
         vec![("gpt-oss-120b", true), ("zai-glm-4.7", false)]
     );
     assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_does_not_fall_back_for_cerebras_auth_failure() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "detail": "Not authenticated"
+        })))
+        .mount(&provider)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let provider_uri = provider.uri();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+[model_providers.cerebras]
+name = "Cerebras"
+base_url = "{provider_uri}/v1"
+env_key = "CODEWITH_TEST_MODEL_LIST_MISSING_KEY"
+wire_api = "responses"
+"#
+        ),
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: Some("cerebras".to_string()),
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INTERNAL_ERROR_CODE);
+    assert!(
+        error
+            .error
+            .message
+            .contains("failed to list models for provider `cerebras`"),
+        "unexpected error message: {}",
+        error.error.message
+    );
     Ok(())
 }
 

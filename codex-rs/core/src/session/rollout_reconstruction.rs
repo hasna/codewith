@@ -173,6 +173,7 @@ impl Session {
                     ) {
                         active_segment.previous_turn_settings = Some(PreviousTurnSettings {
                             model: ctx.model.clone(),
+                            model_provider_id: ctx.model_provider_id.clone(),
                             realtime_active: ctx.realtime_active,
                         });
                         if matches!(

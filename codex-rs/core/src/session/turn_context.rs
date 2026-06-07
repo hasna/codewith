@@ -174,7 +174,23 @@ impl TurnContext {
         model: String,
         models_manager: &SharedModelsManager,
     ) -> Self {
+        self.with_model_provider_and_model(/*model_provider_id*/ None, model, models_manager)
+            .await
+    }
+
+    pub(crate) async fn with_model_provider_and_model(
+        &self,
+        model_provider_id: Option<String>,
+        model: String,
+        models_manager: &SharedModelsManager,
+    ) -> Self {
         let mut config = (*self.config).clone();
+        if let Some(model_provider_id) = model_provider_id
+            && let Some(provider) = config.model_providers.get(&model_provider_id).cloned()
+        {
+            config.model_provider_id = model_provider_id;
+            config.model_provider = provider;
+        }
         config.model = Some(model.clone());
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
@@ -221,6 +237,8 @@ impl TurnContext {
         let available_models = models_manager
             .list_models(RefreshStrategy::OnlineIfUncached)
             .await;
+        let provider =
+            create_model_provider(config.model_provider.clone(), self.auth_manager.clone());
 
         Self {
             sub_id: self.sub_id.clone(),
@@ -234,7 +252,7 @@ impl TurnContext {
                 .session_telemetry
                 .clone()
                 .with_model(model.as_str(), model_info.slug.as_str()),
-            provider: self.provider.clone(),
+            provider,
             reasoning_effort,
             reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
@@ -355,6 +373,7 @@ impl TurnContext {
             network: self.turn_context_network_item(),
             file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
             model: self.model_info.slug.clone(),
+            model_provider_id: Some(self.config.model_provider_id.clone()),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
             multi_agent_version: Some(self.multi_agent_version),

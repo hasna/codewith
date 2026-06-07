@@ -286,6 +286,7 @@ impl SteerInputError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreviousTurnSettings {
     pub(crate) model: String,
+    pub(crate) model_provider_id: Option<String>,
     pub(crate) realtime_active: Option<bool>,
 }
 

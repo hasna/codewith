@@ -1,6 +1,7 @@
 use super::*;
 use codex_config::config_toml::ConfigToml;
 use codex_model_provider::ModelProviderInfo;
+use codex_protocol::error::CodexErr;
 use futures::StreamExt;
 
 #[derive(Clone)]
@@ -15,6 +16,21 @@ pub(crate) struct CatalogRequestProcessor {
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
+
+fn provider_has_runtime_auth(provider: &ModelProviderInfo) -> bool {
+    provider.requires_openai_auth
+        || provider.has_command_auth()
+        || provider.aws.is_some()
+        || provider.experimental_bearer_token.is_some()
+        || match provider.env_key.as_deref() {
+            Some(_) => provider.api_key_if_available().is_some(),
+            None => true,
+        }
+}
+
+fn model_list_error_is_auth_failure(err: &CodexErr) -> bool {
+    matches!(err.http_status_code_value(), Some(401 | 403))
+}
 
 fn skills_to_info(
     skills: &[codex_core::skills::SkillMetadata],
@@ -303,7 +319,7 @@ impl CatalogRequestProcessor {
                     .clone();
                 let provider = create_model_provider_with_id(
                     model_provider.clone(),
-                    provider_info,
+                    provider_info.clone(),
                     Some(Arc::clone(&self.auth_manager)),
                 );
                 let models_manager = provider.models_manager(
@@ -320,6 +336,13 @@ impl CatalogRequestProcessor {
                 match try_supported_models_from_manager(models_manager, include_hidden).await {
                     Ok(models) => models,
                     Err(err) => {
+                        if !provider_has_runtime_auth(&provider_info)
+                            || model_list_error_is_auth_failure(&err)
+                        {
+                            return Err(internal_error(format!(
+                                "failed to list models for provider `{model_provider}`: {err}"
+                            )));
+                        }
                         let fallback_models =
                             fallback_supported_models_for_provider(&model_provider, include_hidden);
                         if fallback_models.is_empty() {
@@ -338,6 +361,9 @@ impl CatalogRequestProcessor {
                 let models = supported_models(self.thread_manager.clone(), include_hidden).await;
                 if models.is_empty() {
                     let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+                    if !provider_has_runtime_auth(&config.model_provider) {
+                        return Self::paginated_model_list_response(models, cursor, limit);
+                    }
                     let fallback_models = fallback_supported_models_for_provider(
                         &config.model_provider_id,
                         include_hidden,

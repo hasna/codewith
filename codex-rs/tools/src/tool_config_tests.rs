@@ -100,6 +100,18 @@ fn shell_type_is_derived_from_model_and_feature_gates() {
 }
 
 #[test]
+fn disabled_model_shell_type_wins_over_unified_exec_feature() {
+    let model = model_with_shell_type(ConfigShellToolType::Disabled);
+    let mut features = shell_features();
+    features.enable(Feature::UnifiedExec);
+
+    assert_eq!(
+        shell_type_for_model_and_features(&model, &features),
+        ConfigShellToolType::Disabled
+    );
+}
+
+#[test]
 fn shell_command_backend_requires_both_shell_tool_and_zsh_fork() {
     let mut features = shell_features();
     assert_eq!(
