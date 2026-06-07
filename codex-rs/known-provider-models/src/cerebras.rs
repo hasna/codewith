@@ -10,13 +10,13 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "gpt-oss-120b",
         "OpenAI GPT OSS 120B",
         "Cerebras hosted OpenAI gpt-oss model. Requires CEREBRAS_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "zai-glm-4.7",
         "Z.ai GLM 4.7",
         "Cerebras hosted Z.ai GLM 4.7 model. Requires CEREBRAS_API_KEY for turns.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
@@ -24,17 +24,17 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
         "gpt-oss-120b" => Some(KnownProviderModelMetadata::new(
             "OpenAI GPT OSS 120B",
-            131_072,
-            true,
-            false,
-            true,
+            /*context_window*/ 131_072,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ false,
+            /*supports_reasoning*/ true,
         )),
         "zai-glm-4.7" => Some(KnownProviderModelMetadata::new(
             "Z.ai GLM 4.7",
-            131_072,
-            true,
-            true,
-            true,
+            /*context_window*/ 131_072,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
         )),
         _ => None,
     }
