@@ -41,6 +41,7 @@ use codex_core_api::ProjectConfig;
 use codex_core_api::RealtimeAudioConfig;
 use codex_core_api::RealtimeConfig;
 use codex_core_api::SessionPickerViewMode;
+use codex_core_api::SessionRecapConfig;
 use codex_core_api::SessionSource;
 use codex_core_api::TerminalResizeReflowConfig;
 use codex_core_api::ThreadManager;
@@ -217,6 +218,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         selected_auth_profile: None,
         auth_profile_auto_switch: Default::default(),
+        session_recap: SessionRecapConfig::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::File,
         mcp_oauth_callback_port: None,
