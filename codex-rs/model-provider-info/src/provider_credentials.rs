@@ -195,8 +195,11 @@ fn non_empty_value(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::Path;
+    #[cfg(unix)]
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
