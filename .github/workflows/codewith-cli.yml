@@ -54,7 +54,7 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.93.0
 
       - name: Build Codewith native CLI
         shell: bash
