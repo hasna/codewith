@@ -10,25 +10,25 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "openai/gpt-oss-120b",
         "OpenAI GPT OSS 120B",
         "OpenRouter hosted OpenAI gpt-oss model. Requires OPENROUTER_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "deepseek/deepseek-v4-flash",
         "DeepSeek V4 Flash",
         "OpenRouter hosted DeepSeek V4 Flash model. Requires OPENROUTER_API_KEY for turns.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "z-ai/glm-4.7",
         "Z.ai GLM 4.7",
         "OpenRouter hosted Z.ai GLM 4.7 model. Requires OPENROUTER_API_KEY for turns.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "z-ai/glm-5.1",
         "Z.ai GLM 5.1",
         "OpenRouter hosted Z.ai GLM 5.1 model. Requires OPENROUTER_API_KEY for turns.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
