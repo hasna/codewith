@@ -1878,7 +1878,9 @@ async fn enable_feature_in_config(feature: &str) -> anyhow::Result<()> {
 
 async fn disable_feature_in_config(feature: &str) -> anyhow::Result<()> {
     FeatureToggles::validate_feature(feature)?;
-    let feature_id = feature_for_key(feature).expect("feature was already validated");
+    let Some(feature_id) = feature_for_key(feature) else {
+        anyhow::bail!("Unknown feature flag: {feature}");
+    };
     if !can_disable_feature_in_user_config(feature_id) {
         anyhow::bail!("Feature `{feature}` cannot be disabled in config.toml.");
     }

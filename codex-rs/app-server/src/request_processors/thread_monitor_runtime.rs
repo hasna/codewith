@@ -1,6 +1,12 @@
 use super::thread_monitor_api::api_thread_monitor_event_from_state;
 use super::thread_monitor_api::api_thread_monitor_from_state;
 use super::*;
+#[cfg(not(target_os = "windows"))]
+use codex_shell_command::shell_detect::ShellType;
+#[cfg(not(target_os = "windows"))]
+use codex_shell_command::shell_detect::get_shell;
+#[cfg(not(target_os = "windows"))]
+use codex_shell_command::shell_detect::ultimate_fallback_shell;
 use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -582,7 +588,11 @@ fn monitor_command(command: &str) -> Command {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = Command::new("sh");
+        let shell = get_shell(ShellType::Bash, /*path*/ None)
+            .or_else(|| get_shell(ShellType::Zsh, /*path*/ None))
+            .or_else(|| get_shell(ShellType::Sh, /*path*/ None))
+            .unwrap_or_else(ultimate_fallback_shell);
+        let mut cmd = Command::new(shell.shell_path);
         cmd.arg("-lc").arg(command);
         cmd
     }
@@ -605,4 +615,29 @@ fn truncate_chars(value: String, max_chars: usize) -> String {
         return value;
     }
     value.chars().take(max_chars).collect()
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn monitor_command_supports_bash_source_when_bash_is_available() {
+        if get_shell(ShellType::Bash, /*path*/ None).is_none() {
+            return;
+        }
+
+        let output = monitor_command("source /dev/null && printf ok")
+            .output()
+            .await
+            .expect("monitor command should run");
+
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+    }
 }
