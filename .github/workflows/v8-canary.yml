@@ -169,27 +169,38 @@ jobs:
             v8_cpu: arm64
             variant: ptrcomp-sandbox
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Skip macOS V8 artifact build outside upstream
+        if: ${{ github.repository != 'openai/codex' && startsWith(matrix.runner, 'macos-') }}
+        shell: bash
+        run: |
+          echo "Skipping macOS V8 artifact build in ${GITHUB_REPOSITORY}; this path requires upstream BuildBuddy and Apple SDK access."
+
+      - if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Bazel
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         uses: ./.github/actions/setup-bazel-ci
         with:
           target: ${{ matrix.target }}
 
       - name: Set up Python
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Set up Rust toolchain for Cargo smoke
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: "1.95.0"
 
       - name: Build Bazel V8 release pair
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
           PLATFORM: ${{ matrix.platform }}
@@ -225,6 +236,7 @@ jobs:
             "--config=${{ matrix.bazel_config }}"
 
       - name: Stage release pair
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         env:
           BAZEL_CONFIG: ${{ matrix.bazel_config }}
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -252,6 +264,7 @@ jobs:
           python3 .github/scripts/rusty_v8_bazel.py stage-release-pair "${stage_args[@]}"
 
       - name: Smoke test staged artifact with Cargo
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         env:
           SANDBOX: ${{ matrix.sandbox }}
           TARGET: ${{ matrix.target }}
@@ -290,6 +303,7 @@ jobs:
           )
 
       - name: Upload staged artifacts
+        if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-${{ matrix.variant }}-${{ matrix.target }}
