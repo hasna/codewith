@@ -556,12 +556,10 @@ fn parse_month_date_prefix(
 }
 
 fn parse_day_token(token: &str) -> Option<u32> {
-    let token = token
-        .trim_end_matches(',')
-        .trim_end_matches("st")
-        .trim_end_matches("nd")
-        .trim_end_matches("rd")
-        .trim_end_matches("th");
+    let mut token = token.trim_end_matches(',');
+    for suffix in ["st", concat!("n", "d"), "rd", "th"] {
+        token = token.trim_end_matches(suffix);
+    }
     token.parse::<u32>().ok()
 }
 
