@@ -1101,7 +1101,7 @@ fn web_search_history_cell_snapshot() {
 #[test]
 fn standalone_unix_update_available_history_cell_snapshot() {
     let cell = UpdateAvailableHistoryCell::new_for_test(
-        "0.1.22",
+        "0.1.23",
         "9.9.9",
         Some(UpdateAction::StandaloneUnix),
     );
@@ -1113,7 +1113,7 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 #[test]
 fn standalone_windows_update_available_history_cell_snapshot() {
     let cell = UpdateAvailableHistoryCell::new_for_test(
-        "0.1.22",
+        "0.1.23",
         "9.9.9",
         Some(UpdateAction::StandaloneWindows),
     );
