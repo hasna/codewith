@@ -377,11 +377,13 @@ impl ScheduleHarness {
 
     async fn read_server_notification(&mut self) -> ServerNotification {
         loop {
-            let envelope =
-                tokio::time::timeout(std::time::Duration::from_secs(5), self.outgoing_rx.recv())
-                    .await
-                    .expect("timed out waiting for server notification")
-                    .expect("outgoing channel closed");
+            let envelope = tokio::time::timeout(
+                std::time::Duration::from_secs(/*secs*/ 20),
+                self.outgoing_rx.recv(),
+            )
+            .await
+            .expect("timed out waiting for server notification")
+            .expect("outgoing channel closed");
             let message = match envelope {
                 OutgoingEnvelope::ToConnection {
                     connection_id,

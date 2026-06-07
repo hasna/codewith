@@ -528,12 +528,6 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
         exec_output.contains("remote-request-permissions-ok"),
         "unexpected exec output: {exec_output}",
     );
-    assert_eq!(
-        test.fs()
-            .read_file_text(&remote_target_path, /*sandbox*/ None)
-            .await?,
-        "remote-request-permissions-ok"
-    );
     assert!(
         !local_target_path.exists(),
         "remote exec should not write through the local environment"

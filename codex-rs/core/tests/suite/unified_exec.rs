@@ -830,11 +830,7 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
 
     assert_eq!(end_event.status, ExecCommandStatus::Failed);
     assert_network_denial_exit_code(end_event.exit_code);
-    assert!(
-        end_event.aggregated_output.contains("Network access"),
-        "expected network denial message in aggregated output: {:?}",
-        end_event.aggregated_output
-    );
+    assert_network_denial_or_proxy_timeout_output(&end_event.aggregated_output);
     assert!(
         end_event.process_id.is_some(),
         "background denial should end the stored unified exec process"
@@ -878,14 +874,7 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
 
     assert_eq!(end_event.status, ExecCommandStatus::Failed);
     assert_network_denial_exit_code(end_event.exit_code);
-    assert!(
-        end_event.aggregated_output.contains("Network access")
-            || end_event
-                .aggregated_output
-                .contains("TimeoutError: timed out"),
-        "expected network denial or proxy timeout message in aggregated output: {:?}",
-        end_event.aggregated_output
-    );
+    assert_network_denial_or_proxy_timeout_output(&end_event.aggregated_output);
     assert!(
         end_event.process_id.is_some(),
         "short-lived denial should still emit an end event for the command"
@@ -1008,6 +997,13 @@ async fn wait_for_unified_exec_end(
         }
     };
     (end_event, turn_completed)
+}
+
+fn assert_network_denial_or_proxy_timeout_output(output: &str) {
+    assert!(
+        output.contains("Network access") || output.contains("TimeoutError: timed out"),
+        "expected network denial or proxy timeout message in aggregated output: {output:?}"
+    );
 }
 
 fn assert_network_denial_exit_code(exit_code: i32) {

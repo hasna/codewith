@@ -20,6 +20,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -411,8 +412,14 @@ async fn wait_for_single_request(mock: &ResponseMock) -> ResponsesRequest {
 async fn wait_for_file_removed(path: &Path) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if !tokio::fs::try_exists(path).await? {
-            return Ok(());
+        match tokio::fs::try_exists(path).await {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(err)
+                if cfg!(windows)
+                    && err.kind() == ErrorKind::PermissionDenied
+                    && Instant::now() < deadline => {}
+            Err(err) => return Err(err.into()),
         }
         assert!(
             Instant::now() < deadline,

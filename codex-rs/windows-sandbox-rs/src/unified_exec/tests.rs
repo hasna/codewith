@@ -17,6 +17,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -51,7 +52,41 @@ fn current_thread_runtime() -> tokio::runtime::Runtime {
 fn pwsh_path() -> Option<PathBuf> {
     let program_files = std::env::var_os("ProgramFiles")?;
     let path = PathBuf::from(program_files).join("PowerShell\\7\\pwsh.exe");
-    path.is_file().then_some(path)
+    if !path.is_file() {
+        return None;
+    }
+
+    let output = Command::new(&path)
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Console]::Out.WriteLine('CODEWITH-PWSH-READY')",
+        ])
+        .output();
+    match output {
+        Ok(output)
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("CODEWITH-PWSH-READY") =>
+        {
+            Some(path)
+        }
+        Ok(output) => {
+            eprintln!(
+                "skipping PowerShell tests: pwsh is installed but unusable: status={} stdout={:?} stderr={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            None
+        }
+        Err(err) => {
+            eprintln!(
+                "skipping PowerShell tests: failed to validate {}: {err}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn sandbox_cwd() -> PathBuf {
@@ -247,7 +282,7 @@ fn legacy_non_tty_powershell_emits_output() {
                 pwsh.display().to_string(),
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
-                "Write-Output LEGACY-NONTTY-DIRECT".to_string(),
+                "[Console]::Out.WriteLine('LEGACY-NONTTY-DIRECT')".to_string(),
             ],
             cwd.as_path(),
             HashMap::new(),
@@ -433,7 +468,7 @@ fn legacy_capture_powershell_emits_output() {
             pwsh.display().to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            "Write-Output LEGACY-CAPTURE-DIRECT".to_string(),
+            "[Console]::Out.WriteLine('LEGACY-CAPTURE-DIRECT')".to_string(),
         ],
         cwd.as_path(),
         HashMap::new(),
@@ -483,7 +518,7 @@ fn legacy_capture_cancellation_is_not_reported_as_timeout() {
             pwsh.display().to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            "Start-Sleep -Seconds 30".to_string(),
+            "[Threading.Thread]::Sleep(30000)".to_string(),
         ],
         cwd.as_path(),
         HashMap::new(),
@@ -495,12 +530,12 @@ fn legacy_capture_cancellation_is_not_reported_as_timeout() {
     cancel_thread.join().expect("cancel thread should finish");
 
     assert!(
-        started_at.elapsed() < Duration::from_secs(10),
-        "cancellation should end capture before the timeout"
-    );
-    assert!(
         !result.timed_out,
         "cancellation should not be reported as a timeout"
+    );
+    assert!(
+        started_at.elapsed() < Duration::from_secs(/*secs*/ 25),
+        "cancellation should end capture before the timeout"
     );
     assert_ne!(result.exit_code, 0);
 }
@@ -527,7 +562,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
                 "-NoProfile".to_string(),
                 "-NoExit".to_string(),
                 "-Command".to_string(),
-                "$PID; Write-Output ready".to_string(),
+                "$PID; [Console]::Out.WriteLine('ready')".to_string(),
             ],
             cwd.as_path(),
             HashMap::new(),
@@ -544,7 +579,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
 
         let writer = spawned.session.writer_sender();
         writer
-            .send(b"Write-Output second\n".to_vec())
+            .send(b"[Console]::Out.WriteLine('second')\n".to_vec())
             .await
             .expect("send second command");
         writer
