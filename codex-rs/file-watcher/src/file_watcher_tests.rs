@@ -35,14 +35,17 @@ async fn throttled_receiver_coalesces_within_interval() {
             paths: vec![path("a")],
         })
     );
+    let first_emit_at = std::time::Instant::now();
 
     tx.add_changed_paths(&[path("b"), path("c")]).await;
-    let blocked = timeout(TEST_THROTTLE_INTERVAL / 2, throttled.recv()).await;
-    assert_eq!(blocked.is_err(), true);
-
-    let second = timeout(TEST_THROTTLE_INTERVAL * 2, throttled.recv())
+    let second = timeout(Duration::from_secs(1), throttled.recv())
         .await
         .expect("second emit timeout");
+    let elapsed = first_emit_at.elapsed();
+    assert!(
+        elapsed >= TEST_THROTTLE_INTERVAL.saturating_sub(Duration::from_millis(5)),
+        "second emit was not throttled: elapsed {elapsed:?}",
+    );
     assert_eq!(
         second,
         Some(FileWatcherEvent {
