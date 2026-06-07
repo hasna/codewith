@@ -62,6 +62,13 @@ filter = 'test(start_thread_uses_all_default_environments_from_codex_home)'
 slow-timeout = { period = "1m", terminate-after = 2 }
 
 [[profile.default.overrides]]
+# This macOS resume test starts five full codex-exec subprocesses. It can exceed
+# the default full-CI 60s termination window under shard contention.
+platform = 'cfg(target_os = "macos")'
+filter = 'package(codex-exec) & test(exec_resume_last_respects_cwd_filter_and_all_flag)'
+slow-timeout = { period = "1m", terminate-after = 3 }
+
+[[profile.default.overrides]]
 # These Windows-heavy tests spawn subprocesses, session files, or JSON-RPC
 # clients and have been the dominant source of 30s full-CI timeouts.
 platform = 'cfg(windows)'
