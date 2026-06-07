@@ -57,11 +57,7 @@ fn pwsh_path() -> Option<PathBuf> {
     }
 
     let output = Command::new(&path)
-        .args([
-            "-NoProfile",
-            "-Command",
-            "[Console]::Out.WriteLine('CODEWITH-PWSH-READY')",
-        ])
+        .args(["-NoProfile", "-Command", "'CODEWITH-PWSH-READY'"])
         .output();
     match output {
         Ok(output)
@@ -282,7 +278,7 @@ fn legacy_non_tty_powershell_emits_output() {
                 pwsh.display().to_string(),
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
-                "[Console]::Out.WriteLine('LEGACY-NONTTY-DIRECT')".to_string(),
+                "'LEGACY-NONTTY-DIRECT'".to_string(),
             ],
             cwd.as_path(),
             HashMap::new(),
@@ -468,7 +464,7 @@ fn legacy_capture_powershell_emits_output() {
             pwsh.display().to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            "[Console]::Out.WriteLine('LEGACY-CAPTURE-DIRECT')".to_string(),
+            "'LEGACY-CAPTURE-DIRECT'".to_string(),
         ],
         cwd.as_path(),
         HashMap::new(),
@@ -518,7 +514,7 @@ fn legacy_capture_cancellation_is_not_reported_as_timeout() {
             pwsh.display().to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            "[Threading.Thread]::Sleep(30000)".to_string(),
+            "$x = 0; while ($true) { $x = $x + 1 }".to_string(),
         ],
         cwd.as_path(),
         HashMap::new(),
@@ -562,7 +558,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
                 "-NoProfile".to_string(),
                 "-NoExit".to_string(),
                 "-Command".to_string(),
-                "$PID; [Console]::Out.WriteLine('ready')".to_string(),
+                "$PID; 'ready'".to_string(),
             ],
             cwd.as_path(),
             HashMap::new(),
@@ -579,7 +575,7 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
 
         let writer = spawned.session.writer_sender();
         writer
-            .send(b"[Console]::Out.WriteLine('second')\n".to_vec())
+            .send(b"'second'\n".to_vec())
             .await
             .expect("send second command");
         writer

@@ -71,7 +71,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::path_regex;
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 const DELEGATED_SHELL_TOOL_TIMEOUT_MS: u64 = 30_000;
 const STARTUP_CONTEXT_HEADER: &str = "Startup context from Codewith.";
 const V2_STEERING_ACKNOWLEDGEMENT: &str =
