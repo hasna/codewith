@@ -3523,6 +3523,7 @@ mod tests {
                     approvals_reviewer: v2::ApprovalsReviewer::User,
                     sandbox_policy: v2::SandboxPolicy::DangerFullAccess,
                     active_permission_profile: None,
+                    auth_profile: None,
                     model: "gpt-5.4".to_string(),
                     model_provider: "openai".to_string(),
                     service_tier: None,

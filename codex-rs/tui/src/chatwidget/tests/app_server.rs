@@ -17,6 +17,7 @@ fn thread_settings_for_test(
             active_permission_profile: Some(
                 codex_app_server_protocol::ActivePermissionProfile::read_only(),
             ),
+            auth_profile: None,
             model: model.to_string(),
             model_provider: "openai".to_string(),
             service_tier: Some(ServiceTier::Fast.request_value().to_string()),

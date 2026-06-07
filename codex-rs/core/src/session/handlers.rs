@@ -206,6 +206,7 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             approvals_reviewer: snapshot.approvals_reviewer,
             permission_profile: snapshot.permission_profile,
             active_permission_profile: snapshot.active_permission_profile,
+            auth_profile: snapshot.auth_profile,
             cwd: snapshot.cwd,
             reasoning_effort: snapshot.reasoning_effort,
             reasoning_summary: snapshot.reasoning_summary,

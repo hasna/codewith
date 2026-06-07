@@ -726,6 +726,7 @@ mod thread_processor_behavior_tests {
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
             active_permission_profile: None,
+            auth_profile: None,
             cwd,
             workspace_roots: Vec::new(),
             profile_workspace_roots: Vec::new(),

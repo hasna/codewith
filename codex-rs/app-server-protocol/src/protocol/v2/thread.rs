@@ -297,6 +297,7 @@ pub struct ThreadSettings {
     pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox_policy: SandboxPolicy,
     pub active_permission_profile: Option<ActivePermissionProfile>,
+    pub auth_profile: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,

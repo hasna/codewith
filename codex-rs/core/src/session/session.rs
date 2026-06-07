@@ -180,6 +180,10 @@ impl SessionConfiguration {
             approvals_reviewer: self.approvals_reviewer,
             permission_profile: self.permission_profile(),
             active_permission_profile: self.active_permission_profile(),
+            auth_profile: self
+                .original_config_do_not_use
+                .selected_auth_profile
+                .clone(),
             cwd: self.cwd.clone(),
             workspace_roots: self.workspace_roots.clone(),
             profile_workspace_roots: self.profile_workspace_roots().to_vec(),

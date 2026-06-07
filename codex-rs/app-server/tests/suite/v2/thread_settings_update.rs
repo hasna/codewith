@@ -72,6 +72,7 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
 
     let updated = read_thread_settings_updated(&mut mcp).await?;
     assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.auth_profile, None);
     assert_eq!(updated.thread_settings.model, model_id);
     assert_eq!(
         updated.thread_settings.service_tier.as_deref(),
@@ -145,6 +146,7 @@ supports_websockets = false
 
     let updated = read_thread_settings_updated(&mut mcp).await?;
     assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.auth_profile, None);
     assert_eq!(updated.thread_settings.model_provider, "mock_provider_two");
     assert_eq!(updated.thread_settings.model, "mock-model-two");
 
@@ -289,6 +291,13 @@ async fn thread_settings_update_auth_profile_updates_future_turns() -> Result<()
     assert!(
         received_response_bodies(&server).await?.is_empty(),
         "auth-profile-only update should not start a model request"
+    );
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(
+        updated.thread_settings.auth_profile.as_deref(),
+        Some("work")
     );
 
     start_text_turn(&mut mcp, thread.id).await?;

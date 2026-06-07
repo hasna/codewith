@@ -200,6 +200,7 @@ pub(crate) fn thread_settings_from_config_snapshot(
         active_permission_profile: thread_response_active_permission_profile(
             config_snapshot.active_permission_profile.clone(),
         ),
+        auth_profile: config_snapshot.auth_profile.clone(),
         model: config_snapshot.model.clone(),
         model_provider: config_snapshot.model_provider_id.clone(),
         service_tier: config_snapshot.service_tier.clone(),
@@ -224,6 +225,7 @@ pub(crate) fn thread_settings_from_core_snapshot(
         active_permission_profile: thread_response_active_permission_profile(
             snapshot.active_permission_profile,
         ),
+        auth_profile: snapshot.auth_profile,
         model: snapshot.model,
         model_provider: snapshot.model_provider_id,
         service_tier: snapshot.service_tier,

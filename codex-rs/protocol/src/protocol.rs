@@ -1900,6 +1900,8 @@ pub struct ThreadSettingsSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_profile: Option<String>,
     pub cwd: AbsolutePathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,

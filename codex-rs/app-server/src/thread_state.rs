@@ -265,6 +265,7 @@ mod tests {
                 network_access: false,
             },
             active_permission_profile: None,
+            auth_profile: None,
             model: model.to_string(),
             model_provider: "mock_provider".to_string(),
             service_tier: None,

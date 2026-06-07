@@ -222,6 +222,7 @@ mod tests {
                 network_access: false,
             },
             active_permission_profile: None,
+            auth_profile: None,
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
