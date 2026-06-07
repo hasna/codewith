@@ -325,6 +325,30 @@ async fn wait_for_requests(
     }
 }
 
+async fn wait_for_matching_request<F>(
+    mock: &core_test_support::responses::ResponseMock,
+    description: &str,
+    predicate: F,
+) -> Result<ResponsesRequest>
+where
+    F: Fn(&ResponsesRequest) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let requests = mock.requests();
+        if let Some(request) = requests.iter().find(|request| predicate(request)) {
+            return Ok(request.clone());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "expected request matching {description}, got {} captured requests",
+                requests.len()
+            );
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn setup_turn_one_with_spawned_child(
     server: &MockServer,
     child_response_delay: Option<Duration>,
@@ -1082,10 +1106,16 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
-    let child_request = wait_for_requests(&child_request_log)
-        .await?
-        .pop()
-        .expect("child request");
+    let child_request = wait_for_matching_request(
+        &child_request_log,
+        "encrypted agent message child request",
+        |request| {
+            request.body_contains_text("agent_message")
+                && request.body_contains_text("encrypted_content")
+                && request.body_contains_text(encrypted_message)
+        },
+    )
+    .await?;
     assert!(child_request.body_contains_text("agent_message"));
     assert!(child_request.body_contains_text("/root"));
     assert!(child_request.body_contains_text("/root/worker"));
