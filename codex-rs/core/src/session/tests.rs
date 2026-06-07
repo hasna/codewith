@@ -3019,7 +3019,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
         sess.previous_turn_settings().await,
         Some(PreviousTurnSettings {
             model: tc.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(tc.config.model_provider_id.clone()),
             realtime_active: Some(tc.realtime_active),
         })
     );

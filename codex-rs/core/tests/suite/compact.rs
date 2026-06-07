@@ -312,7 +312,11 @@ async fn assert_compaction_uses_turn_lifecycle_id(codex: &std::sync::Arc<codex_c
     let mut compact_started_id = None;
     let mut compact_completed_id = None;
 
-    while turn_completed_id.is_none() {
+    while turn_started_id.is_none()
+        || turn_completed_id.is_none()
+        || compact_started_id.is_none()
+        || compact_completed_id.is_none()
+    {
         let event = codex.next_event().await.expect("next event");
         match event.msg {
             EventMsg::TurnStarted(_) => turn_started_id = Some(event.id.clone()),

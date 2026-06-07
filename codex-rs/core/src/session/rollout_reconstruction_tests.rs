@@ -275,7 +275,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );
@@ -369,7 +369,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );
@@ -495,7 +495,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );
@@ -596,7 +596,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );
@@ -817,7 +817,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
         session.previous_turn_settings().await,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );
@@ -1452,7 +1452,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_preserves_turn_
         session.previous_turn_settings().await,
         Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
-            model_provider_id: None,
+            model_provider_id: Some(turn_context.config.model_provider_id.clone()),
             realtime_active: Some(turn_context.realtime_active),
         })
     );

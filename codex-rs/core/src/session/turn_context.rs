@@ -186,6 +186,7 @@ impl TurnContext {
     ) -> Self {
         let mut config = (*self.config).clone();
         if let Some(model_provider_id) = model_provider_id
+            && model_provider_id != config.model_provider_id
             && let Some(provider) = config.model_providers.get(&model_provider_id).cloned()
         {
             config.model_provider_id = model_provider_id;
