@@ -238,7 +238,9 @@ fn chat_tools_from_responses(
     for tool in tools {
         match tool.get("type").and_then(Value::as_str) {
             Some("function") => {
-                if let Some(chat_tool) = chat_function_tool(tool, None, tool_name_map)? {
+                if let Some(chat_tool) =
+                    chat_function_tool(tool, /*namespace*/ None, tool_name_map)?
+                {
                     chat_tools.push(chat_tool);
                 }
             }

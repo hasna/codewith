@@ -65,7 +65,7 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
-    model_info_from_slug_for_provider(slug, None)
+    model_info_from_slug_for_provider(slug, /*provider_id*/ None)
 }
 
 pub(crate) fn model_info_from_slug_for_provider(
