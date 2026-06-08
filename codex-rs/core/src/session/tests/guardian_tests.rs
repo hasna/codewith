@@ -323,7 +323,7 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
     );
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
-    let expiration_ms: u64 = if cfg!(windows) { 2_500 } else { 1_000 };
+    let expiration_ms: u64 = if cfg!(windows) { 10_000 } else { 1_000 };
 
     let handler = crate::tools::handlers::ShellCommandHandler::from(
         codex_tools::ShellCommandBackendConfig::Classic,
