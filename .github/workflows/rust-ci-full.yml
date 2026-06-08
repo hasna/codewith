@@ -464,6 +464,7 @@ jobs:
       profile: ci-test
       artifact_id: linux-arm64
       use_sccache: true
+      archive_timeout_minutes: 90
     secrets: inherit
 
   tests_windows_x64:

@@ -47,6 +47,10 @@ on:
         required: false
         default: false
         type: boolean
+      archive_timeout_minutes:
+        required: false
+        default: 60
+        type: number
 
 # Caller workflow-level env does not flow through workflow_call, so keep the
 # Cargo git transport hardening on the archive and shard jobs directly here.
@@ -57,7 +61,7 @@ jobs:
   archive:
     name: Build nextest archive
     runs-on: ${{ inputs.archive_runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.archive_runner_group, inputs.archive_runner_labels)) || inputs.archive_runner != '' && inputs.archive_runner || inputs.runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner_group, inputs.runner_labels)) || inputs.runner }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.archive_timeout_minutes }}
     defaults:
       run:
         working-directory: codex-rs
