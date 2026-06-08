@@ -1594,21 +1594,19 @@ impl Session {
             )
         };
 
-        if let Some(updated_auth_profile) = updated_auth_profile {
-            if let Some(live_thread) = self.live_thread() {
-                if let Err(err) = live_thread
-                    .update_metadata(
-                        ThreadMetadataPatch {
-                            auth_profile: Some(updated_auth_profile),
-                            ..Default::default()
-                        },
-                        /*include_archived*/ false,
-                    )
-                    .await
-                {
-                    warn!("failed to persist auth profile update: {err}");
-                }
-            }
+        if let Some(updated_auth_profile) = updated_auth_profile
+            && let Some(live_thread) = self.live_thread()
+            && let Err(err) = live_thread
+                .update_metadata(
+                    ThreadMetadataPatch {
+                        auth_profile: Some(updated_auth_profile),
+                        ..Default::default()
+                    },
+                    /*include_archived*/ false,
+                )
+                .await
+        {
+            warn!("failed to persist auth profile update: {err}");
         }
 
         if let Some(prepared_auth_profile_switch) = prepared_auth_profile_switch {
