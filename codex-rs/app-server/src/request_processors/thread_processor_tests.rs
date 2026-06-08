@@ -697,7 +697,6 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn collect_resume_override_mismatches_includes_service_tier() {
-        let cwd = test_path_buf("/tmp").abs();
         let request = ThreadResumeParams {
             thread_id: "thread-1".to_string(),
             history: None,
@@ -705,6 +704,7 @@ mod thread_processor_behavior_tests {
             model: None,
             model_provider: None,
             service_tier: Some(Some("priority".to_string())),
+            auth_profile: None,
             cwd: None,
             runtime_workspace_roots: None,
             approval_policy: None,
@@ -727,7 +727,7 @@ mod thread_processor_behavior_tests {
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
             active_permission_profile: None,
             auth_profile: None,
-            cwd,
+            cwd: test_path_buf("/tmp").abs(),
             workspace_roots: Vec::new(),
             profile_workspace_roots: Vec::new(),
             ephemeral: false,
@@ -751,6 +751,73 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             collect_resume_override_mismatches(&request, &config_snapshot),
             vec!["service_tier requested=Some(\"priority\") active=Some(\"flex\")".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_resume_override_mismatches_includes_auth_profile() {
+        let mut request = ThreadResumeParams {
+            thread_id: "thread-1".to_string(),
+            history: None,
+            path: None,
+            model: None,
+            model_provider: None,
+            service_tier: None,
+            auth_profile: Some(Some("work".to_string())),
+            cwd: None,
+            runtime_workspace_roots: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox: None,
+            permissions: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            personality: None,
+            exclude_turns: false,
+            initial_turns_page: None,
+        };
+        let mut config_snapshot = ThreadConfigSnapshot {
+            model: "gpt-5".to_string(),
+            model_provider_id: "openai".to_string(),
+            service_tier: None,
+            approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
+            permission_profile: codex_protocol::models::PermissionProfile::Disabled,
+            active_permission_profile: None,
+            auth_profile: None,
+            cwd: test_path_buf("/tmp").abs(),
+            workspace_roots: Vec::new(),
+            profile_workspace_roots: Vec::new(),
+            ephemeral: false,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            personality: None,
+            collaboration_mode: CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "gpt-5".to_string(),
+                    reasoning_effort: None,
+                    developer_instructions: None,
+                },
+            },
+            session_source: SessionSource::Cli,
+            forked_from_thread_id: None,
+            parent_thread_id: None,
+            thread_source: None,
+        };
+
+        assert_eq!(
+            collect_resume_override_mismatches(&request, &config_snapshot),
+            vec!["auth_profile requested=Some(\"work\") active=None".to_string()]
+        );
+
+        request.auth_profile = Some(None);
+        config_snapshot.auth_profile = Some("work".to_string());
+
+        assert_eq!(
+            collect_resume_override_mismatches(&request, &config_snapshot),
+            vec!["auth_profile requested=None active=Some(\"work\")".to_string()]
         );
     }
 

@@ -105,6 +105,16 @@ pub struct ThreadStartParams {
     )]
     #[ts(optional = nullable)]
     pub service_tier: Option<Option<String>>,
+    /// Auth profile selected for model requests on this thread. `null` selects
+    /// the default root auth; omission leaves config/env selection unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub auth_profile: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.
@@ -372,6 +382,16 @@ pub struct ThreadResumeParams {
     )]
     #[ts(optional = nullable)]
     pub service_tier: Option<Option<String>>,
+    /// Auth profile selected for model requests on this thread. `null` selects
+    /// the default root auth; omission leaves config/env selection unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub auth_profile: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.
@@ -525,6 +545,16 @@ pub struct ThreadForkParams {
     )]
     #[ts(optional = nullable)]
     pub service_tier: Option<Option<String>>,
+    /// Auth profile selected for model requests on this thread. `null` selects
+    /// the default root auth; omission leaves config/env selection unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub auth_profile: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     /// Replace the thread's runtime workspace roots. Paths must be absolute.

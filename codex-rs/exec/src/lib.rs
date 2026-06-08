@@ -430,7 +430,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         tools_web_search_request: None,
         ephemeral: ephemeral.then_some(true),
         bypass_hook_trust: bypass_hook_trust.then_some(true),
-        auth_profile,
+        auth_profile: auth_profile.map(Some),
         additional_writable_roots: add_dir,
     };
 
@@ -1046,6 +1046,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
     ThreadStartParams {
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
+        auth_profile: Some(config.selected_auth_profile.clone()),
         cwd: Some(config.cwd.to_string_lossy().to_string()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
@@ -1071,6 +1072,7 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
         thread_id,
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
+        auth_profile: Some(config.selected_auth_profile.clone()),
         cwd: Some(config.cwd.to_string_lossy().to_string()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),

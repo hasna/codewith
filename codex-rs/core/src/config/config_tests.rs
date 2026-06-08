@@ -4933,7 +4933,7 @@ async fn config_resolves_selected_auth_profile_from_override() -> std::io::Resul
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides {
-            auth_profile: Some("from-cli".to_string()),
+            auth_profile: Some(Some("from-cli".to_string())),
             ..Default::default()
         },
         codex_home.abs(),
@@ -4941,6 +4941,28 @@ async fn config_resolves_selected_auth_profile_from_override() -> std::io::Resul
     .await?;
 
     assert_eq!(config.selected_auth_profile.as_deref(), Some("from-cli"));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_override_can_clear_selected_auth_profile_env() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::set(CODEWITH_AUTH_PROFILE_ENV_VAR, "from-env");
+    let _codex_guard = EnvVarGuard::set(CODEX_AUTH_PROFILE_ENV_VAR, "from-codex-env");
+    let codex_home = TempDir::new()?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some(None),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.selected_auth_profile, None);
 
     Ok(())
 }
@@ -5015,7 +5037,7 @@ async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
     let err = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides {
-            auth_profile: Some("nested/work".to_string()),
+            auth_profile: Some(Some("nested/work".to_string())),
             ..Default::default()
         },
         codex_home.abs(),

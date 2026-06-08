@@ -1120,27 +1120,7 @@ impl App {
                 reason,
                 resume_queued_input,
             } => {
-                self.config.selected_auth_profile = profile.clone();
-                self.chat_widget.set_auth_profile(profile.clone());
-                let submitted =
-                    self.chat_widget
-                        .submit_op(AppCommand::override_turn_context_auth_profile(
-                            profile.clone(),
-                        ));
-                if submitted {
-                    let queued_input_will_resume =
-                        resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
-                    let message = auth_profile_switch_message(
-                        profile.as_deref(),
-                        &reason,
-                        queued_input_will_resume,
-                    );
-                    self.chat_widget.add_info_message(message, /*hint*/ None);
-                    self.refresh_status_line();
-                    if resume_queued_input {
-                        self.chat_widget.maybe_send_next_queued_input();
-                    }
-                }
+                self.submit_auth_profile_switch(profile, &reason, resume_queued_input);
             }
             AppEvent::OpenAuthProfileRenamePrompt { profile } => {
                 self.chat_widget.open_auth_profile_rename_prompt(profile);
@@ -2504,6 +2484,30 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
+    pub(super) fn submit_auth_profile_switch(
+        &mut self,
+        profile: Option<String>,
+        reason: &crate::app_event::AuthProfileSwitchReason,
+        resume_queued_input: bool,
+    ) {
+        let submitted = self
+            .chat_widget
+            .submit_op(AppCommand::override_turn_context_auth_profile(
+                profile.clone(),
+            ));
+        if submitted {
+            let queued_input_will_resume =
+                resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
+            let message =
+                auth_profile_switch_message(profile.as_deref(), reason, queued_input_will_resume);
+            self.chat_widget.add_info_message(message, /*hint*/ None);
+            self.refresh_status_line();
+            if resume_queued_input {
+                self.chat_widget.maybe_send_next_queued_input();
+            }
+        }
+    }
+
     async fn apply_keymap_capture(
         &mut self,
         context: String,
@@ -2754,7 +2758,7 @@ pub(super) fn auth_profile_switch_message(
         .unwrap_or_else(|| "default".to_string());
     match reason {
         crate::app_event::AuthProfileSwitchReason::Manual => {
-            format!("Profile changed to {label} for this session")
+            format!("Profile switch requested for {label}")
         }
         crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
             let mut message = format!(

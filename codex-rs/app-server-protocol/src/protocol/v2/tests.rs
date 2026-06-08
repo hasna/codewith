@@ -3576,7 +3576,6 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         "approvalPolicy": "on-failure",
         "approvalsReviewer": "user",
         "sandbox": { "type": "dangerFullAccess" },
-        "authProfile": null,
         "reasoningEffort": null
     });
 

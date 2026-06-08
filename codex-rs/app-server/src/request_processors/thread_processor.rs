@@ -45,6 +45,14 @@ fn collect_resume_override_mismatches(
             config_snapshot.service_tier
         ));
     }
+    if let Some(requested_auth_profile) = request.auth_profile.as_ref()
+        && requested_auth_profile != &config_snapshot.auth_profile
+    {
+        mismatch_details.push(format!(
+            "auth_profile requested={requested_auth_profile:?} active={:?}",
+            config_snapshot.auth_profile
+        ));
+    }
     if let Some(requested_cwd) = request.cwd.as_deref() {
         let requested_cwd_path = std::path::PathBuf::from(requested_cwd);
         if requested_cwd_path != config_snapshot.cwd.as_path() {
@@ -820,6 +828,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,
@@ -850,6 +859,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,
@@ -1215,6 +1225,7 @@ impl ThreadRequestProcessor {
         model: Option<String>,
         model_provider: Option<String>,
         service_tier: Option<Option<String>>,
+        auth_profile: Option<Option<String>>,
         cwd: Option<String>,
         runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
         approval_policy: Option<codex_app_server_protocol::AskForApproval>,
@@ -1229,6 +1240,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd: cwd.map(PathBuf::from),
             workspace_roots: runtime_workspace_roots,
             default_permissions: permissions,
@@ -2466,6 +2478,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,
@@ -2503,6 +2516,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,
@@ -3158,6 +3172,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,
@@ -3223,6 +3238,7 @@ impl ThreadRequestProcessor {
             model,
             model_provider,
             service_tier,
+            auth_profile,
             cwd,
             runtime_workspace_roots,
             approval_policy,

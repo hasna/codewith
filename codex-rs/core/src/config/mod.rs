@@ -2407,7 +2407,7 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     pub ephemeral: Option<bool>,
     pub bypass_hook_trust: Option<bool>,
-    pub auth_profile: Option<String>,
+    pub auth_profile: Option<Option<String>>,
     /// Additional directories that should be treated as writable roots for this session.
     pub additional_writable_roots: Vec<PathBuf>,
     /// Explicit absolute runtime workspace roots for this session. When set,
@@ -2802,7 +2802,12 @@ impl Config {
             workspace_roots: workspace_roots_override,
         } = overrides;
         let bypass_hook_trust = bypass_hook_trust.unwrap_or_default();
-        let selected_auth_profile = resolve_selected_auth_profile(auth_profile)?;
+        let selected_auth_profile = match auth_profile {
+            Some(profile) => profile
+                .map(|profile| validate_selected_auth_profile(profile, "--auth-profile"))
+                .transpose()?,
+            None => resolve_selected_auth_profile(None)?,
+        };
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
         let session_recap = resolve_session_recap_config(cfg.session_recap.clone());

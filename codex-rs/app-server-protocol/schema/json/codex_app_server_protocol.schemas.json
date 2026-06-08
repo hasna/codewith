@@ -16582,6 +16582,13 @@
             ],
             "description": "Override where approval requests are routed for review on this thread and subsequent turns."
           },
+          "authProfile": {
+            "description": "Auth profile selected for model requests on this thread. `null` selects the default root auth; omission leaves config/env selection unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "baseInstructions": {
             "type": [
               "string",
@@ -18731,6 +18738,13 @@
             ],
             "description": "Override where approval requests are routed for review on this thread and subsequent turns."
           },
+          "authProfile": {
+            "description": "Auth profile selected for model requests on this thread. `null` selects the default root auth; omission leaves config/env selection unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "baseInstructions": {
             "type": [
               "string",
@@ -19840,6 +19854,13 @@
               }
             ],
             "description": "Override where approval requests are routed for review on this thread and subsequent turns."
+          },
+          "authProfile": {
+            "description": "Auth profile selected for model requests on this thread. `null` selects the default root auth; omission leaves config/env selection unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "baseInstructions": {
             "type": [

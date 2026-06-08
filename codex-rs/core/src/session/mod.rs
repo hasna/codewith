@@ -1503,20 +1503,23 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        if let Some(auth_profile) = updates.auth_profile.clone()
-            && let Err(err) = self
-                .services
-                .auth_manager
-                .switch_auth_profile(auth_profile)
-                .await
+        let prepared_auth_profile_switch = if let Some(auth_profile) = updates.auth_profile.clone()
         {
-            return Err(crate::config::ConstraintError::InvalidValue {
-                field_name: "auth_profile",
-                candidate: err.to_string(),
-                allowed: "existing auth profile or default auth".to_string(),
-                requirement_source: codex_config::RequirementSource::Unknown,
-            });
-        }
+            Some(
+                self.services
+                    .auth_manager
+                    .prepare_auth_profile_switch(auth_profile)
+                    .await
+                    .map_err(|err| crate::config::ConstraintError::InvalidValue {
+                        field_name: "auth_profile",
+                        candidate: err.to_string(),
+                        allowed: "existing auth profile or default auth".to_string(),
+                        requirement_source: codex_config::RequirementSource::Unknown,
+                    })?,
+            )
+        } else {
+            None
+        };
 
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (
@@ -1581,6 +1584,12 @@ impl Session {
                 model_runtime_configuration,
             )
         };
+
+        if let Some(prepared_auth_profile_switch) = prepared_auth_profile_switch {
+            self.services
+                .auth_manager
+                .apply_prepared_auth_profile_switch(prepared_auth_profile_switch);
+        }
 
         if let Some(model_runtime_configuration) = model_runtime_configuration.as_ref() {
             if let Some(startup_prewarm) = self.take_session_startup_prewarm().await {

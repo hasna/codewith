@@ -99,12 +99,10 @@ impl App {
         match result {
             Ok(()) => {
                 if self.config.selected_auth_profile.as_deref() == Some(profile.as_str()) {
-                    self.chat_widget.set_auth_profile(Some(profile.clone()));
                     self.chat_widget
                         .submit_op(AppCommand::override_turn_context_auth_profile(Some(
                             profile.clone(),
                         )));
-                    self.refresh_status_line();
                 }
                 self.chat_widget.add_info_message(
                     format!("Auth profile `{profile}` relogin completed."),
@@ -128,14 +126,10 @@ impl App {
         ) {
             Ok(profile) => {
                 if was_selected {
-                    self.config.selected_auth_profile = Some(profile.name.clone());
-                    self.chat_widget
-                        .set_auth_profile(Some(profile.name.clone()));
                     self.chat_widget
                         .submit_op(AppCommand::override_turn_context_auth_profile(Some(
                             profile.name.clone(),
                         )));
-                    self.refresh_status_line();
                 }
                 self.chat_widget.add_info_message(
                     format!("Auth profile `{old_name}` renamed to `{}`.", profile.name),
@@ -159,11 +153,8 @@ impl App {
         ) {
             Ok(()) => {
                 if was_selected {
-                    self.config.selected_auth_profile = None;
-                    self.chat_widget.set_auth_profile(None);
                     self.chat_widget
                         .submit_op(AppCommand::override_turn_context_auth_profile(None));
-                    self.refresh_status_line();
                 }
                 self.chat_widget.add_info_message(
                     format!("Auth profile `{profile}` deleted."),

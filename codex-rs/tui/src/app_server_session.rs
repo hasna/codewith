@@ -175,6 +175,23 @@ fn is_thread_settings_update_unsupported(source: &JSONRPCErrorError) -> bool {
             && source.message.contains(THREAD_SETTINGS_UPDATE_METHOD))
 }
 
+fn thread_settings_update_error_is_unsupported(err: &TypedRequestError) -> bool {
+    matches!(
+        err,
+        TypedRequestError::Server { source, .. } if is_thread_settings_update_unsupported(source)
+    )
+}
+
+fn unsupported_thread_settings_update_result(auth_profile_update: bool) -> Result<()> {
+    if auth_profile_update {
+        Err(color_eyre::eyre::eyre!(
+            "thread/settings/update is not supported by this app server; auth profile was not changed"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Data collected during the TUI bootstrap phase that the main event loop
 /// needs to configure the UI, telemetry, and initial rate-limit prefetch.
 ///
@@ -685,8 +702,9 @@ impl AppServerSession {
         &mut self,
         params: ThreadSettingsUpdateParams,
     ) -> Result<()> {
+        let auth_profile_update = params.auth_profile.is_some();
         if !self.thread_settings_update_supported {
-            return Ok(());
+            return unsupported_thread_settings_update_result(auth_profile_update);
         }
         let request_id = self.next_request_id();
         match self
@@ -698,8 +716,8 @@ impl AppServerSession {
             .await
         {
             Ok(_) => Ok(()),
-            Err(TypedRequestError::Server { source, .. })
-                if is_thread_settings_update_unsupported(&source) =>
+            Err(err)
+                if !auth_profile_update && thread_settings_update_error_is_unsupported(&err) =>
             {
                 // Older remote app servers can reject this experimental method as
                 // method-not-found, experimental-capability-gated, or an unknown
@@ -1694,6 +1712,16 @@ fn permissions_selection_from_config(
         .map(permission_profile_id_from_active_profile)
 }
 
+fn auth_profile_override_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+) -> Option<Option<String>> {
+    match thread_params_mode {
+        ThreadParamsMode::Embedded => Some(config.selected_auth_profile.clone()),
+        ThreadParamsMode::Remote => config.selected_auth_profile.clone().map(Some),
+    }
+}
+
 fn thread_start_params_from_config(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
@@ -1714,6 +1742,7 @@ fn thread_start_params_from_config(
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(config),
         service_tier: service_tier_override_from_config(config),
+        auth_profile: auth_profile_override_from_config(config, thread_params_mode),
         cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
@@ -1752,6 +1781,7 @@ fn thread_resume_params_from_config(
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
         service_tier: service_tier_override_from_config(&config),
+        auth_profile: auth_profile_override_from_config(&config, thread_params_mode),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
@@ -1787,6 +1817,7 @@ fn thread_fork_params_from_config(
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
         service_tier: service_tier_override_from_config(&config),
+        auth_profile: auth_profile_override_from_config(&config, thread_params_mode),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
@@ -2168,7 +2199,24 @@ mod tests {
                 expected,
                 "{message}"
             );
+            let err = TypedRequestError::Server {
+                method: THREAD_SETTINGS_UPDATE_METHOD.to_string(),
+                source,
+            };
+            assert_eq!(
+                thread_settings_update_error_is_unsupported(&err),
+                expected,
+                "{message}"
+            );
         }
+
+        assert!(unsupported_thread_settings_update_result(/*auth_profile_update*/ false).is_ok());
+        let err = unsupported_thread_settings_update_result(/*auth_profile_update*/ true)
+            .expect_err("auth profile updates cannot silently downgrade");
+        assert!(
+            err.to_string().contains("auth profile was not changed"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -2351,6 +2399,9 @@ mod tests {
         assert_eq!(start.model_provider, None);
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
+        assert_eq!(start.auth_profile, None);
+        assert_eq!(resume.auth_profile, None);
+        assert_eq!(fork.auth_profile, None);
         assert_eq!(start.sandbox, expected_sandbox);
         assert_eq!(resume.sandbox, expected_sandbox);
         assert_eq!(fork.sandbox, expected_sandbox);
@@ -2359,6 +2410,37 @@ mod tests {
         assert_eq!(fork.permissions, None);
         assert_eq!(start.thread_source, Some(ThreadSource::User));
         assert_eq!(fork.thread_source, Some(ThreadSource::User));
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_forward_selected_auth_profile_for_remote_sessions() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+        config.selected_auth_profile = Some("work".to_string());
+        let thread_id = ThreadId::new();
+
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
+
+        assert_eq!(start.auth_profile, Some(Some("work".to_string())));
+        assert_eq!(resume.auth_profile, Some(Some("work".to_string())));
+        assert_eq!(fork.auth_profile, Some(Some("work".to_string())));
     }
 
     #[test]
@@ -2480,6 +2562,7 @@ mod tests {
             .expect("test web search mode should be allowed");
         config.bypass_hook_trust = true;
         config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+        config.selected_auth_profile = Some("work".to_string());
         let thread_id = ThreadId::new();
 
         let start = thread_start_params_from_config(
@@ -2505,6 +2588,9 @@ mod tests {
         assert_eq!(start.service_tier, expected_service_tier);
         assert_eq!(resume.service_tier, expected_service_tier);
         assert_eq!(fork.service_tier, expected_service_tier);
+        assert_eq!(start.auth_profile, Some(Some("work".to_string())));
+        assert_eq!(resume.auth_profile, Some(Some("work".to_string())));
+        assert_eq!(fork.auth_profile, Some(Some("work".to_string())));
         let string = |value: &str| serde_json::Value::String(value.to_string());
         let expected_config = HashMap::from([
             ("model_reasoning_effort".to_string(), string("high")),

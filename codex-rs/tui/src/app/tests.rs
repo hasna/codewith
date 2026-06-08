@@ -4026,7 +4026,7 @@ fn auth_profile_auto_switch_message_explains_profile_and_queued_prompt_resume() 
             &crate::app_event::AuthProfileSwitchReason::Manual,
             /*queued_input_will_resume*/ false,
         ),
-        "Profile changed to default for this session"
+        "Profile switch requested for default"
     );
 }
 
@@ -4087,6 +4087,53 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         }
         other => panic!("expected current-profile rate limits to auto-switch, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn auth_profile_switch_waits_for_settings_update_before_visible_state_changes() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    app.config.selected_auth_profile = Some("personal".to_string());
+    app.chat_widget
+        .set_auth_profile(Some("personal".to_string()));
+
+    app.submit_auth_profile_switch(
+        Some("work".to_string()),
+        &crate::app_event::AuthProfileSwitchReason::Manual,
+        /*resume_queued_input*/ false,
+    );
+
+    assert_eq!(
+        app.config.selected_auth_profile.as_deref(),
+        Some("personal")
+    );
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .selected_auth_profile
+            .as_deref(),
+        Some("personal")
+    );
+
+    let op = op_rx.try_recv().expect("expected auth profile override op");
+    assert_eq!(
+        op,
+        Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            permission_profile: None,
+            active_permission_profile: None,
+            auth_profile: Some(Some("work".to_string())),
+            windows_sandbox_level: None,
+            model_provider: None,
+            model: None,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        }
+    );
 }
 
 fn save_test_auth_profile_for_app(app: &App, name: &str) {

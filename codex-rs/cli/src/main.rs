@@ -1976,7 +1976,7 @@ async fn run_debug_prompt_input_command(
         show_raw_agent_reasoning: shared.oss.then_some(true),
         ephemeral: Some(true),
         bypass_hook_trust: shared.bypass_hook_trust.then_some(true),
-        auth_profile: shared.auth_profile,
+        auth_profile: shared.auth_profile.map(Some),
         additional_writable_roots: shared.add_dir,
         ..Default::default()
     };

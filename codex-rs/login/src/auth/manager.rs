@@ -1390,13 +1390,23 @@ pub struct AuthManager {
     forced_chatgpt_workspace_id: RwLock<Option<Vec<String>>>,
     chatgpt_base_url: Option<String>,
     refresh_lock: Semaphore,
-    external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
+    external_auth: Arc<RwLock<Option<Arc<dyn ExternalAuth>>>>,
 }
 
 #[derive(Clone, Debug)]
 struct AuthStorageSelection {
     auth_storage_home: PathBuf,
     selected_auth_profile: Option<String>,
+}
+
+/// Auth material loaded for a requested profile switch but not yet committed.
+///
+/// Callers can prepare a switch before validating other settings, then commit
+/// it only after the rest of the settings update is known to be accepted.
+pub struct PreparedAuthProfileSwitch {
+    auth_storage_home: PathBuf,
+    selected_auth_profile: Option<String>,
+    new_auth: Option<CodexAuth>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -1503,7 +1513,7 @@ impl AuthManager {
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url,
             refresh_lock: Semaphore::new(/*permits*/ 1),
-            external_auth: RwLock::new(None),
+            external_auth: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1528,7 +1538,7 @@ impl AuthManager {
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
             refresh_lock: Semaphore::new(/*permits*/ 1),
-            external_auth: RwLock::new(None),
+            external_auth: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -1553,7 +1563,7 @@ impl AuthManager {
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
             refresh_lock: Semaphore::new(/*permits*/ 1),
-            external_auth: RwLock::new(None),
+            external_auth: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -1575,9 +1585,9 @@ impl AuthManager {
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
             refresh_lock: Semaphore::new(/*permits*/ 1),
-            external_auth: RwLock::new(Some(
-                Arc::new(BearerTokenRefresher::new(config)) as Arc<dyn ExternalAuth>
-            )),
+            external_auth: Arc::new(RwLock::new(Some(
+                Arc::new(BearerTokenRefresher::new(config)) as Arc<dyn ExternalAuth>,
+            ))),
         })
     }
 
@@ -1804,7 +1814,16 @@ impl AuthManager {
         &self,
         selected_auth_profile: Option<String>,
     ) -> Result<bool, super::AuthProfileError> {
-        let previous_auth_profile = self.selected_auth_profile();
+        let prepared = self
+            .prepare_auth_profile_switch(selected_auth_profile)
+            .await?;
+        Ok(self.apply_prepared_auth_profile_switch(prepared))
+    }
+
+    pub async fn prepare_auth_profile_switch(
+        &self,
+        selected_auth_profile: Option<String>,
+    ) -> Result<PreparedAuthProfileSwitch, super::AuthProfileError> {
         if let Some(name) = selected_auth_profile.as_deref() {
             super::profile::load_auth_profile(
                 &self.codex_home,
@@ -1824,16 +1843,29 @@ impl AuthManager {
         )
         .await?;
 
+        Ok(PreparedAuthProfileSwitch {
+            auth_storage_home,
+            selected_auth_profile,
+            new_auth,
+        })
+    }
+
+    pub fn apply_prepared_auth_profile_switch(&self, prepared: PreparedAuthProfileSwitch) -> bool {
+        let PreparedAuthProfileSwitch {
+            auth_storage_home,
+            selected_auth_profile,
+            new_auth,
+        } = prepared;
+        let previous_auth_profile = self.selected_auth_profile();
         let profile_changed = previous_auth_profile != selected_auth_profile;
         if let Ok(mut guard) = self.storage_selection.write() {
             *guard = AuthStorageSelection {
                 auth_storage_home,
-                selected_auth_profile: selected_auth_profile.clone(),
+                selected_auth_profile,
             };
         }
-        self.clear_external_auth();
         let auth_changed = self.set_cached_auth(new_auth);
-        Ok(profile_changed || auth_changed)
+        profile_changed || auth_changed
     }
 
     /// Convenience constructor returning an `Arc` wrapper.
@@ -1888,6 +1920,32 @@ impl AuthManager {
         .await;
         auth_manager.set_forced_chatgpt_workspace_id(config.forced_chatgpt_workspace_id());
         auth_manager
+    }
+
+    pub async fn shared_scoped_auth_profile(
+        self: &Arc<Self>,
+        selected_auth_profile: Option<String>,
+    ) -> Arc<Self> {
+        if selected_auth_profile.is_none() {
+            return Arc::clone(self);
+        }
+
+        let forced_chatgpt_workspace_id = self
+            .forced_chatgpt_workspace_id
+            .read()
+            .ok()
+            .and_then(|workspace_id| workspace_id.clone());
+        let mut scoped = Self::new_with_auth_profile(
+            self.codex_home.clone(),
+            self.enable_codex_api_key_env,
+            self.auth_credentials_store_mode,
+            self.chatgpt_base_url.clone(),
+            selected_auth_profile,
+        )
+        .await;
+        scoped.external_auth = Arc::clone(&self.external_auth);
+        scoped.set_forced_chatgpt_workspace_id(forced_chatgpt_workspace_id);
+        Arc::new(scoped)
     }
 
     pub fn unauthorized_recovery(self: &Arc<Self>) -> UnauthorizedRecovery {

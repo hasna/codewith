@@ -9,6 +9,7 @@ use crate::load_auth_profile;
 use crate::save_auth_profile;
 use crate::save_current_auth_profile;
 use crate::token_data::IdTokenInfo;
+use async_trait::async_trait;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::KnownPlan as InternalKnownPlan;
@@ -42,6 +43,26 @@ fn api_key_auth_dot_json(api_key: &str) -> AuthDotJson {
         last_refresh: None,
         agent_identity: None,
         personal_access_token: None,
+    }
+}
+
+struct TestExternalAuth;
+
+#[async_trait]
+impl ExternalAuth for TestExternalAuth {
+    fn auth_mode(&self) -> AuthMode {
+        AuthMode::ApiKey
+    }
+
+    async fn resolve(&self) -> std::io::Result<Option<ExternalAuthTokens>> {
+        Ok(Some(ExternalAuthTokens::access_token_only("external-key")))
+    }
+
+    async fn refresh(
+        &self,
+        _context: ExternalAuthRefreshContext,
+    ) -> std::io::Result<ExternalAuthTokens> {
+        Ok(ExternalAuthTokens::access_token_only("external-key"))
     }
 }
 
@@ -590,6 +611,86 @@ async fn auth_manager_can_switch_selected_profiles_at_runtime() -> anyhow::Resul
         load_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "personal")?,
         personal_auth
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn scoped_auth_profile_switch_does_not_mutate_parent_or_sibling() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("root-key");
+    let work_auth = api_key_auth_dot_json("work-key");
+    let personal_auth = api_key_auth_dot_json("personal-key");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &personal_auth,
+    )?;
+
+    let parent = Arc::new(
+        AuthManager::new_with_auth_profile(
+            dir.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
+            /*selected_auth_profile*/ None,
+        )
+        .await,
+    );
+    let root_scope = parent.shared_scoped_auth_profile(None).await;
+    let work_scope = parent
+        .shared_scoped_auth_profile(Some("work".to_string()))
+        .await;
+
+    assert!(Arc::ptr_eq(&parent, &root_scope));
+    assert_eq!(parent.selected_auth_profile(), None);
+    assert_eq!(root_scope.selected_auth_profile(), None);
+    assert_eq!(work_scope.selected_auth_profile().as_deref(), Some("work"));
+    parent.set_external_auth(Arc::new(TestExternalAuth));
+    assert!(parent.has_external_auth());
+    assert!(root_scope.has_external_auth());
+    assert!(work_scope.has_external_auth());
+
+    assert!(
+        work_scope
+            .switch_auth_profile(Some("personal".to_string()))
+            .await?
+    );
+
+    assert_eq!(parent.selected_auth_profile(), None);
+    assert_eq!(root_scope.selected_auth_profile(), None);
+    assert_eq!(
+        root_scope
+            .auth_cached()
+            .expect("root auth should remain loaded")
+            .api_key(),
+        Some("root-key")
+    );
+    assert_eq!(
+        work_scope.selected_auth_profile().as_deref(),
+        Some("personal")
+    );
+    assert_eq!(
+        work_scope
+            .auth_cached()
+            .expect("personal auth should load")
+            .api_key(),
+        Some("personal-key")
+    );
+    assert!(parent.has_external_auth());
+    assert!(root_scope.has_external_auth());
+    assert!(work_scope.has_external_auth());
 
     Ok(())
 }

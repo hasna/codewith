@@ -609,6 +609,9 @@ impl Session {
             .parent_thread_id
             .or_else(|| initial_history.get_resumed_parent_thread_id());
         session_configuration.parent_thread_id = parent_thread_id;
+        let auth_manager = auth_manager
+            .shared_scoped_auth_profile(config.selected_auth_profile.clone())
+            .await;
         let multi_agent_version = multi_agent_version.map(OnceLock::from).unwrap_or_default();
         let initial_multi_agent_version = multi_agent_version.get().copied();
 
