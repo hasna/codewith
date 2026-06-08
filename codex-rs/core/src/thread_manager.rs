@@ -28,6 +28,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
 use codex_model_provider::create_model_provider_with_id;
+use codex_model_provider::model_cache_key_for_configured_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::RefreshStrategy;
@@ -203,6 +204,7 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    models_manager_cache_key: String,
     environment_manager: Arc<EnvironmentManager>,
     skills_manager: Arc<SkillsManager>,
     plugins_manager: Arc<PluginsManager>,
@@ -231,6 +233,22 @@ pub fn build_models_manager(
         config.codex_home.to_path_buf(),
         config.model_catalog.clone(),
     )
+}
+
+fn models_manager_cache_key(config: &Config, auth_manager: Arc<AuthManager>) -> String {
+    model_cache_key_for_configured_provider(
+        &config.model_provider_id,
+        &config.model_provider,
+        Some(auth_manager),
+    )
+}
+
+fn default_provider_id(provider: &ModelProviderInfo) -> String {
+    if provider.requires_openai_auth && provider.is_openai() {
+        OPENAI_PROVIDER_ID.to_string()
+    } else {
+        provider.name.clone()
+    }
 }
 
 pub fn thread_store_from_config(
@@ -281,11 +299,14 @@ impl ThreadManager {
             config.bundled_skills_enabled(),
             restriction_product,
         ));
+        let models_manager = build_models_manager(config, Arc::clone(&auth_manager));
+        let models_manager_cache_key = models_manager_cache_key(config, Arc::clone(&auth_manager));
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
-                models_manager: build_models_manager(config, auth_manager.clone()),
+                models_manager,
+                models_manager_cache_key,
                 environment_manager,
                 skills_manager,
                 plugins_manager,
@@ -381,12 +402,19 @@ impl ThreadManager {
             },
             state_db.clone(),
         ));
+        let models_manager_cache_key = model_cache_key_for_configured_provider(
+            &default_provider_id(&provider),
+            &provider,
+            Some(Arc::clone(&auth_manager)),
+        );
+        let models_manager = create_model_provider(provider, Some(auth_manager.clone()))
+            .models_manager(codex_home, /*config_model_catalog*/ None);
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
-                models_manager: create_model_provider(provider, Some(auth_manager.clone()))
-                    .models_manager(codex_home, /*config_model_catalog*/ None),
+                models_manager,
+                models_manager_cache_key,
                 environment_manager,
                 skills_manager,
                 plugins_manager,
@@ -1311,10 +1339,17 @@ impl ThreadManagerState {
                 forked_from_thread_id,
             )
             .await;
+        let config_models_manager_cache_key =
+            models_manager_cache_key(&config, Arc::clone(&auth_manager));
+        let models_manager = if config_models_manager_cache_key == self.models_manager_cache_key {
+            Arc::clone(&self.models_manager)
+        } else {
+            build_models_manager(&config, Arc::clone(&auth_manager))
+        };
         let CodexSpawnOk {
             codex, thread_id, ..
         } = Box::pin(Codex::spawn(CodexSpawnArgs {
-            models_manager: build_models_manager(&config, Arc::clone(&auth_manager)),
+            models_manager,
             config,
             installation_id: self.installation_id.clone(),
             auth_manager,

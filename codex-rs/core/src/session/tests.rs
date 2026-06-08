@@ -25,6 +25,7 @@ use codex_config::types::ToolSuggestDisabledTool;
 
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_model_provider::model_cache_key_for_configured_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
@@ -5314,6 +5315,11 @@ async fn make_session_and_context_with_events()
         codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
             .expect("create environment"),
     );
+    let models_manager_cache_key = model_cache_key_for_configured_provider(
+        &config.model_provider_id,
+        &config.model_provider,
+        Some(Arc::clone(&auth_manager)),
+    );
 
     let services = SessionServices {
         mcp_connection_manager: Arc::new(RwLock::new(
@@ -5346,7 +5352,10 @@ async fn make_session_and_context_with_events()
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
-        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
+        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::from([(
+            models_manager_cache_key,
+            Arc::clone(&models_manager),
+        )])),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
@@ -7394,6 +7403,11 @@ where
         codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
             .expect("create environment"),
     );
+    let models_manager_cache_key = model_cache_key_for_configured_provider(
+        &config.model_provider_id,
+        &config.model_provider,
+        Some(Arc::clone(&auth_manager)),
+    );
 
     let services = SessionServices {
         mcp_connection_manager: Arc::new(RwLock::new(
@@ -7426,7 +7440,10 @@ where
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
-        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
+        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::from([(
+            models_manager_cache_key,
+            Arc::clone(&models_manager),
+        )])),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

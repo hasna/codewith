@@ -216,12 +216,13 @@ pub fn model_cache_key_for_provider(
     provider_info: &ModelProviderInfo,
     auth_manager: Option<&AuthManager>,
 ) -> String {
+    let provider_fragment = provider_configuration_cache_key_fragment(provider_info);
     let auth_fragment = match auth_manager {
         Some(auth_manager) => auth_manager_cache_key_fragment(auth_manager),
         None => provider_credential_cache_key_fragment(provider_info),
     };
 
-    format!("{provider_id}|{auth_fragment}")
+    format!("{provider_id}|{provider_fragment}|{auth_fragment}")
 }
 
 /// Returns the effective model-manager cache key for a configured provider.
@@ -250,6 +251,166 @@ fn auth_manager_cache_key_fragment(auth_manager: &AuthManager) -> String {
     };
 
     format!("{profile_fragment}|{auth_fragment}")
+}
+
+fn provider_configuration_cache_key_fragment(provider_info: &ModelProviderInfo) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"codewith-model-provider-config-v1\0");
+    hash_field(&mut hasher, "name", &provider_info.name);
+    hash_optional_field(&mut hasher, "base_url", provider_info.base_url.as_deref());
+    hash_optional_field(&mut hasher, "env_key", provider_info.env_key.as_deref());
+    hash_optional_field(
+        &mut hasher,
+        "env_key_instructions",
+        provider_info.env_key_instructions.as_deref(),
+    );
+    hash_optional_secret_field(
+        &mut hasher,
+        "experimental_bearer_token",
+        provider_info.experimental_bearer_token.as_deref(),
+    );
+    hash_debug_field(&mut hasher, "auth", &provider_info.auth);
+    hash_debug_field(&mut hasher, "aws", &provider_info.aws);
+    hash_field(&mut hasher, "wire_api", &provider_info.wire_api.to_string());
+    hash_string_map(
+        &mut hasher,
+        "query_params",
+        provider_info.query_params.as_ref(),
+    );
+    hash_secret_string_map(
+        &mut hasher,
+        "http_headers",
+        provider_info.http_headers.as_ref(),
+    );
+    hash_env_header_map(
+        &mut hasher,
+        "env_http_headers",
+        provider_info.env_http_headers.as_ref(),
+    );
+    hash_optional_field(
+        &mut hasher,
+        "request_max_retries",
+        provider_info
+            .request_max_retries
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    hash_optional_field(
+        &mut hasher,
+        "stream_max_retries",
+        provider_info
+            .stream_max_retries
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    hash_optional_field(
+        &mut hasher,
+        "stream_idle_timeout_ms",
+        provider_info
+            .stream_idle_timeout_ms
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    hash_optional_field(
+        &mut hasher,
+        "websocket_connect_timeout_ms",
+        provider_info
+            .websocket_connect_timeout_ms
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    hash_field(
+        &mut hasher,
+        "requires_openai_auth",
+        &provider_info.requires_openai_auth.to_string(),
+    );
+    hash_field(
+        &mut hasher,
+        "supports_websockets",
+        &provider_info.supports_websockets.to_string(),
+    );
+
+    format!("provider-config:{:x}", hasher.finalize())
+}
+
+fn hash_field(hasher: &mut Sha256, label: &str, value: &str) {
+    hasher.update(label.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(value.as_bytes());
+    hasher.update(b"\0");
+}
+
+fn hash_optional_field(hasher: &mut Sha256, label: &str, value: Option<&str>) {
+    match value {
+        Some(value) => hash_field(hasher, label, value),
+        None => hash_field(hasher, label, "<none>"),
+    }
+}
+
+fn hash_optional_secret_field(hasher: &mut Sha256, label: &str, value: Option<&str>) {
+    let value = value.map(credential_fingerprint);
+    hash_optional_field(hasher, label, value.as_deref());
+}
+
+fn hash_debug_field<T: fmt::Debug>(hasher: &mut Sha256, label: &str, value: &T) {
+    hash_field(hasher, label, &format!("{value:?}"));
+}
+
+fn hash_string_map(
+    hasher: &mut Sha256,
+    label: &str,
+    value: Option<&std::collections::HashMap<String, String>>,
+) {
+    hash_field(hasher, label, "<map>");
+    let Some(value) = value else {
+        hash_field(hasher, "present", "false");
+        return;
+    };
+    hash_field(hasher, "present", "true");
+    let mut entries = value.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by(|left, right| left.0.cmp(right.0).then_with(|| left.1.cmp(right.1)));
+    for (key, value) in entries {
+        hash_field(hasher, key, value);
+    }
+}
+
+fn hash_secret_string_map(
+    hasher: &mut Sha256,
+    label: &str,
+    value: Option<&std::collections::HashMap<String, String>>,
+) {
+    hash_field(hasher, label, "<map>");
+    let Some(value) = value else {
+        hash_field(hasher, "present", "false");
+        return;
+    };
+    hash_field(hasher, "present", "true");
+    let mut entries = value.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by(|left, right| left.0.cmp(right.0).then_with(|| left.1.cmp(right.1)));
+    for (key, value) in entries {
+        hash_field(hasher, key, &credential_fingerprint(value));
+    }
+}
+
+fn hash_env_header_map(
+    hasher: &mut Sha256,
+    label: &str,
+    value: Option<&std::collections::HashMap<String, String>>,
+) {
+    hash_field(hasher, label, "<map>");
+    let Some(value) = value else {
+        hash_field(hasher, "present", "false");
+        return;
+    };
+    hash_field(hasher, "present", "true");
+    let mut entries = value.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by(|left, right| left.0.cmp(right.0).then_with(|| left.1.cmp(right.1)));
+    for (header, env_var) in entries {
+        hash_field(hasher, header, env_var);
+        if let Ok(value) = std::env::var(env_var) {
+            hash_field(hasher, "env-value", &credential_fingerprint(&value));
+        }
+    }
 }
 
 fn auth_cache_key_fragment(auth: &CodexAuth) -> String {
@@ -656,6 +817,36 @@ mod tests {
 
         assert!(key.contains("provider-token:"));
         assert!(!key.contains("raw-provider-secret"));
+    }
+
+    #[test]
+    fn model_cache_key_uses_provider_base_url_fingerprint() {
+        let first_provider = ModelProviderInfo {
+            base_url: Some("https://first.example.test/v1".to_string()),
+            ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        };
+        let second_provider = ModelProviderInfo {
+            base_url: Some("https://second.example.test/v1".to_string()),
+            ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        };
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("openai-api-key"));
+
+        let first = model_cache_key_for_provider(
+            OPENAI_PROVIDER_ID,
+            &first_provider,
+            Some(auth_manager.as_ref()),
+        );
+        let second = model_cache_key_for_provider(
+            OPENAI_PROVIDER_ID,
+            &second_provider,
+            Some(auth_manager.as_ref()),
+        );
+
+        assert_ne!(first, second);
+        assert!(!first.contains("first.example.test"));
+        assert!(!second.contains("second.example.test"));
+        assert!(!first.contains("openai-api-key"));
     }
 
     #[test]

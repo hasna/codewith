@@ -4,6 +4,7 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::config::ConstraintError;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_model_provider::model_cache_key_for_configured_provider;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -1072,6 +1073,11 @@ impl Session {
                     thread_store: &thread_extension_data,
                 }).await;
             }
+            let models_manager_cache_key = model_cache_key_for_configured_provider(
+                &config.model_provider_id,
+                &config.model_provider,
+                Some(Arc::clone(&auth_manager)),
+            );
 
             let services = SessionServices {
                 // Initialize the MCP connection manager with an uninitialized
@@ -1104,7 +1110,10 @@ impl Session {
                 auth_manager: Arc::clone(&auth_manager),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
-                models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
+                models_managers_by_cache_key: Mutex::new(std::collections::HashMap::from([(
+                    models_manager_cache_key,
+                    Arc::clone(&models_manager),
+                )])),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

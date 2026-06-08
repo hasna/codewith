@@ -4,6 +4,7 @@ use codex_core::test_support::all_model_presets;
 use codex_model_provider::model_cache_key_for_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::client_version_to_whole;
 use codex_protocol::config_types::ReasoningSummary;
@@ -130,16 +131,64 @@ pub fn write_models_cache(codex_home: &Path) -> std::io::Result<()> {
 }
 
 pub fn write_mock_provider_models_cache(codex_home: &Path) -> std::io::Result<()> {
-    let provider_cache_key = mock_provider_cache_key();
+    let provider_cache_key = mock_provider_cache_key(codex_home);
     write_models_cache_for_provider(codex_home, &provider_cache_key)
 }
 
-fn mock_provider_cache_key() -> String {
-    let provider_info = ModelProviderInfo {
+fn mock_provider_cache_key(codex_home: &Path) -> String {
+    let provider_info = mock_provider_info_from_config(codex_home);
+    model_cache_key_for_provider("mock_provider", &provider_info, /*auth_manager*/ None)
+}
+
+fn mock_provider_info_from_config(codex_home: &Path) -> ModelProviderInfo {
+    let mut provider_info = ModelProviderInfo {
         name: "mock_provider".to_string(),
         ..Default::default()
     };
-    model_cache_key_for_provider("mock_provider", &provider_info, /*auth_manager*/ None)
+    let Ok(contents) = std::fs::read_to_string(codex_home.join("config.toml")) else {
+        return provider_info;
+    };
+
+    let mut in_mock_provider = false;
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_mock_provider = line == "[model_providers.mock_provider]";
+            continue;
+        }
+        if !in_mock_provider {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().trim_matches('"');
+        match key {
+            "name" => provider_info.name = value.to_string(),
+            "base_url" => provider_info.base_url = Some(value.to_string()),
+            "wire_api" => {
+                provider_info.wire_api = match value {
+                    "chat" => WireApi::Chat,
+                    _ => WireApi::Responses,
+                };
+            }
+            "request_max_retries" => provider_info.request_max_retries = value.parse().ok(),
+            "stream_max_retries" => provider_info.stream_max_retries = value.parse().ok(),
+            "stream_idle_timeout_ms" => provider_info.stream_idle_timeout_ms = value.parse().ok(),
+            "websocket_connect_timeout_ms" => {
+                provider_info.websocket_connect_timeout_ms = value.parse().ok();
+            }
+            "requires_openai_auth" => provider_info.requires_openai_auth = value == "true",
+            "supports_websockets" => provider_info.supports_websockets = value == "true",
+            _ => {}
+        }
+    }
+
+    provider_info
 }
 
 /// Write a models_cache.json file for a specific provider cache key.
@@ -176,7 +225,7 @@ pub fn write_models_cache_for_provider(
         })
         .collect();
     let mut models = models;
-    if provider_cache_key == mock_provider_cache_key() {
+    if provider_cache_key == mock_provider_cache_key(codex_home) {
         append_mock_model_alias(&mut models);
     }
 
