@@ -71,7 +71,7 @@ fn configure_test_session(chat: &mut ChatWidget) {
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
-        auth_profile: None,
+        auth_profile: chat.config.selected_auth_profile.clone(),
         cwd: test_path_buf("/home/user/project").abs(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),

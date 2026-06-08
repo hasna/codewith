@@ -436,23 +436,32 @@ impl Session {
         )
     }
 
-    pub(crate) fn models_manager_for_config_provider_id(
+    pub(crate) async fn models_manager_for_config_provider_id(
         &self,
         config: &Config,
         model_provider_id: Option<&str>,
     ) -> SharedModelsManager {
-        let Some(model_provider_id) = model_provider_id else {
-            return self.models_manager_for_config(config);
-        };
-        if model_provider_id == config.model_provider_id {
-            return self.models_manager_for_config(config);
-        }
         let mut config = config.clone();
-        if let Some(provider) = config.model_providers.get(model_provider_id).cloned() {
+        if let Some(model_provider_id) = model_provider_id
+            && model_provider_id != config.model_provider_id
+            && let Some(provider) = config.model_providers.get(model_provider_id).cloned()
+        {
             config.model_provider_id = model_provider_id.to_string();
             config.model_provider = provider;
         }
-        self.models_manager_for_config(&config)
+
+        let provider_id = config.model_provider_id.clone();
+        {
+            let models_managers = self.services.models_managers_by_provider.lock().await;
+            if let Some(models_manager) = models_managers.get(&provider_id) {
+                return Arc::clone(models_manager);
+            }
+        }
+
+        let models_manager = self.models_manager_for_config(&config);
+        let mut models_managers = self.services.models_managers_by_provider.lock().await;
+        models_managers.insert(provider_id, Arc::clone(&models_manager));
+        models_manager
     }
 
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
@@ -820,7 +829,12 @@ impl Session {
                 .set_permission_profile(session_configuration.permission_profile());
         }
 
-        let turn_models_manager = self.models_manager_for_config(&per_turn_config);
+        let turn_models_manager = self
+            .models_manager_for_config_provider_id(
+                &per_turn_config,
+                Some(per_turn_config.model_provider_id.as_str()),
+            )
+            .await;
         let model_info = turn_models_manager
             .get_model_info(
                 session_configuration.collaboration_mode.model(),

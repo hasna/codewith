@@ -4214,10 +4214,9 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         "auth_profile_auto_switch.enabled",
         &serde_json::Value::Bool(true),
     );
-    app.chat_widget.handle_thread_session(test_thread_session(
-        ThreadId::new(),
-        test_path_buf("/tmp/project"),
-    ));
+    let mut session = test_thread_session(ThreadId::new(), test_path_buf("/tmp/project"));
+    session.auth_profile = Some("personal".to_string());
+    app.chat_widget.handle_thread_session(session);
     while app_event_rx.try_recv().is_ok() {}
 
     let stale_completion = app.apply_rate_limits_loaded(

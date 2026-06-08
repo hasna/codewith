@@ -5296,6 +5296,10 @@ async fn make_session_and_context_with_events()
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        models_managers_by_provider: Mutex::new(std::collections::HashMap::from([(
+            config.model_provider_id.clone(),
+            Arc::clone(&models_manager),
+        )])),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
@@ -7375,6 +7379,10 @@ where
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        models_managers_by_provider: Mutex::new(std::collections::HashMap::from([(
+            config.model_provider_id.clone(),
+            Arc::clone(&models_manager),
+        )])),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

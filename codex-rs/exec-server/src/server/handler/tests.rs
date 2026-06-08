@@ -303,13 +303,25 @@ async fn output_and_exit_are_retained_after_notification_receiver_closes() {
     assert_eq!(output.replace("\r\n", "\n"), "first\nsecond\n");
     assert_eq!(exit_code, Some(0));
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    handler
-        .exec(exec_params(process_id.as_str()))
-        .await
-        .expect("process id should be reusable after exit retention");
+    wait_until_process_id_reusable(&handler, process_id.as_str()).await;
 
     handler.shutdown().await;
+}
+
+async fn wait_until_process_id_reusable(handler: &ExecServerHandler, process_id: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match handler.exec(exec_params(process_id)).await {
+            Ok(_) => return,
+            Err(error)
+                if error.message == format!("process {process_id} already exists")
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("process id should be reusable after exit retention: {error:?}"),
+        }
+    }
 }
 
 async fn read_process_until_closed(
