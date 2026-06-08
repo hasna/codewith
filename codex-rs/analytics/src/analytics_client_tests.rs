@@ -213,6 +213,7 @@ fn sample_thread_start_response(
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
     })
 }
@@ -277,6 +278,7 @@ fn sample_thread_resume_response_with_source(
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
         initial_turns_page: None,
     })

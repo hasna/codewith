@@ -732,6 +732,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             exclude_slash_tmp: false,
         },
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
     }
 }

@@ -157,6 +157,7 @@ fn sample_thread_start_response() -> ClientResponsePayload {
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
     })
 }
@@ -174,6 +175,7 @@ fn sample_thread_resume_response() -> ClientResponsePayload {
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
         initial_turns_page: None,
     })
@@ -192,6 +194,7 @@ fn sample_thread_fork_response() -> ClientResponsePayload {
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
     })
 }
