@@ -981,7 +981,6 @@ mod tests {
     use super::ExecServerClientConnectOptions;
     use super::LazyRemoteExecServerClient;
     use crate::ProcessId;
-    #[cfg(not(windows))]
     use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT;
     use crate::client_api::ExecServerTransportParams;
     use crate::client_api::StdioExecServerCommand;
