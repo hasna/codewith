@@ -164,7 +164,7 @@ async fn uses_cache_when_version_matches() -> Result<()> {
     .await;
 
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth, &server);
     let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
@@ -214,7 +214,7 @@ async fn refreshes_when_cache_version_missing() -> Result<()> {
     .await;
 
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth, &server);
     let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
@@ -264,7 +264,7 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
     }
 
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let provider_cache_key = openai_provider_cache_key_for_auth(&auth);
+    let provider_cache_key = openai_provider_cache_key_for_auth(&auth, &server);
     let mut builder = test_codex().with_auth(auth);
     builder = builder
         .with_pre_build_hook(move |home| {
@@ -329,8 +329,11 @@ fn write_cache_sync(path: &Path, cache: &ModelsCache) -> Result<()> {
     Ok(())
 }
 
-fn openai_provider_cache_key_for_auth(auth: &CodexAuth) -> String {
-    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+fn openai_provider_cache_key_for_auth(auth: &CodexAuth, server: &MockServer) -> String {
+    let base_url = format!("{}/v1", server.uri());
+    let mut provider_info = ModelProviderInfo::create_openai_provider(Some(base_url));
+    provider_info.request_max_retries = Some(0);
+    provider_info.supports_websockets = false;
     let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
     model_cache_key_for_provider(
         OPENAI_PROVIDER_ID,
