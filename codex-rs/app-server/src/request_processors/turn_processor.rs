@@ -51,6 +51,7 @@ struct ThreadSettingsBuildParams {
     approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
     sandbox_policy: Option<codex_app_server_protocol::SandboxPolicy>,
     permissions: Option<String>,
+    auth_profile: Option<Option<String>>,
     model: Option<String>,
     model_provider: Option<String>,
     service_tier: Option<Option<String>>,
@@ -420,6 +421,7 @@ impl TurnRequestProcessor {
                     approvals_reviewer: params.approvals_reviewer,
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
+                    auth_profile: None,
                     model: params.model,
                     model_provider: params.model_provider,
                     service_tier: params.service_tier,
@@ -495,6 +497,7 @@ impl TurnRequestProcessor {
             approvals_reviewer,
             sandbox_policy,
             permissions,
+            auth_profile,
             model,
             model_provider,
             service_tier,
@@ -549,6 +552,7 @@ impl TurnRequestProcessor {
             || approvals_reviewer.is_some()
             || sandbox_policy.is_some()
             || permissions.is_some()
+            || auth_profile.is_some()
             || model.is_some()
             || model_provider.is_some()
             || service_tier.is_some()
@@ -622,6 +626,7 @@ impl TurnRequestProcessor {
                     sandbox_policy: sandbox_policy.clone(),
                     permission_profile: permission_profile.clone(),
                     active_permission_profile: active_permission_profile.clone(),
+                    auth_profile: auth_profile.clone(),
                     profile_workspace_roots: profile_workspace_roots.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
@@ -647,6 +652,7 @@ impl TurnRequestProcessor {
             sandbox_policy,
             permission_profile,
             active_permission_profile,
+            auth_profile,
             windows_sandbox_level: None,
             model,
             model_provider,
@@ -664,7 +670,6 @@ impl TurnRequestProcessor {
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        let auth_profile = params.auth_profile;
         let cwd = resolve_request_cwd(params.cwd)?;
         let thread_settings = self
             .build_thread_settings_overrides(
@@ -677,6 +682,7 @@ impl TurnRequestProcessor {
                     approvals_reviewer: params.approvals_reviewer,
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
+                    auth_profile: params.auth_profile,
                     model: params.model,
                     model_provider: params.model_provider,
                     service_tier: params.service_tier,
@@ -696,15 +702,6 @@ impl TurnRequestProcessor {
             )
             .await
             .map_err(|err| internal_error(format!("failed to update thread settings: {err}")))?;
-        }
-        if let Some(auth_profile) = auth_profile {
-            self.submit_core_op(
-                request_id,
-                thread.as_ref(),
-                Op::AuthProfileSwitch { auth_profile },
-            )
-            .await
-            .map_err(|err| internal_error(format!("failed to switch auth profile: {err}")))?;
         }
 
         Ok(ThreadSettingsUpdateResponse {})

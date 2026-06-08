@@ -84,6 +84,7 @@ impl App {
                 // thread-scoped state from the currently active session.
                 session.collaboration_mode = None;
                 session.personality = None;
+                session.auth_profile = None;
             }
             session
         } else {
@@ -101,6 +102,7 @@ impl App {
                 approvals_reviewer: self.config.approvals_reviewer,
                 permission_profile: permission_profile.clone(),
                 active_permission_profile: active_permission_profile.clone(),
+                auth_profile: self.config.selected_auth_profile.clone(),
                 cwd: thread.cwd.clone(),
                 runtime_workspace_roots: self.config.workspace_roots.clone(),
                 instruction_source_paths: Vec::new(),
@@ -183,6 +185,7 @@ mod tests {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: cwd.abs(),
             runtime_workspace_roots: vec![cwd.abs()],
             instruction_source_paths: Vec::new(),
@@ -256,6 +259,7 @@ mod tests {
             approvals_reviewer: ApprovalsReviewer::AutoReview,
             permission_profile: expected_permission_profile,
             active_permission_profile: Some(expected_active_permission_profile),
+            auth_profile: None,
             ..main_session
         };
         assert_eq!(

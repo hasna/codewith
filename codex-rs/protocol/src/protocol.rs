@@ -397,6 +397,12 @@ pub struct ThreadSettingsOverrides {
     /// update selected a profile rather than supplying raw permissions.
     pub active_permission_profile: Option<ActivePermissionProfile>,
 
+    /// Updated auth profile for future model requests.
+    ///
+    /// Use `Some(Some(_))` to select a named auth profile, `Some(None)` to use
+    /// default root auth, or `None` to leave the existing profile unchanged.
+    pub auth_profile: Option<Option<String>>,
+
     /// Updated Windows sandbox mode for tool execution.
     pub windows_sandbox_level: Option<WindowsSandboxLevel>,
 

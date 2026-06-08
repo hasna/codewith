@@ -45,6 +45,7 @@ pub(crate) struct ThreadSessionState {
     /// Named or implicit built-in profile that produced `permission_profile`,
     /// when the server knows it.
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
+    pub(crate) auth_profile: Option<String>,
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) runtime_workspace_roots: Vec<AbsolutePathBuf>,
     pub(crate) instruction_source_paths: Vec<AbsolutePathBuf>,

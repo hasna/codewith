@@ -670,6 +670,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         approvals_reviewer,
         permission_profile,
         active_permission_profile,
+        auth_profile,
         cwd,
         workspace_roots,
         reasoning_effort,
@@ -694,6 +695,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         approvals_reviewer: approvals_reviewer.into(),
         sandbox,
         active_permission_profile,
+        auth_profile,
         reasoning_effort,
         initial_turns_page,
     };

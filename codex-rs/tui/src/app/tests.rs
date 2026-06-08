@@ -3765,6 +3765,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
@@ -4139,6 +4140,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
+        auth_profile: None,
         cwd: cwd.abs(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
@@ -4748,6 +4750,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
@@ -4814,6 +4817,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
@@ -4964,6 +4968,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
@@ -5370,6 +5375,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
@@ -5834,7 +5840,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             active_permission_profile: Some(
                 codex_app_server_protocol::ActivePermissionProfile::read_only(),
             ),
-            auth_profile: None,
+            auth_profile: Some("work".to_string()),
             model: "gpt-plan".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
@@ -5863,6 +5869,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
         .expect("inactive session should remain cached");
     assert_eq!(cached_session.model, "gpt-test");
     assert_eq!(cached_session.personality, Some(Personality::Pragmatic));
+    assert_eq!(cached_session.auth_profile.as_deref(), Some("work"));
     assert_eq!(
         cached_session.collaboration_mode.as_deref(),
         Some(&collaboration_mode)
@@ -5886,6 +5893,13 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
         app.chat_widget.config_ref().personality,
         Some(Personality::Pragmatic)
     );
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .selected_auth_profile
+            .as_deref(),
+        Some("work")
+    );
 }
 
 #[tokio::test]
@@ -5905,6 +5919,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
+            auth_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
             runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),

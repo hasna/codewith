@@ -662,6 +662,7 @@ impl ChatWidget {
         self.set_service_tier(settings.service_tier.clone());
         self.set_approval_policy(settings.approval_policy);
         self.set_approvals_reviewer(settings.approvals_reviewer.to_core());
+        self.set_auth_profile(settings.auth_profile.clone());
         self.config.personality = settings.personality;
 
         let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(

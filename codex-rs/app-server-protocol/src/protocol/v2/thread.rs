@@ -211,6 +211,9 @@ pub struct ThreadStartResponse {
     #[experimental("thread/start.activePermissionProfile")]
     #[serde(default)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
+    /// Auth profile selected for model requests on this thread, if any.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -439,6 +442,9 @@ pub struct ThreadResumeResponse {
     #[experimental("thread/resume.activePermissionProfile")]
     #[serde(default)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
+    /// Auth profile selected for model requests on this thread, if any.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     /// `thread/turns/list` page returned when requested by `initialTurnsPage`.
     #[experimental("thread/resume.initialTurnsPage")]
@@ -587,6 +593,9 @@ pub struct ThreadForkResponse {
     #[experimental("thread/fork.activePermissionProfile")]
     #[serde(default)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
+    /// Auth profile selected for model requests on this thread, if any.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 

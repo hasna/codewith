@@ -170,6 +170,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
+        auth_profile: None,
         reasoning_effort: None,
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
@@ -3575,6 +3576,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         "approvalPolicy": "on-failure",
         "approvalsReviewer": "user",
         "sandbox": { "type": "dangerFullAccess" },
+        "authProfile": null,
         "reasoningEffort": null
     });
 
@@ -3589,9 +3591,12 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(start.active_permission_profile, None);
+    assert_eq!(start.auth_profile, None);
     assert_eq!(resume.active_permission_profile, None);
+    assert_eq!(resume.auth_profile, None);
     assert_eq!(resume.initial_turns_page, None);
     assert_eq!(fork.active_permission_profile, None);
+    assert_eq!(fork.auth_profile, None);
 }
 
 #[test]

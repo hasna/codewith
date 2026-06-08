@@ -18,4 +18,7 @@ approvalsReviewer: ApprovalsReviewer, /**
  * Legacy sandbox policy retained for compatibility. Experimental clients
  * should prefer `activePermissionProfile` for profile provenance.
  */
-sandbox: SandboxPolicy, reasoningEffort: ReasoningEffort | null};
+sandbox: SandboxPolicy, /**
+ * Auth profile selected for model requests on this thread, if any.
+ */
+authProfile: string | null, reasoningEffort: ReasoningEffort | null};

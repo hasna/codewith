@@ -74,6 +74,7 @@ impl ChatWidget {
         }
         self.config.approvals_reviewer = session.approvals_reviewer;
         self.config.personality = session.personality;
+        self.set_auth_profile(session.auth_profile.clone());
         self.config.model_provider_id = session.model_provider_id.clone();
         if let Some(provider) = self
             .config

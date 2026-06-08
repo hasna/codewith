@@ -1180,6 +1180,7 @@ impl ThreadRequestProcessor {
             approvals_reviewer: config_snapshot.approvals_reviewer.into(),
             sandbox,
             active_permission_profile,
+            auth_profile: config_snapshot.auth_profile,
             reasoning_effort: config_snapshot.reasoning_effort,
         };
         let notif = thread_started_notification(thread);
@@ -2666,6 +2667,7 @@ impl ThreadRequestProcessor {
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
                     sandbox,
                     active_permission_profile,
+                    auth_profile: config_snapshot.auth_profile,
                     reasoning_effort: session_configured.reasoning_effort,
                     initial_turns_page,
                 };
@@ -3375,6 +3377,7 @@ impl ThreadRequestProcessor {
             approvals_reviewer: session_configured.approvals_reviewer.into(),
             sandbox,
             active_permission_profile,
+            auth_profile: config_snapshot.auth_profile,
             reasoning_effort: session_configured.reasoning_effort,
         };
 

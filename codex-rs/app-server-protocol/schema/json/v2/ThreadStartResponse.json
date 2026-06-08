@@ -2257,6 +2257,14 @@
       ],
       "description": "Reviewer currently used for approval requests on this thread."
     },
+    "authProfile": {
+      "default": null,
+      "description": "Auth profile selected for model requests on this thread, if any.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "cwd": {
       "$ref": "#/definitions/AbsolutePathBuf"
     },

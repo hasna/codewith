@@ -1254,6 +1254,7 @@ mod tests {
                 approvals_reviewer: ApprovalsReviewer::User,
                 permission_profile: PermissionProfile::read_only(),
                 active_permission_profile: None,
+                auth_profile: None,
                 cwd: next_cwd.clone().abs(),
                 runtime_workspace_roots: Vec::new(),
                 instruction_source_paths: Vec::new(),

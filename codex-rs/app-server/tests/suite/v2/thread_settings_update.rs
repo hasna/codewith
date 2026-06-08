@@ -8,6 +8,7 @@ use app_test_support::write_mock_provider_models_cache;
 use app_test_support::write_mock_responses_config_toml;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
@@ -318,6 +319,129 @@ async fn thread_settings_update_auth_profile_updates_future_turns() -> Result<()
 }
 
 #[tokio::test]
+async fn thread_settings_update_auth_profile_and_model_apply_together() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_requiring_openai_auth(codex_home.path(), &server.uri())?;
+    save_api_key_auth(codex_home.path(), "root-key")?;
+    save_api_key_auth_profile(codex_home.path(), "work", "work-key")?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            auth_profile: Some(Some("work".to_string())),
+            model: Some("mock-model-3".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.model, "mock-model-3");
+    assert_eq!(
+        updated.thread_settings.auth_profile.as_deref(),
+        Some("work")
+    );
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request_bodies = received_response_bodies(&server).await?;
+    assert!(
+        request_bodies
+            .iter()
+            .any(|body| { body.get("model").and_then(Value::as_str) == Some("mock-model-3") }),
+        "future turn did not use updated model: {request_bodies:#?}"
+    );
+    let authorization_headers = received_response_authorization_headers(&server).await?;
+    assert!(
+        authorization_headers
+            .iter()
+            .any(|header| header == "Bearer work-key"),
+        "future turn did not use selected auth profile: {authorization_headers:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_invalid_auth_profile_does_not_partially_apply() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_requiring_openai_auth(codex_home.path(), &server.uri())?;
+    save_api_key_auth(codex_home.path(), "root-key")?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            auth_profile: Some(Some("missing".to_string())),
+            model: Some("mock-model-3".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let error = read_error_notification_without_thread_settings_update(&mut mcp).await?;
+    assert!(
+        error
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("auth profile")),
+        "expected auth-profile error notification, got {error:#?}"
+    );
+
+    start_text_turn(&mut mcp, thread.id).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request_bodies = received_response_bodies(&server).await?;
+    assert!(
+        request_bodies
+            .iter()
+            .any(|body| body.get("model").and_then(Value::as_str) == Some("mock-model")),
+        "future turn did not preserve original model: {request_bodies:#?}"
+    );
+    assert!(
+        request_bodies
+            .iter()
+            .all(|body| body.get("model").and_then(Value::as_str) != Some("mock-model-3")),
+        "invalid auth-profile update partially changed the model: {request_bodies:#?}"
+    );
+    let authorization_headers = received_response_authorization_headers(&server).await?;
+    assert!(
+        authorization_headers
+            .iter()
+            .any(|header| header == "Bearer root-key"),
+        "future turn did not keep root auth: {authorization_headers:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_settings_update_while_turn_is_active_emits_notification() -> Result<()> {
     let server = responses::start_mock_server().await;
     let first_response =
@@ -591,6 +715,25 @@ async fn read_thread_settings_updated(
         .params
         .context("thread/settings/updated should include params")?;
     Ok(serde_json::from_value(params)?)
+}
+
+async fn read_error_notification_without_thread_settings_update(
+    mcp: &mut TestAppServer,
+) -> Result<Value> {
+    loop {
+        let message = timeout(DEFAULT_TIMEOUT, mcp.read_next_message()).await??;
+        let JSONRPCMessage::Notification(notification) = message else {
+            continue;
+        };
+        if notification.method == "thread/settings/updated" {
+            anyhow::bail!("invalid auth-profile update emitted thread/settings/updated");
+        }
+        if notification.method == "error" {
+            return notification
+                .params
+                .context("error notification should include params");
+        }
+    }
 }
 
 async fn received_response_bodies(server: &wiremock::MockServer) -> Result<Vec<Value>> {

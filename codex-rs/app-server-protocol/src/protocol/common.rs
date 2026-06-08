@@ -2555,6 +2555,7 @@ mod tests {
                 approvals_reviewer: v2::ApprovalsReviewer::User,
                 sandbox: v2::SandboxPolicy::DangerFullAccess,
                 active_permission_profile: None,
+                auth_profile: None,
                 reasoning_effort: None,
             },
         };
@@ -2602,6 +2603,7 @@ mod tests {
                         "type": "dangerFullAccess"
                     },
                     "activePermissionProfile": null,
+                    "authProfile": null,
                     "reasoningEffort": null
                 }
             }),

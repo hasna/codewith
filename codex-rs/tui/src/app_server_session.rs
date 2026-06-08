@@ -1886,6 +1886,7 @@ async fn thread_session_state_from_thread_start_response(
         response.approvals_reviewer.to_core(),
         permission_profile,
         response.active_permission_profile.clone().map(Into::into),
+        response.auth_profile.clone(),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
@@ -1927,6 +1928,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.approvals_reviewer.to_core(),
         permission_profile,
         response.active_permission_profile.clone().map(Into::into),
+        response.auth_profile.clone(),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
@@ -1959,6 +1961,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.approvals_reviewer.to_core(),
         permission_profile,
         response.active_permission_profile.clone().map(Into::into),
+        response.auth_profile.clone(),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
@@ -1998,6 +2001,7 @@ async fn thread_session_state_from_thread_response(
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
     active_permission_profile: Option<ActivePermissionProfile>,
+    auth_profile: Option<String>,
     cwd: AbsolutePathBuf,
     runtime_workspace_roots: Vec<AbsolutePathBuf>,
     instruction_source_paths: Vec<AbsolutePathBuf>,
@@ -2026,6 +2030,7 @@ async fn thread_session_state_from_thread_response(
         approvals_reviewer,
         permission_profile,
         active_permission_profile,
+        auth_profile,
         cwd,
         runtime_workspace_roots,
         instruction_source_paths,
@@ -2700,6 +2705,7 @@ mod tests {
                 .expect("read-only profile must be legacy-compatible")
                 .into(),
             active_permission_profile: None,
+            auth_profile: Some("work".to_string()),
             reasoning_effort: None,
             initial_turns_page: None,
         };
@@ -2721,6 +2727,7 @@ mod tests {
             response.instruction_sources
         );
         assert_eq!(started.session.permission_profile, read_only_profile);
+        assert_eq!(started.session.auth_profile.as_deref(), Some("work"));
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
 
@@ -2828,6 +2835,7 @@ mod tests {
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),
             /*active_permission_profile*/ None,
+            /*auth_profile*/ None,
             test_path_buf("/tmp/project").abs(),
             Vec::new(),
             Vec::new(),
@@ -2863,6 +2871,7 @@ mod tests {
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),
             /*active_permission_profile*/ None,
+            /*auth_profile*/ None,
             test_path_buf("/tmp/project").abs(),
             Vec::new(),
             Vec::new(),
