@@ -1104,10 +1104,7 @@ impl Session {
                 auth_manager: Arc::clone(&auth_manager),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
-                models_managers_by_provider: Mutex::new(std::collections::HashMap::from([(
-                    config.model_provider_id.clone(),
-                    Arc::clone(&models_manager),
-                )])),
+                models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

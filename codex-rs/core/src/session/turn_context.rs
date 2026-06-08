@@ -6,6 +6,7 @@ use crate::environment_selection::ResolvedTurnEnvironments;
 use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider_with_id;
+use codex_model_provider::model_cache_key_for_configured_provider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -450,18 +451,27 @@ impl Session {
             config.model_provider = provider;
         }
 
-        let provider_id = config.model_provider_id.clone();
+        let cache_key = model_cache_key_for_configured_provider(
+            &config.model_provider_id,
+            &config.model_provider,
+            Some(Arc::clone(&self.services.auth_manager)),
+        );
         {
-            let models_managers = self.services.models_managers_by_provider.lock().await;
-            if let Some(models_manager) = models_managers.get(&provider_id) {
+            let models_managers = self.services.models_managers_by_cache_key.lock().await;
+            if let Some(models_manager) = models_managers.get(&cache_key) {
                 return Arc::clone(models_manager);
             }
         }
 
         let models_manager = self.models_manager_for_config(&config);
-        let mut models_managers = self.services.models_managers_by_provider.lock().await;
-        models_managers.insert(provider_id, Arc::clone(&models_manager));
-        models_manager
+        let mut models_managers = self.services.models_managers_by_cache_key.lock().await;
+        match models_managers.entry(cache_key) {
+            std::collections::hash_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Arc::clone(&models_manager));
+                models_manager
+            }
+        }
     }
 
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.

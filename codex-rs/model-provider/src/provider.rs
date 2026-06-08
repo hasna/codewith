@@ -224,6 +224,20 @@ pub fn model_cache_key_for_provider(
     format!("{provider_id}|{auth_fragment}")
 }
 
+/// Returns the effective model-manager cache key for a configured provider.
+///
+/// This applies the same provider-auth scoping that runtime model providers use
+/// before deriving the cache key, so callers do not accidentally key
+/// external-key providers on the ambient OpenAI auth manager.
+pub fn model_cache_key_for_configured_provider(
+    provider_id: &str,
+    provider_info: &ModelProviderInfo,
+    auth_manager: Option<Arc<AuthManager>>,
+) -> String {
+    let auth_manager = auth_manager_for_provider(auth_manager, provider_info);
+    model_cache_key_for_provider(provider_id, provider_info, auth_manager.as_deref())
+}
+
 fn auth_manager_cache_key_fragment(auth_manager: &AuthManager) -> String {
     let profile_fragment = auth_manager
         .selected_auth_profile()
@@ -642,6 +656,33 @@ mod tests {
 
         assert!(key.contains("provider-token:"));
         assert!(!key.contains("raw-provider-secret"));
+    }
+
+    #[test]
+    fn configured_provider_cache_key_ignores_ambient_openai_auth_for_external_key_provider() {
+        let provider_info = ModelProviderInfo {
+            env_key: None,
+            experimental_bearer_token: Some("raw-provider-secret".to_string()),
+            ..ModelProviderInfo::create_openrouter_provider()
+        };
+        let openai_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("openai-api-key"));
+
+        let key_with_ambient_auth = model_cache_key_for_configured_provider(
+            OPENROUTER_PROVIDER_ID,
+            &provider_info,
+            Some(openai_auth_manager),
+        );
+        let key_without_auth = model_cache_key_for_provider(
+            OPENROUTER_PROVIDER_ID,
+            &provider_info,
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(key_with_ambient_auth, key_without_auth);
+        assert!(key_with_ambient_auth.contains("provider-token:"));
+        assert!(!key_with_ambient_auth.contains("openai-api-key"));
+        assert!(!key_with_ambient_auth.contains("raw-provider-secret"));
     }
 
     #[tokio::test]

@@ -4224,6 +4224,56 @@ async fn new_default_turn_uses_active_provider_model_metadata_after_provider_swi
 }
 
 #[tokio::test]
+async fn models_manager_cache_rebuilds_when_provider_credentials_change() -> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let mut openrouter_provider = config
+            .model_providers
+            .get(OPENROUTER_PROVIDER_ID)
+            .cloned()
+            .expect("OpenRouter provider should be configured");
+        openrouter_provider.env_key = None;
+        openrouter_provider.env_key_instructions = None;
+        openrouter_provider.experimental_bearer_token = Some("first-provider-token".to_string());
+        config.model_provider_id = OPENROUTER_PROVIDER_ID.to_string();
+        config.model_provider = openrouter_provider.clone();
+        config
+            .model_providers
+            .insert(OPENROUTER_PROVIDER_ID.to_string(), openrouter_provider);
+    })
+    .await?;
+    let config = session.get_config().await;
+
+    let first_manager = session
+        .models_manager_for_config_provider_id(config.as_ref(), Some(OPENROUTER_PROVIDER_ID))
+        .await;
+
+    let mut updated_config = (*config).clone();
+    let mut updated_provider = updated_config.model_provider.clone();
+    updated_provider.experimental_bearer_token = Some("second-provider-token".to_string());
+    updated_config.model_provider = updated_provider.clone();
+    updated_config
+        .model_providers
+        .insert(OPENROUTER_PROVIDER_ID.to_string(), updated_provider);
+
+    let second_manager = session
+        .models_manager_for_config_provider_id(&updated_config, Some(OPENROUTER_PROVIDER_ID))
+        .await;
+
+    assert!(!Arc::ptr_eq(&first_manager, &second_manager));
+    assert_eq!(
+        session
+            .services
+            .models_managers_by_cache_key
+            .lock()
+            .await
+            .len(),
+        2
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn startup_prewarm_is_not_scheduled_for_non_openai_provider() -> anyhow::Result<()> {
     let session = make_session_with_config(|config| {
         let nvidia_provider = config
@@ -5296,10 +5346,7 @@ async fn make_session_and_context_with_events()
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
-        models_managers_by_provider: Mutex::new(std::collections::HashMap::from([(
-            config.model_provider_id.clone(),
-            Arc::clone(&models_manager),
-        )])),
+        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
@@ -7379,10 +7426,7 @@ where
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
-        models_managers_by_provider: Mutex::new(std::collections::HashMap::from([(
-            config.model_provider_id.clone(),
-            Arc::clone(&models_manager),
-        )])),
+        models_managers_by_cache_key: Mutex::new(std::collections::HashMap::new()),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

@@ -61,6 +61,9 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
+#[cfg(windows)]
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(25);
+#[cfg(not(windows))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]

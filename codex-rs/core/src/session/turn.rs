@@ -2073,8 +2073,13 @@ async fn try_run_sampling_request(
                 should_emit_token_count = true;
             }
             ResponseEvent::ModelsEtag(etag) => {
-                // Update internal state with latest models etag
-                sess.services.models_manager.refresh_if_new_etag(etag).await;
+                let models_manager = sess
+                    .models_manager_for_config_provider_id(
+                        turn_context.config.as_ref(),
+                        Some(turn_context.config.model_provider_id.as_str()),
+                    )
+                    .await;
+                models_manager.refresh_if_new_etag(etag).await;
             }
             ResponseEvent::Completed {
                 token_usage,
