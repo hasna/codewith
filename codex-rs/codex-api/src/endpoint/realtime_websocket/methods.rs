@@ -1679,6 +1679,7 @@ mod tests {
         });
 
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: format!("http://{addr}"),
             query_params: Some(HashMap::new()),
@@ -1973,6 +1974,7 @@ mod tests {
         });
 
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: format!("http://{addr}"),
             query_params: Some(HashMap::new()),
@@ -2088,6 +2090,7 @@ mod tests {
         });
 
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: format!("http://{addr}"),
             query_params: Some(HashMap::new()),
@@ -2192,6 +2195,7 @@ mod tests {
         });
 
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: format!("http://{addr}"),
             query_params: Some(HashMap::new()),
@@ -2282,6 +2286,7 @@ mod tests {
         });
 
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: format!("http://{addr}"),
             query_params: Some(HashMap::new()),

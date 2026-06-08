@@ -119,6 +119,7 @@ fn developer_msg_with_fragments(texts: &[&str]) -> ResponseItem {
 
 fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
+        thread_id: None,
         turn_id: Some("reference-turn".to_string()),
         cwd: PathBuf::from("/tmp/reference-cwd"),
         workspace_roots: None,
@@ -134,6 +135,7 @@ fn reference_context_item() -> TurnContextItem {
         personality: None,
         collaboration_mode: None,
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(false),
         effort: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,

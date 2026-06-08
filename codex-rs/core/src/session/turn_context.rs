@@ -5,7 +5,7 @@ use crate::config::GhostSnapshotConfig;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
-use codex_model_provider::create_model_provider;
+use codex_model_provider::create_model_provider_with_id;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -55,6 +55,7 @@ impl TurnEnvironment {
 /// The context needed for a single turn of the thread.
 #[derive(Debug)]
 pub struct TurnContext {
+    pub(crate) thread_id: ThreadId,
     pub(crate) sub_id: String,
     pub(crate) trace_id: Option<String>,
     pub(crate) realtime_active: bool,
@@ -238,10 +239,14 @@ impl TurnContext {
         let available_models = models_manager
             .list_models(RefreshStrategy::OnlineIfUncached)
             .await;
-        let provider =
-            create_model_provider(config.model_provider.clone(), self.auth_manager.clone());
+        let provider = create_model_provider_with_id(
+            config.model_provider_id.clone(),
+            config.model_provider.clone(),
+            self.auth_manager.clone(),
+        );
 
         Self {
+            thread_id: self.thread_id,
             sub_id: self.sub_id.clone(),
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
@@ -362,6 +367,7 @@ impl TurnContext {
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         let workspace_roots = self.config.effective_workspace_roots();
         TurnContextItem {
+            thread_id: Some(self.thread_id),
             turn_id: Some(self.sub_id.clone()),
             #[allow(deprecated)]
             cwd: self.cwd.to_path_buf(),
@@ -378,6 +384,7 @@ impl TurnContext {
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
             multi_agent_version: Some(self.multi_agent_version),
+            auth_profile: Some(self.config.selected_auth_profile.clone()),
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort.clone(),
             summary: ReasoningSummaryConfig::Auto,
@@ -417,6 +424,37 @@ fn local_time_context() -> (String, String) {
 }
 
 impl Session {
+    pub(crate) fn models_manager_for_config(&self, config: &Config) -> SharedModelsManager {
+        create_model_provider_with_id(
+            config.model_provider_id.clone(),
+            config.model_provider.clone(),
+            Some(Arc::clone(&self.services.auth_manager)),
+        )
+        .models_manager(
+            config.codex_home.to_path_buf(),
+            config.model_catalog.clone(),
+        )
+    }
+
+    pub(crate) fn models_manager_for_config_provider_id(
+        &self,
+        config: &Config,
+        model_provider_id: Option<&str>,
+    ) -> SharedModelsManager {
+        let Some(model_provider_id) = model_provider_id else {
+            return self.models_manager_for_config(config);
+        };
+        if model_provider_id == config.model_provider_id {
+            return self.models_manager_for_config(config);
+        }
+        let mut config = config.clone();
+        if let Some(provider) = config.model_providers.get(model_provider_id).cloned() {
+            config.model_provider_id = model_provider_id.to_string();
+            config.model_provider = provider;
+        }
+        self.models_manager_for_config(&config)
+    }
+
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
     pub(crate) fn build_per_turn_config(
         session_configuration: &SessionConfiguration,
@@ -502,7 +540,11 @@ impl Session {
         );
         let session_source = session_configuration.session_source.clone();
         let auth_manager_for_context = auth_manager.clone();
-        let provider_for_context = create_model_provider(provider, auth_manager);
+        let provider_for_context = create_model_provider_with_id(
+            per_turn_config.model_provider_id.clone(),
+            provider,
+            auth_manager,
+        );
         let session_telemetry_for_context = session_telemetry;
         let available_models = models_manager.try_list_models().unwrap_or_default();
         let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
@@ -545,6 +587,7 @@ impl Session {
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(HostLoadedSkills::new(Arc::clone(&skills_outcome)));
         TurnContext {
+            thread_id,
             sub_id,
             trace_id: current_span_trace_id(),
             realtime_active: false,
@@ -777,9 +820,8 @@ impl Session {
                 .set_permission_profile(session_configuration.permission_profile());
         }
 
-        let model_info = self
-            .services
-            .models_manager
+        let turn_models_manager = self.models_manager_for_config(&per_turn_config);
+        let model_info = turn_models_manager
             .get_model_info(
                 session_configuration.collaboration_mode.model(),
                 &per_turn_config.to_models_manager_config(),
@@ -823,7 +865,7 @@ impl Session {
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             model_info,
-            &self.services.models_manager,
+            &turn_models_manager,
             self.services
                 .network_proxy
                 .load_full()

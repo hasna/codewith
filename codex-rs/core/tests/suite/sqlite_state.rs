@@ -223,6 +223,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                     dynamic_tools: None,
                     memory_mode: None,
                     multi_agent_version: None,
+                    auth_profile: None,
                 },
                 git: None,
             };

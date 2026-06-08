@@ -36,7 +36,8 @@ pub(super) async fn create_thread(
             params.base_instructions,
             params.dynamic_tools,
         )
-        .with_multi_agent_version(params.multi_agent_version),
+        .with_multi_agent_version(params.multi_agent_version)
+        .with_auth_profile(params.metadata.auth_profile.clone()),
     )
     .await
     .map_err(|err| ThreadStoreError::Internal {

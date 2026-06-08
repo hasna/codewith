@@ -1926,7 +1926,7 @@ impl AuthManager {
         self: &Arc<Self>,
         selected_auth_profile: Option<String>,
     ) -> Arc<Self> {
-        if selected_auth_profile.is_none() {
+        if selected_auth_profile.is_none() && self.selected_auth_profile().is_none() {
             return Arc::clone(self);
         }
 

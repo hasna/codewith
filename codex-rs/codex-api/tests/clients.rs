@@ -126,6 +126,7 @@ impl AuthProvider for StaticAuth {
 
 fn provider(name: &str) -> Provider {
     Provider {
+        provider_id: None,
         name: name.to_string(),
         base_url: "https://example.com/v1".to_string(),
         query_params: None,
@@ -143,6 +144,7 @@ fn provider(name: &str) -> Provider {
 
 fn openrouter_provider() -> Provider {
     Provider {
+        provider_id: Some("openrouter".to_string()),
         name: "OpenRouter".to_string(),
         base_url: "https://openrouter.ai/api/v1".to_string(),
         query_params: None,

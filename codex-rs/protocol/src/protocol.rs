@@ -61,6 +61,32 @@ use strum_macros::Display;
 use tracing::error;
 use ts_rs::TS;
 
+mod optional_option {
+    use serde::Deserialize;
+    use serde::Deserializer;
+    use serde::Serialize;
+    use serde::Serializer;
+
+    pub fn serialize<T, S>(value: &Option<Option<T>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        match value {
+            Some(value) => value.serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Some)
+    }
+}
+
 pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
@@ -2481,6 +2507,18 @@ impl InitialHistory {
             .and_then(|meta| meta.parent_thread_id)
     }
 
+    pub fn get_auth_profile(&self) -> Option<Option<String>> {
+        match self {
+            InitialHistory::New | InitialHistory::Cleared => None,
+            InitialHistory::Resumed(resumed) => {
+                auth_profile_from_items(&resumed.history, Some(resumed.conversation_id))
+            }
+            InitialHistory::Forked(items) => {
+                auth_profile_from_items(items, /*thread_id*/ None)
+            }
+        }
+    }
+
     fn get_resumed_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
@@ -2492,6 +2530,25 @@ impl InitialHistory {
             }
         }
     }
+}
+
+fn auth_profile_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<Option<String>> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            turn_context.auth_profile.clone()
+        }
+        RolloutItem::SessionMeta(meta_line)
+            if thread_id.is_none_or(|thread_id| meta_line.meta.id == thread_id) =>
+        {
+            meta_line.meta.auth_profile.clone()
+        }
+        _ => None,
+    })
 }
 
 fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
@@ -2810,6 +2867,18 @@ pub struct SessionMeta {
     pub memory_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Auth profile selected for model requests in this thread.
+    ///
+    /// Omitted means older metadata did not record the profile. `null` means
+    /// root/default auth, and a string means a named profile.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    #[schemars(with = "Option<String>")]
+    #[ts(type = "string | null", optional)]
+    pub auth_profile: Option<Option<String>>,
 }
 
 impl Default for SessionMeta {
@@ -2832,6 +2901,7 @@ impl Default for SessionMeta {
             dynamic_tools: None,
             memory_mode: None,
             multi_agent_version: None,
+            auth_profile: None,
         }
     }
 }
@@ -2887,6 +2957,8 @@ pub struct TurnContextNetworkItem {
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     pub cwd: PathBuf,
     /// Effective workspace roots used to materialize symbolic
@@ -2914,6 +2986,18 @@ pub struct TurnContextItem {
     pub collaboration_mode: Option<CollaborationMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Auth profile selected for model requests in this turn.
+    ///
+    /// Omitted means older context metadata did not record the profile.
+    /// `null` means root/default auth, and a string means a named profile.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    #[schemars(with = "Option<String>")]
+    #[ts(type = "string | null", optional)]
+    pub auth_profile: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5149,6 +5233,7 @@ mod tests {
     #[test]
     fn turn_context_item_serializes_network_when_present() -> Result<()> {
         let item = TurnContextItem {
+            thread_id: None,
             turn_id: None,
             cwd: test_path_buf("/tmp"),
             workspace_roots: None,
@@ -5174,6 +5259,7 @@ mod tests {
             personality: None,
             collaboration_mode: None,
             multi_agent_version: None,
+            auth_profile: None,
             realtime_active: None,
             effort: None,
             summary: ReasoningSummaryConfig::Auto,

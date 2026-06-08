@@ -2073,6 +2073,7 @@ async fn websocket_harness_with_provider_options(
         session_id,
         thread_id,
         /*installation_id*/ TEST_INSTALLATION_ID.to_string(),
+        config.model_provider_id.clone(),
         provider.clone(),
         SessionSource::Exec,
         /*parent_thread_id*/ None,

@@ -1367,6 +1367,7 @@ async fn seed_pathless_store_thread(
                 cwd: None,
                 model_provider: "test-provider".to_string(),
                 memory_mode: ThreadMemoryMode::Disabled,
+                auth_profile: None,
             },
         })
         .await?;

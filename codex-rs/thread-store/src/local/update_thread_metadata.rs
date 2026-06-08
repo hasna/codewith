@@ -73,9 +73,19 @@ pub(super) async fn update_thread_metadata(
         resolve_rollout_path(store, thread_id, params.include_archived).await?;
     let name = patch.name;
     let git_info = patch.git_info;
+    let auth_profile = patch.auth_profile;
     if let Some(memory_mode) = patch.memory_mode {
         apply_thread_memory_mode(resolved_rollout_path.path.as_path(), thread_id, memory_mode)
             .await?;
+        refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
+    }
+    if let Some(auth_profile) = auth_profile {
+        apply_thread_auth_profile(
+            resolved_rollout_path.path.as_path(),
+            thread_id,
+            auth_profile,
+        )
+        .await?;
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
     }
 
@@ -356,6 +366,9 @@ fn needs_rollout_compatibility_update(patch: &ThreadMetadataPatch) -> bool {
     if patch.name.is_some() {
         return true;
     }
+    if patch.auth_profile.is_some() {
+        return true;
+    }
     if patch.memory_mode.is_none() && patch.git_info.is_none() {
         return false;
     }
@@ -392,6 +405,7 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.cli_version.is_some()
         || patch.approval_mode.is_some()
         || patch.permission_profile.is_some()
+        || patch.auth_profile.is_some()
         || patch.token_usage.is_some()
         || patch.first_user_message.is_some()
 }
@@ -551,6 +565,35 @@ async fn apply_thread_memory_mode(
         })
 }
 
+async fn apply_thread_auth_profile(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    auth_profile: Option<String>,
+) -> ThreadStoreResult<()> {
+    let mut session_meta =
+        read_session_meta_line(rollout_path)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to set thread auth profile: {err}"),
+            })?;
+    if session_meta.meta.id != thread_id {
+        return Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to set thread auth profile: rollout session metadata id mismatch: expected {thread_id}, found {}",
+                session_meta.meta.id
+            ),
+        });
+    }
+
+    session_meta.git = None;
+    session_meta.meta.auth_profile = Some(auth_profile);
+    append_rollout_item_to_path(rollout_path, &RolloutItem::SessionMeta(session_meta))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set thread auth profile: {err}"),
+        })
+}
+
 fn memory_mode_as_str(mode: ThreadMemoryMode) -> &'static str {
     match mode {
         ThreadMemoryMode::Enabled => "enabled",
@@ -699,6 +742,35 @@ mod tests {
             .await
             .expect("thread memory mode should be readable");
         assert_eq!(memory_mode.as_deref(), Some("disabled"));
+    }
+
+    #[tokio::test]
+    async fn update_thread_metadata_sets_auth_profile_on_active_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(313);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let path =
+            write_session_file(home.path(), "2025-01-03T18-45-00", uuid).expect("session file");
+
+        let thread = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    auth_profile: Some(Some("work".to_string())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set thread auth profile");
+
+        assert_eq!(thread.thread_id, thread_id);
+        let appended = last_rollout_item(path.as_path());
+        assert_eq!(appended["type"], "session_meta");
+        assert_eq!(appended["payload"]["id"], thread_id.to_string());
+        assert_eq!(appended["payload"]["auth_profile"], "work");
+        assert_eq!(appended["payload"].get("git"), None);
     }
 
     #[tokio::test]
@@ -1621,6 +1693,7 @@ mod tests {
             cwd: Some(std::env::current_dir().expect("cwd")),
             model_provider: "test-provider".to_string(),
             memory_mode: ThreadMemoryMode::Enabled,
+            auth_profile: None,
         }
     }
 

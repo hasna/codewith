@@ -164,6 +164,15 @@ fn merge_persisted_resume_metadata(
     }
 }
 
+fn merge_persisted_auth_profile_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.auth_profile.is_none() {
+        typesafe_overrides.auth_profile = thread_history.get_auth_profile();
+    }
+}
+
 fn normalize_thread_list_cwd_filters(
     cwd: Option<ThreadListCwdFilter>,
 ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
@@ -2729,6 +2738,7 @@ impl ThreadRequestProcessor {
         let InitialHistory::Resumed(resumed_history) = thread_history else {
             return None;
         };
+        merge_persisted_auth_profile_from_history(typesafe_overrides, thread_history);
         let state_db_ctx = self.state_db.clone()?;
         let persisted_metadata = state_db_ctx
             .get_thread(resumed_history.conversation_id)
@@ -3249,6 +3259,12 @@ impl ThreadRequestProcessor {
             developer_instructions,
             /*personality*/ None,
         );
+        let source_initial_history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: source_thread_id,
+            history: history_items.clone(),
+            rollout_path: source_thread.rollout_path.clone(),
+        });
+        merge_persisted_auth_profile_from_history(&mut typesafe_overrides, &source_initial_history);
         typesafe_overrides.ephemeral = ephemeral.then_some(true);
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.
         let config = self
@@ -3269,11 +3285,7 @@ impl ThreadRequestProcessor {
             .fork_thread_from_history(
                 ForkSnapshot::Interrupted,
                 config,
-                InitialHistory::Resumed(ResumedHistory {
-                    conversation_id: source_thread_id,
-                    history: history_items.clone(),
-                    rollout_path: source_thread.rollout_path.clone(),
-                }),
+                source_initial_history,
                 thread_source.map(Into::into),
                 self.request_trace_context(&request_id).await,
             )

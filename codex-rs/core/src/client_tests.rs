@@ -20,6 +20,7 @@ use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
@@ -84,6 +85,7 @@ fn test_model_client_with_parent(
         thread_id.into(),
         thread_id,
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider.name.clone(),
         provider,
         session_source,
         parent_thread_id,
@@ -142,6 +144,7 @@ fn test_session_telemetry() -> SessionTelemetry {
 
 fn api_provider(name: &str, base_url: &str) -> ApiProvider {
     ApiProvider {
+        provider_id: None,
         name: name.to_string(),
         base_url: base_url.to_string(),
         query_params: None,
@@ -414,6 +417,39 @@ fn openrouter_responses_request_omits_tools_for_models_without_tool_support() {
         .expect("request should build");
 
     assert_eq!(request.tools, Vec::<serde_json::Value>::new());
+}
+
+#[tokio::test]
+async fn model_client_preserves_openrouter_provider_id_for_mirror_overrides() {
+    let mut provider = ModelProviderInfo::create_openrouter_provider();
+    provider.name = "OpenRouter Mirror".to_string();
+    provider.base_url = Some("https://openrouter-mirror.example.test/v1".to_string());
+    provider.env_key = None;
+    provider.experimental_bearer_token = Some("provider-token".to_string());
+    let thread_id = ThreadId::new();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id.into(),
+        thread_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        OPENROUTER_PROVIDER_ID.to_string(),
+        provider,
+        SessionSource::Exec,
+        /*parent_thread_id*/ None,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+    );
+
+    let setup = client.current_client_setup().await.expect("client setup");
+
+    assert_eq!(
+        setup.api_provider.provider_id.as_deref(),
+        Some(OPENROUTER_PROVIDER_ID)
+    );
+    assert!(setup.api_provider.is_openrouter_endpoint());
 }
 
 #[test]
@@ -802,6 +838,7 @@ fn model_client_with_counting_attestation(
         SessionId::new(),
         ThreadId::new(),
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider.name.clone(),
         provider,
         SessionSource::Exec,
         /*parent_thread_id*/ None,

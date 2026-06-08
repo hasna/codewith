@@ -347,6 +347,15 @@ impl ModelProvider for ConfiguredModelProvider {
         })
     }
 
+    async fn api_provider(&self) -> codex_protocol::error::Result<Provider> {
+        let auth = self.auth().await;
+        let mut provider = self
+            .info
+            .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
+        provider.provider_id = Some(self.provider_id.clone());
+        Ok(provider)
+    }
+
     fn models_manager(
         &self,
         codex_home: PathBuf,
@@ -390,6 +399,7 @@ mod tests {
     use std::num::NonZeroU64;
 
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
+    use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
     use codex_model_provider_info::WireApi;
     use codex_models_manager::manager::RefreshStrategy;
     use codex_protocol::config_types::ModelProviderAuthInfo;
@@ -632,6 +642,28 @@ mod tests {
 
         assert!(key.contains("provider-token:"));
         assert!(!key.contains("raw-provider-secret"));
+    }
+
+    #[tokio::test]
+    async fn configured_openrouter_mirror_api_provider_preserves_provider_id() {
+        let provider_info = ModelProviderInfo {
+            name: "OpenRouter Mirror".to_string(),
+            base_url: Some("https://openrouter-mirror.example.test/v1".to_string()),
+            ..ModelProviderInfo::create_openrouter_provider()
+        };
+        let provider = create_model_provider_with_id(
+            OPENROUTER_PROVIDER_ID,
+            provider_info,
+            /*auth_manager*/ None,
+        );
+
+        let api_provider = provider.api_provider().await.expect("api provider");
+
+        assert_eq!(
+            api_provider.provider_id.as_deref(),
+            Some(OPENROUTER_PROVIDER_ID)
+        );
+        assert!(api_provider.is_openrouter_endpoint());
     }
 
     #[test]

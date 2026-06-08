@@ -41,6 +41,7 @@ impl RetryConfig {
 /// stream idle timeout, plus helper methods for building requests.
 #[derive(Debug, Clone)]
 pub struct Provider {
+    pub provider_id: Option<String>,
     pub name: String,
     pub base_url: String,
     pub query_params: Option<HashMap<String, String>>,
@@ -90,7 +91,17 @@ impl Provider {
     }
 
     pub fn is_openrouter_endpoint(&self) -> bool {
-        is_openrouter_provider(&self.name, Some(&self.base_url))
+        self.provider_id.as_deref() == Some("openrouter")
+            || is_openrouter_provider(&self.name, Some(&self.base_url))
+    }
+
+    pub fn is_nvidia_endpoint(&self) -> bool {
+        self.provider_id.as_deref() == Some("nvidia") || self.name.eq_ignore_ascii_case("nvidia")
+    }
+
+    pub fn is_cerebras_endpoint(&self) -> bool {
+        self.provider_id.as_deref() == Some("cerebras")
+            || self.name.eq_ignore_ascii_case("cerebras")
     }
 
     pub fn websocket_url_for_path(&self, path: &str) -> Result<Url, url::ParseError> {
@@ -202,5 +213,48 @@ mod tests {
             "test",
             Some("https://example.com/api/v1")
         ));
+    }
+
+    #[test]
+    fn openrouter_endpoint_detection_uses_provider_id_for_mirrors() {
+        let provider = Provider {
+            provider_id: Some("openrouter".to_string()),
+            name: "OpenRouter Mirror".to_string(),
+            base_url: "https://openrouter-mirror.example.test/v1".to_string(),
+            query_params: None,
+            headers: HeaderMap::new(),
+            retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: Duration::from_secs(1),
+        };
+
+        assert!(provider.is_openrouter_endpoint());
+    }
+
+    #[test]
+    fn provider_family_detection_uses_provider_id_for_display_name_overrides() {
+        let provider = |provider_id: &str, name: &str| Provider {
+            provider_id: Some(provider_id.to_string()),
+            name: name.to_string(),
+            base_url: "https://provider-mirror.example.test/v1".to_string(),
+            query_params: None,
+            headers: HeaderMap::new(),
+            retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: Duration::from_secs(1),
+        };
+
+        assert!(provider("nvidia", "NVIDIA Mirror").is_nvidia_endpoint());
+        assert!(provider("cerebras", "Cerebras Mirror").is_cerebras_endpoint());
     }
 }

@@ -664,6 +664,7 @@ impl Session {
                                     } else {
                                         ThreadMemoryMode::Disabled
                                     },
+                                    auth_profile: Some(config.selected_auth_profile.clone()),
                                 },
                             },
                         )
@@ -685,6 +686,7 @@ impl Session {
                                     } else {
                                         ThreadMemoryMode::Disabled
                                     },
+                                    auth_profile: Some(config.selected_auth_profile.clone()),
                                 },
                             },
                         )
@@ -1127,6 +1129,7 @@ impl Session {
                     session_id,
                     thread_id,
                     installation_id.clone(),
+                    config.model_provider_id.clone(),
                     session_configuration.provider.clone(),
                     session_configuration.session_source.clone(),
                     session_configuration.parent_thread_id,

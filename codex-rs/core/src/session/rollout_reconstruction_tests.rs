@@ -58,6 +58,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -74,6 +75,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -99,6 +101,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
     let previous_model = "previous-rollout-model";
     let previous_model_provider_id = "previous-provider";
     let mut previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -115,6 +118,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -956,6 +960,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -972,6 +977,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -1037,6 +1043,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         serde_json::to_value(session.reference_context_item().await)
             .expect("serialize seeded reference context item"),
         serde_json::to_value(Some(TurnContextItem {
+            thread_id: None,
             turn_id: Some(turn_context.sub_id.clone()),
             #[allow(deprecated)]
             cwd: turn_context.cwd.to_path_buf(),
@@ -1053,6 +1060,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             personality: turn_context.personality,
             collaboration_mode: Some(turn_context.collaboration_mode.clone()),
             multi_agent_version: None,
+            auth_profile: None,
             realtime_active: Some(turn_context.realtime_active),
             effort: turn_context.reasoning_effort.clone(),
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -1067,6 +1075,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -1083,6 +1092,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -1188,6 +1198,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
     let current_turn_id = "current-turn".to_string();
     let unmatched_abort_turn_id = "other-turn".to_string();
     let current_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(current_turn_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -1204,6 +1215,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -1308,6 +1320,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -1324,6 +1337,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -1470,6 +1484,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -1486,6 +1501,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,

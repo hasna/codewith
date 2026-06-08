@@ -281,6 +281,7 @@ impl ModelProviderInfo {
         };
 
         Ok(ApiProvider {
+            provider_id: None,
             name: self.name.clone(),
             base_url,
             query_params: self.query_params.clone(),

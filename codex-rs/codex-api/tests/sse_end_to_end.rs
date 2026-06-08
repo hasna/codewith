@@ -59,6 +59,7 @@ impl AuthProvider for NoAuth {
 
 fn provider(name: &str) -> Provider {
     Provider {
+        provider_id: None,
         name: name.to_string(),
         base_url: "https://example.com/v1".to_string(),
         query_params: None,

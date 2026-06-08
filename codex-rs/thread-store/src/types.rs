@@ -54,6 +54,16 @@ pub struct ThreadPersistenceMetadata {
     pub model_provider: String,
     /// Memory mode associated with the live thread.
     pub memory_mode: MemoryMode,
+    /// Auth profile selected for model requests in the thread.
+    ///
+    /// Omitted means unknown, `Some(None)` means root/default auth, and
+    /// `Some(Some(_))` means a named auth profile.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub auth_profile: Option<Option<String>>,
 }
 
 /// Parameters required to create a persisted thread.
@@ -514,6 +524,16 @@ pub struct ThreadMetadataPatch {
     pub approval_mode: Option<AskForApproval>,
     /// Canonical runtime permissions.
     pub permission_profile: Option<PermissionProfile>,
+    /// Auth profile selected for model requests.
+    ///
+    /// `None` leaves the current metadata unchanged, `Some(None)` selects
+    /// root/default auth, and `Some(Some(_))` selects a named auth profile.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub auth_profile: Option<Option<String>>,
     /// Last observed token usage.
     pub token_usage: Option<TokenUsage>,
     /// First user message observed for this thread.
@@ -585,6 +605,9 @@ impl ThreadMetadataPatch {
         if next.permission_profile.is_some() {
             self.permission_profile = next.permission_profile;
         }
+        if next.auth_profile.is_some() {
+            self.auth_profile = next.auth_profile;
+        }
         if next.token_usage.is_some() {
             self.token_usage = next.token_usage;
         }
@@ -620,6 +643,7 @@ impl ThreadMetadataPatch {
             && self.cli_version.is_none()
             && self.approval_mode.is_none()
             && self.permission_profile.is_none()
+            && self.auth_profile.is_none()
             && self.token_usage.is_none()
             && self.first_user_message.is_none()
             && self.git_info.is_none()
@@ -660,6 +684,7 @@ mod tests {
             agent_nickname: Some(None),
             agent_role: Some(None),
             agent_path: Some(None),
+            auth_profile: Some(None),
             ..Default::default()
         };
 
@@ -669,6 +694,7 @@ mod tests {
         assert_eq!(value["agent_nickname"], json!(null));
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
+        assert_eq!(value["auth_profile"], json!(null));
 
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
@@ -677,6 +703,7 @@ mod tests {
         assert_eq!(decoded.agent_nickname, Some(None));
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
+        assert_eq!(decoded.auth_profile, Some(None));
     }
 
     #[test]
@@ -724,6 +751,7 @@ mod tests {
         let mut current = ThreadMetadataPatch {
             name: Some(Some("old name".to_string())),
             preview: Some("old preview".to_string()),
+            auth_profile: Some(Some("old-profile".to_string())),
             git_info: Some(GitInfoPatch {
                 sha: Some(Some("abc123".to_string())),
                 branch: Some(Some("main".to_string())),
@@ -736,6 +764,7 @@ mod tests {
             name: Some(None),
             preview: None,
             title: Some("new title".to_string()),
+            auth_profile: Some(None),
             git_info: Some(GitInfoPatch {
                 sha: None,
                 branch: Some(Some("feature".to_string())),
@@ -747,6 +776,7 @@ mod tests {
         assert_eq!(current.name, Some(None));
         assert_eq!(current.preview.as_deref(), Some("old preview"));
         assert_eq!(current.title.as_deref(), Some("new title"));
+        assert_eq!(current.auth_profile, Some(None));
         assert_eq!(
             current.git_info,
             Some(GitInfoPatch {

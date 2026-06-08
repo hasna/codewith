@@ -121,7 +121,7 @@ use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_model_provider::SharedModelProvider;
-use codex_model_provider::create_model_provider;
+use codex_model_provider::create_model_provider_with_id;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
@@ -396,6 +396,7 @@ impl ModelClient {
         session_id: SessionId,
         thread_id: ThreadId,
         installation_id: String,
+        provider_id: String,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
         parent_thread_id: Option<ThreadId>,
@@ -405,7 +406,8 @@ impl ModelClient {
         beta_features_header: Option<String>,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
     ) -> Self {
-        let model_provider = create_model_provider(provider_info, auth_manager);
+        let model_provider =
+            create_model_provider_with_id(provider_id, provider_info, auth_manager);
         let codex_api_key_env_enabled = model_provider
             .auth_manager()
             .as_ref()
@@ -840,7 +842,7 @@ impl ModelClient {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
         let mut tools = create_tools_json_for_responses_api(&prompt.tools)?;
-        if provider.name.eq_ignore_ascii_case("nvidia") || provider.is_openrouter_endpoint() {
+        if provider.is_nvidia_endpoint() || provider.is_openrouter_endpoint() {
             tools.retain(|tool| {
                 !matches!(
                     tool.get("type").and_then(serde_json::Value::as_str),
@@ -854,8 +856,8 @@ impl ModelClient {
                 .iter()
                 .any(|tool| matches!(tool.as_str(), "tools" | "function_calling"));
         let provider_uses_model_tool_metadata = provider.is_openrouter_endpoint()
-            || provider.name.eq_ignore_ascii_case("nvidia")
-            || provider.name.eq_ignore_ascii_case("cerebras");
+            || provider.is_nvidia_endpoint()
+            || provider.is_cerebras_endpoint();
         if provider_uses_model_tool_metadata && !model_supports_tools {
             tools.clear();
             move_instruction_messages_to_instructions(&mut instructions, &mut input);

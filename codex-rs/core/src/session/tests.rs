@@ -425,6 +425,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         thread_id.into(),
         thread_id,
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        "openai".to_string(),
         ModelProviderInfo::create_openai_provider(/* base_url */ /*base_url*/ None),
         codex_protocol::protocol::SessionSource::Exec,
         /*parent_thread_id*/ None,
@@ -2711,6 +2712,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "forked-rollout-model";
     let previous_context_item = TurnContextItem {
+        thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
@@ -2727,6 +2729,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -3771,6 +3774,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
                 } else {
                     ThreadMemoryMode::Disabled
                 },
+                auth_profile: None,
             },
         },
     )
@@ -4174,6 +4178,47 @@ async fn update_settings_model_provider_rebuilds_runtime_model_client() -> anyho
     assert!(!Arc::ptr_eq(&initial, &updated));
     assert_eq!(updated.current_window_generation(), 7);
     assert!(!updated.responses_websocket_enabled());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn new_default_turn_uses_active_provider_model_metadata_after_provider_switch()
+-> anyhow::Result<()> {
+    let overlapping_model = "z-ai/glm-5.1";
+    let session = make_session_with_config(|config| {
+        let openrouter_provider = config
+            .model_providers
+            .get(OPENROUTER_PROVIDER_ID)
+            .cloned()
+            .expect("OpenRouter provider should be configured");
+        config.model_provider_id = OPENROUTER_PROVIDER_ID.to_string();
+        config.model_provider = openrouter_provider;
+        config.model = Some(overlapping_model.to_string());
+    })
+    .await?;
+    let collaboration_mode = {
+        let state = session.state.lock().await;
+        state.session_configuration.collaboration_mode.clone()
+    };
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            model_provider_id: Some(NVIDIA_PROVIDER_ID.to_string()),
+            collaboration_mode: Some(collaboration_mode.with_updates(
+                Some(overlapping_model.to_string()),
+                /*effort*/ None,
+                /*developer_instructions*/ None,
+            )),
+            ..Default::default()
+        })
+        .await?;
+
+    let turn_context = session.new_default_turn().await;
+
+    assert_eq!(turn_context.config.model_provider_id, NVIDIA_PROVIDER_ID);
+    assert_eq!(turn_context.model_info.slug, overlapping_model);
+    assert_eq!(turn_context.model_info.context_window, Some(131_072));
 
     Ok(())
 }
@@ -5280,6 +5325,7 @@ async fn make_session_and_context_with_events()
             thread_id.into(),
             thread_id,
             /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+            config.model_provider_id.clone(),
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
             session_configuration.parent_thread_id,
@@ -6807,6 +6853,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
                 } else {
                     ThreadMemoryMode::Disabled
                 },
+                auth_profile: None,
             },
         },
     )
@@ -7357,6 +7404,7 @@ where
             thread_id.into(),
             thread_id,
             /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+            config.model_provider_id.clone(),
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
             session_configuration.parent_thread_id,

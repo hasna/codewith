@@ -30,6 +30,7 @@ impl AuthProvider for DummyAuth {
 
 fn provider(base_url: &str) -> Provider {
     Provider {
+        provider_id: None,
         name: "test".to_string(),
         base_url: base_url.to_string(),
         query_params: None,

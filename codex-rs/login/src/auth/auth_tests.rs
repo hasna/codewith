@@ -696,6 +696,59 @@ async fn scoped_auth_profile_switch_does_not_mutate_parent_or_sibling() -> anyho
 }
 
 #[tokio::test]
+#[serial(codex_auth_env)]
+async fn scoped_root_auth_profile_from_profile_parent_uses_root_auth() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("root-key");
+    let work_auth = api_key_auth_dot_json("work-key");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+
+    let parent = Arc::new(
+        AuthManager::new_with_auth_profile(
+            dir.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
+            Some("work".to_string()),
+        )
+        .await,
+    );
+    parent.set_external_auth(Arc::new(TestExternalAuth));
+
+    let root_scope = parent.shared_scoped_auth_profile(None).await;
+
+    assert!(!Arc::ptr_eq(&parent, &root_scope));
+    assert_eq!(parent.selected_auth_profile().as_deref(), Some("work"));
+    assert_eq!(root_scope.selected_auth_profile(), None);
+    assert_eq!(
+        parent
+            .auth_cached()
+            .expect("work auth should load")
+            .api_key(),
+        Some("work-key")
+    );
+    assert_eq!(
+        root_scope
+            .auth_cached()
+            .expect("root auth should load")
+            .api_key(),
+        Some("root-key")
+    );
+    assert!(parent.has_external_auth());
+    assert!(root_scope.has_external_auth());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn auth_manager_with_selected_profile_reload_does_not_fall_back_to_root() -> anyhow::Result<()>
 {
     let dir = tempdir()?;

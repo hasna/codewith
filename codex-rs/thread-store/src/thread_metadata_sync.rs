@@ -527,6 +527,7 @@ mod tests {
                 cwd: None,
                 model_provider: "test-provider".to_string(),
                 memory_mode: ThreadMemoryMode::Enabled,
+                auth_profile: None,
             },
         }
     }

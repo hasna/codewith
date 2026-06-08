@@ -42,6 +42,7 @@ fn write_rollout_with_metadata(path: &Path, thread_id: ThreadId) -> std::io::Res
                 dynamic_tools: None,
                 memory_mode: None,
                 multi_agent_version: None,
+                auth_profile: None,
             },
             git: None,
         }),

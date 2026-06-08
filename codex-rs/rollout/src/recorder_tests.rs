@@ -100,6 +100,7 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             dynamic_tools: None,
             memory_mode: None,
             multi_agent_version: None,
+            auth_profile: None,
         },
         git: None,
     };
@@ -437,6 +438,51 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
     );
     let text_after_second_persist = std::fs::read_to_string(&rollout_path)?;
     assert_eq!(text_after_second_persist, text);
+
+    recorder.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recorder_persists_auth_profile_in_session_meta() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            thread_id,
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            BaseInstructions::default(),
+            Vec::new(),
+        )
+        .with_auth_profile(Some(Some("work".to_string()))),
+    )
+    .await?;
+
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    recorder
+        .record_canonical_items(&[RolloutItem::EventMsg(EventMsg::AgentMessage(
+            AgentMessageEvent {
+                message: "materialize".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        ))])
+        .await?;
+    recorder.flush().await?;
+
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    let RolloutItem::SessionMeta(meta_line) = &items[0] else {
+        panic!("expected session metadata");
+    };
+    assert_eq!(meta_line.meta.auth_profile, Some(Some("work".to_string())));
 
     recorder.shutdown().await?;
     Ok(())
@@ -1133,6 +1179,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
     let turn_context = RolloutLine {
         timestamp: "2025-01-03T13:00:01Z".to_string(),
         item: RolloutItem::TurnContext(TurnContextItem {
+            thread_id: None,
             turn_id: Some("turn-1".to_string()),
             cwd: latest_cwd.clone(),
             workspace_roots: None,
@@ -1148,6 +1195,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             personality: None,
             collaboration_mode: None,
             multi_agent_version: None,
+            auth_profile: None,
             realtime_active: None,
             effort: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,

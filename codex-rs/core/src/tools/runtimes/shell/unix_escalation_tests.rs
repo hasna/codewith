@@ -24,6 +24,7 @@ use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_network_proxy::NetworkProxyConstraints;
 use codex_network_proxy::NetworkProxyState;
+use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ENV_KEYS;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -39,10 +40,12 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::GuardianCommandSource;
 use codex_sandboxing::SandboxType;
+use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_shell_escalation::EscalationExecution;
 use codex_shell_escalation::EscalationPermissions;
 use codex_shell_escalation::ExecResult;
 use codex_shell_escalation::ResolvedPermissionProfile;
+use codex_shell_escalation::ShellCommandExecutor;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -433,6 +436,108 @@ async fn zsh_nested_full_access_exec_drops_managed_network_proxy() -> anyhow::Re
         assert_eq!(prepared.env.get(*key), None, "{key} should be unset");
     }
     assert_eq!(prepared.env.get("CUSTOM_ENV"), Some(&"kept".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsandboxed_intercepted_exec_strips_managed_network_env() -> anyhow::Result<()> {
+    let workdir = test_sandbox_cwd();
+    let executor = CoreShellCommandExecutor {
+        command: Vec::new(),
+        cwd: workdir.clone(),
+        permission_profile: PermissionProfile::workspace_write(),
+        file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
+        network_sandbox_policy: NetworkSandboxPolicy::Restricted,
+        sandbox: SandboxType::None,
+        env: HashMap::new(),
+        network: None,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        arg0: None,
+        sandbox_policy_cwd: workdir.clone(),
+        windows_sandbox_workspace_roots: vec![workdir.clone()],
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+    };
+    let mut env = HashMap::new();
+    env.insert(PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string());
+    for key in PROXY_ENV_KEYS {
+        env.insert((*key).to_string(), format!("proxy-{key}"));
+    }
+
+    let prepared = executor
+        .prepare_escalated_exec(
+            &AbsolutePathBuf::from_absolute_path("/usr/bin/curl")?,
+            &["curl".to_string(), "example.com".to_string()],
+            &workdir,
+            env,
+            EscalationExecution::Unsandboxed,
+        )
+        .await?;
+
+    assert!(
+        !prepared.env.contains_key(PROXY_ACTIVE_ENV_KEY),
+        "unsandboxed intercepted exec should strip the managed-network active marker"
+    );
+    for key in PROXY_ENV_KEYS {
+        assert!(
+            !prepared.env.contains_key(*key),
+            "unsandboxed intercepted exec should strip managed-network proxy env var {key}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn preapproved_additional_permissions_escalate_intercepted_exec() -> anyhow::Result<()> {
+    let (session, turn_context) = make_session_and_context().await;
+    let requested_permissions = AdditionalPermissionProfile {
+        file_system: Some(FileSystemPermissions::from_read_write_roots(
+            /*read*/ None,
+            Some(vec![
+                AbsolutePathBuf::from_absolute_path("/tmp/output").unwrap(),
+            ]),
+        )),
+        ..Default::default()
+    };
+    let workdir = test_sandbox_cwd();
+    let permission_profile = effective_permission_profile(
+        &PermissionProfile::workspace_write(),
+        Some(&requested_permissions),
+    );
+    let provider = CoreShellActionProvider {
+        policy: Arc::new(RwLock::new(codex_execpolicy::Policy::empty())),
+        session: Arc::new(session),
+        turn: Arc::new(turn_context),
+        call_id: "preapproved-additional-permissions".to_string(),
+        tool_name: GuardianCommandSource::Shell,
+        approval_policy: AskForApproval::OnRequest,
+        permission_profile: permission_profile.clone(),
+        file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
+        sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
+        approval_sandbox_permissions: SandboxPermissions::UseDefault,
+        prompt_permissions: Some(requested_permissions),
+        stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+    };
+
+    let action = codex_shell_escalation::EscalationPolicy::determine_action(
+        &provider,
+        &AbsolutePathBuf::from_absolute_path("/usr/bin/printf")?,
+        &["printf".to_string(), "hello".to_string()],
+        &workdir,
+    )
+    .await?;
+
+    let expected = codex_shell_escalation::EscalationDecision::Escalate(
+        EscalationExecution::Permissions(EscalationPermissions::ResolvedPermissionProfile(
+            ResolvedPermissionProfile { permission_profile },
+        )),
+    );
+    assert_eq!(
+        action, expected,
+        "preapproved with_additional_permissions should escalate through the resolved permission profile"
+    );
 
     Ok(())
 }

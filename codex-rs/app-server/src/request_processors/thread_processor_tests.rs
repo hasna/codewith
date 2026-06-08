@@ -75,8 +75,14 @@ mod thread_processor_behavior_tests {
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::InitialHistory;
+    use codex_protocol::protocol::ResumedHistory;
+    use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
     use codex_thread_store::StoredThread;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -839,6 +845,64 @@ mod thread_processor_behavior_tests {
         Ok(metadata)
     }
 
+    fn history_with_auth_profile(auth_profile: Option<Option<&str>>) -> InitialHistory {
+        let conversation_id = ThreadId::new();
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: conversation_id,
+                    auth_profile: auth_profile.map(|value| value.map(str::to_string)),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            })],
+            rollout_path: None,
+        })
+    }
+
+    fn session_meta_with_auth_profile(
+        thread_id: ThreadId,
+        auth_profile: Option<Option<&str>>,
+    ) -> RolloutItem {
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                auth_profile: auth_profile.map(|value| value.map(str::to_string)),
+                ..SessionMeta::default()
+            },
+            git: None,
+        })
+    }
+
+    fn turn_context_with_auth_profile(
+        thread_id: ThreadId,
+        auth_profile: Option<Option<&str>>,
+    ) -> RolloutItem {
+        RolloutItem::TurnContext(TurnContextItem {
+            thread_id: Some(thread_id),
+            turn_id: Some("turn-1".to_string()),
+            cwd: PathBuf::from("/tmp"),
+            workspace_roots: None,
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
+            network: None,
+            file_system_sandbox_policy: None,
+            model: "gpt-5.1-codex".to_string(),
+            model_provider_id: None,
+            personality: None,
+            collaboration_mode: None,
+            multi_agent_version: None,
+            auth_profile: auth_profile.map(|value| value.map(str::to_string)),
+            realtime_active: None,
+            effort: None,
+            summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        })
+    }
+
     #[test]
     fn summary_from_thread_metadata_formats_protocol_timestamps_as_seconds() -> Result<()> {
         let mut metadata =
@@ -1019,6 +1083,98 @@ mod thread_processor_behavior_tests {
         );
         assert_eq!(request_overrides, None);
         Ok(())
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_applies_named_profile() {
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_auth_profile_from_history(
+            &mut typesafe_overrides,
+            &history_with_auth_profile(Some(Some("work"))),
+        );
+
+        assert_eq!(
+            typesafe_overrides.auth_profile,
+            Some(Some("work".to_string()))
+        );
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_applies_root_profile() {
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_auth_profile_from_history(
+            &mut typesafe_overrides,
+            &history_with_auth_profile(Some(None)),
+        );
+
+        assert_eq!(typesafe_overrides.auth_profile, Some(None));
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_preserves_explicit_override() {
+        let mut typesafe_overrides = ConfigOverrides {
+            auth_profile: Some(None),
+            ..Default::default()
+        };
+
+        merge_persisted_auth_profile_from_history(
+            &mut typesafe_overrides,
+            &history_with_auth_profile(Some(Some("work"))),
+        );
+
+        assert_eq!(typesafe_overrides.auth_profile, Some(None));
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_prefers_current_thread_metadata() {
+        let child_thread_id = ThreadId::new();
+        let source_thread_id = ThreadId::new();
+        let mut typesafe_overrides = ConfigOverrides::default();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: child_thread_id,
+            history: vec![
+                session_meta_with_auth_profile(child_thread_id, Some(None)),
+                session_meta_with_auth_profile(source_thread_id, Some(Some("work"))),
+                turn_context_with_auth_profile(source_thread_id, Some(Some("work"))),
+            ],
+            rollout_path: None,
+        });
+
+        merge_persisted_auth_profile_from_history(&mut typesafe_overrides, &history);
+
+        assert_eq!(typesafe_overrides.auth_profile, Some(None));
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_uses_latest_current_turn_context() {
+        let thread_id = ThreadId::new();
+        let mut typesafe_overrides = ConfigOverrides::default();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![
+                session_meta_with_auth_profile(thread_id, Some(Some("work"))),
+                turn_context_with_auth_profile(thread_id, Some(None)),
+            ],
+            rollout_path: None,
+        });
+
+        merge_persisted_auth_profile_from_history(&mut typesafe_overrides, &history);
+
+        assert_eq!(typesafe_overrides.auth_profile, Some(None));
+    }
+
+    #[test]
+    fn merge_persisted_auth_profile_from_history_ignores_legacy_missing_metadata() {
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_auth_profile_from_history(
+            &mut typesafe_overrides,
+            &history_with_auth_profile(None),
+        );
+
+        assert_eq!(typesafe_overrides.auth_profile, None);
     }
 
     #[tokio::test]

@@ -118,6 +118,7 @@ mod tests {
 
     fn provider() -> Provider {
         Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: "https://example.com/v1".to_string(),
             query_params: None,
@@ -134,10 +135,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_posts_typed_request_and_parses_encrypted_output() {
+    async fn search_posts_typed_request_and_parses_output() {
         let transport = CapturingTransport::new(
-            serde_json::to_vec(&json!({"encrypted_output": "ciphertext"}))
-                .expect("serialize response"),
+            serde_json::to_vec(&json!({
+                "encrypted_output": "ciphertext",
+                "output": "search result",
+            }))
+            .expect("serialize response"),
         );
         let client = SearchClient::new(transport.clone(), provider(), Arc::new(DummyAuth));
 
@@ -203,7 +207,8 @@ mod tests {
         assert_eq!(
             response,
             SearchResponse {
-                encrypted_output: "ciphertext".to_string(),
+                encrypted_output: Some("ciphertext".to_string()),
+                output: Some("search result".to_string()),
             }
         );
 
@@ -259,6 +264,41 @@ mod tests {
                 },
                 "max_output_tokens": 2500
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn search_accepts_encrypted_only_response() {
+        let transport = CapturingTransport::new(
+            serde_json::to_vec(&json!({
+                "encrypted_output": "ciphertext",
+            }))
+            .expect("serialize response"),
+        );
+        let client = SearchClient::new(transport, provider(), Arc::new(DummyAuth));
+
+        let response = client
+            .search(
+                &SearchRequest {
+                    id: "search-session".to_string(),
+                    model: "gpt-test".to_string(),
+                    reasoning: None,
+                    input: None,
+                    commands: None,
+                    settings: None,
+                    max_output_tokens: Some(2500),
+                },
+                HeaderMap::new(),
+            )
+            .await
+            .expect("encrypted-only search response should parse");
+
+        assert_eq!(
+            response,
+            SearchResponse {
+                encrypted_output: Some("ciphertext".to_string()),
+                output: None,
+            }
         );
     }
 }

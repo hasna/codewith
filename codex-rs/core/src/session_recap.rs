@@ -96,8 +96,9 @@ async fn recap_turn_context(
     model: &str,
 ) -> TurnContext {
     let turn_context = sess.new_default_turn().await;
+    let models_manager = sess.models_manager_for_config(turn_context.config.as_ref());
     let mut recap_context = turn_context
-        .with_model(model.to_string(), &sess.services.models_manager)
+        .with_model(model.to_string(), &models_manager)
         .await;
     recap_context.reasoning_effort = Some(config.reasoning_effort.clone());
     recap_context.reasoning_summary = ReasoningSummary::None;

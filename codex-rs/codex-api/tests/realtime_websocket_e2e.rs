@@ -60,6 +60,7 @@ where
 
 fn test_provider(base_url: String) -> Provider {
     Provider {
+        provider_id: None,
         name: "test".to_string(),
         base_url,
         query_params: Some(HashMap::new()),

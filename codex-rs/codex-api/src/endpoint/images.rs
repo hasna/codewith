@@ -132,6 +132,7 @@ mod tests {
 
     fn provider() -> Provider {
         Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: "https://example.com/api/codex".to_string(),
             query_params: None,

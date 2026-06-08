@@ -960,6 +960,7 @@ impl Session {
             self.session_id(),
             self.thread_id(),
             self.installation_id.clone(),
+            config.model_provider_id.clone(),
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
             session_configuration.parent_thread_id,
@@ -1532,6 +1533,7 @@ impl Session {
             session_source,
             active_turn_settings_override,
             model_runtime_configuration,
+            updated_auth_profile,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1571,6 +1573,12 @@ impl Session {
                 previous_model_provider_id != updated.original_config_do_not_use.model_provider_id;
             let model_runtime_configuration =
                 (model_provider_changed || updates.auth_profile.is_some()).then(|| updated.clone());
+            let updated_auth_profile = updates.auth_profile.is_some().then(|| {
+                updated
+                    .original_config_do_not_use
+                    .selected_auth_profile
+                    .clone()
+            });
             state.session_configuration = updated;
             (
                 previous_config,
@@ -1582,8 +1590,26 @@ impl Session {
                 session_source,
                 active_turn_settings_override,
                 model_runtime_configuration,
+                updated_auth_profile,
             )
         };
+
+        if let Some(updated_auth_profile) = updated_auth_profile {
+            if let Some(live_thread) = self.live_thread() {
+                if let Err(err) = live_thread
+                    .update_metadata(
+                        ThreadMetadataPatch {
+                            auth_profile: Some(updated_auth_profile),
+                            ..Default::default()
+                        },
+                        /*include_archived*/ false,
+                    )
+                    .await
+                {
+                    warn!("failed to persist auth profile update: {err}");
+                }
+            }
+        }
 
         if let Some(prepared_auth_profile_switch) = prepared_auth_profile_switch {
             self.services

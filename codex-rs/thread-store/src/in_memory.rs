@@ -183,6 +183,7 @@ impl ThreadStore for InMemoryThreadStore {
             memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)
                 .then_some("disabled".to_string()),
             multi_agent_version: params.multi_agent_version,
+            auth_profile: params.metadata.auth_profile.clone(),
             ..SessionMeta::default()
         };
         state
@@ -307,6 +308,20 @@ impl ThreadStore for InMemoryThreadStore {
         state.calls.update_thread_metadata += 1;
         if let Some(name) = params.patch.name.clone() {
             state.names.insert(params.thread_id, name);
+        }
+        if let Some(auth_profile) = params.patch.auth_profile.clone() {
+            state
+                .histories
+                .entry(params.thread_id)
+                .or_default()
+                .push(RolloutItem::SessionMeta(SessionMetaLine {
+                    meta: SessionMeta {
+                        id: params.thread_id,
+                        auth_profile: Some(auth_profile),
+                        ..SessionMeta::default()
+                    },
+                    git: None,
+                }));
         }
         state
             .metadata_updates

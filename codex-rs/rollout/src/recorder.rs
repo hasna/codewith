@@ -89,6 +89,7 @@ pub enum RolloutRecorderParams {
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         multi_agent_version: Option<MultiAgentVersion>,
+        auth_profile: Option<Option<String>>,
     },
     Resume {
         path: PathBuf,
@@ -175,6 +176,7 @@ impl RolloutRecorderParams {
             base_instructions,
             dynamic_tools,
             multi_agent_version: None,
+            auth_profile: None,
         }
     }
 
@@ -188,6 +190,17 @@ impl RolloutRecorderParams {
         } = &mut self
         {
             *version = multi_agent_version;
+        }
+        self
+    }
+
+    pub fn with_auth_profile(mut self, auth_profile: Option<Option<String>>) -> Self {
+        if let Self::Create {
+            auth_profile: profile,
+            ..
+        } = &mut self
+        {
+            *profile = auth_profile;
         }
         self
     }
@@ -679,6 +692,7 @@ impl RolloutRecorder {
                 base_instructions,
                 dynamic_tools,
                 multi_agent_version,
+                auth_profile,
             } => {
                 let log_file_info = precompute_log_file_info(config, conversation_id)?;
                 let path = log_file_info.path.clone();
@@ -715,6 +729,7 @@ impl RolloutRecorder {
                     },
                     memory_mode: (!config.generate_memories()).then_some("disabled".to_string()),
                     multi_agent_version,
+                    auth_profile,
                 };
 
                 (None, Some(log_file_info), path, Some(session_meta))

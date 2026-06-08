@@ -791,12 +791,28 @@ async fn maybe_run_previous_model_inline_compact(
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(());
     };
+    let previous_model_provider_id = previous_turn_settings
+        .model_provider_id
+        .clone()
+        .unwrap_or_else(|| turn_context.config.model_provider_id.clone());
+    if previous_model_provider_id != turn_context.config.model_provider_id {
+        trace!(
+            previous_model_provider = %previous_model_provider_id,
+            current_model_provider = %turn_context.config.model_provider_id,
+            "skipping previous-model inline compaction because the provider changed"
+        );
+        return Ok(());
+    }
+    let previous_models_manager = sess.models_manager_for_config_provider_id(
+        turn_context.config.as_ref(),
+        previous_turn_settings.model_provider_id.as_deref(),
+    );
     let previous_model_turn_context = Arc::new(
         turn_context
             .with_model_provider_and_model(
                 previous_turn_settings.model_provider_id,
                 previous_turn_settings.model,
-                &sess.services.models_manager,
+                &previous_models_manager,
             )
             .await,
     );
