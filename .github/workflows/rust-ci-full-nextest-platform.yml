@@ -111,6 +111,19 @@ jobs:
             packages=(pkg-config libcap-dev bubblewrap)
             if [[ "${{ inputs.target }}" == "aarch64-unknown-linux-gnu" && "$(uname -m)" != "aarch64" ]]; then
               sudo dpkg --add-architecture arm64
+              if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+                sudo sed -i '/^Architectures:/d; /^Signed-By:/i Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+              elif [[ -f /etc/apt/sources.list ]]; then
+                sudo sed -i -E 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+              fi
+              {
+                echo "Types: deb"
+                echo "URIs: http://ports.ubuntu.com/ubuntu-ports"
+                echo "Suites: noble noble-updates noble-backports noble-security"
+                echo "Components: main universe restricted multiverse"
+                echo "Architectures: arm64"
+                echo "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg"
+              } | sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.sources >/dev/null
               packages+=(gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libcap-dev:arm64)
             fi
             sudo apt-get update -y
