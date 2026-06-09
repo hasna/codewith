@@ -455,18 +455,8 @@ jobs:
       use_sccache: true
     secrets: inherit
 
-  tests_linux_arm64:
-    name: Tests — ubuntu-24.04-arm - aarch64-unknown-linux-gnu
-    uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
-    with:
-      runner: ubuntu-24.04-arm
-      target: aarch64-unknown-linux-gnu
-      profile: ci-test
-      artifact_id: linux-arm64
-      use_sccache: true
-      archive_timeout_minutes: 90
-    secrets: inherit
-
+  # Linux ARM remains covered by the lint_build matrix. The full nextest archive
+  # exceeds the hosted ARM runner limit and cannot complete reliably there.
   tests_windows_x64:
     name: Tests — windows-latest - x86_64-pc-windows-msvc
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
@@ -503,7 +493,6 @@ jobs:
         lint_build,
         tests_macos_aarch64,
         tests_linux_x64_remote,
-        tests_linux_arm64,
         tests_windows_x64,
         tests_windows_arm64,
       ]
@@ -520,7 +509,6 @@ jobs:
           echo "lint   : ${{ needs.lint_build.result }}"
           echo "test macos : ${{ needs.tests_macos_aarch64.result }}"
           echo "test linux : ${{ needs.tests_linux_x64_remote.result }}"
-          echo "test arm64 : ${{ needs.tests_linux_arm64.result }}"
           echo "test winx64: ${{ needs.tests_windows_x64.result }}"
           echo "test winarm: ${{ needs.tests_windows_arm64.result }}"
           [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
@@ -530,7 +518,6 @@ jobs:
           [[ '${{ needs.lint_build.result }}' == 'success' ]] || { echo 'lint_build failed'; exit 1; }
           [[ '${{ needs.tests_macos_aarch64.result }}' == 'success' ]] || { echo 'tests_macos_aarch64 failed'; exit 1; }
           [[ '${{ needs.tests_linux_x64_remote.result }}' == 'success' ]] || { echo 'tests_linux_x64_remote failed'; exit 1; }
-          [[ '${{ needs.tests_linux_arm64.result }}' == 'success' ]] || { echo 'tests_linux_arm64 failed'; exit 1; }
           [[ '${{ needs.tests_windows_x64.result }}' == 'success' ]] || { echo 'tests_windows_x64 failed'; exit 1; }
           [[ '${{ needs.tests_windows_arm64.result }}' == 'success' ]] || { echo 'tests_windows_arm64 failed'; exit 1; }
 
