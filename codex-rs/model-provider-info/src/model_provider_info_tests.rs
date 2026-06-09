@@ -305,12 +305,23 @@ fn test_built_in_model_providers_include_expected_picker_providers() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from([
+            ANTHROPIC_PROVIDER_ID.to_string(),
             CEREBRAS_PROVIDER_ID.to_string(),
             NVIDIA_PROVIDER_ID.to_string(),
             OPENAI_PROVIDER_ID.to_string(),
             OPENROUTER_PROVIDER_ID.to_string(),
             XIAOMI_PROVIDER_ID.to_string(),
         ])
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_anthropic() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(ANTHROPIC_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_anthropic_provider())
     );
 }
 
@@ -351,6 +362,35 @@ fn test_built_in_model_providers_include_xiaomi() {
     assert_eq!(
         providers.get(XIAOMI_PROVIDER_ID),
         Some(&ModelProviderInfo::create_xiaomi_provider())
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_anthropic_override() {
+    let anthropic_provider = ModelProviderInfo {
+        name: "Anthropic Dedicated".to_string(),
+        base_url: Some("https://dedicated.anthropic.example.com/v1".to_string()),
+        env_key: Some("ANTHROPIC_DEDICATED_API_KEY".to_string()),
+        wire_api: WireApi::Chat,
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers =
+        std::collections::HashMap::from([(ANTHROPIC_PROVIDER_ID.to_string(), anthropic_provider)]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    let mut expected_provider = ModelProviderInfo::create_anthropic_provider();
+    expected_provider.name = "Anthropic Dedicated".to_string();
+    expected_provider.base_url = Some("https://dedicated.anthropic.example.com/v1".to_string());
+    expected_provider.env_key = Some("ANTHROPIC_DEDICATED_API_KEY".to_string());
+    expected_provider.env_key_instructions = None;
+    expected.insert(ANTHROPIC_PROVIDER_ID.to_string(), expected_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
     );
 }
 

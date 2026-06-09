@@ -15,6 +15,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::collect_auth_env_telemetry;
 use codex_login::default_client::build_reqwest_client;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_otel::TelemetryAuthMode;
@@ -24,12 +25,17 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::telemetry_transport_error_message;
 use http::HeaderMap;
+use http::HeaderValue;
+use http::header::HeaderName;
 use tokio::time::timeout;
 
 use crate::auth::resolve_provider_model_list_auth;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_ENDPOINT: &str = "/models";
+const ANTHROPIC_API_KEY_HEADER: HeaderName = HeaderName::from_static("x-api-key");
+const ANTHROPIC_VERSION_HEADER: HeaderName = HeaderName::from_static("anthropic-version");
+const ANTHROPIC_VERSION_VALUE: HeaderValue = HeaderValue::from_static("2023-06-01");
 
 /// Provider-owned OpenAI-compatible `/models` endpoint.
 #[derive(Debug)]
@@ -66,6 +72,25 @@ impl OpenAiModelsEndpoint {
             .is_some_and(|auth_manager| auth_manager.codex_api_key_env_enabled());
         collect_auth_env_telemetry(&self.provider_info, codex_api_key_env_enabled)
     }
+
+    fn extra_model_list_headers(&self) -> CoreResult<HeaderMap> {
+        if !self.provider_id.eq_ignore_ascii_case(ANTHROPIC_PROVIDER_ID) {
+            return Ok(HeaderMap::new());
+        }
+
+        let api_key = self.provider_info.api_key()?.unwrap_or_default();
+        anthropic_model_list_headers(&api_key)
+    }
+}
+
+fn anthropic_model_list_headers(api_key: &str) -> CoreResult<HeaderMap> {
+    let api_key = HeaderValue::from_str(api_key).map_err(|err| {
+        CodexErr::InvalidRequest(format!("invalid Anthropic API key header: {err}"))
+    })?;
+    let mut headers = HeaderMap::new();
+    headers.insert(ANTHROPIC_API_KEY_HEADER, api_key);
+    headers.insert(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
+    Ok(headers)
 }
 
 #[async_trait]
@@ -105,10 +130,11 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         let client = ModelsClient::new(transport, api_provider, api_auth)
             .with_provider_id(Some(self.provider_id.clone()))
             .with_telemetry(Some(request_telemetry));
+        let extra_headers = self.extra_model_list_headers()?;
 
         timeout(
             MODELS_REFRESH_TIMEOUT,
-            client.list_models(client_version, HeaderMap::new()),
+            client.list_models(client_version, extra_headers),
         )
         .await
         .map_err(|_| CodexErr::Timeout)?
@@ -266,5 +292,24 @@ mod tests {
         );
 
         assert!(!endpoint.has_provider_auth());
+    }
+
+    #[test]
+    fn anthropic_model_list_headers_include_native_auth_headers() {
+        let headers =
+            anthropic_model_list_headers("anthropic-token").expect("headers should build");
+
+        assert_eq!(
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("anthropic-token")
+        );
+        assert_eq!(
+            headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2023-06-01")
+        );
     }
 }

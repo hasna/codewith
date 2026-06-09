@@ -118,8 +118,10 @@ struct OpenAiCompatibleModelsResponse {
 struct OpenAiCompatibleModel {
     id: String,
     name: Option<String>,
+    display_name: Option<String>,
     description: Option<String>,
     context_length: Option<i64>,
+    max_input_tokens: Option<i64>,
     architecture: Option<OpenAiCompatibleArchitecture>,
     capabilities: Option<OpenAiCompatibleCapabilities>,
     limits: Option<OpenAiCompatibleLimits>,
@@ -140,6 +142,12 @@ struct OpenAiCompatibleCapabilities {
     tools: Option<bool>,
     parallel_tool_calls: Option<bool>,
     reasoning: Option<bool>,
+    image_input: Option<OpenAiCompatibleCapabilitySupport>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompatibleCapabilitySupport {
+    supported: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -233,8 +241,10 @@ impl OpenAiCompatibleModel {
         let OpenAiCompatibleModel {
             id,
             name,
+            display_name,
             description,
             context_length,
+            max_input_tokens,
             architecture,
             capabilities,
             limits,
@@ -277,9 +287,12 @@ impl OpenAiCompatibleModel {
         let limits_context_length = limits.and_then(|limits| limits.max_context_length);
         let effective_context_length = provider_context_length
             .or(context_length)
+            .or(max_input_tokens)
             .or(limits_context_length)
             .or_else(|| known_metadata.map(|metadata| metadata.context_window));
-        let max_context_window = context_length.or(effective_context_length);
+        let max_context_window = context_length
+            .or(max_input_tokens)
+            .or(effective_context_length);
         let supports_reasoning = capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning)
@@ -299,7 +312,7 @@ impl OpenAiCompatibleModel {
             );
         ModelInfo {
             slug: id.clone(),
-            display_name: name.unwrap_or_else(|| {
+            display_name: name.or(display_name).unwrap_or_else(|| {
                 known_metadata
                     .map(|metadata| metadata.display_name.to_string())
                     .unwrap_or_else(|| id.clone())
@@ -336,7 +349,10 @@ impl OpenAiCompatibleModel {
             } else {
                 Vec::new()
             },
-            input_modalities: input_modalities_from_openai_compatible_architecture(architecture),
+            input_modalities: input_modalities_from_openai_compatible_architecture(
+                architecture,
+                capabilities.as_ref(),
+            ),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
             use_responses_lite: false,
@@ -433,8 +449,18 @@ fn trim_price(amount: f64) -> String {
 
 fn input_modalities_from_openai_compatible_architecture(
     architecture: Option<OpenAiCompatibleArchitecture>,
+    capabilities: Option<&OpenAiCompatibleCapabilities>,
 ) -> Vec<InputModality> {
     let Some(architecture) = architecture else {
+        if capabilities.is_some_and(|capabilities| {
+            capabilities
+                .image_input
+                .as_ref()
+                .and_then(|image_input| image_input.supported)
+                .unwrap_or(false)
+        }) {
+            return vec![InputModality::Text, InputModality::Image];
+        }
         return vec![InputModality::Text];
     };
 
@@ -1169,6 +1195,50 @@ mod tests {
         assert_eq!(glm.default_reasoning_level, None);
         assert_eq!(glm.supported_reasoning_levels, Vec::new());
         assert!(!glm.supports_reasoning_summaries);
+    }
+
+    #[test]
+    fn parses_anthropic_models_response_with_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "type": "model",
+                        "id": "claude-fable-5",
+                        "display_name": "Claude Fable 5",
+                        "created_at": "2026-06-07T00:00:00Z",
+                        "max_input_tokens": 1_000_000,
+                        "max_tokens": 128_000,
+                        "capabilities": {
+                            "image_input": {"supported": true},
+                            "effort": {"supported": true}
+                        }
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("anthropic"),
+            Some("Anthropic"),
+            Some("https://api.anthropic.com/v1"),
+        )
+        .expect("Anthropic model response should decode");
+
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.slug, "claude-fable-5");
+        assert_eq!(model.display_name, "Claude Fable 5");
+        assert_eq!(model.context_window, Some(1_000_000));
+        assert_eq!(model.max_context_window, Some(1_000_000));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(model.supports_parallel_tool_calls);
+        assert_eq!(
+            model.input_modalities,
+            vec![InputModality::Text, InputModality::Image]
+        );
+        assert_eq!(model.default_reasoning_level, None);
+        assert_eq!(model.supported_reasoning_levels, Vec::new());
+        assert!(!model.supports_reasoning_summaries);
     }
 
     #[tokio::test]

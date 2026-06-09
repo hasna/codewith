@@ -5,7 +5,7 @@
 //!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
-//! The built-in picker surface is intentionally small: OpenAI, Cerebras, NVIDIA, OpenRouter, and Xiaomi MiMo.
+//! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA, OpenRouter, and Xiaomi MiMo.
 
 mod provider_credentials;
 
@@ -39,6 +39,9 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 const CEREBRAS_PROVIDER_NAME: &str = "Cerebras";
 pub const CEREBRAS_PROVIDER_ID: &str = "cerebras";
 pub const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
@@ -410,6 +413,28 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_anthropic_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: ANTHROPIC_PROVIDER_NAME.into(),
+            base_url: Some(ANTHROPIC_BASE_URL.into()),
+            env_key: Some("ANTHROPIC_API_KEY".into()),
+            env_key_instructions: Some("Set ANTHROPIC_API_KEY to an Anthropic API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_cerebras_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: CEREBRAS_PROVIDER_NAME.into(),
@@ -535,6 +560,7 @@ pub fn built_in_model_providers(
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
+    let anthropic_provider = P::create_anthropic_provider();
     let cerebras_provider = P::create_cerebras_provider();
     let nvidia_provider = P::create_nvidia_provider();
     let openrouter_provider = P::create_openrouter_provider();
@@ -542,6 +568,7 @@ pub fn built_in_model_providers(
 
     [
         (OPENAI_PROVIDER_ID, openai_provider),
+        (ANTHROPIC_PROVIDER_ID, anthropic_provider),
         (CEREBRAS_PROVIDER_ID, cerebras_provider),
         (NVIDIA_PROVIDER_ID, nvidia_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
@@ -555,10 +582,11 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable. OpenRouter, Cerebras, and NVIDIA remain overridable
-/// so users can point them at compatible mirrors. Amazon Bedrock is no longer built in,
-/// but an explicit `[model_providers.amazon-bedrock.aws]` block still enables
-/// the provider with the default Bedrock endpoint and optional AWS profile.
+/// generally overridable. Anthropic, OpenRouter, Cerebras, NVIDIA, and Xiaomi
+/// remain overridable so users can point them at compatible mirrors. Amazon
+/// Bedrock is no longer built in, but an explicit
+/// `[model_providers.amazon-bedrock.aws]` block still enables the provider with
+/// the default Bedrock endpoint and optional AWS profile.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
@@ -586,7 +614,8 @@ pub fn merge_configured_model_providers(
                     built_in_aws.region = Some(region);
                 }
             }
-        } else if key == OPENROUTER_PROVIDER_ID
+        } else if key == ANTHROPIC_PROVIDER_ID
+            || key == OPENROUTER_PROVIDER_ID
             || key == CEREBRAS_PROVIDER_ID
             || key == NVIDIA_PROVIDER_ID
             || key == XIAOMI_PROVIDER_ID

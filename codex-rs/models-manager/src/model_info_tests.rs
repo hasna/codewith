@@ -91,6 +91,40 @@ fn known_nvidia_glm_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_anthropic_fable_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("claude-fable-5", Some("anthropic"));
+
+    assert_eq!(model.display_name, "Claude Fable 5");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, None);
+    assert_eq!(model.supported_reasoning_levels, Vec::new());
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_anthropic_latest_models_have_context_windows() {
+    let cases = [
+        ("claude-opus-4-8", "Claude Opus 4.8", 1_000_000),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000),
+        ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000),
+    ];
+
+    for (slug, display_name, context_window) in cases {
+        let model = model_info_from_slug_for_provider(slug, Some("anthropic"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(context_window));
+        assert_eq!(model.max_context_window, Some(context_window));
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
 fn stale_openrouter_deepseek_slug_uses_unknown_fallback() {
     let model =
         model_info_from_slug_for_provider("deepseek-ai/deepseek-v4-flash", Some("openrouter"));

@@ -747,9 +747,11 @@ mod tests {
     #[test]
     fn create_model_provider_does_not_use_openai_auth_manager_for_builtin_external_key_providers() {
         for provider_info in [
+            ModelProviderInfo::create_anthropic_provider(),
             ModelProviderInfo::create_cerebras_provider(),
             ModelProviderInfo::create_nvidia_provider(),
             ModelProviderInfo::create_openrouter_provider(),
+            ModelProviderInfo::create_xiaomi_provider(),
         ] {
             let provider = create_model_provider(
                 provider_info,

@@ -1,11 +1,13 @@
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 
+mod anthropic;
 mod cerebras;
 mod nvidia;
 mod openrouter;
 mod xiaomi;
 
+const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -68,6 +70,14 @@ pub fn metadata_for_openai_compatible_response(
     provider_base_url: Option<&str>,
     slug: &str,
 ) -> Option<KnownProviderModelMetadata> {
+    if provider_matches(
+        provider_id,
+        provider_base_url,
+        "anthropic",
+        ANTHROPIC_BASE_URL,
+    ) {
+        return anthropic::metadata(slug);
+    }
     if provider_matches(provider_id, provider_base_url, "nvidia", NVIDIA_BASE_URL) {
         return nvidia::metadata(slug);
     }
@@ -103,6 +113,9 @@ pub fn metadata_for_local_fallback(
     slug: &str,
 ) -> Option<KnownProviderModelMetadata> {
     match provider_id {
+        Some(provider_id) if provider_id_matches(Some(provider_id), "anthropic") => {
+            anthropic::metadata(slug)
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), "nvidia") => {
             nvidia::metadata(slug)
         }
@@ -143,6 +156,14 @@ pub fn reasoning_levels_for_openai_compatible_response(
     provider_base_url: Option<&str>,
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    if provider_matches(
+        provider_id,
+        provider_base_url,
+        "anthropic",
+        ANTHROPIC_BASE_URL,
+    ) {
+        return no_reasoning_levels();
+    }
     if provider_matches(provider_id, provider_base_url, "nvidia", NVIDIA_BASE_URL) {
         return nvidia::reasoning_levels(slug);
     }
@@ -178,6 +199,9 @@ pub fn reasoning_levels_for_local_fallback(
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
     match provider_id {
+        Some(provider_id) if provider_id_matches(Some(provider_id), "anthropic") => {
+            no_reasoning_levels()
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), "nvidia") => {
             nvidia::reasoning_levels(slug)
         }
@@ -196,6 +220,9 @@ pub fn reasoning_levels_for_local_fallback(
 }
 
 pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProviderFallbackModel] {
+    if provider_id_matches(Some(provider_id), "anthropic") {
+        return anthropic::FALLBACK_MODELS;
+    }
     if provider_id_matches(Some(provider_id), "cerebras") {
         return cerebras::FALLBACK_MODELS;
     }
@@ -252,5 +279,35 @@ fn reasoning_preset(effort: ReasoningEffort, description: &str) -> ReasoningEffo
     ReasoningEffortPreset {
         effort,
         description: description.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_fable_metadata_has_current_context_window() {
+        assert_eq!(
+            metadata_for_local_fallback(Some("anthropic"), "claude-fable-5"),
+            Some(KnownProviderModelMetadata::new(
+                "Claude Fable 5",
+                1_000_000,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ true,
+                /*supports_reasoning*/ true,
+            ))
+        );
+    }
+
+    #[test]
+    fn anthropic_fallback_models_use_fable_as_default() {
+        let models = fallback_models_for_provider("anthropic");
+
+        assert_eq!(models[0].id, "claude-fable-5");
+        assert!(models[0].is_default);
+        assert_eq!(models[1].id, "claude-opus-4-8");
+        assert_eq!(models[2].id, "claude-sonnet-4-6");
+        assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
     }
 }

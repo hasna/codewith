@@ -209,6 +209,23 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_fallback_models_include_fable_default() {
+        let models =
+            fallback_supported_models_for_provider("anthropic", /*include_hidden*/ false);
+
+        assert_eq!(models.len(), 4);
+        assert_eq!(models[0].model, "claude-fable-5");
+        assert_eq!(models[0].display_name, "Claude Fable 5");
+        assert!(models[0].is_default);
+        assert!(!models[0].hidden);
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(models[0].supported_reasoning_efforts, Vec::new());
+        assert_eq!(models[1].model, "claude-opus-4-8");
+        assert_eq!(models[2].model, "claude-sonnet-4-6");
+        assert_eq!(models[3].model, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
     fn openrouter_fallback_models_include_valid_deepseek_and_glm() {
         let models =
             fallback_supported_models_for_provider("openrouter", /*include_hidden*/ false);
