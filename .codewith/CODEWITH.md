@@ -6,6 +6,20 @@
 - Do not re-enable automatic update checks, update notifications, or update prompts. Codewith updates through explicit upstream merges and `@hasna/codewith` releases.
 - When merging upstream, preserve Codewith behavior including the `@hasna/codewith` package, auth profiles, `/profile`, auth-profile auto-switching, `/config`, `.codewith`, and `CODEWITH.md`.
 
+### Codewith release and CI policy
+
+- Do not treat the full upstream-style Rust/Bazel matrix as the default immediate publish gate for every small Codewith release fix. It is a full confidence backstop, not the fastest release path.
+- For urgent `@hasna/codewith` publishes, use a fast release gate unless the user explicitly asks to wait for the full matrix:
+  - targeted tests for the changed crates and workflows
+  - focused regressions for provider auth, model/provider selection, profiles, secrets, and TUI flows touched by the change
+  - package build plus tarball smoke test
+  - published package install smoke test before reporting success
+  - release tag alignment with the commit that produced the package
+- Keep the full Rust/Bazel matrix available as post-merge, nightly, or explicit confidence verification. If it is already running and a job fails with a real compiler/test/lint error, inspect the logs and fix it; do not ignore real regressions.
+- Cancel superseded GitHub Actions runs on `main` after pushing follow-up release commits. Obsolete full-matrix runs consume runner minutes and can hide the signal from the current commit.
+- Prefer branch/PR release work or workflow concurrency that cancels superseded runs over repeatedly pushing tiny fixes directly to `main` and letting every historical full matrix keep running.
+- Bigger runners can help only after the workflow shape is right. Use them for true bottlenecks such as Bazel Linux test/clippy, argument-comment-lint, and Windows build jobs; do not use longer timeouts as the primary speed strategy.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
