@@ -460,6 +460,7 @@ jobs:
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
     with:
       runner: ubuntu-24.04-arm
+      archive_runner: ubuntu-24.04
       target: aarch64-unknown-linux-gnu
       profile: ci-test
       artifact_id: linux-arm64
