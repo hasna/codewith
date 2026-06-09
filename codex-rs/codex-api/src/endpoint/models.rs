@@ -825,6 +825,33 @@ mod tests {
     }
 
     #[test]
+    fn xiaomi_sparse_ultraspeed_response_uses_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "mimo-v2.5-pro-ultraspeed"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("xiaomi"),
+            Some("Xiaomi MiMo"),
+            Some("https://api.xiaomimimo.com/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "MiMo V2.5 Pro UltraSpeed");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.max_context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(!model.supports_parallel_tool_calls);
+        assert!(!model.supports_reasoning_summaries);
+    }
+
+    #[test]
     fn unknown_provider_does_not_use_unqualified_known_metadata() {
         let models = decode_models_response(
             serde_json::to_string(&json!({

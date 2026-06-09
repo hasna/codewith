@@ -4,10 +4,12 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 mod cerebras;
 mod nvidia;
 mod openrouter;
+mod xiaomi;
 
 const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KnownProviderModelMetadata {
@@ -85,6 +87,9 @@ pub fn metadata_for_openai_compatible_response(
     ) {
         return openrouter::metadata(slug);
     }
+    if provider_matches(provider_id, provider_base_url, "xiaomi", XIAOMI_BASE_URL) {
+        return xiaomi::metadata(slug);
+    }
 
     if provider_name.is_none() && provider_base_url.is_none() {
         metadata_for_unqualified_slug(slug)
@@ -106,6 +111,9 @@ pub fn metadata_for_local_fallback(
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
             openrouter::metadata(slug)
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
+            xiaomi::metadata(slug)
         }
         Some(_) => None,
         None => metadata_for_unqualified_slug(slug),
@@ -154,6 +162,9 @@ pub fn reasoning_levels_for_openai_compatible_response(
     ) {
         return openrouter::reasoning_levels(slug);
     }
+    if provider_matches(provider_id, provider_base_url, "xiaomi", XIAOMI_BASE_URL) {
+        return xiaomi::reasoning_levels(slug);
+    }
 
     if provider_name.is_none() && provider_base_url.is_none() {
         reasoning_levels_for_unqualified_slug(slug)
@@ -176,6 +187,9 @@ pub fn reasoning_levels_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
             no_reasoning_levels()
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
+            no_reasoning_levels()
+        }
         Some(_) => no_reasoning_levels(),
         None => reasoning_levels_for_unqualified_slug(slug),
     }
@@ -190,6 +204,9 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     }
     if provider_id_matches(Some(provider_id), "openrouter") {
         return openrouter::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), "xiaomi") {
+        return xiaomi::FALLBACK_MODELS;
     }
 
     &[]

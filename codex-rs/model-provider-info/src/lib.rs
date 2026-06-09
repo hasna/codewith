@@ -5,7 +5,7 @@
 //!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
-//! The built-in picker surface is intentionally small: OpenAI, Cerebras, NVIDIA, and OpenRouter.
+//! The built-in picker surface is intentionally small: OpenAI, Cerebras, NVIDIA, OpenRouter, and Xiaomi MiMo.
 
 mod provider_credentials;
 
@@ -48,6 +48,9 @@ pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const XIAOMI_PROVIDER_NAME: &str = "Xiaomi MiMo";
+pub const XIAOMI_PROVIDER_ID: &str = "xiaomi";
+pub const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -451,6 +454,28 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_xiaomi_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: XIAOMI_PROVIDER_NAME.into(),
+            base_url: Some(XIAOMI_BASE_URL.into()),
+            env_key: Some("MIMO_API_KEY".into()),
+            env_key_instructions: Some("Set MIMO_API_KEY to a Xiaomi MiMo API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_amazon_bedrock_provider(
         aws: Option<ModelProviderAwsAuthInfo>,
     ) -> ModelProviderInfo {
@@ -513,12 +538,14 @@ pub fn built_in_model_providers(
     let cerebras_provider = P::create_cerebras_provider();
     let nvidia_provider = P::create_nvidia_provider();
     let openrouter_provider = P::create_openrouter_provider();
+    let xiaomi_provider = P::create_xiaomi_provider();
 
     [
         (OPENAI_PROVIDER_ID, openai_provider),
         (CEREBRAS_PROVIDER_ID, cerebras_provider),
         (NVIDIA_PROVIDER_ID, nvidia_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
+        (XIAOMI_PROVIDER_ID, xiaomi_provider),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -562,6 +589,7 @@ pub fn merge_configured_model_providers(
         } else if key == OPENROUTER_PROVIDER_ID
             || key == CEREBRAS_PROVIDER_ID
             || key == NVIDIA_PROVIDER_ID
+            || key == XIAOMI_PROVIDER_ID
         {
             if let Some(built_in_provider) = model_providers.get_mut(&key) {
                 apply_provider_override(built_in_provider, provider);

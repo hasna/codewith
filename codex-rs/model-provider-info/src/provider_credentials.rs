@@ -483,6 +483,10 @@ printf 'slow-token\n'
             default_secret_name_for_provider_env_key("OPENROUTER_API_KEY"),
             Some("openrouter/api_key".to_string())
         );
+        assert_eq!(
+            default_secret_name_for_provider_env_key("MIMO_API_KEY"),
+            Some("mimo/api_key".to_string())
+        );
     }
 
     #[test]

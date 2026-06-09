@@ -228,4 +228,16 @@ mod tests {
         assert_eq!(models[3].display_name, "Z.ai GLM 5.1");
         assert!(!models[3].is_default);
     }
+
+    #[test]
+    fn xiaomi_fallback_models_include_ultraspeed_default() {
+        let models =
+            fallback_supported_models_for_provider("xiaomi", /*include_hidden*/ false);
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model, "mimo-v2.5-pro-ultraspeed");
+        assert_eq!(models[0].display_name, "MiMo V2.5 Pro UltraSpeed");
+        assert!(models[0].is_default);
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
+    }
 }
