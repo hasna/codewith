@@ -124,7 +124,7 @@ jobs:
                 echo "Architectures: arm64"
                 echo "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg"
               } | sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.sources >/dev/null
-              packages+=(gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libcap-dev:arm64)
+              packages+=(gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libcap-dev:arm64 libssl-dev:arm64)
             fi
             sudo apt-get update -y
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
