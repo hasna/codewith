@@ -75,6 +75,12 @@ pub(crate) enum AuthProfileSwitchReason {
     AutoRateLimit { window: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpInventoryTarget {
+    History,
+    Manager,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryLookupResponse {
     pub(crate) offset: usize,
@@ -444,6 +450,27 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
+    /// Open the interactive MCP server manager.
+    OpenMcpManager {
+        detail: McpServerStatusDetail,
+    },
+
+    /// Open the detail view for a single MCP server status snapshot.
+    OpenMcpServerDetails {
+        status: McpServerStatus,
+    },
+
+    /// Start OAuth login for a configured MCP server.
+    StartMcpServerOauthLogin {
+        name: String,
+    },
+
+    /// Result of starting an MCP OAuth login flow.
+    McpServerOauthLoginStarted {
+        name: String,
+        result: Result<String, String>,
+    },
+
     /// Open actions for a thread monitor.
     OpenThreadMonitorActions {
         thread_id: ThreadId,
@@ -743,6 +770,7 @@ pub(crate) enum AppEvent {
     FetchMcpInventory {
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
@@ -750,6 +778,7 @@ pub(crate) enum AppEvent {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.

@@ -58,6 +58,7 @@ pub enum SlashCommand {
     Theme,
     #[strum(to_string = "pets", serialize = "pet")]
     Pets,
+    #[strum(to_string = "mcp", serialize = "mcps")]
     Mcp,
     Apps,
     Plugins,
@@ -144,7 +145,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
             SlashCommand::Memories => "configure memory use and generation",
-            SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
+            SlashCommand::Mcp => "open the MCP server manager",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codewith",
@@ -299,6 +300,16 @@ mod tests {
     fn pet_alias_parses_to_pets_command() {
         assert_eq!(SlashCommand::Pets.command(), "pets");
         assert_eq!(SlashCommand::from_str("pet"), Ok(SlashCommand::Pets));
+    }
+
+    #[test]
+    fn mcps_alias_parses_to_mcp_command() {
+        assert_eq!(SlashCommand::Mcp.command(), "mcp");
+        assert_eq!(SlashCommand::from_str("mcps"), Ok(SlashCommand::Mcp));
+        assert_eq!(
+            SlashCommand::Mcp.description(),
+            "open the MCP server manager"
+        );
     }
 
     #[test]

@@ -7,11 +7,17 @@ use codex_app_server_protocol::HookErrorInfo;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::McpAuthStatus;
+use codex_app_server_protocol::McpServerStatus;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Stage;
 use codex_login::AuthDotJson;
 use codex_login::save_auth_profile;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::mcp::McpServerInfo;
+use codex_protocol::mcp::Resource;
+use codex_protocol::mcp::ResourceTemplate;
+use codex_protocol::mcp::Tool;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -66,6 +72,110 @@ fn save_popup_auth_profile(chat: &ChatWidget, name: &str) {
         },
     )
     .expect("save auth profile");
+}
+
+fn mcp_test_statuses() -> Vec<McpServerStatus> {
+    vec![
+        mcp_test_server(
+            "docs",
+            McpAuthStatus::NotLoggedIn,
+            vec![mcp_tool(
+                "search_docs",
+                Some("Search docs"),
+                Some("Search indexed documentation."),
+            )],
+            vec![mcp_resource(
+                "handbook",
+                "file:///workspace/handbook.md",
+                Some("Team handbook"),
+            )],
+            vec![mcp_resource_template(
+                "ticket",
+                "ticket://{id}",
+                Some("Ticket by ID"),
+            )],
+        ),
+        mcp_test_server(
+            "linear",
+            McpAuthStatus::BearerToken,
+            vec![mcp_tool(
+                "create_issue",
+                Some("Create issue"),
+                Some("Create a Linear issue."),
+            )],
+            Vec::new(),
+            Vec::new(),
+        ),
+    ]
+}
+
+fn mcp_test_server(
+    name: &str,
+    auth_status: McpAuthStatus,
+    tools: Vec<Tool>,
+    resources: Vec<Resource>,
+    resource_templates: Vec<ResourceTemplate>,
+) -> McpServerStatus {
+    McpServerStatus {
+        name: name.to_string(),
+        server_info: Some(McpServerInfo {
+            name: format!("{name}-server"),
+            title: Some(format!("{name} MCP")),
+            version: "1.2.3".to_string(),
+            description: Some(format!("{name} server description")),
+            icons: None,
+            website_url: Some(format!("https://example.com/{name}")),
+        }),
+        tools: tools
+            .into_iter()
+            .map(|tool| (tool.name.clone(), tool))
+            .collect::<HashMap<_, _>>(),
+        resources,
+        resource_templates,
+        auth_status,
+    }
+}
+
+fn mcp_tool(name: &str, title: Option<&str>, description: Option<&str>) -> Tool {
+    Tool {
+        name: name.to_string(),
+        title: title.map(str::to_string),
+        description: description.map(str::to_string),
+        input_schema: json!({"type": "object", "properties": {}}),
+        output_schema: None,
+        annotations: None,
+        icons: None,
+        meta: None,
+    }
+}
+
+fn mcp_resource(name: &str, uri: &str, description: Option<&str>) -> Resource {
+    Resource {
+        annotations: None,
+        description: description.map(str::to_string),
+        mime_type: Some("text/markdown".to_string()),
+        name: name.to_string(),
+        size: None,
+        title: Some(format!("{name} resource")),
+        uri: uri.to_string(),
+        icons: None,
+        meta: None,
+    }
+}
+
+fn mcp_resource_template(
+    name: &str,
+    uri_template: &str,
+    description: Option<&str>,
+) -> ResourceTemplate {
+    ResourceTemplate {
+        annotations: None,
+        uri_template: uri_template.to_string(),
+        name: name.to_string(),
+        title: Some(format!("{name} template")),
+        description: description.map(str::to_string),
+        mime_type: Some("application/json".to_string()),
+    }
 }
 
 #[tokio::test]
@@ -168,6 +278,100 @@ async fn plugins_popup_loading_state_snapshot() {
         "expected /plugins to open in a loading state before the marketplace arrives, got:\n{popup}"
     );
     assert_chatwidget_snapshot!("plugins_popup_loading_state", popup);
+}
+
+#[tokio::test]
+async fn mcp_manager_loading_popup_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    chat.open_mcp_manager(McpServerStatusDetail::Full);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("Loading configured servers"));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::FetchMcpInventory {
+            detail: McpServerStatusDetail::Full,
+            thread_id: Some(actual_thread_id),
+            target: crate::app_event::McpInventoryTarget::Manager,
+        }) if actual_thread_id == thread_id
+    );
+    assert_chatwidget_snapshot!("mcp_manager_loading_popup", popup);
+}
+
+#[tokio::test]
+async fn mcp_manager_empty_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_mcp_manager_loaded(
+        Ok(Vec::new()),
+        McpServerStatusDetail::Full,
+        /*thread_id*/ None,
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("No MCP servers configured"));
+    assert_chatwidget_snapshot!("mcp_manager_empty_popup", popup);
+}
+
+#[tokio::test]
+async fn mcp_manager_failure_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_mcp_manager_loaded(
+        Err("app-server unavailable".to_string()),
+        McpServerStatusDetail::Full,
+        /*thread_id*/ None,
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("Inventory unavailable"));
+    assert_chatwidget_snapshot!("mcp_manager_failure_popup", popup);
+}
+
+#[tokio::test]
+async fn mcp_manager_ready_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_mcp_manager_loaded(
+        Ok(mcp_test_statuses()),
+        McpServerStatusDetail::Full,
+        /*thread_id*/ None,
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 112);
+    assert!(popup.contains("2 servers, 2 tools, 1 need login"));
+    assert!(
+        popup.find("docs").expect("docs row") < popup.find("linear").expect("linear row"),
+        "expected login-needed server to sort first, got:\n{popup}"
+    );
+    assert_chatwidget_snapshot!("mcp_manager_ready_popup", popup);
+}
+
+#[tokio::test]
+async fn mcp_manager_server_detail_snapshot_and_oauth_action() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let docs = mcp_test_statuses()
+        .into_iter()
+        .find(|status| status.name == "docs")
+        .expect("docs MCP status");
+
+    chat.open_mcp_server_details(docs);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 112);
+    assert!(popup.contains("OAuth login"));
+    assert!(popup.contains("Search docs"));
+    assert_chatwidget_snapshot!("mcp_manager_server_detail_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::StartMcpServerOauthLogin { name }) if name == "docs"
+    );
 }
 
 #[tokio::test]

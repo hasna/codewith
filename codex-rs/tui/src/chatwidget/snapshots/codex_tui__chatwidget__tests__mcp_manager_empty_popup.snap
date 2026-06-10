@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  MCP Servers
+  0 servers, 0 tools
+
+  Search MCP servers
+› Refresh                    Reload MCP server status and inventory.
+  No MCP servers configured  Add servers in config.toml to use MCP tools.
+
+  Press enter to confirm or esc to go back

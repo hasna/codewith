@@ -1,4 +1,5 @@
 use super::*;
+use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
@@ -2403,31 +2404,53 @@ async fn slash_mcp_requests_inventory_via_app_server() {
 
     chat.dispatch_command(SlashCommand::Mcp);
 
-    assert!(active_blob(&chat).contains("Loading MCP inventory"));
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Loading configured servers"));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
-            detail: McpServerStatusDetail::ToolsAndAuthOnly,
-            thread_id: Some(actual_thread_id)
+            detail: McpServerStatusDetail::Full,
+            thread_id: Some(actual_thread_id),
+            target: McpInventoryTarget::Manager,
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 
 #[tokio::test]
-async fn slash_mcp_verbose_requests_full_inventory_via_app_server() {
+async fn slash_mcps_alias_requests_manager_inventory_via_app_server() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
 
-    submit_composer_text(&mut chat, "/mcp verbose");
+    submit_composer_text(&mut chat, "/mcps");
+
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Loading configured servers"));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::FetchMcpInventory {
+            detail: McpServerStatusDetail::Full,
+            thread_id: Some(actual_thread_id),
+            target: McpInventoryTarget::Manager,
+        }) if actual_thread_id == thread_id
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_mcp_list_requests_history_inventory_via_app_server() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    submit_composer_text(&mut chat, "/mcp list");
 
     assert!(active_blob(&chat).contains("Loading MCP inventory"));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
-            detail: McpServerStatusDetail::Full,
-            thread_id: Some(actual_thread_id)
+            detail: McpServerStatusDetail::ToolsAndAuthOnly,
+            thread_id: Some(actual_thread_id),
+            target: McpInventoryTarget::History,
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
@@ -2446,7 +2469,7 @@ async fn slash_mcp_invalid_args_show_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /mcp [verbose]"),
+        rendered.contains("Usage: /mcp [verbose|manager|list|list verbose]"),
         "expected usage message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/mcp full");
