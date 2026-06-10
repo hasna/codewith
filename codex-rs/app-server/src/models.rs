@@ -15,6 +15,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 
 const CEREBRAS_PROVIDER_ID: &str = "cerebras";
 const NVIDIA_PROVIDER_ID: &str = "nvidia";
+const XAI_PROVIDER_ID: &str = "xai";
 
 pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
@@ -56,7 +57,10 @@ pub async fn supported_models_from_manager(
 }
 
 pub fn provider_has_fallback_models(provider_id: &str) -> bool {
-    matches!(provider_id, CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID)
+    matches!(
+        provider_id,
+        CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID | XAI_PROVIDER_ID
+    )
 }
 
 pub fn fallback_supported_models_for_provider(
@@ -81,6 +85,20 @@ pub fn fallback_supported_models_for_provider(
                 "deepseek-ai/deepseek-v4-flash",
                 "deepseek-ai/deepseek-v4-flash",
                 "NVIDIA hosted DeepSeek model. Requires NVIDIA_API_KEY for turns.",
+                /*is_default*/ false,
+            ),
+        ],
+        XAI_PROVIDER_ID => vec![
+            fallback_model(
+                "grok-build-0.1",
+                "Grok Build 0.1",
+                "xAI coding model. Requires XAI_API_KEY for turns.",
+                /*is_default*/ true,
+            ),
+            fallback_model(
+                "grok-4.3",
+                "Grok 4.3",
+                "xAI Grok chat model. Requires XAI_API_KEY for turns.",
                 /*is_default*/ false,
             ),
         ],
@@ -178,5 +196,27 @@ mod tests {
         assert_eq!(models[0].model, "gpt-oss-120b");
         assert!(models[0].is_default);
         assert!(!models[0].hidden);
+    }
+
+    #[test]
+    fn xai_fallback_models_include_coding_default() {
+        let models =
+            fallback_supported_models_for_provider(XAI_PROVIDER_ID, /*include_hidden*/ false);
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| (
+                    model.model.as_str(),
+                    model.display_name.as_str(),
+                    model.is_default
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("grok-build-0.1", "Grok Build 0.1", true),
+                ("grok-4.3", "Grok 4.3", false),
+            ]
+        );
+        assert!(models.iter().all(|model| !model.hidden));
     }
 }
