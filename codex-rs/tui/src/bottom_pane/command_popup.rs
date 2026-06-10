@@ -26,6 +26,25 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     /*name_column_width*/ None,
 );
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CommandMatchKind {
+    Exact,
+    Prefix,
+    Acronym,
+    Substring,
+    Subsequence,
+}
+
+#[derive(Clone, Debug)]
+struct CommandMatch {
+    item: CommandItem,
+    indices: Option<Vec<usize>>,
+    kind: CommandMatchKind,
+    score: i32,
+    start: usize,
+    order: usize,
+}
+
 /// A selectable item in the popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CommandItem {
@@ -139,57 +158,44 @@ impl CommandPopup {
         )
     }
 
-    /// Compute exact/prefix matches over built-in commands and user prompts,
-    /// paired with optional highlight indices. Preserves the original
-    /// presentation order for built-ins and prompts.
+    /// Compute ranked matches over built-in commands and service-tier prompts.
+    ///
+    /// Ranking is intentionally deterministic: exact, prefix, acronym,
+    /// substring, then broad subsequence matches. Ties are resolved by tighter fuzzy
+    /// score, earlier match start, and finally the original presentation order.
     fn filtered(&self) -> Vec<(CommandItem, Option<Vec<usize>>)> {
         let filter = self.command_filter.trim();
-        let mut out: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         if filter.is_empty() {
-            for command in self.commands.iter() {
-                if matches!(command, CommandItem::Builtin(cmd) if ALIAS_COMMANDS.contains(cmd)) {
-                    continue;
-                }
-                out.push((command.clone(), None));
-            }
-            return out;
+            return self
+                .commands
+                .iter()
+                .filter(|command| {
+                    !matches!(command, CommandItem::Builtin(cmd) if ALIAS_COMMANDS.contains(cmd))
+                })
+                .cloned()
+                .map(|command| (command, None))
+                .collect();
         }
 
-        let filter_lower = filter.to_lowercase();
-        let filter_chars = filter.chars().count();
-        let mut exact: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
-        let mut prefix: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
-        let indices_for = |offset| Some((offset..offset + filter_chars).collect());
+        let mut matches = self
+            .commands
+            .iter()
+            .enumerate()
+            .filter_map(|(order, command)| command_match(command, filter, order))
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|command_match| {
+            (
+                command_match.kind,
+                command_match.score,
+                command_match.start,
+                command_match.order,
+            )
+        });
 
-        let mut push_match =
-            |item: CommandItem, display: &str, name: Option<&str>, name_offset: usize| {
-                let display_lower = display.to_lowercase();
-                let name_lower = name.map(str::to_lowercase);
-                let display_exact = display_lower == filter_lower;
-                let name_exact = name_lower.as_deref() == Some(filter_lower.as_str());
-                if display_exact || name_exact {
-                    let offset = if display_exact { 0 } else { name_offset };
-                    exact.push((item, indices_for(offset)));
-                    return;
-                }
-                let display_prefix = display_lower.starts_with(&filter_lower);
-                let name_prefix = name_lower
-                    .as_ref()
-                    .is_some_and(|name| name.starts_with(&filter_lower));
-                if display_prefix || name_prefix {
-                    let offset = if display_prefix { 0 } else { name_offset };
-                    prefix.push((item, indices_for(offset)));
-                }
-            };
-
-        for command in self.commands.iter() {
-            let display = command.command();
-            push_match(command.clone(), display, None, 0);
-        }
-
-        out.extend(exact);
-        out.extend(prefix);
-        out
+        matches
+            .into_iter()
+            .map(|command_match| (command_match.item, command_match.indices))
+            .collect()
     }
 
     fn filtered_items(&self) -> Vec<CommandItem> {
@@ -258,6 +264,135 @@ impl CommandItem {
             Self::ServiceTier(command) => &command.description,
         }
     }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        match self {
+            Self::Builtin(SlashCommand::Stop) => &["clean"],
+            Self::Builtin(SlashCommand::Pets) => &["pet"],
+            Self::Builtin(_) | Self::ServiceTier(_) => &[],
+        }
+    }
+}
+
+fn command_match(item: &CommandItem, filter: &str, order: usize) -> Option<CommandMatch> {
+    let display = item.command();
+    let mut best = name_match(display, filter, /*highlight*/ true);
+    for alias in item.aliases() {
+        if let Some(alias_match) = name_match(alias, filter, /*highlight*/ false)
+            && best
+                .as_ref()
+                .is_none_or(|best_match| alias_match.sort_key() < best_match.sort_key())
+        {
+            best = Some(alias_match);
+        }
+    }
+
+    best.map(|name_match| CommandMatch {
+        item: item.clone(),
+        indices: name_match.indices,
+        kind: name_match.kind,
+        score: name_match.score,
+        start: name_match.start,
+        order,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct NameMatch {
+    indices: Option<Vec<usize>>,
+    kind: CommandMatchKind,
+    score: i32,
+    start: usize,
+}
+
+impl NameMatch {
+    fn sort_key(&self) -> (CommandMatchKind, i32, usize) {
+        (self.kind, self.score, self.start)
+    }
+}
+
+fn name_match(name: &str, filter: &str, highlight: bool) -> Option<NameMatch> {
+    let name_lower = name.to_lowercase();
+    let filter_lower = filter.to_lowercase();
+    let filter_chars = filter.chars().count();
+    let indices_for = |offset| highlight.then(|| (offset..offset + filter_chars).collect());
+
+    if name_lower == filter_lower {
+        return Some(NameMatch {
+            indices: indices_for(/*offset*/ 0),
+            kind: CommandMatchKind::Exact,
+            score: 0,
+            start: 0,
+        });
+    }
+
+    if name_lower.starts_with(&filter_lower) {
+        return Some(NameMatch {
+            indices: indices_for(/*offset*/ 0),
+            kind: CommandMatchKind::Prefix,
+            score: 0,
+            start: 0,
+        });
+    }
+
+    if let Some(indices) = acronym_indices(name, filter) {
+        return Some(NameMatch {
+            indices: highlight.then_some(indices),
+            kind: CommandMatchKind::Acronym,
+            score: 0,
+            start: 0,
+        });
+    }
+
+    if let Some(start_byte) = name_lower.find(&filter_lower) {
+        let start = name_lower[..start_byte].chars().count();
+        return Some(NameMatch {
+            indices: indices_for(start),
+            kind: CommandMatchKind::Substring,
+            score: 0,
+            start,
+        });
+    }
+
+    if let Some((indices, score)) = codex_utils_fuzzy_match::fuzzy_match(name, filter) {
+        let start = indices.first().copied().unwrap_or(usize::MAX);
+        return Some(NameMatch {
+            indices: highlight.then_some(indices),
+            kind: CommandMatchKind::Subsequence,
+            score,
+            start,
+        });
+    }
+
+    None
+}
+
+fn acronym_indices(name: &str, filter: &str) -> Option<Vec<usize>> {
+    let name_chars = name.chars().collect::<Vec<_>>();
+    let mut boundary_indices = name
+        .chars()
+        .enumerate()
+        .filter_map(|(index, ch)| {
+            if index == 0 {
+                Some(index)
+            } else if matches!(ch, '-' | '_') {
+                Some(index + 1)
+            } else {
+                None
+            }
+        })
+        .filter(|index| *index < name_chars.len());
+
+    let mut matched = Vec::new();
+    for filter_char in filter.to_lowercase().chars() {
+        let index = boundary_indices.find(|index| {
+            name_chars
+                .get(*index)
+                .is_some_and(|name_char| name_char.to_lowercase().any(|ch| ch == filter_char))
+        })?;
+        matched.push(index);
+    }
+    Some(matched)
 }
 
 impl WidgetRef for CommandPopup {
@@ -281,6 +416,17 @@ impl WidgetRef for CommandPopup {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    fn filtered_command_names(popup: &CommandPopup) -> Vec<String> {
+        popup
+            .filtered_items()
+            .into_iter()
+            .map(|item| match item {
+                CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                CommandItem::ServiceTier(command) => command.name,
+            })
+            .collect()
+    }
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
@@ -367,45 +513,81 @@ mod tests {
     }
 
     #[test]
-    fn filtered_commands_keep_presentation_order_for_prefix() {
+    fn prefix_matches_stay_ahead_of_fuzzy_matches_in_presentation_order() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/m".to_string());
 
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
+        let commands = filtered_command_names(&popup);
         assert_eq!(
-            cmds,
-            vec![
-                "model".to_string(),
-                "memories".to_string(),
-                "mention".to_string(),
-                "mcp".to_string()
-            ]
+            commands
+                .iter()
+                .take(4)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["model", "memories", "mention", "mcp"]
         );
     }
 
     #[test]
-    fn prefix_filter_limits_matches_for_ac() {
+    fn substring_filter_includes_non_prefix_matches_after_better_matches() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/ac".to_string());
 
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
-        assert!(
-            !cmds.iter().any(|cmd| cmd == "compact"),
-            "expected prefix search for '/ac' to exclude 'compact', got {cmds:?}"
+        let commands = filtered_command_names(&popup);
+        assert_eq!(commands.first().map(String::as_str), Some("compact"));
+    }
+
+    #[test]
+    fn substring_filter_finds_statusline_from_lin() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/lin".to_string());
+
+        assert_eq!(
+            filtered_command_names(&popup).first().map(String::as_str),
+            Some("statusline")
+        );
+    }
+
+    #[test]
+    fn acronym_filter_finds_service_tier_from_initials() {
+        let mut popup = CommandPopup::new(
+            CommandPopupFlags {
+                service_tier_commands_enabled: true,
+                ..CommandPopupFlags::default()
+            },
+            vec![ServiceTierCommand {
+                id: "fast-lane".to_string(),
+                name: "fast-lane".to_string(),
+                description: "Fast lane".to_string(),
+            }],
+        );
+        popup.on_composer_text_change("/fl".to_string());
+
+        assert_eq!(
+            filtered_command_names(&popup).first().map(String::as_str),
+            Some("fast-lane")
+        );
+    }
+
+    #[test]
+    fn subsequence_filter_finds_statusline_from_sln() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/sln".to_string());
+
+        assert_eq!(
+            filtered_command_names(&popup).first().map(String::as_str),
+            Some("statusline")
+        );
+    }
+
+    #[test]
+    fn alias_filter_finds_canonical_stop_command() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/clean".to_string());
+
+        assert_eq!(
+            filtered_command_names(&popup).first().map(String::as_str),
+            Some("stop")
         );
     }
 
