@@ -126,7 +126,16 @@ fn thread_monitor_manager_params(
         )
     });
 
-    let mut items = Vec::with_capacity(monitors.len() + 1);
+    let mut items = Vec::with_capacity(monitors.len() + 2);
+    items.push(monitor_action_item(
+        "Create monitor",
+        "Start a new monitor request",
+        false,
+        None,
+        || AppEvent::PrefillComposer {
+            text: "/monitor ".to_string(),
+        },
+    ));
     if monitors.is_empty() {
         items.push(SelectionItem {
             name: "No monitors created".to_string(),
@@ -458,10 +467,31 @@ mod tests {
         assert_eq!(
             item_names,
             vec![
+                "Create monitor".to_string(),
                 "running  CI watcher".to_string(),
                 "failed  CI watcher".to_string(),
                 "stopped  CI watcher".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn manager_offers_create_action_when_empty() {
+        let params = thread_monitor_manager_params(ThreadId::new(), Vec::new());
+
+        let item_names = params
+            .items
+            .iter()
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            item_names,
+            vec![
+                "Create monitor".to_string(),
+                "No monitors created".to_string()
+            ]
+        );
+        assert!(!params.items[0].is_disabled);
+        assert!(params.items[1].is_disabled);
     }
 }
