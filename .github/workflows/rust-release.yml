@@ -149,7 +149,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Release builds can take a long time, so leave some headroom to avoid
     # having to restart the full workflow due to a timeout.
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
       contents: read
       id-token: write
@@ -364,7 +364,7 @@ jobs:
 
             cp "${binary_path}" "${unsigned_path}"
             tar -C "$dest" -czf "${unsigned_path}.tar.gz" "${unsigned_name}"
-            zstd -T0 -19 --rm "${unsigned_path}"
+            zstd -T0 -3 --rm "${unsigned_path}"
           done
 
       - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS != 'true' }}
@@ -473,7 +473,7 @@ jobs:
             cp "$dest/bwrap-${{ matrix.target }}" "$bundle_root/codewith-resources/bwrap"
             chmod 0755 "$bundle_root/codewith" "$bundle_root/codewith-resources/bwrap"
             tar -C "$bundle_root" -cf - codewith codewith-resources/bwrap |
-              zstd -T0 -19 -o "$dest/codewith-${{ matrix.target }}-bundle.tar.zst"
+              zstd -T0 -3 -o "$dest/codewith-${{ matrix.target }}-bundle.tar.zst"
           fi
 
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
@@ -533,7 +533,7 @@ jobs:
 
             # Also create .zst and remove the uncompressed binaries to keep
             # non-Windows artifact directories small.
-            zstd -T0 -19 --rm "$dest/$base"
+            zstd -T0 -3 --rm "$dest/$base"
           done
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -738,7 +738,7 @@ jobs:
             fi
 
             tar -C "$dest" -czf "$dest/${base}.tar.gz" "$base"
-            zstd -T0 -19 --rm "$dest/$base"
+            zstd -T0 -3 --rm "$dest/$base"
           done
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
