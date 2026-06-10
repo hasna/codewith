@@ -219,6 +219,7 @@ mod startup_prompts;
 mod thread_events;
 mod thread_goal_actions;
 mod thread_loop_actions;
+mod thread_monitor_actions;
 mod thread_routing;
 mod thread_schedule_actions;
 mod thread_session_state;

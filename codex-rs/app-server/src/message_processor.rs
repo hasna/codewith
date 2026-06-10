@@ -34,6 +34,8 @@ use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
+use crate::request_processors::ThreadMonitorRequestProcessor;
+use crate::request_processors::ThreadMonitorRuntime;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::ThreadScheduleRequestProcessor;
 use crate::request_processors::ThreadScheduleRuntime;
@@ -182,6 +184,8 @@ pub(crate) struct MessageProcessor {
     remote_control_processor: RemoteControlRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
+    thread_monitor_processor: ThreadMonitorRequestProcessor,
+    thread_monitor_runtime: ThreadMonitorRuntime,
     thread_processor: ThreadRequestProcessor,
     thread_schedule_processor: ThreadScheduleRequestProcessor,
     thread_schedule_runtime: ThreadScheduleRuntime,
@@ -443,6 +447,20 @@ impl MessageProcessor {
             state_db.clone(),
             thread_schedule_runtime.clone(),
         );
+        let thread_monitor_runtime = ThreadMonitorRuntime::new(
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&config),
+            state_db.clone(),
+        );
+        thread_monitor_runtime.start();
+        let thread_monitor_processor = ThreadMonitorRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&config),
+            state_db.clone(),
+            thread_monitor_runtime.clone(),
+        );
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -533,6 +551,8 @@ impl MessageProcessor {
             remote_control_processor,
             search_processor,
             thread_goal_processor,
+            thread_monitor_processor,
+            thread_monitor_runtime,
             thread_processor,
             thread_schedule_processor,
             thread_schedule_runtime,
@@ -546,6 +566,7 @@ impl MessageProcessor {
         self.account_processor.clear_external_auth();
         self.apps_processor.shutdown();
         self.skills_watcher.shutdown();
+        self.thread_monitor_runtime.shutdown();
         self.thread_schedule_runtime.shutdown();
     }
 
@@ -727,6 +748,7 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        self.thread_monitor_runtime.drain_background_tasks().await;
         self.thread_schedule_runtime.drain_background_tasks().await;
         self.thread_processor.drain_background_tasks().await;
     }
@@ -1112,6 +1134,36 @@ impl MessageProcessor {
             ClientRequest::ThreadScheduleRunNow { params, .. } => {
                 self.thread_schedule_processor
                     .thread_schedule_run_now(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorCreate { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_create(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorList { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_list(params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorRead { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_read(params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorStop { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_stop(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorRestart { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_restart(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadMonitorDelete { params, .. } => {
+                self.thread_monitor_processor
+                    .thread_monitor_delete(request_id.clone(), params)
                     .await
             }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {

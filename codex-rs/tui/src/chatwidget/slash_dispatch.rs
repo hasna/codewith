@@ -45,6 +45,27 @@ struct PreparedSlashCommandArgs {
     source: SlashCommandDispatchSource,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum MonitorSlashCommand {
+    Create,
+    Manage(MonitorManageCommand),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MonitorManageCommand {
+    List,
+    Read { monitor_id: Option<String> },
+    Stop { monitor_id: Option<String> },
+    Restart { monitor_id: Option<String> },
+    Delete { monitor_id: Option<String> },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MonitorSlashParseError {
+    message: String,
+    hint: Option<String>,
+}
+
 const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
@@ -55,6 +76,10 @@ const LOOP_USAGE_HINT: &str =
     "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list";
 const SCHEDULE_USAGE: &str = "Usage: /schedule <time> <prompt>";
 const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list";
+const MONITOR_USAGE: &str =
+    "Usage: /monitor <request> | /monitor [list|read|stop|restart|delete] [id]";
+const MONITOR_USAGE_HINT: &str =
+    "Examples: /monitor watch CI, /monitor list, /monitor read mon-123";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 
 impl ChatWidget {
@@ -67,7 +92,10 @@ impl ChatWidget {
         self.dispatch_command(cmd);
         if matches!(
             cmd,
-            SlashCommand::Goal | SlashCommand::Loop | SlashCommand::Schedule
+            SlashCommand::Goal
+                | SlashCommand::Loop
+                | SlashCommand::Schedule
+                | SlashCommand::Monitor
         ) {
             self.bottom_pane.drain_pending_submission_state();
         }
@@ -371,6 +399,21 @@ impl ChatWidget {
                     self.add_info_message(
                         SCHEDULE_USAGE.to_string(),
                         Some(SCHEDULE_USAGE_HINT.to_string()),
+                    );
+                }
+            }
+            SlashCommand::Monitor => {
+                if !self.config.features.enabled(Feature::ScheduledTasks) {
+                    return;
+                }
+                if let Some(thread_id) = self.thread_id {
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadMonitorManager { thread_id });
+                    self.append_message_history_entry("/monitor".to_string());
+                } else {
+                    self.add_info_message(
+                        MONITOR_USAGE.to_string(),
+                        Some(MONITOR_USAGE_HINT.to_string()),
                     );
                 }
             }
@@ -921,6 +964,44 @@ impl ChatWidget {
                 };
                 self.dispatch_schedule_slash_command(command, trimmed, source);
             }
+            SlashCommand::Monitor if !trimmed.is_empty() => {
+                if !self.config.features.enabled(Feature::ScheduledTasks) {
+                    return;
+                }
+                let command = match parse_monitor_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(MONITOR_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                if let MonitorSlashCommand::Manage(manage) = command {
+                    self.dispatch_monitor_slash_command(manage, trimmed, source);
+                    return;
+                }
+                let user_message = self.prepared_inline_user_message(
+                    monitor_setup_prompt(trimmed),
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                if self.is_session_configured() {
+                    self.reasoning_buffer.clear();
+                    self.full_reasoning_buffer.clear();
+                    self.set_status_header(String::from("Working"));
+                    self.submit_user_message(user_message);
+                } else {
+                    self.queue_user_message(user_message);
+                }
+            }
             SlashCommand::Recap if !trimmed.is_empty() => {
                 self.dispatch_recap_slash_command(Some(trimmed.to_string()));
             }
@@ -1165,6 +1246,70 @@ impl ChatWidget {
         }
     }
 
+    fn dispatch_monitor_slash_command(
+        &mut self,
+        command: MonitorManageCommand,
+        trimmed: &str,
+        source: SlashCommandDispatchSource,
+    ) {
+        let Some(thread_id) = self.thread_id else {
+            if source == SlashCommandDispatchSource::Live {
+                self.queue_user_message_with_options(
+                    UserMessage {
+                        text: format!("/monitor {trimmed}"),
+                        local_images: Vec::new(),
+                        remote_image_urls: Vec::new(),
+                        text_elements: Vec::new(),
+                        mention_bindings: Vec::new(),
+                    },
+                    QueuedInputAction::ParseSlash,
+                );
+                self.bottom_pane.drain_pending_submission_state();
+            } else {
+                self.add_info_message(
+                    MONITOR_USAGE.to_string(),
+                    Some(MONITOR_USAGE_HINT.to_string()),
+                );
+            }
+            return;
+        };
+
+        match command {
+            MonitorManageCommand::List => {
+                self.app_event_tx
+                    .send(AppEvent::OpenThreadMonitorManager { thread_id });
+            }
+            MonitorManageCommand::Read { monitor_id } => {
+                self.app_event_tx.send(AppEvent::ReadThreadMonitor {
+                    thread_id,
+                    monitor_id,
+                });
+            }
+            MonitorManageCommand::Stop { monitor_id } => {
+                self.app_event_tx.send(AppEvent::StopThreadMonitor {
+                    thread_id,
+                    monitor_id,
+                });
+            }
+            MonitorManageCommand::Restart { monitor_id } => {
+                self.app_event_tx.send(AppEvent::RestartThreadMonitor {
+                    thread_id,
+                    monitor_id,
+                });
+            }
+            MonitorManageCommand::Delete { monitor_id } => {
+                self.app_event_tx.send(AppEvent::DeleteThreadMonitor {
+                    thread_id,
+                    monitor_id,
+                });
+            }
+        }
+        self.append_message_history_entry(format!("/monitor {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
     pub(super) fn submit_queued_slash_prompt(&mut self, user_message: UserMessage) -> QueueDrain {
         let UserMessage {
             text,
@@ -1341,6 +1486,7 @@ impl ChatWidget {
             | SlashCommand::Goal
             | SlashCommand::Loop
             | SlashCommand::Schedule
+            | SlashCommand::Monitor
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -1413,6 +1559,77 @@ impl ChatWidget {
         ));
         self.bottom_pane.drain_pending_submission_state();
         false
+    }
+}
+
+fn monitor_setup_prompt(request: &str) -> String {
+    format!(
+        "\
+Set up a Codewith monitor for this request.
+
+Use the `manage_monitor` tool to create exactly one monitor unless you need to ask a clarification. The monitor should be implemented dynamically from the user's request using a shell command or script you design. Do not choose from predefined monitor categories or hardcoded source types.
+
+Prefer a command that emits concise one-line stdout updates when something relevant happens. Use stream routing unless the user requested a file, in which case choose file or both routing and set output_file.
+
+User monitor request:
+{request}"
+    )
+}
+
+fn parse_monitor_slash_args(input: &str) -> Result<MonitorSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(MonitorSlashCommand::Create);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(MonitorSlashCommand::Manage(MonitorManageCommand::List))
+            } else {
+                Err(monitor_usage_error("Usage: /monitor list"))
+            }
+        }
+        "read" | "show" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Read {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor read [id]")?,
+        })),
+        "stop" | "pause" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Stop {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor stop [id]")?,
+        })),
+        "restart" | "start" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Restart {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor restart [id]")?,
+        })),
+        "delete" | "remove" | "rm" | "clear" => {
+            Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Delete {
+                monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor delete [id]")?,
+            }))
+        }
+        _ => Ok(MonitorSlashCommand::Create),
+    }
+}
+
+fn parse_optional_monitor_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, MonitorSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let Some(monitor_id) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        return Err(monitor_usage_error(usage));
+    }
+    Ok(Some(monitor_id.to_string()))
+}
+
+fn monitor_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(MONITOR_USAGE_HINT.to_string()),
     }
 }
 

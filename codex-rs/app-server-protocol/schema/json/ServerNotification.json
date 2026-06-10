@@ -4237,6 +4237,193 @@
         }
       ]
     },
+    "ThreadMonitor": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastEventAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processId": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "routing": {
+          "$ref": "#/definitions/ThreadMonitorRouting"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadMonitorStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "createdAt",
+        "generation",
+        "monitorId",
+        "name",
+        "prompt",
+        "routing",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorDeletedNotification": {
+      "properties": {
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorEvent": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "stream": {
+          "$ref": "#/definitions/ThreadMonitorEventStream"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "eventId",
+        "monitorId",
+        "stream",
+        "text",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorEventNotification": {
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ThreadMonitorEvent"
+        },
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "monitor",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorEventStream": {
+      "enum": [
+        "stdout",
+        "stderr",
+        "system"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorRouting": {
+      "enum": [
+        "stream",
+        "file",
+        "both"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorStatus": {
+      "enum": [
+        "running",
+        "stopped",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorUpdatedNotification": {
+      "properties": {
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitor",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadNameUpdatedNotification": {
       "properties": {
         "threadId": {
@@ -5825,6 +6012,66 @@
         "params"
       ],
       "title": "Thread/schedule/run/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/monitor/updated"
+          ],
+          "title": "Thread/monitor/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadMonitorUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/monitor/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/monitor/deleted"
+          ],
+          "title": "Thread/monitor/deletedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadMonitorDeletedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/monitor/deletedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/monitor/event"
+          ],
+          "title": "Thread/monitor/eventNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadMonitorEventNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/monitor/eventNotification",
       "type": "object"
     },
     {

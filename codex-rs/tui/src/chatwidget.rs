@@ -347,6 +347,7 @@ mod goal_validation;
 mod ide_context;
 mod loop_display;
 mod loop_slash;
+mod monitor_display;
 use self::ide_context::IdeContextState;
 mod input_queue;
 use self::input_queue::InputQueueState;
@@ -628,6 +629,7 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     announced_loop_schedule_ids: HashSet<String>,
+    announced_monitor_ids: HashSet<String>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it

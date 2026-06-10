@@ -951,6 +951,45 @@ impl App {
                 self.run_thread_schedule_now(app_server, thread_id, schedule_id)
                     .await;
             }
+            AppEvent::OpenThreadMonitorManager { thread_id } => {
+                self.open_thread_monitor_manager(app_server, thread_id)
+                    .await;
+            }
+            AppEvent::OpenThreadMonitorActions {
+                thread_id,
+                monitor_id,
+            } => {
+                self.open_thread_monitor_actions(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::ReadThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.read_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::StopThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.stop_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::RestartThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.restart_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
+            AppEvent::DeleteThreadMonitor {
+                thread_id,
+                monitor_id,
+            } => {
+                self.delete_thread_monitor(app_server, thread_id, monitor_id)
+                    .await;
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget

@@ -1391,6 +1391,150 @@
             },
             "method": {
               "enum": [
+                "thread/monitor/create"
+              ],
+              "title": "Thread/monitor/createRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorCreateParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/createRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/monitor/list"
+              ],
+              "title": "Thread/monitor/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/monitor/read"
+              ],
+              "title": "Thread/monitor/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/monitor/stop"
+              ],
+              "title": "Thread/monitor/stopRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorStopParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/stopRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/monitor/restart"
+              ],
+              "title": "Thread/monitor/restartRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorRestartParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/restartRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/monitor/delete"
+              ],
+              "title": "Thread/monitor/deleteRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorDeleteParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/deleteRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/metadata/update"
               ],
               "title": "Thread/metadata/updateRequestMethod",
@@ -11905,6 +12049,66 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/monitor/updated"
+              ],
+              "title": "Thread/monitor/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/monitor/deleted"
+              ],
+              "title": "Thread/monitor/deletedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorDeletedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/deletedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/monitor/event"
+              ],
+              "title": "Thread/monitor/eventNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadMonitorEventNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/monitor/eventNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/settings/updated"
               ],
               "title": "Thread/settings/updatedNotificationMethod",
@@ -15195,6 +15399,465 @@
         "thread"
       ],
       "title": "ThreadMetadataUpdateResponse",
+      "type": "object"
+    },
+    "ThreadMonitor": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastEventAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processId": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "routing": {
+          "$ref": "#/definitions/ThreadMonitorRouting"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadMonitorStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "createdAt",
+        "generation",
+        "monitorId",
+        "name",
+        "prompt",
+        "routing",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorCreateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "routing": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadMonitorRouting"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "name",
+        "prompt",
+        "threadId"
+      ],
+      "title": "ThreadMonitorCreateParams",
+      "type": "object"
+    },
+    "ThreadMonitorCreateResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        }
+      },
+      "required": [
+        "monitor"
+      ],
+      "title": "ThreadMonitorCreateResponse",
+      "type": "object"
+    },
+    "ThreadMonitorDeleteParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "title": "ThreadMonitorDeleteParams",
+      "type": "object"
+    },
+    "ThreadMonitorDeleteResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        },
+        "monitorId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deleted",
+        "monitorId"
+      ],
+      "title": "ThreadMonitorDeleteResponse",
+      "type": "object"
+    },
+    "ThreadMonitorDeletedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "title": "ThreadMonitorDeletedNotification",
+      "type": "object"
+    },
+    "ThreadMonitorEvent": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "stream": {
+          "$ref": "#/definitions/ThreadMonitorEventStream"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "eventId",
+        "monitorId",
+        "stream",
+        "text",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadMonitorEventNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ThreadMonitorEvent"
+        },
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "monitor",
+        "threadId"
+      ],
+      "title": "ThreadMonitorEventNotification",
+      "type": "object"
+    },
+    "ThreadMonitorEventStream": {
+      "enum": [
+        "stdout",
+        "stderr",
+        "system"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadMonitorListParams",
+      "type": "object"
+    },
+    "ThreadMonitorListResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/definitions/ThreadMonitor"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "title": "ThreadMonitorListResponse",
+      "type": "object"
+    },
+    "ThreadMonitorReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "title": "ThreadMonitorReadParams",
+      "type": "object"
+    },
+    "ThreadMonitorReadResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/definitions/ThreadMonitorEvent"
+          },
+          "type": "array"
+        },
+        "monitor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadMonitor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "title": "ThreadMonitorReadResponse",
+      "type": "object"
+    },
+    "ThreadMonitorRestartParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "title": "ThreadMonitorRestartParams",
+      "type": "object"
+    },
+    "ThreadMonitorRestartResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        }
+      },
+      "required": [
+        "monitor"
+      ],
+      "title": "ThreadMonitorRestartResponse",
+      "type": "object"
+    },
+    "ThreadMonitorRouting": {
+      "enum": [
+        "stream",
+        "file",
+        "both"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorStatus": {
+      "enum": [
+        "running",
+        "stopped",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ThreadMonitorStopParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitorId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitorId",
+        "threadId"
+      ],
+      "title": "ThreadMonitorStopParams",
+      "type": "object"
+    },
+    "ThreadMonitorStopResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        }
+      },
+      "required": [
+        "monitor"
+      ],
+      "title": "ThreadMonitorStopResponse",
+      "type": "object"
+    },
+    "ThreadMonitorUpdatedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "monitor": {
+          "$ref": "#/definitions/ThreadMonitor"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitor",
+        "threadId"
+      ],
+      "title": "ThreadMonitorUpdatedNotification",
       "type": "object"
     },
     "ThreadNameUpdatedNotification": {

@@ -1088,6 +1088,135 @@ async fn schedule_slash_command_emits_manage_events() {
 }
 
 #[tokio::test]
+async fn monitor_slash_command_emits_manage_events() {
+    let cases = [
+        ("/monitor list", "list", None),
+        ("/monitor read", "read", None),
+        ("/monitor read mon-1", "read", Some("mon-1")),
+        ("/monitor stop mon-1", "stop", Some("mon-1")),
+        ("/monitor restart mon-1", "restart", Some("mon-1")),
+        ("/monitor delete mon-1", "delete", Some("mon-1")),
+    ];
+
+    for (command, expected_kind, expected_monitor_id) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected monitor management event");
+        match (expected_kind, event) {
+            (
+                "list",
+                AppEvent::OpenThreadMonitorManager {
+                    thread_id: actual_thread_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+            }
+            (
+                "read",
+                AppEvent::ReadThreadMonitor {
+                    thread_id: actual_thread_id,
+                    monitor_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(monitor_id.as_deref(), expected_monitor_id);
+            }
+            (
+                "stop",
+                AppEvent::StopThreadMonitor {
+                    thread_id: actual_thread_id,
+                    monitor_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(monitor_id.as_deref(), expected_monitor_id);
+            }
+            (
+                "restart",
+                AppEvent::RestartThreadMonitor {
+                    thread_id: actual_thread_id,
+                    monitor_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(monitor_id.as_deref(), expected_monitor_id);
+            }
+            (
+                "delete",
+                AppEvent::DeleteThreadMonitor {
+                    thread_id: actual_thread_id,
+                    monitor_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(monitor_id.as_deref(), expected_monitor_id);
+            }
+            (kind, event) => panic!("expected {kind} monitor event, got {event:?}"),
+        }
+        assert_no_submit_op(&mut op_rx);
+        assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
+}
+
+#[tokio::test]
+async fn monitor_manage_slash_command_queues_before_thread_starts() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let command = "/monitor stop mon-1";
+
+    submit_composer_text(&mut chat, command);
+
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.input_queue.queued_user_messages.front().unwrap().text,
+        command
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.maybe_send_next_queued_input();
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::StopThreadMonitor {
+            thread_id: actual_thread_id,
+            monitor_id,
+        }) if actual_thread_id == thread_id && monitor_id.as_deref() == Some("mon-1")
+    );
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn monitor_manage_slash_command_rejects_extra_args() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/monitor read mon-1 extra");
+
+    let event = rx.try_recv().expect("expected monitor usage error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(
+                rendered.contains("Usage: /monitor read [id]"),
+                "expected monitor read usage error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn bare_loop_slash_command_opens_manager_and_drains_attachments() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
@@ -1129,6 +1258,92 @@ async fn bare_schedule_slash_command_opens_manager_and_drains_attachments() {
     );
     assert!(chat.remote_image_urls().is_empty());
     assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
+}
+
+#[tokio::test]
+async fn bare_monitor_slash_command_opens_manager_and_drains_attachments() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let remote_url = "https://example.com/monitor.png".to_string();
+    let local_image = PathBuf::from("/tmp/monitor-local.png");
+    chat.set_remote_image_urls(vec![remote_url]);
+    chat.bottom_pane
+        .set_composer_text("/monitor".to_string(), Vec::new(), vec![local_image]);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenThreadMonitorManager { thread_id: opened }) if opened == thread_id
+    );
+    assert!(chat.remote_image_urls().is_empty());
+    assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
+}
+
+#[tokio::test]
+async fn monitor_slash_command_submits_setup_prompt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+    let command = "/monitor watch CI until it fails";
+
+    submit_composer_text(&mut chat, command);
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            let [
+                UserInput::Text {
+                    text: submitted, ..
+                },
+            ] = items.as_slice()
+            else {
+                panic!("expected monitor setup prompt text item, got {items:?}");
+            };
+            assert!(submitted.contains("Set up a Codewith monitor for this request."));
+            assert!(submitted.contains("Use the `manage_monitor` tool"));
+            assert!(submitted.contains("create exactly one monitor"));
+            assert!(submitted.contains("watch CI until it fails"));
+        }
+        other => panic!("expected monitor setup user turn, got {other:?}"),
+    }
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn monitor_slash_command_queues_setup_prompt_before_thread_starts() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
+    let command = "/monitor alert when the release log changes";
+
+    submit_composer_text(&mut chat, command);
+
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    let queued = &chat.input_queue.queued_user_messages.front().unwrap().text;
+    assert!(queued.contains("Use the `manage_monitor` tool"));
+    assert!(queued.contains("alert when the release log changes"));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.thread_id = Some(ThreadId::new());
+    chat.maybe_send_next_queued_input();
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            let [
+                UserInput::Text {
+                    text: submitted, ..
+                },
+            ] = items.as_slice()
+            else {
+                panic!("expected queued monitor setup prompt text item, got {items:?}");
+            };
+            assert!(submitted.contains("Use the `manage_monitor` tool"));
+            assert!(submitted.contains("alert when the release log changes"));
+        }
+        other => panic!("expected queued monitor setup user turn, got {other:?}"),
+    }
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
 
 #[tokio::test]

@@ -439,6 +439,41 @@ pub(crate) enum AppEvent {
         schedule_id: Option<String>,
     },
 
+    /// Open the current thread monitor manager.
+    OpenThreadMonitorManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open actions for a thread monitor.
+    OpenThreadMonitorActions {
+        thread_id: ThreadId,
+        monitor_id: String,
+    },
+
+    /// Show recent output for a thread monitor.
+    ReadThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Stop a thread monitor.
+    StopThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Restart a thread monitor.
+    RestartThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
+    /// Delete a thread monitor.
+    DeleteThreadMonitor {
+        thread_id: ThreadId,
+        monitor_id: Option<String>,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,

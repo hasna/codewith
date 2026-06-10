@@ -177,6 +177,7 @@ impl ChatWidget {
             pet_image_support_override: None,
             thread_id: None,
             announced_loop_schedule_ids: HashSet::new(),
+            announced_monitor_ids: HashSet::new(),
             dismissed_plan_mode_nudge_scopes: HashSet::new(),
             thread_name: None,
             thread_rename_block_message: None,

@@ -1085,6 +1085,186 @@ pub struct ThreadScheduleRunNowResponse {
     pub run: ThreadScheduleRun,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMonitorStatus {
+    Running,
+    Stopped,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMonitorRouting {
+    Stream,
+    File,
+    Both,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMonitorEventStream {
+    Stdout,
+    Stderr,
+    System,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitor {
+    pub thread_id: String,
+    pub monitor_id: String,
+    pub name: String,
+    pub prompt: String,
+    pub command: String,
+    #[ts(type = "string | null")]
+    pub cwd: Option<String>,
+    pub routing: ThreadMonitorRouting,
+    #[ts(type = "string | null")]
+    pub output_file: Option<String>,
+    pub status: ThreadMonitorStatus,
+    #[ts(type = "number")]
+    pub generation: i64,
+    #[ts(type = "number | null")]
+    pub process_id: Option<i64>,
+    #[ts(type = "number | null")]
+    pub last_event_at: Option<i64>,
+    #[ts(type = "string | null")]
+    pub last_error: Option<String>,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorEvent {
+    pub thread_id: String,
+    pub monitor_id: String,
+    pub event_id: String,
+    pub stream: ThreadMonitorEventStream,
+    pub text: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorCreateParams {
+    pub thread_id: String,
+    pub name: String,
+    pub prompt: String,
+    pub command: String,
+    #[ts(optional = nullable)]
+    pub cwd: Option<String>,
+    #[ts(optional = nullable)]
+    pub routing: Option<ThreadMonitorRouting>,
+    #[ts(optional = nullable)]
+    pub output_file: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorCreateResponse {
+    pub monitor: ThreadMonitor,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorListParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorListResponse {
+    pub data: Vec<ThreadMonitor>,
+    #[ts(type = "string | null")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorReadParams {
+    pub thread_id: String,
+    pub monitor_id: String,
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorReadResponse {
+    pub monitor: Option<ThreadMonitor>,
+    pub events: Vec<ThreadMonitorEvent>,
+    #[ts(type = "string | null")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorStopParams {
+    pub thread_id: String,
+    pub monitor_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorStopResponse {
+    pub monitor: ThreadMonitor,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorRestartParams {
+    pub thread_id: String,
+    pub monitor_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorRestartResponse {
+    pub monitor: ThreadMonitor,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorDeleteParams {
+    pub thread_id: String,
+    pub monitor_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorDeleteResponse {
+    pub monitor_id: String,
+    pub deleted: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1716,6 +1896,31 @@ pub struct ThreadScheduleDeletedNotification {
 pub struct ThreadScheduleRunUpdatedNotification {
     pub thread_id: String,
     pub run: ThreadScheduleRun,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorUpdatedNotification {
+    pub thread_id: String,
+    pub monitor: ThreadMonitor,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorDeletedNotification {
+    pub thread_id: String,
+    pub monitor_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMonitorEventNotification {
+    pub thread_id: String,
+    pub monitor: ThreadMonitor,
+    pub event: ThreadMonitorEvent,
 }
 
 /// Deprecated: Use `ContextCompaction` item type instead.

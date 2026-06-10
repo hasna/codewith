@@ -549,6 +549,36 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadScheduleRunNowResponse,
     },
+    ThreadMonitorCreate => "thread/monitor/create" {
+        params: v2::ThreadMonitorCreateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorCreateResponse,
+    },
+    ThreadMonitorList => "thread/monitor/list" {
+        params: v2::ThreadMonitorListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorListResponse,
+    },
+    ThreadMonitorRead => "thread/monitor/read" {
+        params: v2::ThreadMonitorReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorReadResponse,
+    },
+    ThreadMonitorStop => "thread/monitor/stop" {
+        params: v2::ThreadMonitorStopParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorStopResponse,
+    },
+    ThreadMonitorRestart => "thread/monitor/restart" {
+        params: v2::ThreadMonitorRestartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorRestartResponse,
+    },
+    ThreadMonitorDelete => "thread/monitor/delete" {
+        params: v2::ThreadMonitorDeleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMonitorDeleteResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -1536,6 +1566,9 @@ server_notification_definitions! {
     ThreadScheduleUpdated => "thread/schedule/updated" (v2::ThreadScheduleUpdatedNotification),
     ThreadScheduleDeleted => "thread/schedule/deleted" (v2::ThreadScheduleDeletedNotification),
     ThreadScheduleRunUpdated => "thread/schedule/run/updated" (v2::ThreadScheduleRunUpdatedNotification),
+    ThreadMonitorUpdated => "thread/monitor/updated" (v2::ThreadMonitorUpdatedNotification),
+    ThreadMonitorDeleted => "thread/monitor/deleted" (v2::ThreadMonitorDeletedNotification),
+    ThreadMonitorEvent => "thread/monitor/event" (v2::ThreadMonitorEventNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
