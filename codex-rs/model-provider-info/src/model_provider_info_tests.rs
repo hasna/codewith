@@ -310,6 +310,7 @@ fn test_built_in_model_providers_include_expected_picker_providers() {
             NVIDIA_PROVIDER_ID.to_string(),
             OPENAI_PROVIDER_ID.to_string(),
             OPENROUTER_PROVIDER_ID.to_string(),
+            XAI_PROVIDER_ID.to_string(),
             XIAOMI_PROVIDER_ID.to_string(),
         ])
     );
@@ -352,6 +353,16 @@ fn test_built_in_model_providers_include_openrouter() {
     assert_eq!(
         providers.get(OPENROUTER_PROVIDER_ID),
         Some(&ModelProviderInfo::create_openrouter_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_xai() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(XAI_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_xai_provider())
     );
 }
 
@@ -546,6 +557,34 @@ fn test_merge_configured_model_providers_allows_openrouter_override() {
     expected_provider.env_key = Some("OPENROUTER_MIRROR_API_KEY".to_string());
     expected_provider.env_key_instructions = None;
     expected.insert(OPENROUTER_PROVIDER_ID.to_string(), expected_provider);
+
+    assert_eq!(
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_xai_override() {
+    let xai_provider = ModelProviderInfo {
+        name: "xAI Mirror".to_string(),
+        base_url: Some("https://xai.example.com/v1".to_string()),
+        env_key: Some("XAI_MIRROR_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers =
+        std::collections::HashMap::from([(XAI_PROVIDER_ID.to_string(), xai_provider)]);
+
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    let mut expected_provider = ModelProviderInfo::create_xai_provider();
+    expected_provider.name = "xAI Mirror".to_string();
+    expected_provider.base_url = Some("https://xai.example.com/v1".to_string());
+    expected_provider.env_key = Some("XAI_MIRROR_API_KEY".to_string());
+    expected_provider.env_key_instructions = None;
+    expected.insert(XAI_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
         merge_configured_model_providers(

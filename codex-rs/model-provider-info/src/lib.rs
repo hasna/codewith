@@ -5,7 +5,7 @@
 //!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
-//! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA, OpenRouter, and Xiaomi MiMo.
+//! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA, OpenRouter, xAI, and Xiaomi MiMo.
 
 mod provider_credentials;
 
@@ -51,6 +51,9 @@ pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const XAI_PROVIDER_NAME: &str = "xAI";
+pub const XAI_PROVIDER_ID: &str = "xai";
+pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_PROVIDER_NAME: &str = "Xiaomi MiMo";
 pub const XIAOMI_PROVIDER_ID: &str = "xiaomi";
 pub const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
@@ -435,6 +438,28 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_xai_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: XAI_PROVIDER_NAME.into(),
+            base_url: Some(XAI_BASE_URL.into()),
+            env_key: Some("XAI_API_KEY".into()),
+            env_key_instructions: Some("Set XAI_API_KEY to an xAI API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_cerebras_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: CEREBRAS_PROVIDER_NAME.into(),
@@ -564,6 +589,7 @@ pub fn built_in_model_providers(
     let cerebras_provider = P::create_cerebras_provider();
     let nvidia_provider = P::create_nvidia_provider();
     let openrouter_provider = P::create_openrouter_provider();
+    let xai_provider = P::create_xai_provider();
     let xiaomi_provider = P::create_xiaomi_provider();
 
     [
@@ -572,6 +598,7 @@ pub fn built_in_model_providers(
         (CEREBRAS_PROVIDER_ID, cerebras_provider),
         (NVIDIA_PROVIDER_ID, nvidia_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
+        (XAI_PROVIDER_ID, xai_provider),
         (XIAOMI_PROVIDER_ID, xiaomi_provider),
     ]
     .into_iter()
@@ -582,7 +609,7 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable. Anthropic, OpenRouter, Cerebras, NVIDIA, and Xiaomi
+/// generally overridable. Anthropic, OpenRouter, Cerebras, NVIDIA, xAI, and Xiaomi
 /// remain overridable so users can point them at compatible mirrors. Amazon
 /// Bedrock is no longer built in, but an explicit
 /// `[model_providers.amazon-bedrock.aws]` block still enables the provider with
@@ -618,6 +645,7 @@ pub fn merge_configured_model_providers(
             || key == OPENROUTER_PROVIDER_ID
             || key == CEREBRAS_PROVIDER_ID
             || key == NVIDIA_PROVIDER_ID
+            || key == XAI_PROVIDER_ID
             || key == XIAOMI_PROVIDER_ID
         {
             if let Some(built_in_provider) = model_providers.get_mut(&key) {
