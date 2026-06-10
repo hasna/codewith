@@ -149,7 +149,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Release builds can take a long time, so leave some headroom to avoid
     # having to restart the full workflow due to a timeout.
-    timeout-minutes: 90
+    timeout-minutes: 150
     permissions:
       contents: read
       id-token: write
@@ -755,7 +755,7 @@ jobs:
       contents: read
       id-token: write
     with:
-      release_lto: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'fat' }}
+      release_lto: thin
     secrets:
       AZURE_TRUSTED_SIGNING_CLIENT_ID: ${{ secrets.AZURE_TRUSTED_SIGNING_CLIENT_ID }}
       AZURE_TRUSTED_SIGNING_TENANT_ID: ${{ secrets.AZURE_TRUSTED_SIGNING_TENANT_ID }}
