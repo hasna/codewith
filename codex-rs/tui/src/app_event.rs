@@ -474,6 +474,11 @@ pub(crate) enum AppEvent {
         monitor_id: Option<String>,
     },
 
+    /// Fill the composer with text from an interactive action.
+    PrefillComposer {
+        text: String,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,

@@ -990,6 +990,10 @@ impl App {
                 self.delete_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::PrefillComposer { text } => {
+                self.chat_widget
+                    .restore_user_message_to_composer(crate::chatwidget::UserMessage::from(text));
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget
