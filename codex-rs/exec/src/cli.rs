@@ -2,6 +2,7 @@ use clap::Args;
 use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
+use codex_protocol::user_input::UserInput;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::SharedCliOptions;
 use std::path::PathBuf;
@@ -52,6 +53,10 @@ pub struct Cli {
     /// Path to a JSON Schema file describing the model's final response shape.
     #[arg(long = "output-schema", value_name = "FILE", global = true)]
     pub output_schema: Option<PathBuf>,
+
+    /// Hidden structured skill input used by first-party CLI recovery flows.
+    #[arg(long = "skill", hide = true, value_parser = parse_skill_input)]
+    pub skill_inputs: Vec<UserInput>,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
@@ -304,6 +309,24 @@ pub enum Color {
     Never,
     #[default]
     Auto,
+}
+
+fn parse_skill_input(value: &str) -> Result<UserInput, String> {
+    let (name, path) = value
+        .split_once('=')
+        .ok_or_else(|| "expected NAME=PATH".to_string())?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("skill name cannot be empty".to_string());
+    }
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("skill path cannot be empty".to_string());
+    }
+    Ok(UserInput::Skill {
+        name: name.to_string(),
+        path,
+    })
 }
 
 #[cfg(test)]

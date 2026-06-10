@@ -211,6 +211,7 @@ struct ExecRunArgs {
     oss: bool,
     output_schema_path: Option<PathBuf>,
     prompt: Option<String>,
+    skill_inputs: Vec<UserInput>,
     skip_git_repo_check: bool,
     stderr_with_ansi: bool,
 }
@@ -256,6 +257,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         json: json_mode,
         prompt,
         output_schema: output_schema_path,
+        skill_inputs,
         config_overrides,
     } = cli;
     let shared = shared.into_inner();
@@ -568,6 +570,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         oss,
         output_schema_path,
         prompt,
+        skill_inputs,
         skip_git_repo_check,
         stderr_with_ansi,
     })
@@ -665,6 +668,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         oss,
         output_schema_path,
         prompt,
+        skill_inputs,
         skip_git_repo_check,
         stderr_with_ansi,
     } = args;
@@ -717,11 +721,12 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 })
                 .or(root_prompt);
             let prompt_text = resolve_prompt(prompt_arg);
-            let mut items: Vec<UserInput> = imgs
-                .into_iter()
-                .chain(args.images.iter().cloned())
-                .map(|path| UserInput::LocalImage { path, detail: None })
-                .collect();
+            let mut items = skill_inputs.clone();
+            items.extend(
+                imgs.into_iter()
+                    .chain(args.images.iter().cloned())
+                    .map(|path| UserInput::LocalImage { path, detail: None }),
+            );
             items.push(UserInput::Text {
                 text: prompt_text.clone(),
                 // CLI input doesn't track UI element ranges, so none are available here.
@@ -738,10 +743,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
         (None, root_prompt, imgs) => {
             let prompt_text = resolve_root_prompt(root_prompt);
-            let mut items: Vec<UserInput> = imgs
-                .into_iter()
-                .map(|path| UserInput::LocalImage { path, detail: None })
-                .collect();
+            let mut items = skill_inputs.clone();
+            items.extend(
+                imgs.into_iter()
+                    .map(|path| UserInput::LocalImage { path, detail: None }),
+            );
             items.push(UserInput::Text {
                 text: prompt_text.clone(),
                 // CLI input doesn't track UI element ranges, so none are available here.

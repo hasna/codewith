@@ -9,6 +9,10 @@
 //! A failing check should describe the problem and remediation, but it should not
 //! mutate user state. That keeps the command safe to run before filing a support
 //! issue or while diagnosing a broken local installation.
+//!
+//! `--self-heal` is the explicit opt-in exception: it starts a normal Codewith
+//! turn with a dedicated recovery skill and redacted diagnostics. Built-in file
+//! repairs remain behind a second confirmation step and create backups first.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -70,6 +74,7 @@ mod git;
 mod output;
 mod progress;
 mod runtime;
+mod self_heal;
 mod system;
 mod thread_inventory;
 mod title;
@@ -167,6 +172,27 @@ pub struct DoctorCommand {
     /// Use ASCII status labels and separators in human output.
     #[arg(long, default_value_t = false)]
     ascii: bool,
+
+    /// Start a guided self-heal turn for config.toml and MCP issues.
+    #[arg(long = "self-heal", default_value_t = false)]
+    self_heal: bool,
+
+    /// Apply narrowly scoped built-in repairs before starting the guided turn.
+    #[arg(
+        long = "self-heal-apply",
+        default_value_t = false,
+        requires = "self_heal"
+    )]
+    self_heal_apply: bool,
+
+    /// Confirm built-in self-heal repairs without prompting.
+    #[arg(
+        long,
+        short = 'y',
+        default_value_t = false,
+        requires = "self_heal_apply"
+    )]
+    yes: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
@@ -309,7 +335,28 @@ pub async fn run_doctor(
     interactive: &TuiCli,
     arg0_paths: &Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
-    let report = build_report(&command, root_config_overrides, interactive, arg0_paths).await;
+    if command.self_heal && command.json {
+        anyhow::bail!("`codewith doctor --self-heal` does not support --json");
+    }
+
+    let report = build_report(
+        &command,
+        root_config_overrides.clone(),
+        interactive,
+        arg0_paths,
+    )
+    .await;
+
+    if command.self_heal {
+        return self_heal::run_self_heal(
+            command,
+            report,
+            root_config_overrides,
+            interactive,
+            arg0_paths,
+        )
+        .await;
+    }
 
     if command.json {
         println!(
@@ -321,6 +368,11 @@ pub async fn run_doctor(
             "{}",
             render_human_report(&report, human_output_options(&command))
         );
+        if self_heal::report_has_self_heal_issue(&report) {
+            eprintln!(
+                "Codewith found a config/MCP issue. Run `codewith doctor --self-heal` to start the guided repair workflow."
+            );
+        }
     }
 
     if report.overall_status == CheckStatus::Fail {
