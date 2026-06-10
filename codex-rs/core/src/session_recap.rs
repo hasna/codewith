@@ -230,7 +230,10 @@ mod tests {
 
     #[test]
     fn recap_request_prompt_uses_default_prompt_without_specific_request() {
-        assert_eq!(recap_request_prompt(None), SESSION_RECAP_PROMPT);
+        assert_eq!(
+            recap_request_prompt(/*recap_request*/ None),
+            SESSION_RECAP_PROMPT
+        );
         assert_eq!(recap_request_prompt(Some("   ")), SESSION_RECAP_PROMPT);
     }
 

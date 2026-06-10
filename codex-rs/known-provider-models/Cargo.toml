@@ -8,7 +8,6 @@ version.workspace = true
 doctest = false
 name = "codex_known_provider_models"
 path = "src/lib.rs"
-test = false
 
 [lints]
 workspace = true

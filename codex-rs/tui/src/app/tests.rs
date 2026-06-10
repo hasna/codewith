@@ -4193,7 +4193,7 @@ fn auth_profile_auto_switch_message_explains_profile_and_queued_prompt_resume() 
     );
     assert_eq!(
         super::event_dispatch::auth_profile_switch_message(
-            None,
+            /*profile*/ None,
             &crate::app_event::AuthProfileSwitchReason::Manual,
             /*queued_input_will_resume*/ false,
         ),
@@ -5720,7 +5720,7 @@ async fn schedule_actions_ignore_explicit_loop_ids() -> Result<()> {
                     amount: 5,
                     unit: ThreadScheduleIntervalUnit::Minutes,
                 },
-                None,
+                /*next_run_at*/ None,
             )
             .await?
             .schedule;

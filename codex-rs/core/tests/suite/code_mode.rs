@@ -130,7 +130,7 @@ fn assert_repeated_output_truncated_with_marker(output: &str, ch: char) {
         body.contains("tokens truncated") || body.contains("chars truncated"),
         "output should include a truncation marker: {output}"
     );
-    assert_repeated_output_window(output, ch, 1_000);
+    assert_repeated_output_window(output, ch, /*min_retained_chars*/ 1_000);
 }
 
 fn wait_for_file_source(path: &Path) -> Result<String> {
@@ -959,7 +959,7 @@ text(result.output);
             /*index*/ 1,
         ),
         'x',
-        100,
+        /*min_retained_chars*/ 100,
     );
 
     Ok(())
@@ -1023,7 +1023,7 @@ text(result.output);
             /*index*/ 1,
         ),
         'x',
-        100,
+        /*min_retained_chars*/ 100,
     );
 
     Ok(())
@@ -1053,7 +1053,7 @@ text(result.output);
             /*index*/ 1,
         ),
         'x',
-        100,
+        /*min_retained_chars*/ 100,
     );
 
     Ok(())
@@ -1086,7 +1086,7 @@ text(result.output);
             /*index*/ 1,
         ),
         'x',
-        100,
+        /*min_retained_chars*/ 100,
     );
 
     Ok(())

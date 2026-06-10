@@ -800,9 +800,9 @@ mod tests {
     #[tokio::test]
     async fn create_update_list_and_delete_thread_schedule() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(1);
+        let thread_id = test_thread_id(/*id*/ 1);
         upsert_test_thread(&runtime, thread_id).await;
-        let next_run_at = at(1_700_000_060);
+        let next_run_at = at(/*seconds*/ 1_700_000_060);
 
         let created = create_interval_schedule(
             &runtime,
@@ -862,7 +862,7 @@ mod tests {
                     timezone: Some("Europe/Bucharest".to_string()),
                     status: Some(crate::ThreadScheduleStatus::Paused),
                     next_run_at: Some(None),
-                    expires_at: Some(Some(at(1_700_086_400))),
+                    expires_at: Some(Some(at(/*seconds*/ 1_700_086_400))),
                 },
             )
             .await
@@ -877,7 +877,7 @@ mod tests {
             timezone: "Europe/Bucharest".to_string(),
             status: crate::ThreadScheduleStatus::Paused,
             next_run_at: None,
-            expires_at: Some(at(1_700_086_400)),
+            expires_at: Some(at(/*seconds*/ 1_700_086_400)),
             updated_at: updated.updated_at,
             ..created.clone()
         };
@@ -902,9 +902,9 @@ mod tests {
     #[tokio::test]
     async fn create_once_thread_schedule() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(11);
+        let thread_id = test_thread_id(/*id*/ 11);
         upsert_test_thread(&runtime, thread_id).await;
-        let next_run_at = at(1_700_000_060);
+        let next_run_at = at(/*seconds*/ 1_700_000_060);
 
         let created = runtime
             .thread_schedules()
@@ -946,9 +946,9 @@ mod tests {
     #[tokio::test]
     async fn completed_one_time_schedule_expires_and_cannot_run_again() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(12);
+        let thread_id = test_thread_id(/*id*/ 12);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let schedule = runtime
             .thread_schedules()
             .create_thread_schedule(ThreadScheduleCreateParams {
@@ -989,7 +989,7 @@ mod tests {
                     &claim.run.run_id,
                     "lease-once",
                     now + chrono::Duration::seconds(5),
-                    None,
+                    /*next_run_at*/ None,
                 )
                 .await
                 .expect("run should complete")
@@ -1022,9 +1022,9 @@ mod tests {
     #[tokio::test]
     async fn claim_due_thread_schedule_leases_one_due_active_schedule() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(2);
+        let thread_id = test_thread_id(/*id*/ 2);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let first = create_interval_schedule(
             &runtime,
             thread_id,
@@ -1086,9 +1086,9 @@ mod tests {
     #[tokio::test]
     async fn claim_thread_schedule_now_leases_specific_active_schedule() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(5);
+        let thread_id = test_thread_id(/*id*/ 5);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let future = create_interval_schedule(
             &runtime,
             thread_id,
@@ -1140,9 +1140,9 @@ mod tests {
     #[tokio::test]
     async fn extend_thread_schedule_lease_refreshes_live_claim() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(6);
+        let thread_id = test_thread_id(/*id*/ 6);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let schedule =
             create_interval_schedule(&runtime, thread_id, "long running task", Some(now)).await;
         let claim = runtime
@@ -1192,9 +1192,9 @@ mod tests {
     #[tokio::test]
     async fn complete_and_fail_thread_schedule_runs_release_the_lease() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(3);
+        let thread_id = test_thread_id(/*id*/ 3);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let completed_schedule =
             create_interval_schedule(&runtime, thread_id, "completed task", Some(now)).await;
         let completed_claim = runtime
@@ -1357,9 +1357,9 @@ mod tests {
     #[tokio::test]
     async fn expire_schedules_and_delete_thread_cleanup_schedule_rows() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(4);
+        let thread_id = test_thread_id(/*id*/ 4);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let expired = runtime
             .thread_schedules()
             .create_thread_schedule(ThreadScheduleCreateParams {
@@ -1438,9 +1438,9 @@ mod tests {
     #[tokio::test]
     async fn expire_thread_schedules_preserves_valid_lease_until_completion() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(13);
+        let thread_id = test_thread_id(/*id*/ 13);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let schedule = runtime
             .thread_schedules()
             .create_thread_schedule(ThreadScheduleCreateParams {
@@ -1499,7 +1499,7 @@ mod tests {
                     &claim.run.run_id,
                     "lease-live",
                     after_expiry,
-                    None,
+                    /*next_run_at*/ None,
                 )
                 .await
                 .expect("run should complete after schedule expiry")
@@ -1517,9 +1517,9 @@ mod tests {
     #[tokio::test]
     async fn expire_thread_schedules_clears_expired_lease() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(14);
+        let thread_id = test_thread_id(/*id*/ 14);
         upsert_test_thread(&runtime, thread_id).await;
-        let now = at(1_700_000_000);
+        let now = at(/*seconds*/ 1_700_000_000);
         let schedule = runtime
             .thread_schedules()
             .create_thread_schedule(ThreadScheduleCreateParams {

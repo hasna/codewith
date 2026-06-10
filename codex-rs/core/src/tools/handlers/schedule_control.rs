@@ -747,7 +747,7 @@ mod tests {
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             runtime.codex_home().join(format!("{thread_id}.jsonl")),
-            at(1_700_000_000),
+            at(/*seconds*/ 1_700_000_000),
             SessionSource::Cli,
         );
         builder.cwd = runtime.codex_home().join("workspace");
@@ -771,7 +771,7 @@ mod tests {
                 schedule: codex_state::ThreadScheduleSpec::Once,
                 timezone: "UTC".to_string(),
                 status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at: Some(at(1_700_000_300)),
+                next_run_at: Some(at(/*seconds*/ 1_700_000_300)),
                 expires_at: None,
             })
             .await
@@ -781,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn create_adds_one_time_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(1);
+        let thread_id = test_thread_id(/*id*/ 1);
         upsert_test_thread(&runtime, thread_id).await;
 
         let response = manage_schedule(
@@ -811,13 +811,13 @@ mod tests {
         assert_eq!(schedule.prompt, "check CI");
         assert_eq!(schedule.timezone, "UTC");
         assert_eq!(schedule.schedule, codex_state::ThreadScheduleSpec::Once);
-        assert_eq!(schedule.next_run_at, Some(at(1_700_000_300)));
+        assert_eq!(schedule.next_run_at, Some(at(/*seconds*/ 1_700_000_300)));
     }
 
     #[tokio::test]
     async fn create_rejects_one_time_schedule_without_next_run_at() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(13);
+        let thread_id = test_thread_id(/*id*/ 13);
         upsert_test_thread(&runtime, thread_id).await;
 
         let error = manage_schedule(
@@ -845,7 +845,7 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_recurring_schedule_specs() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(14);
+        let thread_id = test_thread_id(/*id*/ 14);
         upsert_test_thread(&runtime, thread_id).await;
 
         let error = manage_schedule(
@@ -878,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn update_changes_prompt_and_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(2);
+        let thread_id = test_thread_id(/*id*/ 2);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
 
@@ -907,13 +907,13 @@ mod tests {
             .expect("schedule should exist");
         assert_eq!(updated.prompt, "write handoff");
         assert_eq!(updated.schedule, codex_state::ThreadScheduleSpec::Once);
-        assert_eq!(updated.next_run_at, Some(at(1_700_001_000)));
+        assert_eq!(updated.next_run_at, Some(at(/*seconds*/ 1_700_001_000)));
     }
 
     #[tokio::test]
     async fn resume_rejects_one_time_schedule_without_next_run_at() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(15);
+        let thread_id = test_thread_id(/*id*/ 15);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
         runtime
@@ -959,7 +959,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_specific_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(3);
+        let thread_id = test_thread_id(/*id*/ 3);
         upsert_test_thread(&runtime, thread_id).await;
         let first = create_once_schedule(&runtime, thread_id, "check CI").await;
         let second = create_once_schedule(&runtime, thread_id, "write handoff").await;

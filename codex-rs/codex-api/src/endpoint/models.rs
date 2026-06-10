@@ -838,7 +838,7 @@ mod tests {
             }))
             .unwrap()
             .as_bytes(),
-            None,
+            /*provider_id*/ None,
             Some("OpenRouter Mirror"),
             Some("https://openrouter.ai/api/v1/"),
         )

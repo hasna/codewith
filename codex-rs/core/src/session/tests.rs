@@ -4165,7 +4165,7 @@ async fn session_settings_provider_prefixed_model_keeps_non_openai_provider() {
 async fn update_settings_model_provider_rebuilds_runtime_model_client() -> anyhow::Result<()> {
     let session = make_session_with_config(|_config| {}).await?;
     let initial = session.runtime_model_client();
-    initial.set_window_generation(7);
+    initial.set_window_generation(/*window_generation*/ 7);
     assert!(initial.responses_websocket_enabled());
 
     session

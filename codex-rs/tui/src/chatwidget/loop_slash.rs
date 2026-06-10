@@ -342,7 +342,9 @@ fn parse_cron_schedule(
     }
     validate_cron_fields(&tokens)?;
     let expression = tokens.join(" ");
-    let prompt = split_after_tokens(args, 5).unwrap_or("").trim_start();
+    let prompt = split_after_tokens(args, /*token_count*/ 5)
+        .unwrap_or("")
+        .trim_start();
     Ok(Some((LoopCronSchedule { expression }, prompt)))
 }
 
@@ -444,7 +446,7 @@ fn parse_time_prefix(args: &str) -> Option<(NaiveTime, &str)> {
         return parse_time_token_with_period(time_token, Some(period_token))
             .map(|time| (time, after_period));
     }
-    parse_time_token_with_period(time_token, None).map(|time| (time, rest))
+    parse_time_token_with_period(time_token, /*period*/ None).map(|time| (time, rest))
 }
 
 fn parse_time_token_with_period(token: &str, period: Option<&str>) -> Option<NaiveTime> {

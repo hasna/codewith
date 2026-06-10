@@ -202,11 +202,13 @@ mod tests {
 
     #[test]
     fn requires_output_file_for_file_routing() {
-        assert!(validate_monitor_output_file_for_routing(
-            codex_state::ThreadMonitorRouting::File,
-            None,
-        )
-        .is_err());
+        assert!(
+            validate_monitor_output_file_for_routing(
+                codex_state::ThreadMonitorRouting::File,
+                /*output_file*/ None,
+            )
+            .is_err()
+        );
         assert!(
             validate_monitor_output_file_for_routing(
                 codex_state::ThreadMonitorRouting::Stream,

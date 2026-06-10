@@ -719,14 +719,14 @@ mod tests {
     #[test]
     fn computes_interval_next_run() {
         assert_eq!(
-            Some(at(1_700_000_300)),
+            Some(at(/*seconds*/ 1_700_000_300)),
             next_thread_schedule_run_at(
                 &codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
                     amount: 5,
                     unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
                 }),
                 "UTC",
-                at(1_700_000_000),
+                at(/*seconds*/ 1_700_000_000),
             )
             .expect("next interval should compute")
         );
@@ -739,7 +739,7 @@ mod tests {
             next_thread_schedule_run_at(
                 &codex_state::ThreadScheduleSpec::Once,
                 "UTC",
-                at(1_700_000_000),
+                at(/*seconds*/ 1_700_000_000),
             )
             .expect("one-time schedule should not compute a follow-up run")
         );
@@ -748,13 +748,13 @@ mod tests {
     #[test]
     fn computes_cron_next_run_in_timezone() {
         assert_eq!(
-            Some(at(1_700_031_600)),
+            Some(at(/*seconds*/ 1_700_031_600)),
             next_thread_schedule_run_at(
                 &codex_state::ThreadScheduleSpec::Cron {
                     expression: "0 9 * * *".to_string(),
                 },
                 "Europe/Bucharest",
-                at(1_700_000_000),
+                at(/*seconds*/ 1_700_000_000),
             )
             .expect("next cron run should compute")
         );

@@ -530,8 +530,8 @@ fn thread_schedule_actions_params(
     items.push(loop_action_item(
         "Stats",
         "Show run counts and latest outcomes",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || kind.open_stats_event(thread_id, stats_schedule_id.clone()),
     ));
 
@@ -541,8 +541,8 @@ fn thread_schedule_actions_params(
             items.push(loop_action_item(
                 "Pause",
                 "Stop future automatic runs until resumed",
-                false,
-                None,
+                /*is_disabled*/ false,
+                /*disabled_reason*/ None,
                 move || kind.pause_event(thread_id, Some(pause_schedule_id.clone())),
             ));
         }
@@ -551,8 +551,8 @@ fn thread_schedule_actions_params(
             items.push(loop_action_item(
                 "Resume",
                 "Start scheduling future runs again",
-                false,
-                None,
+                /*is_disabled*/ false,
+                /*disabled_reason*/ None,
                 move || kind.resume_event(thread_id, Some(resume_schedule_id.clone())),
             ));
         }
@@ -561,7 +561,7 @@ fn thread_schedule_actions_params(
             items.push(loop_action_item(
                 "Resume",
                 format!("Expired {} cannot be resumed", kind.plural_lower()),
-                true,
+                /*is_disabled*/ true,
                 Some(format!(
                     "Expired {} are kept for history only",
                     kind.plural_lower()
@@ -575,8 +575,8 @@ fn thread_schedule_actions_params(
     items.push(loop_action_item(
         "Delete",
         format!("Remove this {} from the thread", kind.lower_label()),
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || kind.delete_event(thread_id, Some(delete_schedule_id.clone())),
     ));
     let back_label = match kind {
@@ -586,8 +586,8 @@ fn thread_schedule_actions_params(
     items.push(loop_action_item(
         back_label,
         "Return to all scheduled prompts",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || kind.open_manager_event(thread_id),
     ));
 
@@ -660,7 +660,7 @@ fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
         .next_run_at
         .map(format_schedule_timestamp)
         .unwrap_or_else(|| "not scheduled".to_string());
-    let prompt = truncate_text(&schedule.prompt, 72);
+    let prompt = truncate_text(&schedule.prompt, /*max_graphemes*/ 72);
     let mut parts = vec![
         format!("id {}", schedule.schedule_id),
         format!("next {next}"),
@@ -826,7 +826,7 @@ fn thread_schedule_stats_lines(
     if let Some(error) = stats.last_error.as_deref() {
         lines.push(Line::from(vec![
             "Last error: ".dim(),
-            truncate_text(error, 120).into(),
+            truncate_text(error, /*max_graphemes*/ 120).into(),
         ]));
     }
     lines
@@ -1032,7 +1032,11 @@ mod tests {
         let params = loop_manager_params(
             ThreadId::new(),
             vec![
-                test_schedule("expired", ThreadScheduleStatus::Expired, None),
+                test_schedule(
+                    "expired",
+                    ThreadScheduleStatus::Expired,
+                    /*next_run_at*/ None,
+                ),
                 test_schedule("paused", ThreadScheduleStatus::Paused, Some(5)),
                 test_schedule("active", ThreadScheduleStatus::Active, Some(10)),
             ],
@@ -1082,7 +1086,11 @@ mod tests {
     fn expired_schedule_disables_mutating_actions() {
         let params = loop_schedule_actions_params(
             ThreadId::new(),
-            test_schedule("sch_123", ThreadScheduleStatus::Expired, None),
+            test_schedule(
+                "sch_123",
+                ThreadScheduleStatus::Expired,
+                /*next_run_at*/ None,
+            ),
         );
 
         let disabled = params

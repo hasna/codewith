@@ -54,11 +54,11 @@ fn user_config_cannot_disable_shell_tool() {
 fn persisted_shell_tool_toggles_are_cleared() {
     assert!(crate::should_clear_user_config_feature_toggle(
         "shell_tool",
-        false
+        /*enabled*/ false
     ));
     assert!(crate::should_clear_user_config_feature_toggle(
         "shell_tool",
-        true
+        /*enabled*/ true
     ));
 }
 

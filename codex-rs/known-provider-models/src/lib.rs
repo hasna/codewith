@@ -292,7 +292,7 @@ mod tests {
             metadata_for_local_fallback(Some("anthropic"), "claude-fable-5"),
             Some(KnownProviderModelMetadata::new(
                 "Claude Fable 5",
-                1_000_000,
+                /*context_window*/ 1_000_000,
                 /*supports_tools*/ true,
                 /*supports_parallel_tool_calls*/ true,
                 /*supports_reasoning*/ true,

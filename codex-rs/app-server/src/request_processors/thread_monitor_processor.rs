@@ -224,7 +224,7 @@ impl ThreadMonitorRequestProcessor {
             .set_thread_monitor_status(
                 monitor_id.as_str(),
                 codex_state::ThreadMonitorStatus::Stopped,
-                None,
+                /*last_error*/ None,
             )
             .await
             .map_err(|err| internal_error(format!("failed to stop thread monitor: {err}")))?

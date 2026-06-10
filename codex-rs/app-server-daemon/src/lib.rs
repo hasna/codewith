@@ -891,7 +891,10 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
 
         assert_eq!(
-            app_server_daemon_state_dir_for_auth_profile(temp_dir.path(), None),
+            app_server_daemon_state_dir_for_auth_profile(
+                temp_dir.path(),
+                /*auth_profile*/ None
+            ),
             temp_dir.path().join("app-server-daemon")
         );
         assert_eq!(

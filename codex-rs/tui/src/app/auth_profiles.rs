@@ -154,7 +154,9 @@ impl App {
             Ok(()) => {
                 if was_selected {
                     self.chat_widget
-                        .submit_op(AppCommand::override_turn_context_auth_profile(None));
+                        .submit_op(AppCommand::override_turn_context_auth_profile(
+                            /*auth_profile*/ None,
+                        ));
                 }
                 self.chat_widget.add_info_message(
                     format!("Auth profile `{profile}` deleted."),

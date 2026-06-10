@@ -1171,7 +1171,7 @@ mod thread_processor_behavior_tests {
 
         merge_persisted_auth_profile_from_history(
             &mut typesafe_overrides,
-            &history_with_auth_profile(None),
+            &history_with_auth_profile(/*auth_profile*/ None),
         );
 
         assert_eq!(typesafe_overrides.auth_profile, None);

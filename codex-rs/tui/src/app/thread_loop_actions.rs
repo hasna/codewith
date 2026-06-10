@@ -147,7 +147,13 @@ impl App {
         schedule: ThreadScheduleSpec,
     ) {
         let result = app_server
-            .thread_schedule_create(thread_id, prompt, prompt_source, schedule, None)
+            .thread_schedule_create(
+                thread_id,
+                prompt,
+                prompt_source,
+                schedule,
+                /*next_run_at*/ None,
+            )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;

@@ -594,7 +594,11 @@ async fn auth_manager_can_switch_selected_profiles_at_runtime() -> anyhow::Resul
     );
     assert_eq!(active_auth_profile(dir.path())?, None);
 
-    assert!(manager.switch_auth_profile(None).await?);
+    assert!(
+        manager
+            .switch_auth_profile(/*selected_auth_profile*/ None)
+            .await?
+    );
     assert_eq!(manager.selected_auth_profile(), None);
     assert_eq!(
         manager
@@ -648,7 +652,9 @@ async fn scoped_auth_profile_switch_does_not_mutate_parent_or_sibling() -> anyho
         )
         .await,
     );
-    let root_scope = parent.shared_scoped_auth_profile(None).await;
+    let root_scope = parent
+        .shared_scoped_auth_profile(/*selected_auth_profile*/ None)
+        .await;
     let work_scope = parent
         .shared_scoped_auth_profile(Some("work".to_string()))
         .await;
@@ -723,7 +729,9 @@ async fn scoped_root_auth_profile_from_profile_parent_uses_root_auth() -> anyhow
     );
     parent.set_external_auth(Arc::new(TestExternalAuth));
 
-    let root_scope = parent.shared_scoped_auth_profile(None).await;
+    let root_scope = parent
+        .shared_scoped_auth_profile(/*selected_auth_profile*/ None)
+        .await;
 
     assert!(!Arc::ptr_eq(&parent, &root_scope));
     assert_eq!(parent.selected_auth_profile().as_deref(), Some("work"));

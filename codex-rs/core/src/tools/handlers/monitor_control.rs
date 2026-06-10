@@ -274,7 +274,7 @@ async fn set_monitor_stopped(
         .set_thread_monitor_status(
             monitor_id.as_str(),
             codex_state::ThreadMonitorStatus::Stopped,
-            None,
+            /*last_error*/ None,
         )
         .await
         .map_err(|err| FunctionCallError::Fatal(format!("failed to stop monitor: {err}")))?

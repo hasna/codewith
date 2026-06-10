@@ -176,8 +176,8 @@ fn thread_monitor_actions_params(
     let mut items = vec![monitor_action_item(
         "Read output",
         "Show recent monitor events",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || AppEvent::ReadThreadMonitor {
             thread_id,
             monitor_id: Some(read_monitor_id.clone()),
@@ -190,8 +190,8 @@ fn thread_monitor_actions_params(
             items.push(monitor_action_item(
                 "Stop",
                 "Stop the monitor process",
-                false,
-                None,
+                /*is_disabled*/ false,
+                /*disabled_reason*/ None,
                 move || AppEvent::StopThreadMonitor {
                     thread_id,
                     monitor_id: Some(stop_monitor_id.clone()),
@@ -203,8 +203,8 @@ fn thread_monitor_actions_params(
             items.push(monitor_action_item(
                 "Restart",
                 "Run the monitor command again",
-                false,
-                None,
+                /*is_disabled*/ false,
+                /*disabled_reason*/ None,
                 move || AppEvent::RestartThreadMonitor {
                     thread_id,
                     monitor_id: Some(restart_monitor_id.clone()),
@@ -217,8 +217,8 @@ fn thread_monitor_actions_params(
     items.push(monitor_action_item(
         "Delete",
         "Remove this monitor from the thread",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || AppEvent::DeleteThreadMonitor {
             thread_id,
             monitor_id: Some(delete_monitor_id.clone()),
@@ -227,8 +227,8 @@ fn thread_monitor_actions_params(
     items.push(monitor_action_item(
         "Back to monitors",
         "Return to all monitors",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         move || AppEvent::OpenThreadMonitorManager { thread_id },
     ));
 
@@ -436,9 +436,17 @@ mod tests {
         let params = thread_monitor_manager_params(
             ThreadId::new(),
             vec![
-                test_monitor("stopped", ThreadMonitorStatus::Stopped, 3),
-                test_monitor("failed", ThreadMonitorStatus::Failed, 2),
-                test_monitor("running", ThreadMonitorStatus::Running, 1),
+                test_monitor(
+                    "stopped",
+                    ThreadMonitorStatus::Stopped,
+                    /*updated_at*/ 3,
+                ),
+                test_monitor("failed", ThreadMonitorStatus::Failed, /*updated_at*/ 2),
+                test_monitor(
+                    "running",
+                    ThreadMonitorStatus::Running,
+                    /*updated_at*/ 1,
+                ),
             ],
         );
 

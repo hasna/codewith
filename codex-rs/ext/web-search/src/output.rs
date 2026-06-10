@@ -104,7 +104,7 @@ mod tests {
         let long_output = "search result ".repeat(20_000);
         let output = SearchOutput::new(
             Some(long_output.clone()),
-            None,
+            /*encrypted_output*/ None,
             TruncationPolicy::Tokens(20_000),
         );
 
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn emits_encrypted_function_call_output_without_plaintext() {
         let output = SearchOutput::new(
-            None,
+            /*output*/ None,
             Some("ciphertext".to_string()),
             TruncationPolicy::Tokens(1_000),
         );

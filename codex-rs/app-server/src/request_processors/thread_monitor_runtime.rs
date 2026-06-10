@@ -460,7 +460,7 @@ Output:
             .set_thread_monitor_status(
                 monitor.monitor_id.as_str(),
                 codex_state::ThreadMonitorStatus::Stopped,
-                None,
+                /*last_error*/ None,
             )
             .await
         {

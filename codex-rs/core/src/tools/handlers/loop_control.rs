@@ -716,7 +716,7 @@ mod tests {
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             runtime.codex_home().join(format!("{thread_id}.jsonl")),
-            at(1_700_000_000),
+            at(/*seconds*/ 1_700_000_000),
             SessionSource::Cli,
         );
         builder.cwd = runtime.codex_home().join("workspace");
@@ -746,7 +746,7 @@ mod tests {
                 ),
                 timezone: "UTC".to_string(),
                 status,
-                next_run_at: Some(at(1_700_000_300)),
+                next_run_at: Some(at(/*seconds*/ 1_700_000_300)),
                 expires_at: None,
             })
             .await
@@ -791,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn create_interval_loop_creates_active_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(7);
+        let thread_id = test_thread_id(/*id*/ 7);
         upsert_test_thread(&runtime, thread_id).await;
 
         let response = manage_loop(
@@ -859,7 +859,7 @@ mod tests {
     #[tokio::test]
     async fn start_with_loop_fields_creates_active_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(9);
+        let thread_id = test_thread_id(/*id*/ 9);
         upsert_test_thread(&runtime, thread_id).await;
 
         let response = manage_loop(
@@ -908,7 +908,7 @@ mod tests {
     #[tokio::test]
     async fn start_without_loop_fields_resumes_single_loop() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(10);
+        let thread_id = test_thread_id(/*id*/ 10);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_interval_schedule(
             &runtime,
@@ -945,7 +945,7 @@ mod tests {
     #[tokio::test]
     async fn create_loop_rejects_once_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(8);
+        let thread_id = test_thread_id(/*id*/ 8);
         upsert_test_thread(&runtime, thread_id).await;
 
         let err = manage_loop(
@@ -974,7 +974,7 @@ mod tests {
     #[tokio::test]
     async fn stop_without_schedule_id_pauses_single_loop() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(1);
+        let thread_id = test_thread_id(/*id*/ 1);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_interval_schedule(
             &runtime,
@@ -1018,7 +1018,7 @@ mod tests {
     #[tokio::test]
     async fn clear_deletes_specific_loop() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(2);
+        let thread_id = test_thread_id(/*id*/ 2);
         upsert_test_thread(&runtime, thread_id).await;
         let first = create_interval_schedule(
             &runtime,
@@ -1072,7 +1072,7 @@ mod tests {
     #[tokio::test]
     async fn resume_recomputes_missing_next_run_at() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(6);
+        let thread_id = test_thread_id(/*id*/ 6);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_interval_schedule(
             &runtime,
@@ -1129,8 +1129,8 @@ mod tests {
     #[tokio::test]
     async fn stop_rejects_schedule_from_another_thread() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(3);
-        let other_thread_id = test_thread_id(4);
+        let thread_id = test_thread_id(/*id*/ 3);
+        let other_thread_id = test_thread_id(/*id*/ 4);
         upsert_test_thread(&runtime, thread_id).await;
         upsert_test_thread(&runtime, other_thread_id).await;
         let other_schedule = create_interval_schedule(
@@ -1167,7 +1167,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_loops_require_schedule_id_for_mutations() {
         let (_temp_dir, runtime) = test_runtime().await;
-        let thread_id = test_thread_id(5);
+        let thread_id = test_thread_id(/*id*/ 5);
         upsert_test_thread(&runtime, thread_id).await;
         create_interval_schedule(
             &runtime,

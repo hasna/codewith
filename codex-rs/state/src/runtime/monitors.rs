@@ -524,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn create_event_restart_and_delete_thread_monitor() {
         let runtime = test_runtime().await;
-        let thread_id = test_thread_id(1);
+        let thread_id = test_thread_id(/*id*/ 1);
         upsert_test_thread(&runtime, thread_id).await;
 
         let created = create_test_monitor(&runtime, thread_id).await;

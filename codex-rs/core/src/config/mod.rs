@@ -2806,7 +2806,7 @@ impl Config {
             Some(profile) => profile
                 .map(|profile| validate_selected_auth_profile(profile, "--auth-profile"))
                 .transpose()?,
-            None => resolve_selected_auth_profile(None)?,
+            None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
         };
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;

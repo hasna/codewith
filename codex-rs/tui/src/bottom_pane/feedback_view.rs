@@ -807,17 +807,26 @@ mod tests {
         assert!(bug_url.contains("Feedback%20type%3A%20bug"));
         assert!(bug_url.contains("Feedback%20note%3A%0Athe%20terminal%20froze"));
 
-        let bad_result_url = issue_url_for_category(FeedbackCategory::BadResult, "thread-2", None);
+        let bad_result_url = issue_url_for_category(
+            FeedbackCategory::BadResult,
+            "thread-2",
+            /*reason*/ None,
+        );
         assert!(bad_result_url.contains("Feedback%20type%3A%20bad_result"));
 
-        let other_url = issue_url_for_category(FeedbackCategory::Other, "thread-3", None);
+        let other_url =
+            issue_url_for_category(FeedbackCategory::Other, "thread-3", /*reason*/ None);
         assert!(other_url.contains("Feedback%20type%3A%20other"));
 
-        let safety_check_url =
-            issue_url_for_category(FeedbackCategory::SafetyCheck, "thread-4", None);
+        let safety_check_url = issue_url_for_category(
+            FeedbackCategory::SafetyCheck,
+            "thread-4",
+            /*reason*/ None,
+        );
         assert!(safety_check_url.contains("Feedback%20type%3A%20safety_check"));
 
-        let good_result_url = issue_url_for_category(FeedbackCategory::GoodResult, "t", None);
+        let good_result_url =
+            issue_url_for_category(FeedbackCategory::GoodResult, "t", /*reason*/ None);
         assert!(good_result_url.contains("Feedback%20type%3A%20good_result"));
     }
 
@@ -848,7 +857,7 @@ mod tests {
         let rendered = render_cell(
             &feedback_success_cell(
                 FeedbackCategory::Bug,
-                None,
+                /*reason*/ None,
                 /*include_logs*/ true,
                 "thread-2",
                 FeedbackAudience::OpenAiEmployee,
@@ -891,7 +900,7 @@ mod tests {
             let rendered = render_cell(
                 &feedback_success_cell(
                     category,
-                    None,
+                    /*reason*/ None,
                     /*include_logs*/ false,
                     "thread-4",
                     FeedbackAudience::External,

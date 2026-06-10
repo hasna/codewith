@@ -2297,7 +2297,12 @@ allow_local_binding = true
         .iter()
         .find(|hook_input| hook_input["tool_input"]["description"].is_null())
     {
-        assert_permission_request_hook_input(shell_hook_input, "Bash", command, None);
+        assert_permission_request_hook_input(
+            shell_hook_input,
+            "Bash",
+            command,
+            /*description*/ None,
+        );
     }
     let network_hook_input = hook_inputs
         .iter()

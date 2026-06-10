@@ -141,12 +141,12 @@ impl SessionRecapScheduler {
 
 impl App {
     pub(super) fn handle_terminal_focus_lost(&mut self) {
-        self.session_recap.set_terminal_focused(false);
+        self.session_recap.set_terminal_focused(/*focused*/ false);
         self.schedule_automatic_session_recap();
     }
 
     pub(super) fn handle_terminal_focus_gained(&mut self) {
-        self.session_recap.set_terminal_focused(true);
+        self.session_recap.set_terminal_focused(/*focused*/ true);
     }
 
     pub(super) fn note_session_recap_turn_completed(&mut self, thread_id: ThreadId, turn: &Turn) {

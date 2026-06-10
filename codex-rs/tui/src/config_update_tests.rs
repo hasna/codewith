@@ -44,7 +44,7 @@ fn model_provider_selection_edits_clear_default_effort() {
             /*profile*/ None,
             "openrouter",
             "openai/o4-mini",
-            Option::<String>::None,
+            /*effort*/ Option::<String>::None,
         ),
         vec![
             replace_config_value("model_provider", serde_json::json!("openrouter")),
