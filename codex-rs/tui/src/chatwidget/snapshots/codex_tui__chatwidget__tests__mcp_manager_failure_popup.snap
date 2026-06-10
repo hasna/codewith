@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  MCP Servers
+  Failed to load server inventory.
+
+› 1. Refresh                Reload MCP server status and inventory.
+     Inventory unavailable  app-server unavailable
+
+  Press enter to confirm or esc to go back

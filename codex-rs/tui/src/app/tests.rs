@@ -8,6 +8,7 @@ use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
+use crate::app_event::McpInventoryTarget;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
@@ -165,6 +166,7 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         }]),
         McpServerStatusDetail::ToolsAndAuthOnly,
         /*thread_id*/ None,
+        McpInventoryTarget::History,
     );
 
     assert_eq!(app.transcript_cells.len(), 0);
@@ -179,6 +181,7 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         Ok(Vec::new()),
         McpServerStatusDetail::ToolsAndAuthOnly,
         Some(ThreadId::new()),
+        McpInventoryTarget::History,
     );
 
     assert_eq!(app.transcript_cells.len(), 1);

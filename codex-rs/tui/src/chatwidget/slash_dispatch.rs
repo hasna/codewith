@@ -608,7 +608,7 @@ impl ChatWidget {
                 self.add_app_server_stub_message("Memory maintenance");
             }
             SlashCommand::Mcp => {
-                self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly);
+                self.open_mcp_manager(McpServerStatusDetail::Full);
             }
             SlashCommand::Apps => {
                 self.add_connectors_output();
@@ -781,8 +781,12 @@ impl ChatWidget {
                 self.handle_ide_command_args(trimmed);
             }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
-                "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
-                _ => self.add_error_message("Usage: /mcp [verbose]".to_string()),
+                "" | "verbose" | "manager" => self.open_mcp_manager(McpServerStatusDetail::Full),
+                "list" => self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly),
+                "list verbose" | "verbose list" => self.add_mcp_output(McpServerStatusDetail::Full),
+                _ => self.add_error_message(
+                    "Usage: /mcp [verbose|manager|list|list verbose]".to_string(),
+                ),
             },
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),

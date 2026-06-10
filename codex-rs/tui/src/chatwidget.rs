@@ -259,6 +259,7 @@ fn queued_message_edit_hint_binding(
 
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
+use crate::app_event::McpInventoryTarget;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
 #[cfg(any(target_os = "windows", test))]
@@ -358,6 +359,7 @@ mod input_submission;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_manager;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
@@ -1576,6 +1578,7 @@ impl ChatWidget {
         self.app_event_tx.send(AppEvent::FetchMcpInventory {
             detail,
             thread_id: self.thread_id(),
+            target: McpInventoryTarget::History,
         });
     }
 

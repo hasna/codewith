@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  MCP Servers
+  Loading configured servers...
+
+›    Loading MCP servers...  This updates when server inventory is ready.
+
+  Press enter to confirm or esc to go back

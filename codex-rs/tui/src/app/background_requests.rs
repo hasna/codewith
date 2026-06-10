@@ -7,6 +7,7 @@
 use super::plugin_mentions::fetch_plugin_mentions;
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
+use crate::app_event::McpInventoryTarget;
 use crate::config_update::format_config_error;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
@@ -16,6 +17,8 @@ use codex_app_server_protocol::MarketplaceRemoveParams;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
+use codex_app_server_protocol::McpServerOauthLoginParams;
+use codex_app_server_protocol::McpServerOauthLoginResponse;
 use codex_app_server_protocol::ThreadRecapParams;
 use codex_app_server_protocol::ThreadRecapResponse;
 
@@ -32,6 +35,7 @@ impl App {
         app_server: &AppServerSession,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
@@ -44,7 +48,24 @@ impl App {
                 result,
                 detail,
                 thread_id,
+                target,
             });
+        });
+    }
+
+    pub(super) fn start_mcp_server_oauth_login(
+        &mut self,
+        app_server: &AppServerSession,
+        name: String,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = start_mcp_server_oauth_login(request_handle, name.clone())
+                .await
+                .map(|response| response.authorization_url)
+                .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::McpServerOauthLoginStarted { name, result });
         });
     }
 
@@ -590,8 +611,15 @@ impl App {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     ) {
         if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
+            return;
+        }
+
+        if target == McpInventoryTarget::Manager {
+            self.chat_widget
+                .on_mcp_manager_loaded(result, detail, thread_id);
             return;
         }
 
@@ -695,6 +723,24 @@ pub(super) async fn fetch_all_mcp_server_statuses(
     }
 
     Ok(statuses)
+}
+
+async fn start_mcp_server_oauth_login(
+    request_handle: AppServerRequestHandle,
+    name: String,
+) -> Result<McpServerOauthLoginResponse> {
+    let request_id = RequestId::String(format!("mcp-oauth-login-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::McpServerOauthLogin {
+            request_id,
+            params: McpServerOauthLoginParams {
+                name,
+                scopes: None,
+                timeout_secs: None,
+            },
+        })
+        .await
+        .wrap_err("mcpServer/oauth/login failed in TUI")
 }
 
 pub(super) async fn fetch_account_rate_limits(

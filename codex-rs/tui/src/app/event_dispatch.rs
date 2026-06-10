@@ -501,6 +501,25 @@ impl App {
             AppEvent::OpenDesktopThread { thread_id } => {
                 self.open_desktop_thread(thread_id);
             }
+            AppEvent::OpenMcpManager { detail } => {
+                self.chat_widget.open_mcp_manager(detail);
+            }
+            AppEvent::OpenMcpServerDetails { status } => {
+                self.chat_widget.open_mcp_server_details(status);
+            }
+            AppEvent::StartMcpServerOauthLogin { name } => {
+                self.start_mcp_server_oauth_login(app_server, name);
+            }
+            AppEvent::McpServerOauthLoginStarted { name, result } => match result {
+                Ok(url) => {
+                    self.open_url_in_browser(url);
+                }
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to start MCP OAuth login for {name}: {err}"
+                    ));
+                }
+            },
             AppEvent::PetSelected { pet_id } => {
                 self.handle_pet_selected(tui, pet_id);
             }
@@ -760,15 +779,20 @@ impl App {
                         .on_plugin_enabled_set(cwd, plugin_id, enabled, result);
                 }
             }
-            AppEvent::FetchMcpInventory { detail, thread_id } => {
-                self.fetch_mcp_inventory(app_server, detail, thread_id);
+            AppEvent::FetchMcpInventory {
+                detail,
+                thread_id,
+                target,
+            } => {
+                self.fetch_mcp_inventory(app_server, detail, thread_id, target);
             }
             AppEvent::McpInventoryLoaded {
                 result,
                 detail,
                 thread_id,
+                target,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                self.handle_mcp_inventory_result(result, detail, thread_id, target);
             }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
