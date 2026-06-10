@@ -1006,29 +1006,17 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
-            AppEvent::RateLimitsLoaded { origin, result } => match result {
-                Ok(snapshots) => {
-                    for snapshot in snapshots {
-                        self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
-                    }
-                    match origin {
-                        RateLimitRefreshOrigin::StartupPrefetch => {
-                            tui.frame_requester().schedule_frame();
-                        }
-                        RateLimitRefreshOrigin::StatusCommand { request_id } => {
-                            self.chat_widget
-                                .finish_status_rate_limit_refresh(request_id);
-                        }
-                    }
+            AppEvent::RateLimitsLoaded {
+                origin,
+                auth_profile,
+                result,
+            } => {
+                if self.apply_rate_limits_loaded(origin, auth_profile, result)
+                    == RateLimitRefreshCompletion::ScheduleFrame
+                {
+                    tui.frame_requester().schedule_frame();
                 }
-                Err(err) => {
-                    tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
-                    if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
-                        self.chat_widget
-                            .finish_status_rate_limit_refresh(request_id);
-                    }
-                }
-            },
+            }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
@@ -2688,6 +2676,60 @@ impl App {
                 self.chat_widget
                     .add_error_message(format!("Failed to archive current thread: {err}"));
                 AppRunControl::Continue
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RateLimitRefreshCompletion {
+    None,
+    ScheduleFrame,
+}
+
+impl App {
+    pub(super) fn apply_rate_limits_loaded(
+        &mut self,
+        origin: RateLimitRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<Vec<RateLimitSnapshot>, String>,
+    ) -> RateLimitRefreshCompletion {
+        if auth_profile != self.config.selected_auth_profile {
+            tracing::debug!(
+                request_auth_profile = ?auth_profile,
+                current_auth_profile = ?self.config.selected_auth_profile,
+                "discarding stale account/rateLimits/read result after auth profile change"
+            );
+            if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                self.chat_widget
+                    .finish_status_rate_limit_refresh(request_id);
+            }
+            return RateLimitRefreshCompletion::None;
+        }
+
+        match result {
+            Ok(snapshots) => {
+                for snapshot in snapshots {
+                    self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
+                }
+                match origin {
+                    RateLimitRefreshOrigin::StartupPrefetch => {
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::StatusCommand { request_id } => {
+                        self.chat_widget
+                            .finish_status_rate_limit_refresh(request_id);
+                        RateLimitRefreshCompletion::None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
+                if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
+                    self.chat_widget
+                        .finish_status_rate_limit_refresh(request_id);
+                }
+                RateLimitRefreshCompletion::None
             }
         }
     }

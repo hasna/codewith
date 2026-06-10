@@ -482,6 +482,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
+        auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
 
