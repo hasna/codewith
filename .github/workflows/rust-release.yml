@@ -161,6 +161,7 @@ jobs:
       # Ubuntu ARM is timing out at 60 minutes.
       CARGO_PROFILE_RELEASE_LTO: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'thin' }}
       SIGN_MACOS: ${{ github.event_name != 'workflow_dispatch' }}
+      MACOS_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
 
     strategy:
       fail-fast: false
@@ -335,6 +336,12 @@ jobs:
           path: codex-rs/target/**/cargo-timings/cargo-timing.html
           if-no-files-found: warn
 
+      - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE != 'true' }}
+        name: Report skipped macOS signing
+        shell: bash
+        run: |
+          echo "::warning title=macOS signing skipped::Apple signing secrets are not configured; publishing unsigned macOS release binaries."
+
       - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS != 'true' }}
         name: Stage unsigned macOS artifacts
         shell: bash
@@ -376,7 +383,7 @@ jobs:
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ matrix.target }}/release
           binaries: ${{ matrix.binaries }}
 
-      - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS == 'true' }}
+      - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true' }}
         name: MacOS code signing (binaries)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -390,7 +397,7 @@ jobs:
           apple-notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           apple-notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
 
-      - if: ${{ runner.os == 'macOS' && matrix.build_dmg == 'true' && env.SIGN_MACOS == 'true' }}
+      - if: ${{ runner.os == 'macOS' && matrix.build_dmg == 'true' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true' }}
         name: Build macOS dmg
         shell: bash
         run: |
@@ -430,7 +437,7 @@ jobs:
             exit 1
           fi
 
-      - if: ${{ runner.os == 'macOS' && matrix.build_dmg == 'true' && env.SIGN_MACOS == 'true' }}
+      - if: ${{ runner.os == 'macOS' && matrix.build_dmg == 'true' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true' }}
         name: MacOS code signing (dmg)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -470,7 +477,12 @@ jobs:
           fi
 
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
-            cp target/${{ matrix.target }}/release/codewith-${{ matrix.target }}.dmg "$dest/codewith-${{ matrix.target }}.dmg"
+            dmg_path="target/${{ matrix.target }}/release/codewith-${{ matrix.target }}.dmg"
+            if [[ -f "$dmg_path" ]]; then
+              cp "$dmg_path" "$dest/codewith-${{ matrix.target }}.dmg"
+            else
+              echo "DMG not present; continuing with package archive artifacts only."
+            fi
           fi
 
       - name: Build Codex package archive
