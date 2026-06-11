@@ -1329,6 +1329,7 @@ jobs:
         !cancelled() &&
         needs.release.result == 'success' &&
         needs.release.outputs.sign_macos == 'true' &&
+        vars.CODEWITH_PUBLISH_WINGET == 'true' &&
         !contains(needs.release.outputs.version, '-')
       }}
     # This job only invokes a GitHub Action to open/update the winget-pkgs PR;
@@ -1354,7 +1355,8 @@ jobs:
       ${{
         !cancelled() &&
         needs.release.result == 'success' &&
-        needs.release.outputs.sign_macos == 'true'
+        needs.release.outputs.sign_macos == 'true' &&
+        contains(needs.release.outputs.version, '-alpha')
       }}
     permissions:
       contents: write
