@@ -296,7 +296,7 @@ jobs:
             fi
 
             # Keep raw executables and produce .zst alongside them.
-            "${GITHUB_WORKSPACE}/.github/workflows/zstd" -T0 -19 "$dest/$base"
+            "${GITHUB_WORKSPACE}/.github/workflows/zstd" -T0 -3 "$dest/$base"
           done
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

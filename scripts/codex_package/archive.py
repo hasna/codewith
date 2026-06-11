@@ -12,6 +12,7 @@ from .targets import REPO_ROOT
 
 
 ZSTD_DOTSLASH = REPO_ROOT / ".github" / "workflows" / "zstd"
+ZSTD_COMPRESSION_LEVEL = "-3"
 
 
 def write_archive(package_dir: Path, archive_path: Path, *, force: bool) -> None:
@@ -75,7 +76,15 @@ def write_tar_zst_archive(package_dir: Path, archive_path: Path) -> None:
         tar_path = Path(temp_dir_str) / "package.tar"
         write_tar_archive(package_dir, tar_path, mode="w")
         subprocess.check_call(
-            [*zstd_command, "-T0", "-19", "-f", str(tar_path), "-o", str(archive_path)]
+            [
+                *zstd_command,
+                "-T0",
+                ZSTD_COMPRESSION_LEVEL,
+                "-f",
+                str(tar_path),
+                "-o",
+                str(archive_path),
+            ]
         )
 
 

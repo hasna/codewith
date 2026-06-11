@@ -7,10 +7,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from codex_package.archive import ZSTD_COMPRESSION_LEVEL
 from codex_package.archive import resolve_zstd_command
 
 
 class ResolveZstdCommandTest(unittest.TestCase):
+    def test_release_archive_uses_fast_zstd_level(self) -> None:
+        self.assertEqual(ZSTD_COMPRESSION_LEVEL, "-3")
+
     def test_prefers_zstd_from_path(self) -> None:
         def which(name: str) -> str | None:
             return {"zstd": "/usr/bin/zstd", "dotslash": "/usr/bin/dotslash"}.get(name)

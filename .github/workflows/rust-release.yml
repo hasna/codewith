@@ -322,11 +322,16 @@ jobs:
       - name: Cargo build
         shell: bash
         run: |
+          if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *linux* ]]; then
+            export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+          fi
+
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             build_args+=(--bin "$binary")
           done
           echo "CARGO_PROFILE_RELEASE_LTO: ${CARGO_PROFILE_RELEASE_LTO}"
+          echo "CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-default}"
           cargo build --target ${{ matrix.target }} --release --timings "${build_args[@]}"
 
       - name: Upload Cargo timings
