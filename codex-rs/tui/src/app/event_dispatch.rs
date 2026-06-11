@@ -1187,6 +1187,9 @@ impl App {
             AppEvent::DeleteAuthProfile { profile } => {
                 self.delete_auth_profile(profile);
             }
+            AppEvent::MoveAuthProfile { profile, direction } => {
+                self.move_auth_profile(profile, direction);
+            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)

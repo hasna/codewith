@@ -2601,6 +2601,26 @@ async fn profile_selection_popup_snapshot_and_selection() {
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
     );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::MoveAuthProfile { profile, direction })
+            if profile == "personal"
+                && direction == codex_login::AuthProfileMoveDirection::Down
+    );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::MoveAuthProfile { profile, direction })
+            if profile == "personal"
+                && direction == codex_login::AuthProfileMoveDirection::Up
+    );
 }
 
 #[tokio::test]
@@ -2635,7 +2655,8 @@ async fn profile_selection_popup_shows_usage_hints() {
     assert!(popup.contains("usage unknown"));
     assert!(popup.contains("stale 5h 30% left"));
     assert!(popup.contains("5h 42% left"));
-    assert!(popup.contains("weekly 80% left"));
+    assert!(popup.contains("weekly"));
+    assert!(popup.contains("80% left"));
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@ use super::storage::create_auth_storage;
 
 const AUTH_PROFILES_DIR: &str = "auth_profiles";
 const ACTIVE_PROFILE_FILE: &str = ".active";
+const PROFILE_ORDER_FILE: &str = ".order";
 pub const CODEWITH_AUTH_PROFILE_ENV_VAR: &str = "CODEWITH_AUTH_PROFILE";
 pub const CODEX_AUTH_PROFILE_ENV_VAR: &str = "CODEX_AUTH_PROFILE";
 
@@ -31,6 +32,12 @@ pub struct AuthProfile {
     pub account_id: Option<String>,
     pub plan: Option<String>,
     pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthProfileMoveDirection {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Error)]
@@ -140,7 +147,7 @@ pub fn list_auth_profiles(
             && active_auth.as_ref().is_some_and(|active| active == &auth);
         profiles.push(profile_from_auth(name, &auth, active));
     }
-    profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    sort_auth_profiles(codex_home, &mut profiles)?;
     Ok(profiles)
 }
 
@@ -206,6 +213,7 @@ pub fn delete_auth_profile(
     }
 
     delete_profile_storage_dir(profile_dir, auth_credentials_store_mode)?;
+    remove_profile_from_order(codex_home, name)?;
     Ok(())
 }
 
@@ -248,6 +256,7 @@ pub fn remove_auth_profile(
     if active_auth_profile(codex_home).ok().flatten().as_deref() == Some(name) {
         clear_active_auth_profile(codex_home)?;
     }
+    remove_profile_from_order(codex_home, name)?;
     Ok(())
 }
 
@@ -290,8 +299,41 @@ pub fn rename_auth_profile(
     if active {
         write_active_profile(codex_home, new_name)?;
     }
+    rename_profile_in_order(codex_home, old_name, new_name)?;
 
     Ok(profile_from_auth(new_name.to_string(), &auth, active))
+}
+
+pub fn move_auth_profile(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    name: &str,
+    direction: AuthProfileMoveDirection,
+) -> Result<bool, AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+
+    let profiles = list_auth_profiles(codex_home, auth_credentials_store_mode)?;
+    let mut ordered_names: Vec<String> = profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    let Some(index) = ordered_names.iter().position(|profile| profile == name) else {
+        return Err(AuthProfileError::ProfileNotFound {
+            name: name.to_string(),
+        });
+    };
+    let target_index = match direction {
+        AuthProfileMoveDirection::Up => index.checked_sub(1),
+        AuthProfileMoveDirection::Down => (index + 1 < ordered_names.len()).then_some(index + 1),
+    };
+    let Some(target_index) = target_index else {
+        return Ok(false);
+    };
+
+    ordered_names.swap(index, target_index);
+    write_auth_profile_order(codex_home, &ordered_names)?;
+    Ok(true)
 }
 
 pub fn auth_profile_storage_dir(
@@ -348,6 +390,86 @@ fn auth_profile_dir(codex_home: &Path, name: &str) -> PathBuf {
 
 fn active_profile_file(codex_home: &Path) -> PathBuf {
     auth_profiles_dir(codex_home).join(ACTIVE_PROFILE_FILE)
+}
+
+fn profile_order_file(codex_home: &Path) -> PathBuf {
+    auth_profiles_dir(codex_home).join(PROFILE_ORDER_FILE)
+}
+
+fn sort_auth_profiles(
+    codex_home: &Path,
+    profiles: &mut [AuthProfile],
+) -> Result<(), AuthProfileError> {
+    let order = read_auth_profile_order(codex_home)?;
+    profiles.sort_by(|left, right| {
+        let left_order = order.iter().position(|name| name == &left.name);
+        let right_order = order.iter().position(|name| name == &right.name);
+        match (left_order, right_order) {
+            (Some(left_order), Some(right_order)) => left_order.cmp(&right_order),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.name.cmp(&right.name),
+        }
+    });
+    Ok(())
+}
+
+fn read_auth_profile_order(codex_home: &Path) -> Result<Vec<String>, AuthProfileError> {
+    let raw = match fs::read_to_string(profile_order_file(codex_home)) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    let mut names = Vec::new();
+    for line in raw.lines() {
+        let name = line.trim();
+        if validate_auth_profile_name(name).is_ok() && !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
+fn write_auth_profile_order(codex_home: &Path, names: &[String]) -> Result<(), AuthProfileError> {
+    let mut contents = names.join("\n");
+    if !contents.is_empty() {
+        contents.push('\n');
+    }
+    write_private_file(&profile_order_file(codex_home), &contents)?;
+    Ok(())
+}
+
+fn rewrite_auth_profile_order_if_present(
+    codex_home: &Path,
+    rewrite: impl FnOnce(&mut Vec<String>),
+) -> Result<(), AuthProfileError> {
+    let path = profile_order_file(codex_home);
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut order = read_auth_profile_order(codex_home)?;
+    rewrite(&mut order);
+    write_auth_profile_order(codex_home, &order)
+}
+
+fn remove_profile_from_order(codex_home: &Path, name: &str) -> Result<(), AuthProfileError> {
+    rewrite_auth_profile_order_if_present(codex_home, |order| {
+        order.retain(|profile| profile != name);
+    })
+}
+
+fn rename_profile_in_order(
+    codex_home: &Path,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), AuthProfileError> {
+    rewrite_auth_profile_order_if_present(codex_home, |order| {
+        for profile in order {
+            if profile == old_name {
+                *profile = new_name.to_string();
+            }
+        }
+    })
 }
 
 fn create_private_dir_all(path: &Path) -> std::io::Result<()> {

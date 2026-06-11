@@ -6,6 +6,7 @@ use crate::status::RateLimitSnapshotDisplay;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_status_limit_summary;
 use codex_login::AuthProfile;
+use codex_login::AuthProfileMoveDirection;
 use codex_login::list_auth_profiles;
 use crossterm::event::KeyCode;
 
@@ -96,6 +97,8 @@ impl ChatWidget {
         })];
         let rename_profile_name = profile.name.clone();
         let delete_profile_name = profile.name.clone();
+        let move_up_profile_name = profile.name.clone();
+        let move_down_profile_name = profile.name.clone();
         let shortcut_actions = vec![
             SelectionShortcutAction {
                 binding: key_hint::plain(KeyCode::Char('r')),
@@ -115,12 +118,32 @@ impl ChatWidget {
                 }),
                 dismiss_on_select: true,
             },
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char('[')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::MoveAuthProfile {
+                        profile: move_up_profile_name.clone(),
+                        direction: AuthProfileMoveDirection::Up,
+                    });
+                }),
+                dismiss_on_select: true,
+            },
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char(']')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::MoveAuthProfile {
+                        profile: move_down_profile_name.clone(),
+                        direction: AuthProfileMoveDirection::Down,
+                    });
+                }),
+                dismiss_on_select: true,
+            },
         ];
         SelectionItem {
             name: profile.name.clone(),
             description,
             selected_description: Some(auth_profile_description_with_usage(
-                "Enter switch / r rename / d delete",
+                "Enter switch / r rename / d delete / [ up / ] down",
                 &usage_hint,
             )),
             is_current: current == Some(profile.name.as_str()),
