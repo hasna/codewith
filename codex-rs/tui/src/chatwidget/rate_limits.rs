@@ -399,6 +399,10 @@ impl ChatWidget {
             }
             self.rate_limit_snapshots_by_limit_id
                 .insert(limit_id, display);
+            self.auth_profile_rate_limit_snapshots_by_profile.insert(
+                self.config.selected_auth_profile.clone(),
+                self.rate_limit_snapshots_by_limit_id.clone(),
+            );
 
             if !warnings.is_empty() {
                 for warning in warnings {
@@ -408,6 +412,8 @@ impl ChatWidget {
             }
         } else {
             self.rate_limit_snapshots_by_limit_id.clear();
+            self.auth_profile_rate_limit_snapshots_by_profile
+                .remove(&self.config.selected_auth_profile);
             self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
             self.codex_rate_limit_reached_type = None;
         }

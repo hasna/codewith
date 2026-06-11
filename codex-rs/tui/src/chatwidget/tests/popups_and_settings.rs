@@ -1,6 +1,7 @@
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::chatwidget::connectors::ConnectorsCacheState;
+use crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::HookErrorInfo;
@@ -21,6 +22,7 @@ use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::mcp::Tool;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 fn provider_picker_preset(
@@ -2752,6 +2754,29 @@ async fn model_selection_popup_snapshot() {
     assert_chatwidget_snapshot!("model_selection_popup", popup);
 }
 
+fn profile_usage_snapshot(
+    secondary_used_percent: i32,
+    primary_used_percent: i32,
+) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent: primary_used_percent,
+            window_duration_mins: Some(7 * 24 * 60),
+            resets_at: None,
+        }),
+        secondary: Some(RateLimitWindow {
+            used_percent: secondary_used_percent,
+            window_duration_mins: Some(5 * 60),
+            resets_at: None,
+        }),
+        credits: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }
+}
+
 #[tokio::test]
 async fn profile_selection_popup_snapshot_and_selection() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
@@ -2811,6 +2836,41 @@ async fn profile_selection_popup_snapshot_and_selection() {
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
     );
+}
+
+#[tokio::test]
+async fn profile_selection_popup_shows_usage_hints() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    save_popup_auth_profile(&chat, "work");
+    save_popup_auth_profile(&chat, "personal");
+    while rx.try_recv().is_ok() {}
+
+    chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
+        /*secondary_used_percent*/ 58, /*primary_used_percent*/ 20,
+    )));
+
+    let stale_snapshot = rate_limit_snapshot_display_for_limit(
+        &profile_usage_snapshot(
+            /*secondary_used_percent*/ 70, /*primary_used_percent*/ 40,
+        ),
+        "codex".to_string(),
+        Local::now() - chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES + 1),
+    );
+    let mut stale_snapshots = BTreeMap::new();
+    stale_snapshots.insert("codex".to_string(), stale_snapshot);
+    chat.auth_profile_rate_limit_snapshots_by_profile
+        .insert(Some("personal".to_string()), stale_snapshots);
+
+    chat.open_profile_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 96);
+    assert_chatwidget_snapshot!("profile_selection_popup_usage_hints", popup);
+    assert!(popup.contains("usage unknown"));
+    assert!(popup.contains("stale 5h 30% left"));
+    assert!(popup.contains("5h 42% left"));
+    assert!(popup.contains("weekly 80% left"));
 }
 
 #[tokio::test]

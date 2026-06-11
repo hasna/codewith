@@ -562,6 +562,8 @@ pub(crate) struct ChatWidget {
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
+    auth_profile_rate_limit_snapshots_by_profile:
+        BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
