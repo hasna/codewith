@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+▌ Log in new profile
+▌ Use letters, numbers, dots, dashes, or underscores
+▌
+▌ Profile name
+
+Press enter to confirm or esc to go back

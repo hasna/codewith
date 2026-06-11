@@ -877,6 +877,21 @@ pub(crate) enum AppEvent {
         profile: String,
     },
 
+    /// Prompt for creating and logging in a new saved auth profile.
+    OpenAuthProfileLoginPrompt,
+
+    /// Start creating and logging in a new saved auth profile.
+    LoginNewAuthProfile {
+        profile: String,
+    },
+
+    /// A background new-profile login attempt completed.
+    AuthProfileLoginCompleted {
+        profile: String,
+        success: bool,
+        error: Option<String>,
+    },
+
     /// Rename a saved auth profile.
     RenameAuthProfile {
         old_name: String,

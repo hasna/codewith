@@ -5,9 +5,10 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
-  1. default         Root login / usage unknown
-  2. personal        ApiKey / stale 5h 30% left / weekly 60% left
-› 3. work (current)  Enter switch / r rename / d delete / [ up / ] down / 5h 42% left / weekly
-                     80% left
+  1. default             Root login / usage unknown
+  2. personal            ApiKey / stale 5h 30% left / weekly 60% left
+› 3. work (current)      Enter switch / r rename / d delete / [ up / ] down / 5h 42% left /
+                         weekly 80% left
+  4. Log in new profile  Create a saved auth profile
 
   Press enter to confirm or esc to go back

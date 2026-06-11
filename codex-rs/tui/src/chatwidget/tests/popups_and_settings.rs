@@ -2570,6 +2570,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("default"));
     assert!(popup.contains("personal"));
     assert!(popup.contains("work"));
+    assert!(popup.contains("Log in new profile"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2620,6 +2621,92 @@ async fn profile_selection_popup_snapshot_and_selection() {
         Ok(AppEvent::MoveAuthProfile { profile, direction })
             if profile == "personal"
                 && direction == codex_login::AuthProfileMoveDirection::Up
+    );
+
+    chat.open_profile_popup();
+    for _ in 0..3 {
+        chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAuthProfileLoginPrompt));
+}
+
+#[tokio::test]
+async fn profile_login_prompt_snapshot_and_submit() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    while rx.try_recv().is_ok() {}
+
+    chat.open_auth_profile_login_prompt();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_login_prompt", popup);
+    assert!(popup.contains("Profile name"));
+
+    for ch in " work-dev ".chars() {
+        chat.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::LoginNewAuthProfile { profile }) if profile == "work-dev"
+    );
+}
+
+#[tokio::test]
+async fn profile_login_validation_errors_do_not_start_browser_login() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    while rx.try_recv().is_ok() {}
+
+    chat.start_auth_profile_login("nested/work".to_string());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Invalid auth profile name"),
+        "expected invalid name error, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn profile_login_duplicate_errors_do_not_start_browser_login() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_auth_profile(&chat, "personal");
+    while rx.try_recv().is_ok() {}
+
+    chat.start_auth_profile_login("personal".to_string());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Auth profile `personal` already exists."),
+        "expected duplicate profile error, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn profile_login_api_only_mode_points_to_cli_flow() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.forced_login_method = Some(codex_protocol::config_types::ForcedLoginMethod::Api);
+    while rx.try_recv().is_ok() {}
+
+    chat.start_auth_profile_login("work".to_string());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("ChatGPT browser login is disabled"),
+        "expected API-only login guidance, got:\n{rendered}"
     );
 }
 
