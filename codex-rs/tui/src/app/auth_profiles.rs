@@ -170,4 +170,37 @@ impl App {
             }
         }
     }
+
+    pub(super) fn move_auth_profile(
+        &mut self,
+        profile: String,
+        direction: codex_login::AuthProfileMoveDirection,
+    ) {
+        match codex_login::move_auth_profile(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+            profile.as_str(),
+            direction,
+        ) {
+            Ok(moved) => {
+                let direction_label = match direction {
+                    codex_login::AuthProfileMoveDirection::Up => "up",
+                    codex_login::AuthProfileMoveDirection::Down => "down",
+                };
+                let message = if moved {
+                    format!("Auth profile `{profile}` moved {direction_label}.")
+                } else {
+                    format!(
+                        "Auth profile `{profile}` is already as far {direction_label} as it can move."
+                    )
+                };
+                self.chat_widget.add_info_message(message, /*hint*/ None);
+                self.chat_widget.open_profile_popup();
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to reorder auth profile: {err}"));
+            }
+        }
+    }
 }

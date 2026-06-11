@@ -380,3 +380,115 @@ fn profile_scoped_delete_only_removes_target_profile() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn moving_auth_profiles_persists_manual_order() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &auth_with_key("sk-work"),
+    )?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &auth_with_key("sk-personal"),
+    )?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "client",
+        &auth_with_key("sk-client"),
+    )?;
+
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["client", "personal", "work"]
+    );
+
+    assert!(move_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        AuthProfileMoveDirection::Down,
+    )?);
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["client", "work", "personal"]
+    );
+
+    assert!(!move_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        AuthProfileMoveDirection::Down,
+    )?);
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["client", "work", "personal"]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rename_and_remove_auth_profiles_update_manual_order() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &auth_with_key("sk-work"),
+    )?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        &auth_with_key("sk-personal"),
+    )?;
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "client",
+        &auth_with_key("sk-client"),
+    )?;
+    move_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "personal",
+        AuthProfileMoveDirection::Down,
+    )?;
+
+    rename_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        "team",
+    )?;
+    remove_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "client")?;
+
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["team", "personal"]
+    );
+
+    Ok(())
+}

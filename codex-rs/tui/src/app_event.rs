@@ -43,6 +43,7 @@ use crate::chatwidget::UserMessage;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
+use codex_login::AuthProfileMoveDirection;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
@@ -1036,6 +1037,12 @@ pub(crate) enum AppEvent {
     /// Delete a saved auth profile.
     DeleteAuthProfile {
         profile: String,
+    },
+
+    /// Move a saved auth profile within the manually ordered profile list.
+    MoveAuthProfile {
+        profile: String,
+        direction: AuthProfileMoveDirection,
     },
 
     /// Update the current personality in the running app and widget.
