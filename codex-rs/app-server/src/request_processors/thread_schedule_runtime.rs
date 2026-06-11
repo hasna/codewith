@@ -184,7 +184,11 @@ impl ThreadScheduleRuntime {
         let turn_id = thread
             .submit(Op::UserInput {
                 items: vec![CoreInputItem::Text {
-                    text: scheduled_thread_prompt(&prompt),
+                    text: scheduled_thread_prompt(
+                        &prompt,
+                        claim.run.run_id.as_str(),
+                        claim.run.scheduled_for,
+                    ),
                     text_elements: Vec::new(),
                 }],
                 environments: None,
@@ -420,16 +424,52 @@ impl ThreadScheduleRuntime {
     }
 }
 
-fn scheduled_thread_prompt(prompt: &str) -> String {
+fn scheduled_thread_prompt(
+    prompt: &str,
+    run_id: &str,
+    scheduled_for: Option<DateTime<Utc>>,
+) -> String {
+    let scheduled_for = scheduled_for
+        .map(|scheduled_for| scheduled_for.to_rfc3339())
+        .unwrap_or_else(|| "immediate".to_string());
     format!(
         "\
-You are running one scheduled Codewith prompt.
+You are running one new scheduled Codewith prompt.
 
-Execute only the scheduled prompt below for this run. Produce exactly one response for this scheduled run, then stop. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+Run id: {run_id}
+Scheduled for: {scheduled_for}
+
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 {prompt}"
     )
+}
+
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+enum ScheduledTurnFinish {
+    Complete,
+    Failed(String),
+}
+
+fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
+    match event {
+        EventMsg::TurnComplete(completed)
+            if completed
+                .last_agent_message
+                .as_deref()
+                .is_some_and(|message| !message.trim().is_empty()) =>
+        {
+            Some(ScheduledTurnFinish::Complete)
+        }
+        EventMsg::TurnComplete(_) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
+            "scheduled turn completed without a final assistant message".to_string(),
+        ))),
+        EventMsg::TurnAborted(aborted) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
+            format!("scheduled turn aborted: {:?}", aborted.reason),
+        ))),
+        _ => None,
+    }
 }
 
 pub(super) fn default_thread_schedule_expires_at(now: DateTime<Utc>) -> Option<DateTime<Utc>> {
@@ -478,13 +518,10 @@ pub(super) async fn finish_scheduled_run_after_turn(
     outgoing: &Arc<OutgoingMessageSender>,
 ) {
     let completed_at = Utc::now();
-    let error = match event {
-        EventMsg::TurnComplete(_) => None,
-        EventMsg::TurnAborted(aborted) => Some(schedule_run_error(format!(
-            "scheduled turn aborted: {:?}",
-            aborted.reason
-        ))),
-        _ => return,
+    let error = match scheduled_turn_finish(event) {
+        Some(ScheduledTurnFinish::Complete) => None,
+        Some(ScheduledTurnFinish::Failed(error)) => Some(error),
+        None => return,
     };
     match finish_scheduled_run_state(
         &scheduled_run.state_db,
@@ -711,6 +748,7 @@ fn looks_like_standalone_secret(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::protocol::TurnCompleteEvent;
     use pretty_assertions::assert_eq;
 
     fn at(seconds: i64) -> DateTime<Utc> {
@@ -768,13 +806,51 @@ mod tests {
 
     #[test]
     fn scheduled_thread_prompt_tells_model_not_to_wait() {
-        let prompt = scheduled_thread_prompt("ask me a funny question every minute");
+        let prompt = scheduled_thread_prompt(
+            "ask me a funny question every minute",
+            "run-123",
+            Some(at(1_700_000_000)),
+        );
 
-        assert!(prompt.contains("one scheduled Codewith prompt"));
-        assert!(prompt.contains("Produce exactly one response for this scheduled run, then stop."));
+        assert!(prompt.contains("one new scheduled Codewith prompt"));
+        assert!(prompt.contains("Run id: run-123"));
+        assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
+        assert!(prompt.contains("This is a distinct run"));
+        assert!(prompt.contains("Produce exactly one visible final response"));
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
+    }
+
+    #[test]
+    fn scheduled_turn_without_agent_message_fails() {
+        let finish = scheduled_turn_finish(&EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }));
+
+        assert_eq!(
+            Some(ScheduledTurnFinish::Failed(
+                "scheduled turn completed without a final assistant message".to_string()
+            )),
+            finish
+        );
+    }
+
+    #[test]
+    fn scheduled_turn_with_agent_message_completes() {
+        let finish = scheduled_turn_finish(&EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("done".to_string()),
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }));
+
+        assert_eq!(Some(ScheduledTurnFinish::Complete), finish);
     }
 
     #[test]

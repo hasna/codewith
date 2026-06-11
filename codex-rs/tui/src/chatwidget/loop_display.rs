@@ -203,14 +203,28 @@ impl ChatWidget {
             return;
         }
         match run.status {
+            ThreadScheduleRunStatus::Running => self.add_info_message(
+                "Loop run started".to_string(),
+                Some(format!(
+                    "{} started for {}.",
+                    short_schedule_run_id(&run.run_id),
+                    short_schedule_id(&run.schedule_id)
+                )),
+            ),
+            ThreadScheduleRunStatus::Completed => self.add_info_message(
+                "Loop run completed".to_string(),
+                Some(format!(
+                    "{} completed for {}.",
+                    short_schedule_run_id(&run.run_id),
+                    short_schedule_id(&run.schedule_id)
+                )),
+            ),
             ThreadScheduleRunStatus::Failed => self.add_warning_message(format!(
                 "Loop run failed for {}: {}",
                 run.schedule_id,
                 run.error.unwrap_or_else(|| "unknown error".to_string())
             )),
-            ThreadScheduleRunStatus::Leased
-            | ThreadScheduleRunStatus::Running
-            | ThreadScheduleRunStatus::Completed => {}
+            ThreadScheduleRunStatus::Leased => {}
         }
     }
 }
@@ -724,6 +738,14 @@ fn thread_schedule_status_sort_key(status: ThreadScheduleStatus) -> u8 {
         ThreadScheduleStatus::Paused => 1,
         ThreadScheduleStatus::Expired => 2,
     }
+}
+
+fn short_schedule_id(schedule_id: &str) -> String {
+    schedule_id.chars().take(8).collect()
+}
+
+fn short_schedule_run_id(run_id: &str) -> String {
+    run_id.chars().take(8).collect()
 }
 
 #[cfg(test)]

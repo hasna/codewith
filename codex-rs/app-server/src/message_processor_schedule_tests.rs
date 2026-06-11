@@ -1150,11 +1150,14 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
         let response_request_bodies = harness.response_request_bodies().await;
         assert!(
             response_request_bodies.iter().any(|body| body
-                .contains("You are running one scheduled Codewith prompt")
+                .contains("You are running one new scheduled Codewith prompt")
+                && body.contains("Run id:")
+                && body.contains(run_now.run.run_id.as_str())
+                && body.contains("This is a distinct run")
                 && body
-                    .contains("Produce exactly one response for this scheduled run, then stop.")
+                    .contains("Produce exactly one visible final response for this scheduled run")
                 && body.contains("summarize the latest test status")),
-            "scheduled prompt should be wrapped as one scheduled run: {response_request_bodies:#?}"
+            "scheduled prompt should be wrapped as a fresh visible scheduled run: {response_request_bodies:#?}"
         );
 
         harness.shutdown().await;
