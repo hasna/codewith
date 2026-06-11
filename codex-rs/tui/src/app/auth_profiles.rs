@@ -171,6 +171,33 @@ impl App {
         }
     }
 
+    pub(super) fn complete_auth_profile_login(
+        &mut self,
+        profile: String,
+        success: bool,
+        error: Option<String>,
+    ) {
+        if !success {
+            let message = error.unwrap_or_else(|| "Login was not completed".to_string());
+            self.chat_widget.add_error_message(format!(
+                "Failed to log in auth profile `{profile}`: {message}"
+            ));
+            return;
+        }
+
+        self.config.selected_auth_profile = Some(profile.clone());
+        self.chat_widget.set_auth_profile(Some(profile.clone()));
+        self.chat_widget
+            .submit_op(AppCommand::override_turn_context_auth_profile(Some(
+                profile.clone(),
+            )));
+        self.chat_widget.add_info_message(
+            format!("Auth profile `{profile}` logged in and selected."),
+            /*hint*/ None,
+        );
+        self.refresh_status_line();
+    }
+
     pub(super) fn move_auth_profile(
         &mut self,
         profile: String,

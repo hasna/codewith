@@ -1294,6 +1294,19 @@ impl App {
             AppEvent::AuthProfileReloginFinished { profile, result } => {
                 self.finish_auth_profile_relogin(profile, result);
             }
+            AppEvent::OpenAuthProfileLoginPrompt => {
+                self.chat_widget.open_auth_profile_login_prompt();
+            }
+            AppEvent::LoginNewAuthProfile { profile } => {
+                self.chat_widget.start_auth_profile_login(profile);
+            }
+            AppEvent::AuthProfileLoginCompleted {
+                profile,
+                success,
+                error,
+            } => {
+                self.complete_auth_profile_login(profile, success, error);
+            }
             AppEvent::RenameAuthProfile { old_name, new_name } => {
                 self.rename_auth_profile(old_name, new_name);
             }

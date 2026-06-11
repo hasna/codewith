@@ -4214,6 +4214,48 @@ fn auth_profile_auto_switch_message_explains_profile_and_queued_prompt_resume() 
 }
 
 #[tokio::test]
+async fn completed_auth_profile_login_selects_profile_for_running_session() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    while op_rx.try_recv().is_ok() {}
+
+    app.complete_auth_profile_login(
+        "work".to_string(),
+        /*success*/ true,
+        /*error*/ None,
+    );
+
+    assert_eq!(app.config.selected_auth_profile.as_deref(), Some("work"));
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .selected_auth_profile
+            .as_deref(),
+        Some("work")
+    );
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::OverrideTurnContext { auth_profile, .. })
+            if auth_profile == Some(Some("work".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn failed_auth_profile_login_does_not_switch_profile() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    while op_rx.try_recv().is_ok() {}
+
+    app.complete_auth_profile_login(
+        "work".to_string(),
+        /*success*/ false,
+        Some("cancelled".to_string()),
+    );
+
+    assert_eq!(app.config.selected_auth_profile, None);
+    assert_eq!(app.chat_widget.config_ref().selected_auth_profile, None);
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch_back() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     save_test_auth_profile_for_app(&app, "work");
