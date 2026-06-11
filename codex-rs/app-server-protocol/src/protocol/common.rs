@@ -3636,6 +3636,7 @@ mod tests {
                         },
                     },
                     personality: None,
+                    auth_profile: None,
                 },
             });
 
