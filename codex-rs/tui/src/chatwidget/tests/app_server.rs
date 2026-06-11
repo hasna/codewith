@@ -31,6 +31,7 @@ fn thread_settings_for_test(
                 },
             },
             personality: Some(Personality::Pragmatic),
+            auth_profile: None,
         },
     }
 }
@@ -105,8 +106,10 @@ async fn thread_settings_updated_updates_visible_state_without_transcript() {
     chat.handle_thread_session(configured_thread_session(thread_id));
     let _ = drain_insert_history(&mut rx);
 
+    let mut notification = thread_settings_for_test("gpt-5.4", thread_id);
+    notification.thread_settings.auth_profile = Some("work".to_string());
     chat.handle_server_notification(
-        ServerNotification::ThreadSettingsUpdated(thread_settings_for_test("gpt-5.4", thread_id)),
+        ServerNotification::ThreadSettingsUpdated(notification),
         /*replay_kind*/ None,
     );
 
@@ -136,6 +139,10 @@ async fn thread_settings_updated_updates_visible_state_without_transcript() {
         codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY
     );
     assert_eq!(chat.config_ref().personality, Some(Personality::Pragmatic));
+    assert_eq!(
+        chat.config_ref().selected_auth_profile.as_deref(),
+        Some("work")
+    );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert!(
         drain_insert_history(&mut rx).is_empty(),

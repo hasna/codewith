@@ -207,7 +207,6 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
-            | SlashCommand::Profile
             | SlashCommand::Provider
             | SlashCommand::Config
             | SlashCommand::Personality
@@ -227,6 +226,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Profile
             | SlashCommand::Recap
             | SlashCommand::Rename
             | SlashCommand::Mention
@@ -331,7 +331,7 @@ mod tests {
             SlashCommand::Profile.description(),
             "choose the auth profile for this session"
         );
-        assert!(!SlashCommand::Profile.available_during_task());
+        assert!(SlashCommand::Profile.available_during_task());
     }
 
     #[test]

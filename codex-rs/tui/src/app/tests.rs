@@ -5800,6 +5800,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
+            auth_profile: None,
         },
     };
     app.enqueue_thread_notification(

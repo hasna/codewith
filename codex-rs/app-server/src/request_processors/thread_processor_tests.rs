@@ -722,6 +722,7 @@ mod thread_processor_behavior_tests {
                     developer_instructions: None,
                 },
             },
+            selected_auth_profile: None,
             session_source: SessionSource::Cli,
             parent_thread_id: None,
             thread_source: None,

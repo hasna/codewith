@@ -189,6 +189,10 @@ impl SessionConfiguration {
             reasoning_summary: self.model_reasoning_summary,
             personality: self.personality,
             collaboration_mode: self.collaboration_mode.clone(),
+            selected_auth_profile: self
+                .original_config_do_not_use
+                .selected_auth_profile
+                .clone(),
             session_source: self.session_source.clone(),
             parent_thread_id: self.parent_thread_id,
             thread_source: self.thread_source,

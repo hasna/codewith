@@ -12,6 +12,7 @@ use crate::tools::handlers::GetGoalHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
+use crate::tools::handlers::ManageAuthProfilesHandler;
 use crate::tools::handlers::ManageLoopHandler;
 use crate::tools::handlers::ManageMonitorHandler;
 use crate::tools::handlers::ManageScheduleHandler;
@@ -608,6 +609,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
     planned_tools.add(RenameSessionHandler);
+    planned_tools.add(ManageAuthProfilesHandler);
     if goal_tools_enabled(turn_context) {
         planned_tools.add(GetGoalHandler);
         planned_tools.add(CreateGoalHandler);

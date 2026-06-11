@@ -161,6 +161,10 @@ impl App {
         thread_id: ThreadId,
         settings: &ThreadSettings,
     ) {
+        if self.primary_thread_id == Some(thread_id) {
+            self.config.selected_auth_profile = settings.auth_profile.clone();
+        }
+
         if self.primary_thread_id == Some(thread_id)
             && let Some(session) = self.primary_session_configured.as_mut()
         {

@@ -1035,6 +1035,15 @@ impl Session {
         state.session_configuration.codex_home().clone()
     }
 
+    pub(crate) async fn selected_auth_profile(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .original_config_do_not_use
+            .selected_auth_profile
+            .clone()
+    }
+
     pub(crate) fn subscribe_out_of_band_elicitation_pause_state(&self) -> watch::Receiver<bool> {
         self.out_of_band_elicitation_paused.subscribe()
     }

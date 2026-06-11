@@ -19357,6 +19357,12 @@
           "approvalsReviewer": {
             "$ref": "#/definitions/v2/ApprovalsReviewer"
           },
+          "authProfile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "collaborationMode": {
             "$ref": "#/definitions/v2/CollaborationMode"
           },

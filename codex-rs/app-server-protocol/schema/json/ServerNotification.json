@@ -4935,6 +4935,12 @@
         "approvalsReviewer": {
           "$ref": "#/definitions/ApprovalsReviewer"
         },
+        "authProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "collaborationMode": {
           "$ref": "#/definitions/CollaborationMode"
         },
