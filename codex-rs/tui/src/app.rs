@@ -201,6 +201,7 @@ mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
 mod auth_profiles;
+mod background_agent_actions;
 mod background_requests;
 mod config_persistence;
 mod event_dispatch;

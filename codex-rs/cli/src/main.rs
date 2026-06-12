@@ -42,6 +42,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use supports_color::Stream;
 
+mod agent_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -58,6 +59,7 @@ mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
 
+use self::agent_cmd::AgentCli;
 use self::mcp_cmd::McpCli;
 use self::plugin_cmd::PluginCli;
 use self::plugin_cmd::PluginSubcommand;
@@ -146,6 +148,25 @@ enum Subcommand {
     /// Manage Codewith plugins.
     Plugin(PluginCli),
 
+    /// Manage durable background agents.
+    #[clap(visible_alias = "agents")]
+    Agent(AgentCli),
+
+    /// Attach to a durable background agent by id.
+    Attach(BackgroundAgentEventsCommand),
+
+    /// Print durable background-agent events by id.
+    Logs(BackgroundAgentEventsCommand),
+
+    /// Request a durable background-agent stop by id.
+    Stop(BackgroundAgentIdCommand),
+
+    /// Delete or mark a durable background agent for deletion by id.
+    Rm(BackgroundAgentIdCommand),
+
+    /// Show or stop the background-agent daemon host.
+    Daemon(BackgroundAgentDaemonCommand),
+
     /// Start Codewith as an MCP server (stdio).
     McpServer(McpServerCommand),
 
@@ -211,6 +232,41 @@ enum Subcommand {
 
     /// Inspect feature flags.
     Features(FeaturesCli),
+}
+
+#[derive(Debug, Args)]
+struct BackgroundAgentEventsCommand {
+    /// Background-agent run id.
+    agent_id: String,
+
+    /// Return events after this sequence number.
+    #[arg(long = "after-seq")]
+    after_seq: Option<i64>,
+
+    /// Maximum number of events to return.
+    #[arg(long = "limit", default_value_t = 100)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct BackgroundAgentIdCommand {
+    /// Background-agent run id.
+    agent_id: String,
+}
+
+#[derive(Debug, Args)]
+struct BackgroundAgentDaemonCommand {
+    #[command(subcommand)]
+    subcommand: Option<BackgroundAgentDaemonSubcommand>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum BackgroundAgentDaemonSubcommand {
+    /// Print durable background-agent admission and status diagnostics.
+    Status,
+
+    /// Stop the background-agent daemon that hosts workers.
+    Stop,
 }
 
 #[derive(Debug, Parser)]
@@ -586,6 +642,14 @@ struct AppServerCommand {
     /// Enable remote control for this app-server process.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
+
+    /// Internal: run as the transport-free background-agent worker host.
+    #[arg(long = "background-agent-host", hide = true)]
+    background_agent_host: bool,
+
+    /// Internal: run one durable background-agent worker and exit.
+    #[arg(long = "background-agent-worker", value_name = "RUN_ID", hide = true)]
+    background_agent_worker_run_id: Option<String>,
 
     /// Controls whether analytics are enabled by default.
     ///
@@ -1025,18 +1089,45 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
 
     match subcommand {
         None => {
-            prepend_config_flags(
-                &mut interactive.config_overrides,
-                root_config_overrides.clone(),
-            );
-            let exit_info = run_interactive_tui(
-                interactive,
-                root_remote.clone(),
-                root_remote_auth_token_env.clone(),
-                arg0_paths.clone(),
-            )
-            .await?;
-            handle_app_exit(exit_info)?;
+            if interactive.background_agent {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "--bg",
+                )?;
+                let cwd = interactive.cwd.clone();
+                let Some(prompt) = interactive.prompt.take() else {
+                    anyhow::bail!(
+                        "--bg requires a prompt, for example: codewith --bg \"fix tests\""
+                    );
+                };
+                let runtime_context = load_background_agent_runtime_context(
+                    &interactive,
+                    &root_config_overrides,
+                    &arg0_paths,
+                )
+                .await?;
+                agent_cmd::run_background_agent_start(
+                    prompt,
+                    cwd,
+                    Some(runtime_context),
+                    root_auth_profile.as_deref(),
+                )
+                .await?;
+            } else {
+                prepend_config_flags(
+                    &mut interactive.config_overrides,
+                    root_config_overrides.clone(),
+                );
+                let exit_info = run_interactive_tui(
+                    interactive,
+                    root_remote.clone(),
+                    root_remote_auth_token_env.clone(),
+                    arg0_paths.clone(),
+                )
+                .await?;
+                handle_app_exit(exit_info)?;
+            }
         }
         Some(Subcommand::Exec(mut exec_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -1136,6 +1227,92 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Subcommand::Agent(agent_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "agent",
+            )?;
+            let runtime_context =
+                if matches!(agent_cli.subcommand, agent_cmd::AgentSubcommand::Start(_)) {
+                    Some(
+                        load_background_agent_runtime_context(
+                            &interactive,
+                            &root_config_overrides,
+                            &arg0_paths,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+            agent_cmd::run_agent_command(agent_cli, runtime_context, root_auth_profile.as_deref())
+                .await?;
+        }
+        Some(Subcommand::Attach(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "attach",
+            )?;
+            agent_cmd::run_background_agent_attach(
+                cmd.agent_id,
+                cmd.after_seq,
+                cmd.limit,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
+        }
+        Some(Subcommand::Logs(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "logs",
+            )?;
+            agent_cmd::run_background_agent_logs(
+                cmd.agent_id,
+                cmd.after_seq,
+                cmd.limit,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
+        }
+        Some(Subcommand::Stop(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "stop",
+            )?;
+            agent_cmd::run_background_agent_stop(cmd.agent_id, root_auth_profile.as_deref())
+                .await?;
+        }
+        Some(Subcommand::Rm(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "rm",
+            )?;
+            agent_cmd::run_background_agent_delete(cmd.agent_id, root_auth_profile.as_deref())
+                .await?;
+        }
+        Some(Subcommand::Daemon(cmd)) => match cmd.subcommand {
+            None | Some(BackgroundAgentDaemonSubcommand::Status) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "daemon status",
+                )?;
+                agent_cmd::run_background_agent_daemon_status().await?;
+            }
+            Some(BackgroundAgentDaemonSubcommand::Stop) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "daemon stop",
+                )?;
+                agent_cmd::run_background_agent_daemon_stop().await?;
+            }
+        },
         Some(Subcommand::AppServer(app_server_cli)) => {
             apply_root_auth_profile_to_app_server_env(root_auth_profile.as_deref())?;
             let AppServerCommand {
@@ -1144,6 +1321,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 listen,
                 stdio,
                 remote_control,
+                background_agent_host,
+                background_agent_worker_run_id,
                 analytics_default_enabled,
                 auth,
             } = app_server_cli;
@@ -1164,6 +1343,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         remote_control_enabled: remote_control,
+                        background_agent_host,
+                        background_agent_worker_run_id,
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(
@@ -1725,13 +1906,14 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Archive(_)
         | Subcommand::Unarchive(_)
         | Subcommand::Fork(_)
+        | Subcommand::Agent(_)
         | Subcommand::Mcp(_)
         | Subcommand::Sandbox(_)
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codewith mcp`: `codewith`, `codewith exec`, `codewith review`, `codewith resume`, `codewith archive`, `codewith unarchive`, `codewith fork`, `codewith mcp`, `codewith sandbox`, and `codewith debug prompt-input`."
+            "--profile only applies to runtime commands and `codewith mcp`: `codewith`, `codewith exec`, `codewith review`, `codewith resume`, `codewith archive`, `codewith unarchive`, `codewith fork`, `codewith agent`, `codewith mcp`, `codewith sandbox`, and `codewith debug prompt-input`."
         ),
     }
 }
@@ -1869,6 +2051,59 @@ async fn load_exec_server_config(
         .strict_config(strict_config)
         .build()
         .await?)
+}
+
+async fn load_background_agent_runtime_context(
+    interactive: &TuiCli,
+    root_config_overrides: &CliConfigOverrides,
+    arg0_paths: &Arg0DispatchPaths,
+) -> anyhow::Result<agent_cmd::AgentStartRuntimeContext> {
+    let mut config_overrides = interactive.config_overrides.clone();
+    prepend_config_flags(&mut config_overrides, root_config_overrides.clone());
+    let mut cli_kv_overrides = config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    if interactive.web_search {
+        cli_kv_overrides.push((
+            "web_search".to_string(),
+            toml::Value::String("live".to_string()),
+        ));
+    }
+
+    let shared = interactive.shared.clone().into_inner();
+    let loader_overrides = loader_overrides_for_profile(shared.config_profile_v2.as_ref())?;
+    let approval_policy = if shared.dangerously_bypass_approvals_and_sandbox {
+        Some(AskForApproval::Never)
+    } else {
+        interactive.approval_policy.map(Into::into)
+    };
+    let sandbox_mode = if shared.dangerously_bypass_approvals_and_sandbox {
+        Some(codex_protocol::config_types::SandboxMode::DangerFullAccess)
+    } else {
+        shared.sandbox_mode.map(Into::into)
+    };
+    let overrides = ConfigOverrides {
+        model: shared.model,
+        approval_policy,
+        sandbox_mode,
+        cwd: shared.cwd,
+        codex_self_exe: arg0_paths.codex_self_exe.clone(),
+        codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
+        main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
+        show_raw_agent_reasoning: shared.oss.then_some(true),
+        bypass_hook_trust: shared.bypass_hook_trust.then_some(true),
+        auth_profile: shared.auth_profile.map(Some),
+        additional_writable_roots: shared.add_dir,
+        ..Default::default()
+    };
+    let config = ConfigBuilder::default()
+        .cli_overrides(cli_kv_overrides)
+        .harness_overrides(overrides)
+        .loader_overrides(loader_overrides)
+        .strict_config(interactive.strict_config)
+        .build()
+        .await?;
+    Ok(agent_cmd::AgentStartRuntimeContext::from_config(&config))
 }
 
 async fn load_exec_server_remote_auth(
@@ -2170,6 +2405,17 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
+        Some(Subcommand::Agent(agent))
+            if matches!(agent.subcommand, agent_cmd::AgentSubcommand::Start(_)) =>
+        {
+            None
+        }
+        Some(Subcommand::Agent(_)) => Some("agent"),
+        Some(Subcommand::Attach(_)) => Some("attach"),
+        Some(Subcommand::Logs(_)) => Some("logs"),
+        Some(Subcommand::Stop(_)) => Some("stop"),
+        Some(Subcommand::Rm(_)) => Some("rm"),
+        Some(Subcommand::Daemon(_)) => Some("daemon"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(_)) => Some("app"),
         Some(Subcommand::Login(_)) => Some("login"),
@@ -3845,6 +4091,223 @@ mod tests {
                 subcommand: AppServerDaemonSubcommand::Version
             }))
         ));
+    }
+
+    #[test]
+    fn app_server_background_agent_internal_flags_parse() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--background-agent-host",
+                "--background-agent-worker",
+                "run-123",
+                "--listen",
+                "off",
+            ]
+            .as_ref(),
+        );
+
+        assert!(app_server.background_agent_host);
+        assert_eq!(
+            app_server.background_agent_worker_run_id.as_deref(),
+            Some("run-123")
+        );
+        assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
+    }
+
+    #[test]
+    fn background_agent_nested_subcommands_parse() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "agent",
+            "start",
+            "--idempotency-key",
+            "request-1",
+            "--cwd",
+            "/tmp",
+            "ship",
+            "it",
+        ])
+        .expect("agent start should parse");
+        let Some(Subcommand::Agent(agent)) = cli.subcommand else {
+            panic!("expected agent subcommand");
+        };
+        let debug = format!("{:?}", agent.subcommand);
+        assert!(debug.contains("Start"));
+        assert!(debug.contains(r#"prompt: ["ship", "it"]"#));
+        assert!(debug.contains(r#"idempotency_key: Some("request-1")"#));
+        assert!(debug.contains(r#"cwd: Some("/tmp")"#));
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agents", "list", "--limit", "7"])
+            .expect("agents alias should parse");
+        let Some(Subcommand::Agent(agent)) = cli.subcommand else {
+            panic!("expected agent subcommand");
+        };
+        let debug = format!("{:?}", agent.subcommand);
+        assert!(debug.contains("List"));
+        assert!(debug.contains("limit: 7"));
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "ls", "--limit", "8"])
+            .expect("agent ls alias should parse");
+        let Some(Subcommand::Agent(agent)) = cli.subcommand else {
+            panic!("expected agent subcommand");
+        };
+        let debug = format!("{:?}", agent.subcommand);
+        assert!(debug.contains("List"));
+        assert!(debug.contains("limit: 8"));
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "show", "run-123"])
+            .expect("agent show alias should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Read(agent_cmd::AgentIdCommand {
+                    agent_id,
+                })
+            })) if agent_id == "run-123"
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "rm", "run-123"])
+            .expect("agent rm alias should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Delete(agent_cmd::AgentIdCommand {
+                    agent_id,
+                })
+            })) if agent_id == "run-123"
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "diagnostics"])
+            .expect("agent diagnostics should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Diagnostics
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "daemon"])
+            .expect("agent daemon alias should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Diagnostics
+            }))
+        );
+    }
+
+    #[test]
+    fn background_agent_top_level_shortcuts_parse() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "attach",
+            "run-123",
+            "--after-seq",
+            "4",
+            "--limit",
+            "9",
+        ])
+        .expect("attach shortcut should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Attach(BackgroundAgentEventsCommand {
+                agent_id,
+                after_seq: Some(4),
+                limit: 9,
+            })) if agent_id == "run-123"
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "logs", "run-123"])
+            .expect("logs shortcut should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Logs(BackgroundAgentEventsCommand {
+                agent_id,
+                after_seq: None,
+                limit: 100,
+            })) if agent_id == "run-123"
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "stop", "run-123"])
+            .expect("stop shortcut should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Stop(BackgroundAgentIdCommand { agent_id }))
+                if agent_id == "run-123"
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "rm", "run-123"])
+            .expect("rm shortcut should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Rm(BackgroundAgentIdCommand { agent_id }))
+                if agent_id == "run-123"
+        );
+    }
+
+    #[test]
+    fn background_agent_daemon_subcommands_parse() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "daemon"]).expect("daemon default should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Daemon(BackgroundAgentDaemonCommand {
+                subcommand: None
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "daemon", "status"])
+            .expect("daemon status should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Daemon(BackgroundAgentDaemonCommand {
+                subcommand: Some(BackgroundAgentDaemonSubcommand::Status)
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "daemon", "stop"])
+            .expect("daemon stop should parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Daemon(BackgroundAgentDaemonCommand {
+                subcommand: Some(BackgroundAgentDaemonSubcommand::Stop)
+            }))
+        );
+    }
+
+    #[test]
+    fn background_agent_subcommands_reject_root_strict_config() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "--strict-config", "agent", "start", "ship"])
+                .expect("agent start should parse");
+        reject_root_strict_config_for_subcommand(cli.interactive.strict_config, &cli.subcommand)
+            .expect("agent start should accept root strict-config");
+
+        for (args, expected_name) in [
+            (vec!["codex", "--strict-config", "agent", "list"], "agent"),
+            (
+                vec!["codex", "--strict-config", "attach", "run-1"],
+                "attach",
+            ),
+            (vec!["codex", "--strict-config", "logs", "run-1"], "logs"),
+            (vec!["codex", "--strict-config", "stop", "run-1"], "stop"),
+            (vec!["codex", "--strict-config", "rm", "run-1"], "rm"),
+            (
+                vec!["codex", "--strict-config", "daemon", "status"],
+                "daemon",
+            ),
+        ] {
+            let cli = MultitoolCli::try_parse_from(args).expect("parse should succeed");
+            let err = reject_root_strict_config_for_subcommand(
+                cli.interactive.strict_config,
+                &cli.subcommand,
+            )
+            .expect_err("background-agent commands should reject root strict-config");
+
+            assert!(err.to_string().contains(expected_name));
+        }
     }
 
     #[test]

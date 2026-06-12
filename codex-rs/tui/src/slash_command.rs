@@ -46,6 +46,12 @@ pub enum SlashCommand {
     Schedule,
     Monitor,
     Agent,
+    #[strum(
+        to_string = "background-agent",
+        serialize = "background-agents",
+        serialize = "bg-agent"
+    )]
+    BackgroundAgent,
     Side,
     Btw,
     Copy,
@@ -132,7 +138,9 @@ impl SlashCommand {
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
-            SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::Agent => "manage durable background agents",
+            SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::BackgroundAgent => "manage durable background agents",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -172,6 +180,8 @@ impl SlashCommand {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -242,6 +252,7 @@ impl SlashCommand {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::BackgroundAgent
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
@@ -269,6 +280,7 @@ impl SlashCommand {
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
+            SlashCommand::MultiAgents => false,
             _ => true,
         }
     }

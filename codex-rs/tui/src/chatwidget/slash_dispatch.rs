@@ -46,6 +46,25 @@ struct PreparedSlashCommandArgs {
     source: SlashCommandDispatchSource,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum BackgroundAgentSlashCommand {
+    List,
+    Start { prompt: String },
+    Read { agent_id: Option<String> },
+    Logs { agent_id: Option<String> },
+    Attach { agent_id: Option<String> },
+    Detach { agent_id: Option<String> },
+    Stop { agent_id: Option<String> },
+    Delete { agent_id: Option<String> },
+    Diagnostics,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BackgroundAgentSlashParseError {
+    message: String,
+    hint: Option<String>,
+}
+
 const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
@@ -57,6 +76,10 @@ const SCHEDULE_USAGE: &str = "Usage: /schedule <time> <prompt>";
 const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list";
 const MONITOR_USAGE: &str = "Usage: /monitor <request>";
 const MONITOR_USAGE_HINT: &str = "Example: /monitor <request>";
+const BACKGROUND_AGENT_USAGE: &str =
+    "Usage: /agent [list|diagnostics|start <prompt>|read|attach|detach|stop|delete] [id]";
+const BACKGROUND_AGENT_USAGE_HINT: &str =
+    "Examples: /agent start fix the flaky test, /background-agent attach abc123";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 
 impl ChatWidget {
@@ -73,6 +96,8 @@ impl ChatWidget {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
         ) {
             self.bottom_pane.drain_pending_submission_state();
         }
@@ -404,10 +429,13 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Agent | SlashCommand::BackgroundAgent => {
+                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
+            }
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
-            SlashCommand::Agent | SlashCommand::MultiAgents => {
+            SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Permissions => {
@@ -972,6 +1000,27 @@ impl ChatWidget {
                     self.queue_user_message(user_message);
                 }
             }
+            SlashCommand::Agent | SlashCommand::BackgroundAgent if !trimmed.is_empty() => {
+                let command = match parse_background_agent_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(BACKGROUND_AGENT_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.dispatch_background_agent_slash_command(
+                    cmd.command(),
+                    command,
+                    trimmed,
+                    source,
+                );
+            }
             SlashCommand::Recap if !trimmed.is_empty() => {
                 self.dispatch_recap_slash_command(Some(trimmed.to_string()));
             }
@@ -1216,6 +1265,56 @@ impl ChatWidget {
         }
     }
 
+    fn dispatch_background_agent_slash_command(
+        &mut self,
+        command_name: &str,
+        command: BackgroundAgentSlashCommand,
+        trimmed: &str,
+        source: SlashCommandDispatchSource,
+    ) {
+        match command {
+            BackgroundAgentSlashCommand::List => {
+                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
+            }
+            BackgroundAgentSlashCommand::Start { prompt } => {
+                self.app_event_tx
+                    .send(AppEvent::StartBackgroundAgent { prompt });
+            }
+            BackgroundAgentSlashCommand::Read { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::ReadBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Logs { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::ShowBackgroundAgentLogs { agent_id });
+            }
+            BackgroundAgentSlashCommand::Attach { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::AttachBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Detach { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::DetachBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Stop { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::StopBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Delete { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::DeleteBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Diagnostics => {
+                self.app_event_tx
+                    .send(AppEvent::ShowBackgroundAgentDiagnostics);
+            }
+        }
+        self.append_message_history_entry(format!("/{command_name} {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
     pub(super) fn submit_queued_slash_prompt(&mut self, user_message: UserMessage) -> QueueDrain {
         let UserMessage {
             text,
@@ -1394,6 +1493,7 @@ impl ChatWidget {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::BackgroundAgent
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -1481,6 +1581,109 @@ Prefer a command that emits concise one-line stdout updates when something relev
 User monitor request:
 {request}"
     )
+}
+
+fn parse_background_agent_slash_args(
+    input: &str,
+) -> Result<BackgroundAgentSlashCommand, BackgroundAgentSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(BackgroundAgentSlashCommand::List);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::List)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent list",
+                ))
+            }
+        }
+        "diagnostics" | "diag" | "daemon" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::Diagnostics)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent diagnostics",
+                ))
+            }
+        }
+        "start" | "run" | "spawn" => {
+            if rest.is_empty() {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent start <prompt>",
+                ))
+            } else {
+                Ok(BackgroundAgentSlashCommand::Start {
+                    prompt: rest.to_string(),
+                })
+            }
+        }
+        "read" | "show" => Ok(BackgroundAgentSlashCommand::Read {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent read [id]",
+            )?,
+        }),
+        "logs" | "log" => Ok(BackgroundAgentSlashCommand::Logs {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent logs [id]",
+            )?,
+        }),
+        "attach" => Ok(BackgroundAgentSlashCommand::Attach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent attach [id]",
+            )?,
+        }),
+        "detach" => Ok(BackgroundAgentSlashCommand::Detach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent detach [id]",
+            )?,
+        }),
+        "stop" | "cancel" => Ok(BackgroundAgentSlashCommand::Stop {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent stop [id]",
+            )?,
+        }),
+        "delete" | "remove" | "rm" => Ok(BackgroundAgentSlashCommand::Delete {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent delete [id]",
+            )?,
+        }),
+        _ => Err(background_agent_usage_error(BACKGROUND_AGENT_USAGE)),
+    }
+}
+
+fn parse_optional_background_agent_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, BackgroundAgentSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let Some(agent_id) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        return Err(background_agent_usage_error(usage));
+    }
+    Ok(Some(agent_id.to_string()))
+}
+
+fn background_agent_usage_error(usage: &'static str) -> BackgroundAgentSlashParseError {
+    BackgroundAgentSlashParseError {
+        message: usage.to_string(),
+        hint: Some(BACKGROUND_AGENT_USAGE_HINT.to_string()),
+    }
 }
 
 fn loop_create_request_to_api(

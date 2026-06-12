@@ -149,6 +149,57 @@ pub(crate) enum AppEvent {
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
+    /// Open the durable background-agent manager.
+    OpenBackgroundAgentManager,
+
+    /// Open actions for one durable background agent.
+    OpenBackgroundAgentActions {
+        agent_id: String,
+    },
+
+    /// Start a durable background agent.
+    StartBackgroundAgent {
+        prompt: String,
+    },
+
+    /// Show the latest state for one durable background agent.
+    ReadBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Attach to one durable background agent and replay its event journal.
+    AttachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show one durable background agent event journal without attaching.
+    ShowBackgroundAgentLogs {
+        agent_id: Option<String>,
+    },
+
+    /// Detach from one durable background agent.
+    DetachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Request that one durable background agent stop.
+    StopBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Delete or mark one durable background agent for deletion.
+    DeleteBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show durable background-agent daemon diagnostics.
+    ShowBackgroundAgentDiagnostics,
+
+    /// Replace the composer draft with the provided text.
+    PrefillComposer {
+        text: String,
+    },
+
     /// Fork the current thread into a transient side conversation.
     StartSide {
         parent_thread_id: ThreadId,

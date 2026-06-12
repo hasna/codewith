@@ -998,6 +998,41 @@ impl App {
                 self.delete_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::OpenBackgroundAgentManager => {
+                self.open_background_agent_manager(app_server).await;
+            }
+            AppEvent::OpenBackgroundAgentActions { agent_id } => {
+                self.open_background_agent_actions(app_server, agent_id)
+                    .await;
+            }
+            AppEvent::StartBackgroundAgent { prompt } => {
+                self.start_background_agent(app_server, prompt).await;
+            }
+            AppEvent::ReadBackgroundAgent { agent_id } => {
+                self.read_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::AttachBackgroundAgent { agent_id } => {
+                self.attach_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::ShowBackgroundAgentLogs { agent_id } => {
+                self.show_background_agent_logs(app_server, agent_id).await;
+            }
+            AppEvent::DetachBackgroundAgent { agent_id } => {
+                self.detach_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::StopBackgroundAgent { agent_id } => {
+                self.stop_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::DeleteBackgroundAgent { agent_id } => {
+                self.delete_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::ShowBackgroundAgentDiagnostics => {
+                self.show_background_agent_diagnostics(app_server).await;
+            }
+            AppEvent::PrefillComposer { text } => {
+                self.chat_widget
+                    .set_composer_text(text, Vec::new(), Vec::new());
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget
