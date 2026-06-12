@@ -1827,6 +1827,56 @@ async fn late_matching_snapshot_after_auto_switch_does_not_switch_back() {
 }
 
 #[tokio::test]
+async fn exhausted_limit_auto_switches_until_configured_profiles_are_exhausted() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+    let exhausted = rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    );
+
+    chat.on_rate_limit_snapshot(Some(exhausted.clone()));
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+
+    chat.set_auth_profile(Some("personal".to_string()));
+    chat.on_rate_limit_snapshot(Some(exhausted.clone()));
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("backup"));
+        }
+        other => panic!("expected second auth profile switch event, got {other:?}"),
+    }
+
+    chat.set_auth_profile(Some("backup".to_string()));
+    chat.on_rate_limit_snapshot(Some(exhausted.clone()));
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "auto-switch should stop once all configured profiles are exhausted"
+    );
+
+    chat.on_rate_limit_snapshot(Some(exhausted));
+    assert!(
+        !matches!(rx.try_recv(), Ok(AppEvent::SwitchAuthProfile { .. })),
+        "duplicate exhausted snapshot should stay stopped after all profiles are exhausted"
+    );
+}
+
+#[tokio::test]
 async fn exhausted_daily_limit_does_not_auto_switch_auth_profile() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");

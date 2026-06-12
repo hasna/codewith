@@ -145,18 +145,24 @@ fn auth_profile_auto_switch_window_enabled(
     }
 }
 
-fn auto_switch_trigger_key(limit_id: &str, window: &AuthProfileAutoSwitchWindow) -> String {
+fn auto_switch_trigger_key(
+    profile: Option<&str>,
+    limit_id: &str,
+    window: &AuthProfileAutoSwitchWindow,
+) -> String {
+    let profile = profile.unwrap_or("<default>");
     let resets_at = window
         .resets_at
         .map(|reset| reset.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    format!("{limit_id}:{}:{resets_at}", window.label)
+    format!("{profile}:{limit_id}:{}:{resets_at}", window.label)
 }
 
 fn next_auth_profile_for_auto_switch(
     current: Option<&str>,
     configured_profiles: &[String],
     saved_profiles: &[AuthProfile],
+    profile_available: impl Fn(&str) -> bool,
 ) -> Option<String> {
     let saved_names = saved_profiles
         .iter()
@@ -188,7 +194,7 @@ fn next_auth_profile_for_auto_switch(
         .cycle()
         .skip(start)
         .take(ordered.len())
-        .find(|profile| current != Some(profile.as_str()))
+        .find(|profile| current != Some(profile.as_str()) && profile_available(profile.as_str()))
         .cloned()
 }
 
@@ -472,7 +478,11 @@ impl ChatWidget {
         else {
             return false;
         };
-        let trigger_key = auto_switch_trigger_key(&limit_id, &window);
+        let trigger_key = auto_switch_trigger_key(
+            self.config.selected_auth_profile.as_deref(),
+            &limit_id,
+            &window,
+        );
         if self.pending_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
             self.queue_user_message_for_auth_profile_auto_switch(
                 user_message,
@@ -527,8 +537,12 @@ impl ChatWidget {
         limit_id: &str,
         window: &AuthProfileAutoSwitchWindow,
     ) -> Option<(String, String)> {
-        let trigger_key = auto_switch_trigger_key(limit_id, window);
-        if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
+        let current_profile = self.config.selected_auth_profile.as_deref();
+        let trigger_key = auto_switch_trigger_key(current_profile, limit_id, window);
+        if self
+            .auth_profile_auto_switch_exhausted_triggers
+            .contains(&trigger_key)
+        {
             return None;
         }
 
@@ -543,12 +557,36 @@ impl ChatWidget {
             }
         };
         let next_profile = next_auth_profile_for_auto_switch(
-            self.config.selected_auth_profile.as_deref(),
+            current_profile,
             &self.config.auth_profile_auto_switch.profiles,
             &profiles,
+            |profile| {
+                let trigger_key = auto_switch_trigger_key(Some(profile), limit_id, window);
+                !self
+                    .auth_profile_auto_switch_exhausted_triggers
+                    .contains(&trigger_key)
+            },
         );
         if let Some(next_profile) = next_profile {
             return Some((next_profile, trigger_key));
+        }
+
+        let has_alternate_profile = next_auth_profile_for_auto_switch(
+            current_profile,
+            &self.config.auth_profile_auto_switch.profiles,
+            &profiles,
+            |_| true,
+        )
+        .is_some();
+        if has_alternate_profile {
+            self.auth_profile_auto_switch_exhausted_triggers
+                .insert(trigger_key);
+            self.add_info_message(
+                "Auth profile auto-switch is enabled, but all alternate profiles are exhausted for the current limit window."
+                    .to_string(),
+                /*hint*/ None,
+            );
+            return None;
         }
 
         self.add_info_message(
@@ -565,8 +603,9 @@ impl ChatWidget {
         trigger_key: String,
         window: AuthProfileAutoSwitchWindow,
     ) {
-        self.pending_auth_profile_auto_switch_trigger = Some(trigger_key.clone());
-        self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
+        self.auth_profile_auto_switch_exhausted_triggers
+            .insert(trigger_key.clone());
+        self.pending_auth_profile_auto_switch_trigger = Some(trigger_key);
         self.app_event_tx.send(AppEvent::SwitchAuthProfile {
             profile: Some(next_profile),
             reason: crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
