@@ -2,6 +2,7 @@ mod account;
 mod analytics;
 mod app_list;
 mod attestation;
+mod background_agent;
 mod client_metadata;
 mod collaboration_mode_list;
 #[cfg(unix)]

@@ -6478,6 +6478,170 @@
         },
         "type": "object"
       },
+      "AgentDesiredState": {
+        "enum": [
+          "running",
+          "stopped",
+          "deleted"
+        ],
+        "type": "string"
+      },
+      "AgentEvent": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "payload": true,
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "createdAt",
+          "eventId",
+          "eventType",
+          "payload",
+          "seq"
+        ],
+        "type": "object"
+      },
+      "AgentExecutionContextParams": {
+        "properties": {
+          "configSourceHashes": true,
+          "envSnapshotPolicy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maxRuntimeSeconds": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxTokens": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mcpToolAllowlist": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "networkPolicy": true,
+          "permissionProfile": true,
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recoveryPolicy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sandboxPolicy": true,
+          "serviceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shellSnapshot": true,
+          "workspaceRoots": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AgentExecutionSnapshot": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "configFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "payload": true,
+          "recoveryPolicy": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "snapshotId": {
+            "type": "string"
+          },
+          "snapshotKind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId",
+          "createdAt",
+          "payload",
+          "recoveryPolicy",
+          "seq",
+          "snapshotId",
+          "snapshotKind"
+        ],
+        "type": "object"
+      },
+      "AgentLifecycleEffect": {
+        "enum": [
+          "replayState",
+          "removeSubscriberOnly",
+          "requestWorkerStop",
+          "markDeleteRequested",
+          "keepWorkerRunning"
+        ],
+        "type": "string"
+      },
       "AgentMessageDeltaNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -6529,6 +6693,425 @@
       },
       "AgentPath": {
         "type": "string"
+      },
+      "AgentPendingInteraction": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "deliveredAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "interactionId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/v2/AgentPendingInteractionKind"
+          },
+          "noClientPolicy": {
+            "type": "string"
+          },
+          "requestPayload": true,
+          "respondedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "responsePayload": true,
+          "status": {
+            "$ref": "#/definitions/v2/AgentPendingInteractionStatus"
+          },
+          "timeoutAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "workerRequestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agentId",
+          "createdAt",
+          "interactionId",
+          "kind",
+          "noClientPolicy",
+          "requestPayload",
+          "status",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AgentPendingInteractionKind": {
+        "enum": [
+          "approval",
+          "userInput",
+          "mcpElicitation",
+          "permissionGrant"
+        ],
+        "type": "string"
+      },
+      "AgentPendingInteractionStatus": {
+        "enum": [
+          "pending",
+          "delivered",
+          "responded",
+          "expired",
+          "cancelled",
+          "denied",
+          "workerNoLongerWaiting"
+        ],
+        "type": "string"
+      },
+      "AgentPendingInteractionTerminalStatus": {
+        "enum": [
+          "responded",
+          "expired",
+          "cancelled",
+          "denied",
+          "workerNoLongerWaiting"
+        ],
+        "type": "string"
+      },
+      "AgentRetentionState": {
+        "enum": [
+          "active",
+          "archived",
+          "deleteRequested",
+          "deleted"
+        ],
+        "type": "string"
+      },
+      "AgentRun": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "archiveAfter": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "archivedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "authProfileRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "configFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "crashReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "deleteAfter": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deletedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "desiredState": {
+            "$ref": "#/definitions/v2/AgentDesiredState"
+          },
+          "exitCode": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "exitSignal": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "heartbeatAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "idempotencyKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputSnapshotRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "jobId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastEventSeq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lastSnapshotSeq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "parentAgentRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pgid": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pid": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "promptSnapshotRef": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retentionState": {
+            "$ref": "#/definitions/v2/AgentRetentionState"
+          },
+          "rolloutPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "spawnLinkage": true,
+          "startedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/v2/AgentRunStatus"
+          },
+          "statusReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supervisorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadStoreId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadStoreKind": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "versionFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktreeLeaseId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agentId",
+          "createdAt",
+          "desiredState",
+          "generation",
+          "lastEventSeq",
+          "lastSnapshotSeq",
+          "promptSnapshotRef",
+          "retentionState",
+          "source",
+          "status",
+          "threadStoreKind",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AgentRunStatus": {
+        "enum": [
+          "queued",
+          "starting",
+          "running",
+          "waitingOnApproval",
+          "waitingOnUser",
+          "stopping",
+          "completed",
+          "failed",
+          "cancelled",
+          "orphaned"
+        ],
+        "type": "string"
+      },
+      "AgentRunStatusCount": {
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/AgentRunStatus"
+          }
+        },
+        "required": [
+          "count",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AgentStatusSnapshot": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "desiredState": {
+            "$ref": "#/definitions/v2/AgentDesiredState"
+          },
+          "lastEventSeq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "payload": true,
+          "pendingInteractionCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/AgentRunStatus"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "desiredState",
+          "lastEventSeq",
+          "payload",
+          "pendingInteractionCount",
+          "seq",
+          "status",
+          "updatedAt"
+        ],
+        "type": "object"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,

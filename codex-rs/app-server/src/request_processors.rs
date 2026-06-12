@@ -520,6 +520,8 @@ use codex_app_server_protocol::ServerRequest;
 
 mod account_processor;
 mod apps_processor;
+mod background_agent_live;
+mod background_agent_processor;
 mod catalog_processor;
 mod command_exec_processor;
 mod config_processor;

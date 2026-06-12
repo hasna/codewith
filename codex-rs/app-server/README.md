@@ -155,6 +155,12 @@ Example with notification opt-out:
 - `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
 - `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
+- `agent/start` — experimental; enqueue a durable background-agent run outside the live foreground thread. The response includes the run, initial status snapshot, execution snapshot, and start event. Use `idempotencyKey` or `requestId` when retrying a start request; `executionContext` can capture cwd, workspace roots, model/provider, service tier, permissions, sandbox policy, and recovery policy for detached execution.
+- `agent/list`, `agent/read`, and `agent/events/list` — experimental; page durable background-agent runs and replay their append-only event journals. Event cursors are per agent; stale cursors can be rejected after compaction.
+- `agent/attach` and `agent/detach` — experimental; attach a client to one durable run for replay and pending-interaction delivery, or detach without stopping the worker. `agent/attach` returns recent events, snapshots, and pending interactions.
+- `agent/stop` and `agent/delete` — experimental; request cancellation or deletion of a durable run. Queued or otherwise unclaimed runs are terminalized immediately; claimed workers observe the desired-state change and shut down through their heartbeat path.
+- `agent/pendingInteraction/respond` — experimental; respond to a pending approval, user-input, MCP elicitation, or permission-grant prompt for one durable run.
+- `agent/daemonDiagnostics` — experimental; inspect background-agent admission, quota, run counts, and pending-interaction counts.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
@@ -708,6 +714,37 @@ Use `thread/schedule/list`, `thread/schedule/get`, and `thread/schedule/update` 
 } } }
 { "method": "thread/schedule/run/updated", "params": { "threadId": "thr_123", "run": { "runId": "run_123", "status": "running" } } }
 { "method": "thread/schedule/run/updated", "params": { "threadId": "thr_123", "run": { "runId": "run_123", "status": "completed" } } }
+```
+
+### Example: Start and inspect a background agent
+
+Background-agent methods are experimental and require `initialize.params.capabilities.experimentalApi = true`. Use them when a client wants durable work that can continue without the current UI attachment. A start request creates durable state first; the background-agent host later claims queued runs and appends lifecycle and output events.
+
+```json
+{ "method": "agent/start", "id": 40, "params": {
+  "prompt": "Fix the flaky checkout test and summarize the diff",
+  "cwd": "/workspace/project",
+  "idempotencyKey": "checkout-flake-2026-06-12",
+  "executionContext": {
+    "model": "gpt-5.3-codex",
+    "provider": "openai",
+    "serviceTier": null,
+    "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary"
+  }
+} }
+```
+
+Use `agent/list` for a roster, `agent/read` for the latest snapshots plus pending interactions, and `agent/events/list` or `agent/attach` to replay the event stream:
+
+```json
+{ "method": "agent/attach", "id": 41, "params": { "agentId": "agent_123", "limit": 100 } }
+{ "method": "agent/pendingInteraction/respond", "id": 42, "params": {
+  "agentId": "agent_123",
+  "interactionId": "pi_123",
+  "terminalStatus": "responded",
+  "response": { "decision": "approved" }
+} }
+{ "method": "agent/stop", "id": 43, "params": { "agentId": "agent_123" } }
 ```
 
 ### Example: Archive a thread
