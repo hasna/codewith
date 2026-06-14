@@ -35,3 +35,22 @@ fn migration_items_that_update_runtime_sources_trigger_refresh() {
         ExternalAgentConfigMigrationItemType::Sessions,
     )]));
 }
+
+#[test]
+fn migration_items_that_update_mcp_sources_trigger_mcp_refresh() {
+    assert!(migration_items_need_mcp_refresh(&[migration_item(
+        ExternalAgentConfigMigrationItemType::McpServerConfig,
+    )]));
+    assert!(migration_items_need_mcp_refresh(&[migration_item(
+        ExternalAgentConfigMigrationItemType::Plugins,
+    )]));
+    assert!(!migration_items_need_mcp_refresh(&[migration_item(
+        ExternalAgentConfigMigrationItemType::Config,
+    )]));
+    assert!(!migration_items_need_mcp_refresh(&[migration_item(
+        ExternalAgentConfigMigrationItemType::Skills,
+    )]));
+    assert!(!migration_items_need_mcp_refresh(&[migration_item(
+        ExternalAgentConfigMigrationItemType::Sessions,
+    )]));
+}

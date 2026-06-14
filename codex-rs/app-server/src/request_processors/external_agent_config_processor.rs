@@ -176,6 +176,7 @@ impl ExternalAgentConfigRequestProcessor {
         params: ExternalAgentConfigImportParams,
     ) -> Result<(), JSONRPCErrorError> {
         let needs_runtime_refresh = migration_items_need_runtime_refresh(&params.migration_items);
+        let needs_mcp_refresh = migration_items_need_mcp_refresh(&params.migration_items);
         let has_migration_items = !params.migration_items.is_empty();
         let has_plugin_imports = params.migration_items.iter().any(|item| {
             matches!(
@@ -187,6 +188,13 @@ impl ExternalAgentConfigRequestProcessor {
         let pending_plugin_imports = self.import_external_agent_config(params).await?;
         if needs_runtime_refresh {
             self.config_processor.handle_config_mutation().await;
+        }
+        if needs_mcp_refresh {
+            crate::mcp_refresh::queue_best_effort_refresh(
+                &self.thread_manager,
+                &self.config_manager,
+            )
+            .await;
         }
         self.outgoing
             .send_response(request_id, ExternalAgentConfigImportResponse {})
@@ -212,6 +220,7 @@ impl ExternalAgentConfigRequestProcessor {
         let plugin_processor = self.clone();
         let outgoing = Arc::clone(&self.outgoing);
         let thread_manager = Arc::clone(&self.thread_manager);
+        let config_manager = self.config_manager.clone();
         tokio::spawn(async move {
             let session_imports = async move {
                 if !pending_session_imports.is_empty() {
@@ -263,6 +272,8 @@ impl ExternalAgentConfigRequestProcessor {
             if has_plugin_imports {
                 thread_manager.plugins_manager().clear_cache();
                 thread_manager.skills_manager().clear_cache();
+                crate::mcp_refresh::queue_best_effort_refresh(&thread_manager, &config_manager)
+                    .await;
             }
             outgoing
                 .send_server_notification(ServerNotification::ExternalAgentConfigImportCompleted(
@@ -508,6 +519,16 @@ fn migration_items_need_runtime_refresh(items: &[ExternalAgentConfigMigrationIte
                 | ExternalAgentConfigMigrationItemType::McpServerConfig
                 | ExternalAgentConfigMigrationItemType::Hooks
                 | ExternalAgentConfigMigrationItemType::Commands
+                | ExternalAgentConfigMigrationItemType::Plugins
+        )
+    })
+}
+
+fn migration_items_need_mcp_refresh(items: &[ExternalAgentConfigMigrationItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item.item_type,
+            ExternalAgentConfigMigrationItemType::McpServerConfig
                 | ExternalAgentConfigMigrationItemType::Plugins
         )
     })

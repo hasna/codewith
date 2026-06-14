@@ -7,11 +7,9 @@ use codex_shell_command::shell_detect::ShellType;
 use codex_shell_command::shell_detect::get_shell;
 #[cfg(not(target_os = "windows"))]
 use codex_shell_command::shell_detect::ultimate_fallback_shell;
-use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
-use tokio::process::Command;
 
 const MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_MONITOR_EVENT_CHARS: usize = 8_000;
@@ -191,6 +189,34 @@ impl ThreadMonitorRuntime {
         });
     }
 
+    /// Spawn the monitor's command as a streaming child confined by the
+    /// session's sandbox policy — the same confinement the `shell` tool uses —
+    /// instead of running model-designed commands with no sandbox or approval.
+    ///
+    /// Fails closed: when the session policy requires an enforcing sandbox that
+    /// cannot be applied to a streaming child on this platform, the command is
+    /// not run and the monitor is marked failed.
+    async fn spawn_monitor_child(
+        &self,
+        monitor: &codex_state::ThreadMonitor,
+    ) -> codex_protocol::error::Result<tokio::process::Child> {
+        let argv = monitor_command_argv(&monitor.command);
+        let cwd = AbsolutePathBuf::try_from(monitor_cwd(monitor, self.config.cwd.as_path()))
+            .unwrap_or_else(|_| self.config.cwd.clone());
+        let permission_profile = self.config.permissions.effective_permission_profile();
+        let env: HashMap<String, String> = std::env::vars().collect();
+        codex_core::exec::spawn_streaming_command_under_sandbox(
+            argv,
+            cwd,
+            env,
+            &permission_profile,
+            &self.config.cwd,
+            &self.config.codex_linux_sandbox_exe,
+            self.config.features.use_legacy_landlock(),
+        )
+        .await
+    }
+
     async fn execute_monitor(
         &self,
         monitor: codex_state::ThreadMonitor,
@@ -209,14 +235,7 @@ impl ThreadMonitorRuntime {
         )
         .await;
 
-        let mut command = monitor_command(&monitor.command);
-        command
-            .current_dir(monitor_cwd(&monitor, self.config.cwd.as_path()))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
-
-        let mut child = match command.spawn() {
+        let mut child = match self.spawn_monitor_child(&monitor).await {
             Ok(child) => child,
             Err(err) => {
                 let error = monitor_error(format!("failed to start monitor command: {err}"));
@@ -578,12 +597,14 @@ Output:
     }
 }
 
-fn monitor_command(command: &str) -> Command {
+/// Build the argv for a monitor command. The command itself is model-designed,
+/// so it is always handed to a shell; callers spawn this argv under the
+/// session sandbox via [`ThreadMonitorRuntime::spawn_monitor_child`] rather than
+/// executing it directly.
+fn monitor_command_argv(command: &str) -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(command);
-        cmd
+        vec!["cmd".to_string(), "/C".to_string(), command.to_string()]
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -592,9 +613,11 @@ fn monitor_command(command: &str) -> Command {
             .or_else(|| get_shell(ShellType::Zsh, /*path*/ None))
             .or_else(|| get_shell(ShellType::Sh, /*path*/ None))
             .unwrap_or_else(ultimate_fallback_shell);
-        let mut cmd = Command::new(shell.shell_path);
-        cmd.arg("-lc").arg(command);
-        cmd
+        vec![
+            shell.shell_path.to_string_lossy().into_owned(),
+            "-lc".to_string(),
+            command.to_string(),
+        ]
     }
 }
 
@@ -623,21 +646,49 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
-    async fn monitor_command_supports_bash_source_when_bash_is_available() {
-        if get_shell(ShellType::Bash, /*path*/ None).is_none() {
-            return;
-        }
-
-        let output = monitor_command("source /dev/null && printf ok")
+    async fn monitor_command_supports_source_builtin() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let env_path = temp_dir.path().join("monitor.env");
+        std::fs::write(&env_path, "MONITOR_VALUE=ok\n").expect("env file should be written");
+        let env_path = env_path.to_string_lossy();
+        let quoted_env_path = shlex::try_quote(env_path.as_ref()).expect("path should quote");
+        let argv = monitor_command_argv(&format!(
+            "source {quoted_env_path} && printf '__monitor_source_test__%s' \"$MONITOR_VALUE\""
+        ));
+        let output = tokio::process::Command::new(&argv[0])
+            .args(&argv[1..])
             .output()
             .await
-            .expect("monitor command should run");
+            .expect("monitor command should start");
 
         assert!(
             output.status.success(),
             "stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("__monitor_source_test__ok"),
+            "stdout: {stdout}"
+        );
+    }
+
+    #[test]
+    fn monitor_command_argv_uses_a_shell() {
+        let argv = monitor_command_argv("echo hi");
+        // The model-designed command must be passed to a shell as a single
+        // argument (so it is later wrapped by the sandbox), never split.
+        assert_eq!(argv.len(), 3);
+        assert_eq!(argv[2], "echo hi");
+        #[cfg(not(target_os = "windows"))]
+        {
+            let shell_name = std::path::Path::new(&argv[0])
+                .file_name()
+                .and_then(|name| name.to_str());
+            assert!(matches!(shell_name, Some("bash" | "zsh" | "sh")));
+            assert_eq!(argv[1], "-lc");
+        }
+        #[cfg(target_os = "windows")]
+        assert_eq!(&argv[0..2], &["cmd".to_string(), "/C".to_string()]);
     }
 }

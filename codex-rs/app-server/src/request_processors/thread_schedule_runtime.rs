@@ -474,11 +474,13 @@ pub(super) async fn finish_scheduled_run_after_turn(
     thread_id: ThreadId,
     scheduled_run: crate::thread_state::ScheduledThreadScheduleRun,
     event: &EventMsg,
+    turn_error: Option<codex_app_server_protocol::TurnError>,
     outgoing: &Arc<OutgoingMessageSender>,
 ) {
     let completed_at = Utc::now();
     let error = match event {
-        EventMsg::TurnComplete(_) => None,
+        EventMsg::TurnComplete(_) => turn_error
+            .map(|error| schedule_run_error(format!("scheduled turn failed: {}", error.message))),
         EventMsg::TurnAborted(aborted) => Some(schedule_run_error(format!(
             "scheduled turn aborted: {:?}",
             aborted.reason
@@ -522,6 +524,24 @@ pub(super) async fn finish_scheduled_run_after_turn(
     }
 }
 
+/// Maximum consecutive failed runs before a recurring schedule stops
+/// re-arming itself (circuit breaker). The streak resets after a success.
+const MAX_CONSECUTIVE_SCHEDULE_FAILURES: i64 = 10;
+
+/// Push a failed schedule's next run out with exponential backoff — 30s, 60s,
+/// 120s, … capped at one hour — but never earlier than its natural next
+/// cadence. `consecutive_failures` is 1 for the first failure in a streak.
+fn schedule_failure_backoff_run_at(
+    natural_next: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+    consecutive_failures: i64,
+) -> DateTime<Utc> {
+    let exponent = consecutive_failures.saturating_sub(1).clamp(0, 7) as u32;
+    let backoff_seconds = 30i64.saturating_mul(1i64 << exponent).min(3600);
+    let backoff_until = completed_at + chrono::Duration::seconds(backoff_seconds);
+    natural_next.max(backoff_until)
+}
+
 async fn finish_scheduled_run_state(
     state_db: &StateDbHandle,
     schedule_id: &str,
@@ -537,8 +557,34 @@ async fn finish_scheduled_run_state(
     else {
         return Ok(None);
     };
-    let next_run_at =
+    let natural_next_run_at =
         next_thread_schedule_run_at(&schedule.schedule, &schedule.timezone, completed_at)?;
+
+    // On failure, back off (and eventually trip a circuit breaker) so a
+    // persistently-failing recurring schedule cannot re-fire every cadence
+    // indefinitely until expiry (resource exhaustion). `failure_count` is the
+    // streak BEFORE this run; it resets to 0 on the first successful run.
+    let next_run_at = match &error {
+        Some(_) => {
+            let consecutive_failures = schedule.failure_count.saturating_add(1);
+            if consecutive_failures >= MAX_CONSECUTIVE_SCHEDULE_FAILURES {
+                // Circuit breaker: stop re-arming until a human intervenes.
+                None
+            } else {
+                natural_next_run_at.map(|natural_next| {
+                    schedule_failure_backoff_run_at(
+                        natural_next,
+                        completed_at,
+                        consecutive_failures,
+                    )
+                })
+            }
+        }
+        None => natural_next_run_at,
+    };
+
+    // Never schedule a run at or after the schedule's expiry (applied after any
+    // failure backoff so backing off past expiry stops the schedule).
     let next_run_at = match (next_run_at, schedule.expires_at) {
         (Some(next_run_at), Some(expires_at)) if next_run_at >= expires_at => None,
         (next_run_at, _) => next_run_at,
@@ -601,6 +647,28 @@ async fn apply_persisted_schedule_resume_metadata(
             serde_json::Value::String(reasoning_effort.to_string()),
         );
     }
+
+    // Restore the thread's approval policy so an unattended scheduled run is
+    // gated by the same human-in-the-loop control the thread was created with,
+    // not the app-server's launch-time default (which may be more permissive).
+    // Combined with the unattended auto-deny guard, this stops a scheduled run
+    // from silently escalating beyond the thread's configured authority.
+    if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
+    {
+        typesafe_overrides.approval_policy = Some(approval_policy);
+    }
+}
+
+/// Parse the stringified approval mode persisted in thread metadata back into an
+/// [`AskForApproval`]. The value is written via `enum_to_string` (a bare serde
+/// string such as `"on-request"`); parsing is best-effort and tolerates
+/// unknown/legacy formats by returning `None` (leaving the loaded default).
+fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protocol::AskForApproval> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_value(serde_json::Value::String(trimmed.to_string())).ok()
 }
 
 fn parse_schedule_timezone(timezone: &str) -> anyhow::Result<Tz> {
@@ -704,7 +772,65 @@ fn looks_like_standalone_secret(word: &str) -> bool {
             '"' | '\'' | '`' | ',' | ';' | '.' | ')' | '(' | '[' | ']' | '{' | '}'
         )
     });
-    trimmed.len() >= 12 && trimmed.starts_with("sk-")
+    if trimmed.len() < 12 {
+        return false;
+    }
+    // Known credential prefixes. Keep in sync with the repo's pre-commit secret
+    // scan so non-`sk-` keys (GitHub, AWS, Google, xAI, Slack, …) are also
+    // redacted from persisted run errors and notifications, not just OpenAI keys.
+    const SECRET_PREFIXES: &[&str] = &[
+        "sk-",         // OpenAI / Anthropic (sk-ant-) / generic
+        "rk-",         // OpenAI restricted key
+        "xai-",        // xAI
+        "AIza",        // Google API keys
+        "AKIA",        // AWS access key id
+        "ASIA",        // AWS temporary access key id
+        "ghp_",        // GitHub personal access token
+        "gho_",        // GitHub OAuth token
+        "ghu_",        // GitHub user-to-server token
+        "ghs_",        // GitHub server-to-server token
+        "ghr_",        // GitHub refresh token
+        "github_pat_", // GitHub fine-grained PAT
+        "glpat-",      // GitLab PAT
+        "npm_",        // npm token
+        "ctx7sk-",     // Context7
+        "xoxb-",       // Slack bot token
+        "xoxp-",       // Slack user token
+        "hf_",         // Hugging Face
+    ];
+    if SECRET_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return true;
+    }
+
+    // JSON Web Tokens (e.g. bearer tokens) — three base64url segments.
+    looks_like_jwt(trimmed)
+}
+
+/// Heuristic JWT detector: a `header.payload.signature` triple whose header
+/// segment is base64url-encoded JSON (begins with `eyJ`).
+fn looks_like_jwt(value: &str) -> bool {
+    let mut segments = value.split('.');
+    let (Some(header), Some(payload), Some(signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    let is_base64url = |segment: &str| {
+        segment.len() >= 2
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    };
+    header.starts_with("eyJ")
+        && is_base64url(header)
+        && is_base64url(payload)
+        && is_base64url(signature)
 }
 
 #[cfg(test)]
@@ -714,6 +840,58 @@ mod tests {
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp")
+    }
+
+    #[test]
+    fn schedule_failure_backoff_grows_and_caps() {
+        let completed = at(1_000_000);
+        let natural = at(1_000_060); // natural cadence: 60s after completion.
+
+        // Early failures: 30s/60s backoff is still earlier than the natural
+        // 60s cadence, so the natural next run wins.
+        assert_eq!(
+            natural,
+            schedule_failure_backoff_run_at(natural, completed, 1)
+        );
+        assert_eq!(
+            natural,
+            schedule_failure_backoff_run_at(natural, completed, 2)
+        );
+
+        // A longer streak backs off past the natural cadence...
+        assert_eq!(
+            completed + chrono::Duration::seconds(240),
+            schedule_failure_backoff_run_at(natural, completed, 4)
+        );
+        // ...and caps at one hour regardless of how long the streak is.
+        assert_eq!(
+            completed + chrono::Duration::seconds(3600),
+            schedule_failure_backoff_run_at(natural, completed, 50)
+        );
+    }
+
+    #[test]
+    fn parse_persisted_approval_mode_round_trips_thread_metadata_format() {
+        use codex_protocol::protocol::AskForApproval;
+        // Mirror how thread metadata stores the approval mode (enum_to_string ==
+        // bare serde string) and confirm it parses back to the same policy so a
+        // scheduled run is gated by the thread's approval policy, not the
+        // server default.
+        for mode in [
+            AskForApproval::OnRequest,
+            AskForApproval::Never,
+            AskForApproval::OnFailure,
+            AskForApproval::UnlessTrusted,
+        ] {
+            let stored = match serde_json::to_value(mode).expect("serialize approval mode") {
+                serde_json::Value::String(value) => value,
+                other => other.to_string(),
+            };
+            assert_eq!(Some(mode), parse_persisted_approval_mode(&stored));
+        }
+
+        assert_eq!(None, parse_persisted_approval_mode(""));
+        assert_eq!(None, parse_persisted_approval_mode("not-a-real-mode"));
     }
 
     #[test]
@@ -790,6 +968,28 @@ mod tests {
         assert!(!sanitized.contains("sk-test-secret"));
         assert!(!sanitized.contains("plain-secret"));
         assert!(!sanitized.contains("sk-bearer-secret"));
+    }
+
+    #[test]
+    fn redacts_non_openai_credential_shapes() {
+        // Standalone credentials that are NOT `sk-` prefixed must still be
+        // stripped from persisted run errors and notifications.
+        for secret in [
+            "ghp_0123456789abcdefghijABCDEFGHIJ01",
+            "github_pat_11ABCDEFG0abcdefghijKLMNOP",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AIzaSyA1234567890abcdefghijklmnopqrs",
+            "xai-abcdef0123456789abcdef0123",
+            "glpat-abcdefghij0123456789",
+            "xoxb-1234567890-abcdefghijkl",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9P",
+        ] {
+            let sanitized = schedule_run_error(format!("run failed near {secret} end"));
+            assert!(
+                !sanitized.contains(secret),
+                "expected `{secret}` to be redacted, got: {sanitized}"
+            );
+        }
     }
 
     #[test]
