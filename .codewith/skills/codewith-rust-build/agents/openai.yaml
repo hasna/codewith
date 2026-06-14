@@ -1,4 +1,4 @@
 interface:
   display_name: "Codewith Rust Build"
-  short_description: "Build and test Codewith Rust crates."
-  default_prompt: "Build and test the Codewith Rust changes, fix errors, and report the verified result."
+  short_description: "Build, lint, test, and speed up Codewith Rust crates."
+  default_prompt: "Build and test the Codewith Rust changes with the fastest valid focused workflow, fix errors, and report the verified result."
