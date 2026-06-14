@@ -257,25 +257,25 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     }
 
     let mut specs = Vec::new();
-    let standalone_web_search_available = standalone_web_search_enabled(turn_context)
-        && context
-            .extension_tool_executors
-            .iter()
-            .any(|executor| executor.tool_name() == ToolName::namespaced("web", "run"));
-    // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
-    // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
-    let web_search_mode = (!standalone_web_search_available
-        && turn_context.provider.capabilities().web_search)
+    let provider_capabilities = turn_context.provider.capabilities();
+    let hosted_web_search_provider = provider_capabilities.web_search;
+    let hosted_web_search_enabled =
+        hosted_web_search_provider.is_enabled() && search_tool_enabled(turn_context);
+    let web_search_mode = (!standalone_web_run_available(context.extension_tool_executors)
+        && hosted_web_search_enabled)
         .then_some(turn_context.config.web_search_mode.value());
-    let web_search_config = web_search_mode
-        .as_ref()
-        .and(turn_context.config.web_search_config.as_ref());
-    if let Some(hosted_web_search_tool) = create_web_search_tool(WebSearchToolOptions {
+    let web_search_config = if hosted_web_search_enabled {
+        turn_context.config.web_search_config.as_ref()
+    } else {
+        None
+    };
+    if let Some(web_search_tool) = create_web_search_tool(WebSearchToolOptions {
         web_search_mode,
         web_search_config,
         web_search_tool_type: turn_context.model_info.web_search_tool_type,
+        hosted_web_search_provider,
     }) {
-        specs.push(hosted_web_search_tool);
+        specs.push(web_search_tool);
     }
     // TODO: Remove hosted image generation once the standalone extension is ready.
     if image_generation_tool_enabled(turn_context)

@@ -46,6 +46,24 @@ pub enum ToolSpec {
         #[serde(skip_serializing_if = "Option::is_none")]
         search_content_types: Option<Vec<String>>,
     },
+    #[serde(rename = "web_search_20260209")]
+    AnthropicWebSearch {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+    },
+    #[serde(rename = "openrouter:web_search")]
+    OpenRouterWebSearch {},
+    #[serde(rename = "web_search")]
+    XaiWebSearch {},
+    #[serde(rename = "web_search")]
+    XiaomiWebSearch {},
+    #[serde(rename = "web_search")]
+    QwenWebSearch {},
+    #[serde(rename = "web_search")]
+    ZaiWebSearch { web_search: ZaiWebSearchConfig },
     #[serde(rename = "custom")]
     Freeform(FreeformTool),
 }
@@ -57,7 +75,13 @@ impl ToolSpec {
             ToolSpec::Namespace(namespace) => namespace.name.as_str(),
             ToolSpec::ToolSearch { .. } => "tool_search",
             ToolSpec::ImageGeneration { .. } => "image_generation",
-            ToolSpec::WebSearch { .. } => "web_search",
+            ToolSpec::WebSearch { .. }
+            | ToolSpec::AnthropicWebSearch { .. }
+            | ToolSpec::OpenRouterWebSearch { .. }
+            | ToolSpec::XaiWebSearch { .. }
+            | ToolSpec::XiaomiWebSearch { .. }
+            | ToolSpec::QwenWebSearch { .. }
+            | ToolSpec::ZaiWebSearch { .. } => "web_search",
             ToolSpec::Freeform(tool) => tool.name.as_str(),
         }
     }
@@ -114,6 +138,13 @@ pub struct ResponsesApiWebSearchUserLocation {
     pub city: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ZaiWebSearchConfig {
+    pub enable: bool,
+    pub search_engine: String,
+    pub search_result: bool,
 }
 
 impl From<ConfigWebSearchUserLocation> for ResponsesApiWebSearchUserLocation {
