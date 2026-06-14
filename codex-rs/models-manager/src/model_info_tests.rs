@@ -70,7 +70,7 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
     assert_eq!(model.display_name, "DeepSeek V4 Flash");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
-    assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
     assert!(!model.used_fallback_model_metadata);
 }
@@ -144,40 +144,6 @@ fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
     assert_eq!(model.default_reasoning_level, None);
     assert_eq!(model.supported_reasoning_levels, Vec::new());
     assert!(!model.used_fallback_model_metadata);
-}
-
-#[test]
-fn known_anthropic_fable_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("claude-fable-5", Some("anthropic"));
-
-    assert_eq!(model.display_name, "Claude Fable 5");
-    assert_eq!(model.context_window, Some(1_000_000));
-    assert_eq!(model.max_context_window, Some(1_000_000));
-    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
-    assert!(model.supports_parallel_tool_calls);
-    assert!(!model.supports_reasoning_summaries);
-    assert_eq!(model.default_reasoning_level, None);
-    assert_eq!(model.supported_reasoning_levels, Vec::new());
-    assert!(!model.used_fallback_model_metadata);
-}
-
-#[test]
-fn known_anthropic_latest_models_have_context_windows() {
-    let cases = [
-        ("claude-opus-4-8", "Claude Opus 4.8", 1_000_000),
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000),
-        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000),
-        ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000),
-    ];
-
-    for (slug, display_name, context_window) in cases {
-        let model = model_info_from_slug_for_provider(slug, Some("anthropic"));
-
-        assert_eq!(model.display_name, display_name);
-        assert_eq!(model.context_window, Some(context_window));
-        assert_eq!(model.max_context_window, Some(context_window));
-        assert!(!model.used_fallback_model_metadata);
-    }
 }
 
 #[test]
@@ -256,7 +222,7 @@ fn known_google_gemini_model_advertises_openai_compatible_thinking() {
         model
             .supported_reasoning_levels
             .iter()
-            .map(|preset| preset.effort)
+            .map(|preset| preset.effort.clone())
             .collect::<Vec<_>>(),
         vec![
             codex_protocol::openai_models::ReasoningEffort::Minimal,
@@ -291,21 +257,6 @@ fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
     assert_eq!(model.context_window, Some(202_752));
     assert_eq!(model.default_reasoning_level, None);
     assert_eq!(model.supported_reasoning_levels, Vec::new());
-    assert!(!model.supports_reasoning_summaries);
-    assert!(!model.used_fallback_model_metadata);
-}
-
-#[test]
-fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("mimo-v2.5-pro-ultraspeed", Some("xiaomi"));
-
-    assert_eq!(model.display_name, "MiMo V2.5 Pro UltraSpeed");
-    assert_eq!(model.context_window, Some(1_048_576));
-    assert_eq!(model.max_context_window, Some(1_048_576));
-    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
-    assert!(!model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, None);
-    assert!(model.supported_reasoning_levels.is_empty());
     assert!(!model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }

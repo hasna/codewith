@@ -10,8 +10,6 @@ use codex_model_provider_info::ANTHROPIC_BASE_URL;
 use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
-use codex_model_provider_info::GOOGLE_PROVIDER_ID;
-use codex_model_provider_info::MINIMAX_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -659,6 +657,8 @@ impl ConfiguredModelProvider {
 mod tests {
     use std::num::NonZeroU64;
 
+    use codex_model_provider_info::GOOGLE_PROVIDER_ID;
+    use codex_model_provider_info::MINIMAX_PROVIDER_ID;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
     use codex_model_provider_info::WireApi;

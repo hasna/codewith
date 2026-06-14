@@ -54,6 +54,14 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             false,
             false,
         )),
+        "z-ai/glm-5.1" => Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.1",
+            131_072,
+            true,
+            false,
+            false,
+            false,
+        )),
         "nvidia/nemotron-3.5-content-safety" => Some(KnownProviderModelMetadata::new(
             "NVIDIA Nemotron 3.5 Content Safety",
             128_000,

@@ -1271,6 +1271,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             config.multi_agent_v2.non_code_mode_only = true;
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
         });
+        turn.model_info.supports_search_tool = true;
     })
     .await;
 
@@ -1356,6 +1357,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         use_chatgpt_auth(turn);
         set_features(turn, &[Feature::CodeModeOnly, Feature::MultiAgentV2]);
         set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = true;
         turn.model_info.input_modalities = vec![InputModality::Image];
     })
     .await;

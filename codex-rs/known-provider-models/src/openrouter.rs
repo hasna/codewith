@@ -14,6 +14,14 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             true,
             true,
         )),
+        "z-ai/glm-5.1" => Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.1",
+            202_752,
+            true,
+            true,
+            false,
+            true,
+        )),
         "z-ai/glm-4.7" => Some(KnownProviderModelMetadata::new(
             "Z.ai GLM 4.7",
             202_752,

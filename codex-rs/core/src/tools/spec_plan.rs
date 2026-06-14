@@ -261,7 +261,8 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     let hosted_web_search_provider = provider_capabilities.web_search;
     let hosted_web_search_enabled =
         hosted_web_search_provider.is_enabled() && search_tool_enabled(turn_context);
-    let web_search_mode = (!standalone_web_run_available(context.extension_tool_executors)
+    let web_search_mode = (!(standalone_web_search_enabled(turn_context)
+        && standalone_web_run_available(context.extension_tool_executors))
         && hosted_web_search_enabled)
         .then_some(turn_context.config.web_search_mode.value());
     let web_search_config = if hosted_web_search_enabled {
@@ -589,6 +590,15 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
                 .features
                 .get()
                 .enabled(Feature::StandaloneWebSearch))
+}
+
+fn standalone_web_run_available(
+    extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+) -> bool {
+    let web_run = ToolName::namespaced("web", "run");
+    extension_tools
+        .iter()
+        .any(|executor| executor.tool_name() == web_run)
 }
 
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
