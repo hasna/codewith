@@ -1302,6 +1302,11 @@ impl MessageProcessor {
                     .thread_shell_command(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadExternalAgentStart { params, .. } => {
+                self.thread_processor
+                    .thread_external_agent_start(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {
                 self.thread_processor
                     .thread_approve_guardian_denied_action(&request_id, params)

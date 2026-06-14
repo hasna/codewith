@@ -1827,6 +1827,7 @@ dependencies = [
  "codex-core-plugins",
  "codex-exec-server",
  "codex-extension-api",
+ "codex-external-agent",
  "codex-external-agent-migration",
  "codex-external-agent-sessions",
  "codex-features",
@@ -2801,6 +2802,23 @@ dependencies = [
  "codex-context-fragments",
  "codex-protocol",
  "codex-tools",
+]
+
+[[package]]
+name = "codex-external-agent"
+version = "0.1.28"
+dependencies = [
+ "codex-protocol",
+ "codex-sandboxing",
+ "codex-utils-absolute-path",
+ "codex-utils-pty",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "which 8.0.0",
 ]
 
 [[package]]
@@ -3817,6 +3835,7 @@ dependencies = [
  "codex-core-plugins",
  "codex-core-skills",
  "codex-exec-server",
+ "codex-external-agent",
  "codex-features",
  "codex-feedback",
  "codex-file-search",

@@ -705,6 +705,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
     },
+    #[experimental("thread/externalAgent/start")]
+    ThreadExternalAgentStart => "thread/externalAgent/start" {
+        params: v2::ThreadExternalAgentStartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadExternalAgentStartResponse,
+    },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
         serialization: thread_id(params.thread_id),
@@ -1681,6 +1687,8 @@ server_notification_definitions! {
     ThreadMonitorUpdated => "thread/monitor/updated" (v2::ThreadMonitorUpdatedNotification),
     ThreadMonitorDeleted => "thread/monitor/deleted" (v2::ThreadMonitorDeletedNotification),
     ThreadMonitorEvent => "thread/monitor/event" (v2::ThreadMonitorEventNotification),
+    #[experimental("thread/externalAgent/event")]
+    ThreadExternalAgentEvent => "thread/externalAgent/event" (v2::ThreadExternalAgentEventNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
@@ -3294,6 +3302,27 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("mock/experimentalMethod"));
+    }
+
+    #[test]
+    fn agent_methods_are_marked_experimental() {
+        for method in [
+            "agent/start",
+            "agent/list",
+            "agent/read",
+            "agent/attach",
+            "agent/detach",
+            "agent/stop",
+            "agent/delete",
+            "agent/events/list",
+            "agent/pendingInteraction/respond",
+            "agent/daemon/diagnostics",
+        ] {
+            assert!(
+                EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should be experimental"
+            );
+        }
     }
 
     #[test]

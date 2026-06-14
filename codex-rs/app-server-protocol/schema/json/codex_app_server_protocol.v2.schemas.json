@@ -12951,6 +12951,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/externalAgent/event"
+              ],
+              "title": "Thread/externalAgent/eventNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadExternalAgentEventNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/externalAgent/eventNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/settings/updated"
               ],
               "title": "Thread/settings/updatedNotificationMethod",
@@ -14962,6 +14982,304 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadCompactStartResponse",
       "type": "object"
+    },
+    "ThreadExternalAgentEvent": {
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/ThreadExternalAgentMode"
+            },
+            "runtime_id": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "runStarted"
+              ],
+              "title": "RunStartedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "runtime_id",
+            "task",
+            "type"
+          ],
+          "title": "RunStartedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "external_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "sessionResolved"
+              ],
+              "title": "SessionResolvedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SessionResolvedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "outputTextDelta"
+              ],
+              "title": "OutputTextDeltaThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "OutputTextDeltaThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "reasoningDelta"
+              ],
+              "title": "ReasoningDeltaThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "ReasoningDeltaThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "plan": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "planUpdated"
+              ],
+              "title": "PlanUpdatedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "plan",
+            "type"
+          ],
+          "title": "PlanUpdatedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "request": {
+              "$ref": "#/definitions/ThreadExternalAgentPermissionRequest"
+            },
+            "type": {
+              "enum": [
+                "permissionRequested"
+              ],
+              "title": "PermissionRequestedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "type"
+          ],
+          "title": "PermissionRequestedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "proposal": true,
+            "type": {
+              "enum": [
+                "proposedAction"
+              ],
+              "title": "ProposedActionThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "proposal",
+            "type"
+          ],
+          "title": "ProposedActionThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "status"
+              ],
+              "title": "StatusThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "StatusThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "completed"
+              ],
+              "title": "CompletedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "CompletedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "failed"
+              ],
+              "title": "FailedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "FailedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "cancelled"
+              ],
+              "title": "CancelledThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "CancelledThreadExternalAgentEvent",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadExternalAgentEventNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ThreadExternalAgentEvent"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "runId",
+        "threadId"
+      ],
+      "title": "ThreadExternalAgentEventNotification",
+      "type": "object"
+    },
+    "ThreadExternalAgentMode": {
+      "enum": [
+        "plan",
+        "propose"
+      ],
+      "type": "string"
+    },
+    "ThreadExternalAgentPermissionOption": {
+      "enum": [
+        "allowOnce",
+        "rejectOnce"
+      ],
+      "type": "string"
+    },
+    "ThreadExternalAgentPermissionRequest": {
+      "properties": {
+        "action": true,
+        "id": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/definitions/ThreadExternalAgentPermissionOption"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "id",
+        "options"
+      ],
+      "type": "object"
+    },
+    "ThreadExternalAgentStartStatus": {
+      "enum": [
+        "started",
+        "gated"
+      ],
+      "type": "string"
     },
     "ThreadForkParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",

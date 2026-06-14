@@ -86,6 +86,7 @@ use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadListParams;
@@ -525,6 +526,16 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/shellCommand", params).await
+    }
+
+    /// Send a `thread/externalAgent/start` JSON-RPC request.
+    pub async fn send_thread_external_agent_start_request(
+        &mut self,
+        params: ThreadExternalAgentStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/externalAgent/start", params)
+            .await
     }
 
     /// Send a `thread/rollback` JSON-RPC request.

@@ -936,6 +936,103 @@ fn thread_shell_command_response_round_trip() {
 }
 
 #[test]
+fn thread_external_agent_start_params_round_trip() {
+    let params = ThreadExternalAgentStartParams {
+        thread_id: "thr_123".to_string(),
+        runtime_id: "grok-build".to_string(),
+        task: "inspect the diff".to_string(),
+        mode: ThreadExternalAgentMode::Plan,
+    };
+
+    let value = serde_json::to_value(&params).expect("serialize thread/externalAgent/start params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runtimeId": "grok-build",
+            "task": "inspect the diff",
+            "mode": "plan",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadExternalAgentStartParams>(value)
+        .expect("deserialize thread/externalAgent/start params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_external_agent_start_response_round_trip() {
+    let response = ThreadExternalAgentStartResponse {
+        status: ThreadExternalAgentStartStatus::Gated,
+        run_id: None,
+        message: "external-agent execution is gated".to_string(),
+    };
+
+    let value =
+        serde_json::to_value(&response).expect("serialize thread/externalAgent/start response");
+    assert_eq!(
+        value,
+        json!({
+            "status": "gated",
+            "runId": null,
+            "message": "external-agent execution is gated",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadExternalAgentStartResponse>(value)
+        .expect("deserialize thread/externalAgent/start response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn thread_external_agent_event_notification_round_trip() {
+    let notification = ThreadExternalAgentEventNotification {
+        thread_id: "thr_123".to_string(),
+        run_id: "ext_1".to_string(),
+        event: ThreadExternalAgentEvent::PermissionRequested {
+            request: ThreadExternalAgentPermissionRequest {
+                id: "perm_1".to_string(),
+                action: json!({
+                    "type": "run-command",
+                    "command": ["cargo", "test"],
+                    "cwd": "/repo",
+                }),
+                options: vec![
+                    ThreadExternalAgentPermissionOption::AllowOnce,
+                    ThreadExternalAgentPermissionOption::RejectOnce,
+                ],
+            },
+        },
+    };
+
+    let value = serde_json::to_value(&notification)
+        .expect("serialize thread/externalAgent/event notification");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runId": "ext_1",
+            "event": {
+                "type": "permissionRequested",
+                "request": {
+                    "id": "perm_1",
+                    "action": {
+                        "type": "run-command",
+                        "command": ["cargo", "test"],
+                        "cwd": "/repo",
+                    },
+                    "options": ["allowOnce", "rejectOnce"],
+                },
+            },
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadExternalAgentEventNotification>(value)
+        .expect("deserialize thread/externalAgent/event notification");
+    assert_eq!(decoded, notification);
+}
+
+#[test]
 fn fs_changed_notification_round_trips() {
     let notification = FsChangedNotification {
         watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
