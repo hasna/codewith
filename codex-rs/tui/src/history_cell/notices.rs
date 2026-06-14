@@ -1,6 +1,7 @@
 //! Informational, warning, update, and policy notice history cells.
 
 use super::*;
+use crate::style::accent_color;
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
@@ -39,7 +40,11 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         use ratatui_macros::line;
         use ratatui_macros::text;
         let update_instruction = if let Some(update_action) = self.update_action {
-            line!["Run ", update_action.command_str().cyan(), " to update."]
+            line![
+                "Run ",
+                update_action.command_str().fg(accent_color()),
+                " to update."
+            ]
         } else {
             line![
                 "See ",
@@ -50,8 +55,8 @@ impl HistoryCell for UpdateAvailableHistoryCell {
 
         let content = text![
             line![
-                padded_emoji("✨").bold().cyan(),
-                "Update available!".bold().cyan(),
+                padded_emoji("✨").bold().fg(accent_color()),
+                "Update available!".bold().fg(accent_color()),
                 " ",
                 format!("{} -> {}", self.current_version, self.latest_version).bold(),
             ],
@@ -117,7 +122,7 @@ impl HistoryCell for CyberPolicyNoticeCell {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(
             vec![
-                "ⓘ ".cyan(),
+                "ⓘ ".fg(accent_color()),
                 "This chat was flagged for possible cybersecurity risk".bold(),
             ]
             .into(),

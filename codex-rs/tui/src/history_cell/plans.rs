@@ -1,6 +1,7 @@
 //! Proposed-plan and plan-update history cells.
 
 use super::*;
+use crate::style::accent_color;
 
 /// Transient active-cell representation of the mutable tail of a proposed-plan stream.
 ///
@@ -177,7 +178,7 @@ impl HistoryCell for PlanUpdateCell {
         let render_step = |status: &StepStatus, text: &str| -> Vec<Line<'static>> {
             let (box_str, step_style) = match status {
                 StepStatus::Completed => ("✔ ", Style::default().crossed_out().dim()),
-                StepStatus::InProgress => ("□ ", Style::default().cyan().bold()),
+                StepStatus::InProgress => ("□ ", Style::default().fg(accent_color()).bold()),
                 StepStatus::Pending => ("□ ", Style::default().dim()),
             };
 

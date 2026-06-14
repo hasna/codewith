@@ -99,10 +99,12 @@ impl App {
         match result {
             Ok(()) => {
                 if self.config.selected_auth_profile.as_deref() == Some(profile.as_str()) {
+                    self.chat_widget.set_auth_profile(Some(profile.clone()));
                     self.chat_widget
                         .submit_op(AppCommand::override_turn_context_auth_profile(Some(
                             profile.clone(),
                         )));
+                    self.refresh_status_line();
                 }
                 self.chat_widget.add_info_message(
                     format!("Auth profile `{profile}` relogin completed."),

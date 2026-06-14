@@ -330,7 +330,7 @@ async fn mcp_manager_loading_popup_snapshot() {
 
 #[tokio::test]
 async fn mcp_manager_empty_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.on_mcp_manager_loaded(
         Ok(Vec::new()),
@@ -340,7 +340,14 @@ async fn mcp_manager_empty_popup_snapshot() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert!(popup.contains("No MCP servers configured"));
+    assert!(popup.contains("Add server"));
+    assert!(popup.contains("Reload MCP tools"));
     assert_chatwidget_snapshot!("mcp_manager_empty_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ReloadMcpServers));
 }
 
 #[tokio::test]
@@ -389,6 +396,8 @@ async fn mcp_manager_server_detail_snapshot_and_oauth_action() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 112);
     assert!(popup.contains("OAuth login"));
+    assert!(popup.contains("Diagnose"));
+    assert!(popup.contains("Reload MCP tools"));
     assert!(popup.contains("Search docs"));
     assert_chatwidget_snapshot!("mcp_manager_server_detail_popup", popup);
 
@@ -2594,15 +2603,25 @@ async fn profile_selection_popup_snapshot_and_selection() {
 
     chat.open_profile_popup();
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileSettings { profile }) if profile == "personal"
+    );
+
+    chat.open_auth_profile_settings_popup("personal".to_string());
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_settings_popup", popup);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileRenamePrompt { profile }) if profile == "personal"
     );
 
-    chat.open_profile_popup();
+    chat.open_auth_profile_settings_popup("personal".to_string());
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"

@@ -44,6 +44,7 @@ use std::time::Instant;
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
 use crate::app_event::HistoryLookupResponse;
+use crate::app_event::McpInventoryTarget;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_approval_conversions::file_update_changes_to_display;
 use crate::approval_events::ApplyPatchApprovalRequestEvent;
@@ -78,6 +79,7 @@ use crate::status::StatusHistoryHandle;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
 use crate::status::rate_limit_snapshot_display_for_limit;
+use crate::style::accent_color;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
@@ -114,6 +116,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -259,7 +262,6 @@ fn queued_message_edit_hint_binding(
 
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
-use crate::app_event::McpInventoryTarget;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
 #[cfg(any(target_os = "windows", test))]
@@ -558,6 +560,7 @@ pub(crate) struct ChatWidget {
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
+    refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
@@ -1554,10 +1557,13 @@ impl ChatWidget {
         let mut line = vec![
             "• ".into(),
             "Session renamed to ".into(),
-            name.to_string().cyan(),
+            name.to_string().fg(accent_color()),
         ];
         if let Some(hint) = resume_hint(Some(name), thread_id) {
-            line.extend([". To resume this session run ".into(), hint.cyan()]);
+            line.extend([
+                ". To resume this session run ".into(),
+                hint.fg(accent_color()),
+            ]);
         }
         PlainHistoryCell::new(vec![line.into()])
     }
@@ -1708,6 +1714,10 @@ impl ChatWidget {
 
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
+    }
+
+    pub(crate) fn user_turn_pending_or_running(&self) -> bool {
+        self.is_user_turn_pending_or_running()
     }
 
     #[cfg(test)]

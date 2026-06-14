@@ -1,10 +1,17 @@
 use super::*;
 use assert_matches::assert_matches;
+use chrono::TimeZone;
 use codex_app_server_protocol::AuthMode;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::save_auth_profile;
+use codex_model_provider_info::MINIMAX_PROVIDER_ID;
+use codex_model_provider_info::ModelProviderInfo;
 
+use crate::app_event::MiniMaxUsageRefreshOrigin;
+use crate::minimax_usage::MiniMaxUsageBucket;
+use crate::minimax_usage::MiniMaxUsageSnapshot;
+use crate::minimax_usage::MiniMaxUsageWindow;
 use crate::status::StatusAccountDisplay;
 
 #[tokio::test]
@@ -83,6 +90,46 @@ async fn status_command_renders_immediately_without_rate_limit_refresh() {
 }
 
 #[tokio::test]
+async fn stats_command_refreshes_minimax_usage_for_minimax_provider() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model_provider_id = MINIMAX_PROVIDER_ID.to_string();
+    chat.config.model_provider = ModelProviderInfo::create_minimax_provider();
+
+    chat.dispatch_command(SlashCommand::Stats);
+
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected stats output before MiniMax usage refresh, got {other:?}"),
+    };
+    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 100));
+    assert!(
+        rendered.contains("stats") && rendered.contains("refreshing Token Plan usage"),
+        "expected /stats to render MiniMax refresh state, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("Limits"),
+        "expected MiniMax /stats not to show generic ChatGPT limits, got: {rendered}"
+    );
+
+    let request_id = match rx.try_recv() {
+        Ok(AppEvent::RefreshMiniMaxUsage {
+            origin: MiniMaxUsageRefreshOrigin::StatusCommand { request_id },
+        }) => request_id,
+        other => panic!("expected MiniMax usage refresh request, got {other:?}"),
+    };
+    pretty_assertions::assert_eq!(request_id, 0);
+
+    chat.finish_status_minimax_usage_refresh(request_id, Ok(minimax_usage_snapshot()));
+    let refreshed = lines_to_single_string(&cell.display_lines(/*width*/ 100));
+    assert!(
+        refreshed.contains("Token Plan general bucket")
+            && refreshed.contains("72% left")
+            && refreshed.contains("20 / 100 used"),
+        "expected MiniMax usage data to update /stats output, got: {refreshed}"
+    );
+}
+
+#[tokio::test]
 async fn status_command_reflects_auth_profile_switch_account_state() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.update_account_state(
@@ -136,6 +183,29 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
             .any(|event| matches!(event, AppEvent::RefreshRateLimits { .. })),
         "API key profiles should not request a ChatGPT rate-limit refresh"
     );
+}
+
+fn minimax_usage_snapshot() -> MiniMaxUsageSnapshot {
+    let resets_at = chrono::Local
+        .with_ymd_and_hms(2026, 6, 12, 18, 0, 0)
+        .single();
+    MiniMaxUsageSnapshot {
+        buckets: vec![MiniMaxUsageBucket {
+            name: "general".to_string(),
+            interval: MiniMaxUsageWindow {
+                remaining_percent: 72.0,
+                used_count: Some(0),
+                total_count: Some(0),
+                resets_at,
+            },
+            weekly: MiniMaxUsageWindow {
+                remaining_percent: 80.0,
+                used_count: Some(20),
+                total_count: Some(100),
+                resets_at,
+            },
+        }],
+    }
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 
-const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
+const CODEWITH_EMERALD_RGB: (u8, u8, u8) = (5, 150, 105);
 // Decorative table rules should remain visible without competing with cell content.
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
@@ -32,6 +32,11 @@ pub(crate) fn accent_style() -> Style {
     accent_style_for(default_bg())
 }
 
+/// Returns the shared Codewith accent color.
+pub(crate) fn accent_color() -> Color {
+    accent_color_for_level(stdout_color_level())
+}
+
 /// Returns the style for a user-authored message using the provided terminal background.
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
@@ -48,11 +53,15 @@ pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 }
 
 /// Returns the shared accent style for the provided terminal background.
-pub(crate) fn accent_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
-    if terminal_bg.is_some_and(is_light) {
-        Style::default().fg(best_color(LIGHT_BG_ACCENT_RGB)).bold()
-    } else {
-        Style::default().fg(Color::Cyan).bold()
+pub(crate) fn accent_style_for(_terminal_bg: Option<(u8, u8, u8)>) -> Style {
+    Style::default().fg(accent_color()).bold()
+}
+
+fn accent_color_for_level(color_level: StdoutColorLevel) -> Color {
+    match color_level {
+        StdoutColorLevel::TrueColor => rgb_color(CODEWITH_EMERALD_RGB),
+        StdoutColorLevel::Ansi256 => best_color(CODEWITH_EMERALD_RGB),
+        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Color::Green,
     }
 }
 
@@ -94,16 +103,32 @@ mod tests {
     use ratatui::style::Modifier;
 
     #[test]
-    fn accent_style_uses_darker_cyan_on_light_backgrounds() {
+    fn accent_color_uses_codewith_emerald_or_green_fallback() {
+        assert_eq!(
+            accent_color_for_level(StdoutColorLevel::TrueColor),
+            rgb_color(CODEWITH_EMERALD_RGB)
+        );
+        assert_eq!(
+            accent_color_for_level(StdoutColorLevel::Ansi16),
+            Color::Green
+        );
+        assert_eq!(
+            accent_color_for_level(StdoutColorLevel::Unknown),
+            Color::Green
+        );
+    }
+
+    #[test]
+    fn accent_style_uses_codewith_emerald_on_light_backgrounds() {
         let style = accent_style_for(Some((255, 255, 255)));
 
-        assert_eq!(style.fg, Some(best_color(LIGHT_BG_ACCENT_RGB)));
+        assert_eq!(style.fg, Some(accent_color()));
         assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn accent_style_uses_cyan_on_dark_or_unknown_backgrounds() {
-        let expected = Style::default().fg(Color::Cyan).bold();
+    fn accent_style_uses_codewith_emerald_on_dark_or_unknown_backgrounds() {
+        let expected = Style::default().fg(accent_color()).bold();
 
         assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
         assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);

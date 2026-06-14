@@ -79,9 +79,8 @@ impl ChatWidget {
                 resume_queued_input: false,
             });
         })];
-        let rename_profile_name = profile.name.clone();
-        let delete_profile_name = profile.name.clone();
         let relogin_profile_name = profile.name.clone();
+        let settings_profile_name = profile.name.clone();
         let shortcut_actions = vec![
             SelectionShortcutAction {
                 binding: key_hint::plain(KeyCode::Char('l')),
@@ -93,19 +92,10 @@ impl ChatWidget {
                 dismiss_on_select: true,
             },
             SelectionShortcutAction {
-                binding: key_hint::plain(KeyCode::Char('r')),
+                binding: key_hint::plain(KeyCode::Char('s')),
                 action: Box::new(move |tx| {
-                    tx.send(AppEvent::OpenAuthProfileRenamePrompt {
-                        profile: rename_profile_name.clone(),
-                    });
-                }),
-                dismiss_on_select: true,
-            },
-            SelectionShortcutAction {
-                binding: key_hint::plain(KeyCode::Char('d')),
-                action: Box::new(move |tx| {
-                    tx.send(AppEvent::OpenAuthProfileDeleteConfirm {
-                        profile: delete_profile_name.clone(),
+                    tx.send(AppEvent::OpenAuthProfileSettings {
+                        profile: settings_profile_name.clone(),
                     });
                 }),
                 dismiss_on_select: true,
@@ -114,15 +104,60 @@ impl ChatWidget {
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: Some(
-                "Enter switch / l relogin / r rename / d delete".to_string(),
-            ),
+            selected_description: Some("Enter switch / l relogin / s settings".to_string()),
             is_current: current == Some(profile.name.as_str()),
             actions,
             shortcut_actions,
             dismiss_on_select: true,
             ..Default::default()
         }
+    }
+
+    pub(crate) fn open_auth_profile_settings_popup(&mut self, profile: String) {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Profile settings".bold()));
+        header.push(Line::from(
+            format!("Manage auth profile `{profile}`.").dim(),
+        ));
+
+        let rename_profile = profile.clone();
+        let delete_profile = profile.clone();
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            header: Box::new(header),
+            items: vec![
+                SelectionItem {
+                    name: "Rename profile".to_string(),
+                    description: Some(format!("Rename `{profile}`.")),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::OpenAuthProfileRenamePrompt {
+                            profile: rename_profile.clone(),
+                        });
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+                SelectionItem {
+                    name: "Delete profile".to_string(),
+                    description: Some(format!("Remove `{profile}` from saved auth profiles.")),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::OpenAuthProfileDeleteConfirm {
+                            profile: delete_profile.clone(),
+                        });
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+                SelectionItem {
+                    name: "Cancel".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+            ],
+            initial_selected_idx: Some(0),
+            ..Default::default()
+        });
     }
 
     pub(crate) fn open_auth_profile_rename_prompt(&mut self, profile: String) {

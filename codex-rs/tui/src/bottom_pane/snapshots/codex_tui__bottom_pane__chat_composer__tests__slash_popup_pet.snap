@@ -5,5 +5,5 @@ expression: terminal.backend()
 "                                                            "
 "› /pet                                                      "
 "                                                            "
-"                                                            "
-"  /pets  choose or hide the terminal pet                    "
+"  /pets          choose or hide the terminal pet            "
+"  /experimental  toggle experimental features               "

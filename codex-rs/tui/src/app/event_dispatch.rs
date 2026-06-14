@@ -6,6 +6,7 @@
 use super::resize_reflow::trailing_run_start;
 use super::*;
 use crate::config_update::format_config_error;
+use crate::style::accent_color;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -203,6 +204,18 @@ impl App {
             AppEvent::ArchiveCurrentThread => {
                 return Ok(self.archive_current_thread(app_server).await);
             }
+            AppEvent::OpenInTmux {
+                name,
+                replace_existing,
+            } => match self.prepare_tmux_handoff_from_slash(name, replace_existing) {
+                Ok(_) => {
+                    self.show_shutdown_feedback(tui)?;
+                    return Ok(self
+                        .handle_exit_mode(app_server, ExitMode::ShutdownFirst)
+                        .await);
+                }
+                Err(message) => self.chat_widget.add_error_message(message),
+            },
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
                     "codex.thread.fork",
@@ -238,7 +251,7 @@ impl App {
                                         if let Some(command) = summary.resume_hint {
                                             let spans = vec![
                                                 "To continue this session, run ".into(),
-                                                command.cyan(),
+                                                command.fg(accent_color()),
                                             ];
                                             lines.push(spans.into());
                                         }
@@ -509,6 +522,41 @@ impl App {
             }
             AppEvent::StartMcpServerOauthLogin { name } => {
                 self.start_mcp_server_oauth_login(app_server, name);
+            }
+            AppEvent::ReloadMcpServers => {
+                self.reload_mcp_servers(app_server);
+            }
+            AppEvent::McpServersReloaded { result } => match result {
+                Ok(()) => {
+                    self.chat_widget.add_info_message(
+                        "MCP reload queued.".to_string(),
+                        Some(
+                            "Loaded threads pick up new or updated tools before the next turn. Reopening /mcp inventory now.".to_string(),
+                        ),
+                    );
+                    self.chat_widget
+                        .open_mcp_manager(McpServerStatusDetail::Full);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to reload MCP servers: {err}"));
+                }
+            },
+            AppEvent::ShowMcpSetupHelp => {
+                self.chat_widget.add_info_message(
+                    "Add MCP servers in config.toml under [mcp_servers.<name>].".to_string(),
+                    Some(
+                        "Stdio command/args is fine for normal local servers. For many or heavy servers, prefer streamable HTTP or plugin-managed MCPs to reduce local process load.".to_string(),
+                    ),
+                );
+            }
+            AppEvent::ShowMcpDiagnosticsHelp { name } => {
+                self.chat_widget.add_info_message(
+                    format!("Diagnose MCP server `{name}`."),
+                    Some(
+                        "Check command/cwd/env for stdio servers, URL/auth/headers for HTTP servers, then reload MCP tools and refresh inventory.".to_string(),
+                    ),
+                );
             }
             AppEvent::McpServerOauthLoginStarted { name, result } => match result {
                 Ok(url) => {
@@ -809,6 +857,9 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::RefreshMiniMaxUsage { origin } => {
+                self.refresh_minimax_usage(origin);
+            }
             AppEvent::OpenThreadGoalMenu { thread_id } => {
                 self.open_thread_goal_menu(app_server, thread_id).await;
             }
@@ -1080,6 +1131,13 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
+            AppEvent::MiniMaxUsageLoaded {
+                origin,
+                auth_profile,
+                result,
+            } => {
+                self.apply_minimax_usage_loaded(origin, auth_profile, result);
+            }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
@@ -1183,6 +1241,9 @@ impl App {
             }
             AppEvent::OpenAuthProfileRenamePrompt { profile } => {
                 self.chat_widget.open_auth_profile_rename_prompt(profile);
+            }
+            AppEvent::OpenAuthProfileSettings { profile } => {
+                self.chat_widget.open_auth_profile_settings_popup(profile);
             }
             AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
                 self.chat_widget.open_auth_profile_delete_confirm(profile);
@@ -2194,6 +2255,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentRenamePrompt {
+                thread_id,
+                current_name,
+                label,
+            } => {
+                self.chat_widget
+                    .show_agent_rename_prompt(thread_id, current_name, label);
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
@@ -2370,7 +2439,7 @@ impl App {
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
-                            rule_line.cyan(),
+                            rule_line.fg(accent_color()),
                         ]));
                     }
                     self.overlay = Some(Overlay::new_static_with_renderables(
@@ -2805,6 +2874,33 @@ impl App {
             }
         }
     }
+
+    pub(super) fn apply_minimax_usage_loaded(
+        &mut self,
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
+    ) {
+        let MiniMaxUsageRefreshOrigin::StatusCommand { request_id } = origin;
+        if auth_profile != self.config.selected_auth_profile {
+            tracing::debug!(
+                request_auth_profile = ?auth_profile,
+                current_auth_profile = ?self.config.selected_auth_profile,
+                "discarding stale MiniMax usage result after auth profile change"
+            );
+            self.chat_widget.finish_status_minimax_usage_refresh(
+                request_id,
+                Err("MiniMax usage refresh was superseded by an auth profile change".to_string()),
+            );
+            return;
+        }
+
+        if let Err(err) = result.as_ref() {
+            tracing::warn!("MiniMax usage refresh failed during TUI refresh: {err}");
+        }
+        self.chat_widget
+            .finish_status_minimax_usage_refresh(request_id, result);
+    }
 }
 
 pub(super) fn auth_profile_switch_message(
@@ -2817,7 +2913,7 @@ pub(super) fn auth_profile_switch_message(
         .unwrap_or_else(|| "default".to_string());
     match reason {
         crate::app_event::AuthProfileSwitchReason::Manual => {
-            format!("Profile switch requested for {label}")
+            format!("Profile changed to {label} for this session")
         }
         crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
             let mut message = format!(

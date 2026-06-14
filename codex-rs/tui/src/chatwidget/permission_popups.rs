@@ -5,6 +5,7 @@
 //! `windows_sandbox_prompts`.
 
 use super::*;
+use crate::style::accent_color;
 
 impl ChatWidget {
     /// Open the permissions popup.
@@ -145,7 +146,7 @@ impl ChatWidget {
         let footer_note = show_elevate_sandbox_hint.then(|| {
             vec![
                 "The non-admin sandbox protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected. To upgrade to the default sandbox, run ".dim(),
-                "/setup-default-sandbox".cyan(),
+                "/setup-default-sandbox".fg(accent_color()),
                 ".".dim(),
             ]
             .into()

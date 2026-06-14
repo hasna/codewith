@@ -6,9 +6,13 @@ expression: popup
   docs MCP · 1.2.3 · Login needed · 1 tool · 1 resource · 1 template
   docs server description
 
-  Search tools and resources
+  Search actions, tools, and resources
 › Refresh                        Reload MCP server status and inventory.
   OAuth login                    Open the browser login flow for this server.
+  Reload MCP tools               Reconnect loaded threads to the latest MCP config.
+  Diagnose                       Show checks for this server's command, env, auth, and inventory.
+  Scale guidance                 Many stdio MCPs spawn many local processes; HTTP/plugin MCPs reduce local
+                                 load.
   T Search docs                  Search indexed documentation.
   R handbook resource            file:///workspace/handbook.md
   P ticket template              ticket://{id}

@@ -31,6 +31,8 @@ use codex_state::memories_db_path;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
+use codex_tui::TmuxHandoffAttachMode;
+use codex_tui::TmuxHandoffExit;
 use codex_tui::UpdateAction;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
@@ -849,12 +851,31 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
     }
 
     let update_action = exit_info.update_action;
+    if let Some(tmux_handoff) = exit_info.tmux_handoff.clone() {
+        return run_tmux_handoff(tmux_handoff);
+    }
     let color_enabled = supports_color::on(Stream::Stdout).is_some();
     for line in format_exit_messages(exit_info, color_enabled) {
         println!("{line}");
     }
     if let Some(action) = update_action {
         run_update_action(action)?;
+    }
+    Ok(())
+}
+
+fn run_tmux_handoff(handoff: TmuxHandoffExit) -> anyhow::Result<()> {
+    let target = format!("={}", handoff.session_name);
+    let tmux_command = match handoff.attach_mode {
+        TmuxHandoffAttachMode::Attach => "attach-session",
+        TmuxHandoffAttachMode::SwitchClient => "switch-client",
+    };
+    let status = std::process::Command::new("tmux")
+        .args([tmux_command, "-t", &target])
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to run tmux {tmux_command}: {err}"))?;
+    if !status.success() {
+        anyhow::bail!("tmux {tmux_command} failed with status {status}");
     }
     Ok(())
 }
@@ -3110,6 +3131,97 @@ mod tests {
         app_server
     }
 
+    #[test]
+    fn agent_subcommands_parse() {
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "start", "fix", "tests"])
+            .expect("parse agent start");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Start(_)
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "list", "--limit", "5"])
+            .expect("parse agent list");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::List(_)
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agent", "diagnostics"])
+            .expect("parse agent diagnostics");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Diagnostics
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "agents", "attach", "agent-1"])
+            .expect("parse agents attach alias");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Agent(AgentCli {
+                subcommand: agent_cmd::AgentSubcommand::Attach(_)
+            }))
+        );
+
+        let cli = MultitoolCli::try_parse_from(["codex", "attach", "agent-1"])
+            .expect("parse top-level attach");
+        assert_matches!(cli.subcommand, Some(Subcommand::Attach(_)));
+
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "logs",
+            "agent-1",
+            "--after-seq",
+            "7",
+            "--limit",
+            "20",
+        ])
+        .expect("parse top-level logs");
+        assert_matches!(cli.subcommand, Some(Subcommand::Logs(_)));
+
+        let cli = MultitoolCli::try_parse_from(["codex", "stop", "agent-1"])
+            .expect("parse top-level stop");
+        assert_matches!(cli.subcommand, Some(Subcommand::Stop(_)));
+
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "rm", "agent-1"]).expect("parse top-level rm");
+        assert_matches!(cli.subcommand, Some(Subcommand::Rm(_)));
+
+        let cli = MultitoolCli::try_parse_from(["codex", "daemon", "status"])
+            .expect("parse daemon status");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Daemon(BackgroundAgentDaemonCommand {
+                subcommand: Some(BackgroundAgentDaemonSubcommand::Status)
+            }))
+        );
+
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "daemon", "stop"]).expect("parse daemon stop");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::Daemon(BackgroundAgentDaemonCommand {
+                subcommand: Some(BackgroundAgentDaemonSubcommand::Stop)
+            }))
+        );
+    }
+
+    #[test]
+    fn background_agent_root_flag_parses_prompt() {
+        let cli = MultitoolCli::try_parse_from(["codex", "--bg", "fix tests"])
+            .expect("parse background agent root flag");
+
+        assert!(cli.interactive.background_agent);
+        assert_eq!(cli.interactive.prompt.as_deref(), Some("fix tests"));
+        assert!(cli.subcommand.is_none());
+    }
+
     fn default_app_server_socket_path() -> AbsolutePathBuf {
         let codex_home = find_codex_home().expect("codex home");
         codex_app_server::app_server_control_socket_path(&codex_home)
@@ -3400,6 +3512,7 @@ mod tests {
                 .map(Result::unwrap),
             thread_name: thread_name.map(str::to_string),
             update_action: None,
+            tmux_handoff: None,
             exit_reason: ExitReason::UserRequested,
         }
     }
@@ -3411,6 +3524,7 @@ mod tests {
             thread_id: None,
             thread_name: None,
             update_action: None,
+            tmux_handoff: None,
             exit_reason: ExitReason::UserRequested,
         };
         let lines = format_exit_messages(exit_info, /*color_enabled*/ false);
@@ -4009,6 +4123,28 @@ mod tests {
     fn app_server_listen_off_parses() {
         let app_server = app_server_from_args(["codex", "app-server", "--listen", "off"].as_ref());
         assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
+    }
+
+    #[test]
+    fn app_server_background_agent_worker_flags_parse() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--listen",
+                "off",
+                "--background-agent-host",
+                "--background-agent-worker",
+                "run-1",
+            ]
+            .as_ref(),
+        );
+        assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
+        assert!(app_server.background_agent_host);
+        assert_eq!(
+            app_server.background_agent_worker_run_id.as_deref(),
+            Some("run-1")
+        );
     }
 
     #[test]

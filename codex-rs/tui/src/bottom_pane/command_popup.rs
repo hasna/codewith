@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn substring_filter_includes_non_prefix_matches_after_better_matches() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
-        popup.on_composer_text_change("/ac".to_string());
+        popup.on_composer_text_change("/pac".to_string());
 
         let commands = filtered_command_names(&popup);
         assert_eq!(commands.first().map(String::as_str), Some("compact"));

@@ -10,6 +10,7 @@ use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
 use crate::app_event::HistoryLookupResponse;
+use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RealtimeAudioDeviceKind;
@@ -26,8 +27,8 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionShortcutAction;
 use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
@@ -59,7 +60,7 @@ use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
 use crate::multi_agents::agent_picker_status_dot_spans;
-use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_entry_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
@@ -226,6 +227,8 @@ mod thread_routing;
 mod thread_schedule_actions;
 mod thread_session_state;
 mod thread_settings;
+mod tmux_handoff;
+mod ui_dynamic_tools;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
@@ -392,6 +395,7 @@ pub struct AppExitInfo {
     pub thread_id: Option<ThreadId>,
     pub thread_name: Option<String>,
     pub update_action: Option<UpdateAction>,
+    pub tmux_handoff: Option<crate::tmux_handoff::TmuxHandoffExit>,
     pub exit_reason: ExitReason,
 }
 
@@ -402,6 +406,7 @@ impl AppExitInfo {
             thread_id: None,
             thread_name: None,
             update_action: None,
+            tmux_handoff: None,
             exit_reason: ExitReason::Fatal(message.into()),
         }
     }
@@ -536,6 +541,7 @@ pub(crate) struct App {
     app_server_target: AppServerTarget,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
+    pending_tmux_handoff: Option<crate::tmux_handoff::TmuxHandoffExit>,
 
     /// Tracks the thread we intentionally shut down while exiting the app.
     ///
@@ -783,6 +789,7 @@ impl App {
                     thread_id: None,
                     thread_name: None,
                     update_action: None,
+                    tmux_handoff: None,
                     exit_reason: ExitReason::UserRequested,
                 });
             }
@@ -1036,6 +1043,7 @@ See the Codewith keymap documentation for supported actions and examples."
             environment_manager,
             app_server_target,
             pending_update_action: None,
+            pending_tmux_handoff: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
@@ -1239,6 +1247,7 @@ See the Codewith keymap documentation for supported actions and examples."
             thread_id: resumable_thread.as_ref().map(|thread| thread.thread_id),
             thread_name: resumable_thread.and_then(|thread| thread.thread_name),
             update_action: app.pending_update_action,
+            tmux_handoff: app.pending_tmux_handoff.clone(),
             exit_reason,
         })
     }

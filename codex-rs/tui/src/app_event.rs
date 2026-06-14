@@ -140,6 +140,14 @@ pub(crate) enum RateLimitRefreshOrigin {
     StatusCommand { request_id: u64 },
 }
 
+/// Distinguishes why a MiniMax usage refresh was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MiniMaxUsageRefreshOrigin {
+    /// User-initiated via `/status` or `/stats`; the `request_id` correlates with
+    /// the status card that should be updated when the fetch completes.
+    StatusCommand { request_id: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeymapEditIntent {
     ReplaceAll,
@@ -154,6 +162,12 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Prompt for a persisted name for a selected agent thread.
+    OpenAgentRenamePrompt {
+        thread_id: ThreadId,
+        current_name: Option<String>,
+        label: String,
+    },
 
     /// Open the durable background-agent manager.
     OpenBackgroundAgentManager,
@@ -297,6 +311,12 @@ pub(crate) enum AppEvent {
     /// Archive the current active main thread and exit after it succeeds.
     ArchiveCurrentThread,
 
+    /// Create a tmux session for the current thread and exit into it.
+    OpenInTmux {
+        name: Option<String>,
+        replace_existing: bool,
+    },
+
     /// Fork the current session into a new thread.
     ForkCurrentSession,
 
@@ -344,6 +364,11 @@ pub(crate) enum AppEvent {
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,
+    },
+
+    /// Refresh MiniMax Token Plan usage in the background.
+    RefreshMiniMaxUsage {
+        origin: MiniMaxUsageRefreshOrigin,
     },
 
     /// Open the current thread goal summary/action menu.
@@ -519,6 +544,22 @@ pub(crate) enum AppEvent {
         name: String,
     },
 
+    /// Reload MCP server connections for loaded threads.
+    ReloadMcpServers,
+
+    /// Result of reloading MCP server connections for loaded threads.
+    McpServersReloaded {
+        result: Result<(), String>,
+    },
+
+    /// Show setup guidance for configuring MCP servers.
+    ShowMcpSetupHelp,
+
+    /// Show diagnostic guidance for one MCP server.
+    ShowMcpDiagnosticsHelp {
+        name: String,
+    },
+
     /// Result of starting an MCP OAuth login flow.
     McpServerOauthLoginStarted {
         name: String,
@@ -560,6 +601,13 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
+    },
+
+    /// Result of refreshing MiniMax Token Plan usage.
+    MiniMaxUsageLoaded {
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
     },
 
     /// Send a user-confirmed request to notify the workspace owner.
@@ -922,6 +970,11 @@ pub(crate) enum AppEvent {
 
     /// Prompt for renaming a saved auth profile.
     OpenAuthProfileRenamePrompt {
+        profile: String,
+    },
+
+    /// Open settings for a saved auth profile.
+    OpenAuthProfileSettings {
         profile: String,
     },
 

@@ -6,6 +6,7 @@ use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
+use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
@@ -38,6 +39,11 @@ pub(crate) enum AppCommand {
     RealtimeConversationClose,
     RunUserShellCommand {
         command: String,
+    },
+    StartExternalAgent {
+        runtime_id: String,
+        task: String,
+        mode: ThreadExternalAgentMode,
     },
     UserTurn {
         items: Vec<UserInput>,
@@ -156,6 +162,18 @@ impl AppCommand {
 
     pub(crate) fn run_user_shell_command(command: String) -> Self {
         Self::RunUserShellCommand { command }
+    }
+
+    pub(crate) fn start_external_agent(
+        runtime_id: String,
+        task: String,
+        mode: ThreadExternalAgentMode,
+    ) -> Self {
+        Self::StartExternalAgent {
+            runtime_id,
+            task,
+            mode,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

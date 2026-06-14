@@ -9,5 +9,7 @@ expression: popup
 › Refresh                        Reload MCP server status and inventory.
   ! docs                         Login needed · 1 tool · 1 resource · 1 template
   K linear                       API key · 1 tool · 0 resources · 0 templates
+  Reload MCP tools               Reconnect loaded threads to the latest MCP config.
+  Add server                     Show config guidance for stdio and HTTP MCP servers.
 
   Press enter to confirm or esc to go back

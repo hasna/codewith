@@ -52,6 +52,7 @@ use crate::motion::shimmer_text;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
+use crate::style::accent_color;
 use crate::tui::FrameRequester;
 
 /// Marks buffer cells that have cyan+underlined style as an OSC 8 hyperlink.
@@ -409,8 +410,10 @@ impl AuthModeWidget {
 
             let line1 = if is_selected {
                 Line::from(vec![
-                    format!("{caret} {index}. ", index = idx + 1).cyan().dim(),
-                    text.to_string().cyan(),
+                    format!("{caret} {index}. ", index = idx + 1)
+                        .fg(accent_color())
+                        .dim(),
+                    text.to_string().fg(accent_color()),
                 ])
             } else {
                 format!("  {index}. {text}", index = idx + 1).into()
@@ -418,7 +421,7 @@ impl AuthModeWidget {
 
             let line2 = if is_selected {
                 Line::from(format!("     {description}"))
-                    .fg(Color::Cyan)
+                    .fg(accent_color())
                     .add_modifier(Modifier::DIM)
             } else {
                 Line::from(format!("     {description}"))
@@ -518,7 +521,7 @@ impl AuthModeWidget {
                 "  On a remote or headless machine? Press ".into(),
                 self.cancel_binding().into(),
                 " and choose ".into(),
-                "Sign in with Device Code".cyan(),
+                "Sign in with Device Code".fg(accent_color()),
                 ".".into(),
             ]));
             lines.push("".into());
@@ -579,9 +582,9 @@ impl AuthModeWidget {
             .dim(),
             "".into(),
             Line::from(vec![
-                "  Press ".fg(Color::Cyan),
+                "  Press ".fg(accent_color()),
                 self.confirm_binding().into(),
-                " to continue".fg(Color::Cyan),
+                " to continue".fg(accent_color()),
             ]),
         ];
 
@@ -656,7 +659,7 @@ impl AuthModeWidget {
                     .title("API key")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(accent_color())),
             )
             .render(input_area, buf);
 

@@ -5,6 +5,8 @@ use codex_config::LoaderOverrides;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli;
 use codex_tui::ExitReason;
+use codex_tui::TmuxHandoffAttachMode;
+use codex_tui::TmuxHandoffExit;
 use codex_tui::run_main;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::resume_hint;
@@ -33,6 +35,22 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     }
 
     lines
+}
+
+fn run_tmux_handoff(handoff: TmuxHandoffExit) -> anyhow::Result<()> {
+    let target = format!("={}", handoff.session_name);
+    let tmux_command = match handoff.attach_mode {
+        TmuxHandoffAttachMode::Attach => "attach-session",
+        TmuxHandoffAttachMode::SwitchClient => "switch-client",
+    };
+    let status = std::process::Command::new("tmux")
+        .args([tmux_command, "-t", &target])
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to run tmux {tmux_command}: {err}"))?;
+    if !status.success() {
+        anyhow::bail!("tmux {tmux_command} failed with status {status}");
+    }
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -67,6 +85,9 @@ fn main() -> anyhow::Result<()> {
             ExitReason::UserRequested => {}
         }
 
+        if let Some(tmux_handoff) = exit_info.tmux_handoff.clone() {
+            return run_tmux_handoff(tmux_handoff);
+        }
         let color_enabled = supports_color::on(Stream::Stdout).is_some();
         for line in format_exit_messages(exit_info, color_enabled) {
             println!("{line}");

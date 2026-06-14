@@ -1,4 +1,5 @@
 use super::*;
+use crate::style::accent_color;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
@@ -105,14 +106,20 @@ impl ChatWidget {
 
         let mut items = vec![refresh_mcp_manager_item()];
         if statuses.is_empty() {
+            items.push(reload_mcp_servers_item());
+            items.push(mcp_setup_help_item());
             items.push(SelectionItem {
                 name: "No MCP servers configured".to_string(),
-                description: Some("Add servers in config.toml to use MCP tools.".to_string()),
+                description: Some(
+                    "Use Add server for the config shape and reload flow.".to_string(),
+                ),
                 is_disabled: true,
                 ..Default::default()
             });
         } else {
             items.extend(statuses.iter().cloned().map(mcp_server_status_item));
+            items.push(reload_mcp_servers_item());
+            items.push(mcp_setup_help_item());
         }
 
         SelectionViewParams {
@@ -132,18 +139,25 @@ impl ChatWidget {
         header.push(Line::from(format!("MCP: {}", status.name).bold()));
         header.push(Line::from(mcp_server_detail_summary(&status).dim()));
         if let Some(info) = &status.server_info
-            && let Some(description) = non_empty(info.description.as_deref()) {
-                header.push(Line::from(description.to_string().dim()));
-            }
+            && let Some(description) = non_empty(info.description.as_deref())
+        {
+            header.push(Line::from(description.to_string().dim()));
+        }
 
+        let has_inventory = !status.tools.is_empty()
+            || !status.resources.is_empty()
+            || !status.resource_templates.is_empty();
         let mut items = vec![refresh_mcp_manager_item()];
         if status.auth_status == McpAuthStatus::NotLoggedIn {
             items.push(mcp_oauth_login_item(status.name.clone()));
         }
+        items.push(reload_mcp_servers_item());
+        items.push(mcp_diagnostics_help_item(status.name.clone()));
+        items.push(mcp_scale_guidance_item());
         push_tool_items(&mut items, &status);
         push_resource_items(&mut items, &status);
         push_resource_template_items(&mut items, &status);
-        if items.len() == 1 {
+        if !has_inventory {
             items.push(SelectionItem {
                 name: "No tools or resources advertised".to_string(),
                 description: Some("This server is reachable but has no inventory.".to_string()),
@@ -158,7 +172,7 @@ impl ChatWidget {
             footer_hint: Some(standard_popup_hint_line()),
             items,
             is_searchable: true,
-            search_placeholder: Some("Search tools and resources".to_string()),
+            search_placeholder: Some("Search actions, tools, and resources".to_string()),
             col_width_mode: ColumnWidthMode::Fixed,
             ..Default::default()
         }
@@ -169,6 +183,7 @@ fn refresh_mcp_manager_item() -> SelectionItem {
     SelectionItem {
         name: "Refresh".to_string(),
         description: Some("Reload MCP server status and inventory.".to_string()),
+        search_value: Some("refresh inventory status".to_string()),
         actions: vec![Box::new(|tx| {
             tx.send(AppEvent::OpenMcpManager {
                 detail: McpServerStatusDetail::Full,
@@ -179,16 +194,79 @@ fn refresh_mcp_manager_item() -> SelectionItem {
     }
 }
 
+fn reload_mcp_servers_item() -> SelectionItem {
+    SelectionItem {
+        name: "Reload MCP tools".to_string(),
+        description: Some("Reconnect loaded threads to the latest MCP config.".to_string()),
+        selected_description: Some(
+            "Use this after adding a server, changing command args, or updating an npm/plugin-backed MCP.".to_string(),
+        ),
+        search_value: Some("reload refresh reconnect tools config npm plugin".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::ReloadMcpServers);
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_setup_help_item() -> SelectionItem {
+    SelectionItem {
+        name: "Add server".to_string(),
+        description: Some("Show config guidance for stdio and HTTP MCP servers.".to_string()),
+        selected_description: Some(
+            "Stdio is fine for normal local MCPs; use streamable HTTP or plugins for heavier fleets.".to_string(),
+        ),
+        search_value: Some("add setup configure config stdio http streamable plugin".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::ShowMcpSetupHelp);
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
 fn mcp_oauth_login_item(server_name: String) -> SelectionItem {
     SelectionItem {
         name: "OAuth login".to_string(),
         description: Some("Open the browser login flow for this server.".to_string()),
+        search_value: Some("oauth login auth browser".to_string()),
         actions: vec![Box::new(move |tx| {
             tx.send(AppEvent::StartMcpServerOauthLogin {
                 name: server_name.clone(),
             });
         })],
         dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_diagnostics_help_item(server_name: String) -> SelectionItem {
+    SelectionItem {
+        name: "Diagnose".to_string(),
+        description: Some(
+            "Show checks for this server's command, env, auth, and inventory.".to_string(),
+        ),
+        search_value: Some("diagnose debug troubleshoot command env auth inventory".to_string()),
+        actions: vec![Box::new(move |tx| {
+            tx.send(AppEvent::ShowMcpDiagnosticsHelp {
+                name: server_name.clone(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_scale_guidance_item() -> SelectionItem {
+    SelectionItem {
+        name: "Scale guidance".to_string(),
+        description: Some(
+            "Many stdio MCPs spawn many local processes; HTTP/plugin MCPs reduce local load."
+                .to_string(),
+        ),
+        search_value: Some("scale stdio http streamable plugin process load".to_string()),
+        is_disabled: true,
         ..Default::default()
     }
 }
@@ -241,7 +319,7 @@ fn push_resource_template_items(items: &mut Vec<SelectionItem>, status: &McpServ
 fn tool_item(tool: &Tool) -> SelectionItem {
     SelectionItem {
         name: display_name(tool.title.as_deref(), &tool.name),
-        name_prefix_spans: vec!["T ".cyan()],
+        name_prefix_spans: vec!["T ".fg(accent_color())],
         description: tool.description.clone().or_else(|| Some(tool.name.clone())),
         selected_description: Some(format!("Tool name: {}", tool.name)),
         is_disabled: true,
@@ -313,7 +391,7 @@ fn auth_status_order(status: McpAuthStatus) -> usize {
 fn auth_status_prefix(status: McpAuthStatus) -> Span<'static> {
     match status {
         McpAuthStatus::NotLoggedIn => "! ".red(),
-        McpAuthStatus::BearerToken => "K ".cyan(),
+        McpAuthStatus::BearerToken => "K ".fg(accent_color()),
         McpAuthStatus::OAuth => "O ".green(),
         McpAuthStatus::Unsupported => "- ".dim(),
     }

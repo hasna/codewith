@@ -22,6 +22,7 @@ use crate::app_event::FeedbackCategory;
 use crate::app_event_sender::AppEventSender;
 use crate::history_cell;
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -269,7 +270,7 @@ pub(crate) fn should_show_feedback_connectivity_details(
 }
 
 fn gutter() -> Span<'static> {
-    "▌ ".cyan()
+    "▌ ".fg(accent_color())
 }
 
 fn feedback_title_and_placeholder(category: FeedbackCategory) -> (String, String) {

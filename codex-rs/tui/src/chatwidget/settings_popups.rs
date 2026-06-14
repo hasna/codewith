@@ -126,128 +126,10 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_config_popup(&mut self) {
-        let items = vec![
-            SelectionItem {
-                name: "Update checks".to_string(),
-                description: Some(
-                    "Off for this internal app. Updates come from explicit internal releases."
-                        .to_string(),
-                ),
-                selected_description: Some(
-                    "Managed by Codewith and cannot be enabled here.".to_string(),
-                ),
-                is_current: true,
-                is_disabled: true,
-                disabled_reason: Some("Managed by Codewith.".to_string()),
-                toggle_placeholder: Some("[ ] "),
-                ..Default::default()
-            },
-            config_toggle_item(
-                "Auth profile auto-switch",
-                "Switch to another configured profile after rate limits are exhausted.",
-                "auth_profile_auto_switch.enabled",
-                self.config.auth_profile_auto_switch.enabled,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Switch on 5h limit",
-                "Allow auto-switching when the five-hour limit is exhausted.",
-                "auth_profile_auto_switch.on_5h_limit",
-                self.config.auth_profile_auto_switch.on_5h_limit,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Switch on weekly limit",
-                "Allow auto-switching when the weekly limit is exhausted.",
-                "auth_profile_auto_switch.on_weekly_limit",
-                self.config.auth_profile_auto_switch.on_weekly_limit,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Paste burst detection",
-                "Detect fast pasted input before inserting it into the composer.",
-                "disable_paste_burst",
-                !self.config.disable_paste_burst,
-                Some(Box::new(|enabled| serde_json::json!(!enabled))),
-            ),
-            config_toggle_item(
-                "Session recap",
-                "Prepare a one-line summary while the terminal is unfocused.",
-                "session_recap.enabled",
-                self.config.session_recap.enabled,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Hide reasoning summaries",
-                "Hide agent reasoning events from the transcript.",
-                "hide_agent_reasoning",
-                self.config.hide_agent_reasoning,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Show raw reasoning",
-                "Show raw reasoning content when the model emits it.",
-                "show_raw_agent_reasoning",
-                self.config.show_raw_agent_reasoning,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Environment context",
-                "Include the environment_context block in model-visible context.",
-                "include_environment_context",
-                self.config.include_environment_context,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Permission instructions",
-                "Include current sandbox and approval instructions in model-visible context.",
-                "include_permissions_instructions",
-                self.config.include_permissions_instructions,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "App instructions",
-                "Include app and tool-surface instructions in model-visible context.",
-                "include_apps_instructions",
-                self.config.include_apps_instructions,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Collaboration instructions",
-                "Include collaboration-mode instructions in model-visible context.",
-                "include_collaboration_mode_instructions",
-                self.config.include_collaboration_mode_instructions,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Skill instructions",
-                "Include installed skill instructions in model-visible context.",
-                "skills.include_instructions",
-                self.config.include_skill_instructions,
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Unstable feature warnings",
-                "Show warnings for enabled under-development features.",
-                "suppress_unstable_features_warning",
-                !self.config.suppress_unstable_features_warning,
-                Some(Box::new(|enabled| serde_json::json!(!enabled))),
-            ),
-            config_toggle_item(
-                "Analytics",
-                "Allow analytics across product surfaces on this machine.",
-                "analytics.enabled",
-                self.config.analytics_enabled.unwrap_or(true),
-                /*value_for_state*/ None,
-            ),
-            config_toggle_item(
-                "Feedback",
-                "Allow feedback collection from the TUI.",
-                "feedback.enabled",
-                self.config.feedback_enabled,
-                /*value_for_state*/ None,
-            ),
-        ];
+        let items = crate::common_config_options::common_config_options(&self.config)
+            .into_iter()
+            .map(config_selection_item)
+            .collect();
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Config".bold()));
@@ -485,27 +367,47 @@ impl ChatWidget {
     }
 }
 
-type ConfigToggleValue = Box<dyn Fn(bool) -> serde_json::Value + Send + Sync>;
-
-fn config_toggle_item(
-    label: &'static str,
-    description: &'static str,
-    key_path: &'static str,
-    is_on: bool,
-    value_for_state: Option<ConfigToggleValue>,
+fn config_selection_item(
+    option: crate::common_config_options::CommonConfigOption,
 ) -> SelectionItem {
-    let value_for_state =
-        value_for_state.unwrap_or_else(|| Box::new(|enabled| serde_json::json!(enabled)));
+    if option.is_disabled() {
+        return SelectionItem {
+            name: option.label.to_string(),
+            description: Some(option.description.to_string()),
+            selected_description: Some(
+                "Managed by Codewith and cannot be enabled here.".to_string(),
+            ),
+            is_current: true,
+            is_disabled: true,
+            disabled_reason: option.disabled_reason.map(str::to_string),
+            toggle_placeholder: Some("[ ] "),
+            ..Default::default()
+        };
+    }
+
+    let Some(key_path) = option.key_path else {
+        return SelectionItem {
+            name: option.label.to_string(),
+            description: Some(option.description.to_string()),
+            selected_description: Some("This option is not available.".to_string()),
+            is_current: option.enabled,
+            is_disabled: true,
+            disabled_reason: Some("Unavailable.".to_string()),
+            toggle_placeholder: Some("[ ] "),
+            ..Default::default()
+        };
+    };
+
     SelectionItem {
-        name: label.to_string(),
-        description: Some(description.to_string()),
+        name: option.label.to_string(),
+        description: Some(option.description.to_string()),
         toggle: Some(SelectionToggle {
-            is_on,
+            is_on: option.enabled,
             action: Box::new(move |enabled, tx| {
                 tx.send(AppEvent::UpdateConfigValue {
                     key_path: key_path.to_string(),
-                    value: value_for_state(enabled),
-                    label: label.to_string(),
+                    value: option.value_for_enabled(enabled),
+                    label: option.label.to_string(),
                 });
             }),
         }),

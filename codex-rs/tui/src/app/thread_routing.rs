@@ -133,11 +133,7 @@ impl App {
             format!("Agent ({short_id})")
         };
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
-            let label = format_agent_picker_item_name(
-                entry.agent_nickname.as_deref(),
-                entry.agent_role.as_deref(),
-                is_primary,
-            );
+            let label = format_agent_picker_entry_name(entry, is_primary);
             if label == "Agent" {
                 let thread_id = thread_id.to_string();
                 let short_id: String = thread_id.chars().take(8).collect();
@@ -639,6 +635,9 @@ impl App {
                 app_server
                     .thread_set_name(thread_id, name.to_string())
                     .await?;
+                self.agent_navigation
+                    .set_thread_name(thread_id, Some(name.to_string()));
+                self.sync_active_agent_label();
                 Ok(true)
             }
             AppCommand::ThreadRollback { num_turns } => {
@@ -682,6 +681,21 @@ impl App {
             AppCommand::RunUserShellCommand { command } => {
                 app_server
                     .thread_shell_command(thread_id, command.to_string())
+                    .await?;
+                Ok(true)
+            }
+            AppCommand::StartExternalAgent {
+                runtime_id,
+                task,
+                mode,
+            } => {
+                app_server
+                    .thread_external_agent_start(
+                        thread_id,
+                        runtime_id.to_string(),
+                        task.to_string(),
+                        *mode,
+                    )
                     .await?;
                 Ok(true)
             }
@@ -956,6 +970,9 @@ impl App {
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
         );
+        self.agent_navigation
+            .set_thread_name(thread_id, notification.thread.name.clone());
+        self.sync_active_agent_label();
         Some(session)
     }
 

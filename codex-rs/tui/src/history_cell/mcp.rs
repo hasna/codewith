@@ -1,6 +1,7 @@
 //! MCP tool-call, inventory, and output history cells.
 
 use super::*;
+use crate::style::accent_color;
 
 #[derive(Debug)]
 struct CompletedMcpToolCallWithImageOutput {
@@ -681,9 +682,9 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
         .unwrap_or_default();
 
     let invocation_spans = vec![
-        invocation.server.clone().cyan(),
+        invocation.server.clone().fg(accent_color()),
         ".".into(),
-        invocation.tool.cyan(),
+        invocation.tool.fg(accent_color()),
         "(".into(),
         args_str.dim(),
         ")".into(),

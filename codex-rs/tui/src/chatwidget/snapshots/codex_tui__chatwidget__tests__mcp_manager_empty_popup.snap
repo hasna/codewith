@@ -7,6 +7,8 @@ expression: popup
 
   Search MCP servers
 › Refresh                    Reload MCP server status and inventory.
-  No MCP servers configured  Add servers in config.toml to use MCP tools.
+  Reload MCP tools           Reconnect loaded threads to the latest MCP config.
+  Add server                 Show config guidance for stdio and HTTP MCP servers.
+  No MCP servers configured  Use Add server for the config shape and reload flow.
 
   Press enter to confirm or esc to go back
