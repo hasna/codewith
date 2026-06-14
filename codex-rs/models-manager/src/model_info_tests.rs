@@ -88,6 +88,62 @@ fn known_nvidia_glm_model_uses_local_metadata() {
     assert!(model.supported_reasoning_levels.is_empty());
     assert!(!model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
+    assert!(!model.supports_search_tool);
+}
+
+#[test]
+fn known_anthropic_fable_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("claude-fable-5", Some("anthropic"));
+
+    assert_eq!(model.display_name, "Claude Fable 5");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert!(!model.supports_reasoning_summaries);
+    assert!(model.supports_search_tool);
+    assert_eq!(model.default_reasoning_level, None);
+    assert_eq!(model.supported_reasoning_levels, Vec::new());
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_anthropic_latest_models_have_context_windows() {
+    let cases = [
+        ("claude-opus-4-8", "Claude Opus 4.8", 1_000_000),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000),
+        ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000),
+    ];
+
+    for (slug, display_name, context_window) in cases {
+        let model = model_info_from_slug_for_provider(slug, Some("anthropic"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(context_window));
+        assert_eq!(model.max_context_window, Some(context_window));
+        assert_eq!(
+            model.supports_search_tool,
+            slug != "claude-haiku-4-5-20251001" && slug != "claude-haiku-4-5"
+        );
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
+fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("mimo-v2.5-pro-ultraspeed", Some("xiaomi"));
+
+    assert_eq!(model.display_name, "MiMo V2.5 Pro UltraSpeed");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(!model.supports_reasoning_summaries);
+    assert!(model.supports_search_tool);
+    assert_eq!(model.default_reasoning_level, None);
+    assert_eq!(model.supported_reasoning_levels, Vec::new());
+    assert!(!model.used_fallback_model_metadata);
 }
 
 #[test]
@@ -144,6 +200,71 @@ fn known_openrouter_deepseek_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert!(model.supports_search_tool);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn new_provider_models_use_local_metadata() {
+    let cases = [
+        (
+            "deepseek",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            1_048_576,
+            false,
+        ),
+        ("qwen", "qwen3.5-flash", "Qwen3.5 Flash", 1_000_000, true),
+        (
+            "google",
+            "gemini-3.5-flash",
+            "Gemini 3.5 Flash",
+            1_048_576,
+            false,
+        ),
+        ("zai", "glm-5.1", "GLM-5.1", 1_000_000, true),
+    ];
+
+    for (provider_id, slug, display_name, context_window, supports_search_tool) in cases {
+        let model = model_info_from_slug_for_provider(slug, Some(provider_id));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(context_window));
+        assert_eq!(model.max_context_window, Some(context_window));
+        assert_eq!(model.supports_search_tool, supports_search_tool);
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
+fn known_google_gemini_model_advertises_openai_compatible_thinking() {
+    let model = model_info_from_slug_for_provider("gemini-3.1-pro-preview", Some("google"));
+
+    assert_eq!(model.display_name, "Gemini 3.1 Pro Preview");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(model.supports_reasoning_summaries);
+    assert!(!model.supports_search_tool);
+    assert_eq!(
+        model.default_reasoning_level,
+        Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+    );
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort)
+            .collect::<Vec<_>>(),
+        vec![
+            codex_protocol::openai_models::ReasoningEffort::Minimal,
+            codex_protocol::openai_models::ReasoningEffort::Low,
+            codex_protocol::openai_models::ReasoningEffort::Medium,
+            codex_protocol::openai_models::ReasoningEffort::High,
+        ]
+    );
     assert!(!model.used_fallback_model_metadata);
 }
 

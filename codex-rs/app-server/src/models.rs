@@ -257,4 +257,18 @@ mod tests {
         assert!(models[0].is_default);
         assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
     }
+
+    #[test]
+    fn xai_fallback_models_include_grok_build_default() {
+        let models = fallback_supported_models_for_provider("xai", /*include_hidden*/ false);
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model, "grok-build-0.1");
+        assert_eq!(models[0].display_name, "Grok Build 0.1");
+        assert!(models[0].is_default);
+        assert!(!models[0].hidden);
+        assert_eq!(models[1].model, "grok-4.3");
+        assert_eq!(models[1].display_name, "Grok 4.3");
+        assert!(!models[1].is_default);
+    }
 }

@@ -63,11 +63,14 @@ impl Provider {
         if let Some(params) = &self.query_params
             && !params.is_empty()
         {
-            let qs = params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("&");
+            // Percent-encode keys and values so a param containing `&`, `=`, or
+            // whitespace cannot corrupt the query string. Sort for deterministic
+            // output (HashMap iteration order is otherwise unspecified).
+            let mut pairs: Vec<(&String, &String)> = params.iter().collect();
+            pairs.sort();
+            let qs = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish();
             url.push('?');
             url.push_str(&qs);
         }
@@ -192,6 +195,33 @@ mod tests {
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn url_for_path_percent_encodes_query_params() {
+        let mut query_params = HashMap::new();
+        query_params.insert("api version".to_string(), "a&b=c".to_string());
+        let provider = Provider {
+            name: "test".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            query_params: Some(query_params),
+            headers: HeaderMap::new(),
+            retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: Duration::from_secs(1),
+        };
+
+        // Special characters in keys/values must be percent-encoded so they
+        // cannot break out of their query-parameter slot.
+        assert_eq!(
+            "https://example.com/v1/models?api+version=a%26b%3Dc",
+            provider.url_for_path("/models")
+        );
     }
 
     #[test]

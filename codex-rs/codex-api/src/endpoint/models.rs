@@ -92,9 +92,19 @@ impl<T: HttpTransport> ModelsClient<T> {
             Some(provider.base_url.as_str()),
         )
         .map_err(|e| {
+            // Don't embed the entire upstream response body (unbounded, may be
+            // large or noisy) in the error string; a bounded prefix is enough to
+            // diagnose a decode failure.
+            const MAX_BODY_PREVIEW_CHARS: usize = 512;
+            let body = String::from_utf8_lossy(&resp.body);
+            let preview: String = body.chars().take(MAX_BODY_PREVIEW_CHARS).collect();
+            let ellipsis = if body.chars().count() > MAX_BODY_PREVIEW_CHARS {
+                "… (truncated)"
+            } else {
+                ""
+            };
             ApiError::Stream(format!(
-                "failed to decode models response: {e}; body: {}",
-                String::from_utf8_lossy(&resp.body)
+                "failed to decode models response: {e}; body: {preview}{ellipsis}"
             ))
         })?;
 
@@ -354,7 +364,8 @@ impl OpenAiCompatibleModel {
                 capabilities.as_ref(),
             ),
             used_fallback_model_metadata: false,
-            supports_search_tool: false,
+            supports_search_tool: known_metadata
+                .is_some_and(|metadata| metadata.supports_search_tool),
             use_responses_lite: false,
             auto_review_model_override: None,
             tool_mode: None,
@@ -771,6 +782,7 @@ mod tests {
         assert_eq!(model.context_window, Some(1_048_576));
         assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
         assert!(!model.supports_parallel_tool_calls);
+        assert!(model.supports_search_tool);
     }
 
     #[test]
@@ -824,6 +836,7 @@ mod tests {
         assert_eq!(model.max_context_window, Some(1_048_576));
         assert_eq!(model.experimental_supported_tools, vec!["tools"]);
         assert!(!model.supports_parallel_tool_calls);
+        assert!(model.supports_search_tool);
     }
 
     #[test]
@@ -848,6 +861,7 @@ mod tests {
         assert_eq!(model.display_name, "DeepSeek V4 Flash");
         assert_eq!(model.context_window, Some(1_048_576));
         assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(model.supports_search_tool);
     }
 
     #[test]
@@ -1186,6 +1200,7 @@ mod tests {
         assert_eq!(deepseek.max_context_window, Some(1_048_576));
         assert_eq!(deepseek.experimental_supported_tools, Vec::<String>::new());
         assert!(!deepseek.supports_parallel_tool_calls);
+        assert!(!deepseek.supports_search_tool);
         let glm = &models[4];
         assert_eq!(glm.display_name, "Z.ai GLM 5.1");
         assert_eq!(glm.context_window, Some(131_072));
