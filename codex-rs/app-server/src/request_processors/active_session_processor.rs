@@ -14,6 +14,11 @@ use crate::active_session_registry::LastSeenAt;
 use codex_protocol::protocol::SubAgentSource;
 use std::time::Duration;
 
+const TARGET_NOT_LOADED_REASON: &str =
+    "target thread is not currently loaded; no offline delivery was attempted";
+const SENDER_NOT_LOADED_REASON: &str =
+    "sender thread is not currently loaded; no offline delivery was attempted";
+
 #[derive(Clone)]
 pub(crate) struct ActiveSessionRequestProcessor {
     thread_manager: Arc<ThreadManager>,
@@ -106,11 +111,13 @@ impl ActiveSessionRequestProcessor {
         let message_id = uuid::Uuid::now_v7().to_string();
         let target = ThreadId::from_string(target_thread_id.as_str())
             .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
-        let sender = match sender_thread_id.as_deref() {
-            Some(sender_thread_id) => Some(
-                ThreadId::from_string(sender_thread_id)
-                    .map_err(|err| invalid_request(format!("invalid senderThreadId: {err}")))?,
-            ),
+        let target_thread_id = target.to_string();
+        let sender_thread_id = match sender_thread_id {
+            Some(sender_thread_id) => {
+                let sender = ThreadId::from_string(sender_thread_id.as_str())
+                    .map_err(|err| invalid_request(format!("invalid senderThreadId: {err}")))?;
+                Some(sender.to_string())
+            }
             None => None,
         };
         let freshness = freshness_now();
@@ -118,47 +125,45 @@ impl ActiveSessionRequestProcessor {
         let target_peer = match registry.get_active(target_thread_id.as_str(), freshness) {
             Ok(peer) => peer,
             Err(ActivePeerLookupError::Unknown { .. } | ActivePeerLookupError::Inactive { .. }) => {
-                return Ok(ActiveSessionSendResponse {
-                    status: ActiveSessionSendStatus::NotLoaded,
+                return Ok(active_session_not_loaded_response(
                     message_id,
                     target_thread_id,
                     sender_thread_id,
-                    reason: Some(
-                        "target thread is not currently loaded; inactive delivery is deferred"
-                            .to_string(),
-                    ),
-                });
+                    TARGET_NOT_LOADED_REASON,
+                ));
             }
         };
-        let sender_peer = match sender {
-            Some(sender) => {
-                let sender_thread_id = sender.to_string();
+        let sender_peer = match sender_thread_id.as_ref() {
+            Some(sender_thread_id) => {
                 match registry.get_active(sender_thread_id.as_str(), freshness) {
                     Ok(peer) => Some(peer),
                     Err(
                         ActivePeerLookupError::Unknown { .. }
                         | ActivePeerLookupError::Inactive { .. },
                     ) => {
-                        return Ok(ActiveSessionSendResponse {
-                            status: ActiveSessionSendStatus::NotLoaded,
+                        return Ok(active_session_not_loaded_response(
                             message_id,
                             target_thread_id,
-                            sender_thread_id: Some(sender_thread_id),
-                            reason: Some(
-                                "sender thread is not currently loaded; inactive delivery is deferred"
-                                    .to_string(),
-                            ),
-                        });
+                            Some(sender_thread_id.clone()),
+                            SENDER_NOT_LOADED_REASON,
+                        ));
                     }
                 }
             }
             None => None,
         };
-        let target_thread = self
-            .thread_manager
-            .get_thread(target)
-            .await
-            .map_err(active_session_get_thread_error)?;
+        let target_thread = match self.thread_manager.get_thread(target).await {
+            Ok(thread) => thread,
+            Err(CodexErr::ThreadNotFound(_)) => {
+                return Ok(active_session_not_loaded_response(
+                    message_id,
+                    target_thread_id,
+                    sender_thread_id,
+                    TARGET_NOT_LOADED_REASON,
+                ));
+            }
+            Err(err) => return Err(active_session_get_thread_error(err)),
+        };
         let envelope = active_channel_envelope(
             message_id.as_str(),
             sender_label,
@@ -170,10 +175,21 @@ impl ActiveSessionRequestProcessor {
                 .into(),
         );
         let communication = active_session_communication(&envelope);
-        target_thread
+        match target_thread
             .submit(Op::InterAgentCommunication { communication })
             .await
-            .map_err(active_session_submit_error)?;
+        {
+            Ok(_) => {}
+            Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
+                return Ok(active_session_not_loaded_response(
+                    message_id,
+                    target_thread_id,
+                    sender_thread_id,
+                    TARGET_NOT_LOADED_REASON,
+                ));
+            }
+            Err(err) => return Err(active_session_submit_error(err)),
+        }
 
         Ok(ActiveSessionSendResponse {
             status: ActiveSessionSendStatus::Delivered,
@@ -190,11 +206,11 @@ impl ActiveSessionRequestProcessor {
     ) -> Result<ActivePeerRegistry, JSONRPCErrorError> {
         let mut registry = ActivePeerRegistry::default();
         for thread_id in self.thread_manager.list_thread_ids().await {
-            let thread = self
-                .thread_manager
-                .get_thread(thread_id)
-                .await
-                .map_err(active_session_get_thread_error)?;
+            let thread = match self.thread_manager.get_thread(thread_id).await {
+                Ok(thread) => thread,
+                Err(CodexErr::ThreadNotFound(_)) => continue,
+                Err(err) => return Err(active_session_get_thread_error(err)),
+            };
             let config_snapshot = thread.config_snapshot().await;
             let session_id = thread.session_configured().session_id.to_string();
             let peer_id = thread_id.to_string();
@@ -354,6 +370,21 @@ impl From<ActiveSessionMessageDelivery> for ActiveChannelDeliveryMode {
             ActiveSessionMessageDelivery::QueueOnly => Self::QueueOnly,
             ActiveSessionMessageDelivery::TriggerTurn => Self::TriggerTurn,
         }
+    }
+}
+
+fn active_session_not_loaded_response(
+    message_id: String,
+    target_thread_id: String,
+    sender_thread_id: Option<String>,
+    reason: &'static str,
+) -> ActiveSessionSendResponse {
+    ActiveSessionSendResponse {
+        status: ActiveSessionSendStatus::NotLoaded,
+        message_id,
+        target_thread_id,
+        sender_thread_id,
+        reason: Some(reason.to_string()),
     }
 }
 

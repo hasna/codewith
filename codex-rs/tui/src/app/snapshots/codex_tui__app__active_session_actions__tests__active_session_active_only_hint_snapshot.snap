@@ -1,0 +1,5 @@
+---
+source: tui/src/app/active_session_actions.rs
+expression: ACTIVE_SESSION_ACTIVE_ONLY_HINT
+---
+Only loaded sessions can receive messages; no offline delivery is attempted.

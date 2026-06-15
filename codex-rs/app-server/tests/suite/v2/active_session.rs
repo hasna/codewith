@@ -130,12 +130,14 @@ async fn active_session_send_delivers_to_loaded_thread() -> Result<()> {
 
     let sender_thread_id = start_thread(&mut mcp).await?;
     let target_thread_id = start_thread(&mut mcp).await?;
+    let sender_thread_id_input = sender_thread_id.to_ascii_uppercase();
+    let target_thread_id_input = target_thread_id.to_ascii_uppercase();
 
     let send_id = mcp
         .send_active_session_send_request(ActiveSessionSendParams {
-            target_thread_id: target_thread_id.clone(),
+            target_thread_id: target_thread_id_input,
             message: "hello active peer".to_string(),
-            sender_thread_id: Some(sender_thread_id.clone()),
+            sender_thread_id: Some(sender_thread_id_input),
             sender_label: Some("integration test".to_string()),
             delivery: Some(ActiveSessionMessageDelivery::QueueOnly),
         })
@@ -325,8 +327,64 @@ async fn active_session_send_rejects_unloaded_target_without_resuming() -> Resul
     assert_eq!(response.sender_thread_id, None);
     assert_eq!(
         response.reason,
-        Some("target thread is not currently loaded; inactive delivery is deferred".to_string())
+        Some(
+            "target thread is not currently loaded; no offline delivery was attempted".to_string()
+        )
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_session_send_returns_not_loaded_for_offline_thread_without_resuming() -> Result<()>
+{
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let offline_thread_id = {
+        let mut mcp = McpProcess::new(codex_home.path()).await?;
+        timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+        start_thread(&mut mcp).await?
+    };
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let send_response = send_active_session_message(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id: offline_thread_id.clone(),
+            message: "hello offline peer".to_string(),
+            sender_thread_id: None,
+            sender_label: None,
+            delivery: Some(ActiveSessionMessageDelivery::TriggerTurn),
+        },
+    )
+    .await?;
+
+    assert_eq!(send_response.status, ActiveSessionSendStatus::NotLoaded);
+    assert_eq!(send_response.target_thread_id, offline_thread_id);
+    assert_eq!(send_response.sender_thread_id, None);
+    assert_eq!(
+        send_response.reason,
+        Some(
+            "target thread is not currently loaded; no offline delivery was attempted".to_string()
+        )
+    );
+
+    let list_id = mcp
+        .send_active_session_list_request(ActiveSessionListParams::default())
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let ActiveSessionListResponse { data, next_cursor } =
+        to_response::<ActiveSessionListResponse>(resp)?;
+    assert_eq!(data, Vec::new());
+    assert_eq!(next_cursor, None);
 
     Ok(())
 }

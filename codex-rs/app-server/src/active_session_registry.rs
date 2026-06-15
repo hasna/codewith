@@ -200,15 +200,16 @@ impl ActivePeerRegistry {
     }
 
     pub(crate) fn remove_inactive(&mut self, freshness: ActivePeerFreshness) -> Vec<ActivePeer> {
-        let inactive_peer_ids = self
-            .peers
-            .iter()
-            .filter_map(|(peer_id, peer)| (!peer.is_fresh(freshness)).then_some(peer_id.clone()))
-            .collect::<Vec<_>>();
-        inactive_peer_ids
-            .into_iter()
-            .filter_map(|peer_id| self.peers.remove(&peer_id))
-            .collect()
+        let mut inactive_peers = Vec::new();
+        self.peers.retain(|_, peer| {
+            if peer.is_fresh(freshness) {
+                true
+            } else {
+                inactive_peers.push(peer.clone());
+                false
+            }
+        });
+        inactive_peers
     }
 }
 
