@@ -106,7 +106,8 @@ pub fn create_resume_goal_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: RESUME_GOAL_TOOL_NAME.to_string(),
         description: r#"Resume an existing stopped goal by setting it back to active.
-Use this tool only when the user explicitly asks to resume a paused, blocked, usage-limited, or budget-limited goal.
+Use this tool only when the user explicitly asks to resume a paused, blocked, or usage-limited goal.
+Do not use this tool for budget-limited goals because they cannot resume without changing the budget.
 Do not use this tool for completed goals; create a new goal only when explicitly requested.
 After resuming a previously blocked goal, treat the resumed run as a fresh blocked audit before any later blocked update."#
             .to_string(),

@@ -1028,6 +1028,67 @@ async fn resume_goal_rejects_active_and_complete_goals() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn resume_goal_rejects_budget_limited_goal_without_accounting() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ Some(0),
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+
+    let err = match resume_tool
+        .handle(tool_call(
+            "resume_goal",
+            "call-resume-budget-limited",
+            json!({}),
+        ))
+        .await
+    {
+        Ok(_) => panic!("budget-limited goal resume should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cannot resume a budget-limited goal without changing its token budget".to_string()
+        )
+    );
+    assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
+
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-shell", "shell")
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::BudgetLimited, goal.status);
+    assert_eq!(0, goal.tokens_used);
+    assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
+    Ok(())
+}
+
+#[tokio::test]
 async fn external_goal_mutation_start_accounts_active_goal_progress() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

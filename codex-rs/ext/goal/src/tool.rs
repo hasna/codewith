@@ -349,8 +349,14 @@ impl GoalToolExecutor {
         match existing_goal.status {
             codex_state::ThreadGoalStatus::Paused
             | codex_state::ThreadGoalStatus::Blocked
-            | codex_state::ThreadGoalStatus::UsageLimited
-            | codex_state::ThreadGoalStatus::BudgetLimited => {}
+            | codex_state::ThreadGoalStatus::UsageLimited => {}
+            codex_state::ThreadGoalStatus::BudgetLimited => {
+                self.accounting_state.clear_active_goal();
+                return Err(FunctionCallError::RespondToModel(
+                    "cannot resume a budget-limited goal without changing its token budget"
+                        .to_string(),
+                ));
+            }
             codex_state::ThreadGoalStatus::Active => {
                 return Err(FunctionCallError::RespondToModel(
                     "cannot resume goal because it is already active".to_string(),
