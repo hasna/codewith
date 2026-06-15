@@ -84,7 +84,7 @@ impl ActivePeer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActivePeerKind {
     CodewithSession,
     SpawnedAgent,
