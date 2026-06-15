@@ -8,6 +8,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -22,6 +23,8 @@ use crate::app_event::FeedbackCategory;
 use crate::app_event_sender::AppEventSender;
 use crate::history_cell;
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -269,7 +272,7 @@ pub(crate) fn should_show_feedback_connectivity_details(
 }
 
 fn gutter() -> Span<'static> {
-    "▌ ".cyan()
+    "▌ ".fg(accent_color())
 }
 
 fn feedback_title_and_placeholder(category: FeedbackCategory) -> (String, String) {
@@ -325,7 +328,7 @@ pub(crate) fn feedback_success_cell(
     ))];
     lines.extend([
         "".into(),
-        Line::from(vec!["  ".into(), issue_url.cyan().underlined()]),
+        Line::from(vec!["  ".into(), issue_url.set_style(accent_link_style())]),
     ]);
     if include_logs {
         append_prepared_files_lines(&mut lines, thread_id);

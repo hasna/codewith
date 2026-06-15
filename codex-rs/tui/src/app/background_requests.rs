@@ -18,6 +18,7 @@ use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::ThreadRecapParams;
 use codex_app_server_protocol::ThreadRecapResponse;
 
@@ -68,6 +69,18 @@ impl App {
         });
     }
 
+    pub(super) fn reload_mcp_servers(&mut self, app_server: &AppServerSession) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = reload_mcp_servers(request_handle)
+                .await
+                .map(|_| ())
+                .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::McpServersReloaded { result });
+        });
+    }
+
     fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
         thread_id.filter(|thread_id| {
             self.active_thread_id == Some(*thread_id)
@@ -98,6 +111,22 @@ impl App {
                 .await
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::RateLimitsLoaded {
+                origin,
+                auth_profile,
+                result,
+            });
+        });
+    }
+
+    /// Spawns a background task to fetch MiniMax Token Plan usage and deliver
+    /// the result as a `MiniMaxUsageLoaded` event.
+    pub(super) fn refresh_minimax_usage(&mut self, origin: MiniMaxUsageRefreshOrigin) {
+        let app_event_tx = self.app_event_tx.clone();
+        let auth_profile = self.config.selected_auth_profile.clone();
+        let provider = self.config.model_provider.clone();
+        tokio::spawn(async move {
+            let result = crate::minimax_usage::fetch_minimax_usage(&provider).await;
+            app_event_tx.send(AppEvent::MiniMaxUsageLoaded {
                 origin,
                 auth_profile,
                 result,
@@ -656,10 +685,7 @@ impl App {
         match result {
             Ok(summary) => {
                 self.chat_widget
-                    .add_to_history(history_cell::new_info_event(
-                        format!("Recap: {summary}"),
-                        /*hint*/ None,
-                    ));
+                    .add_to_history(history_cell::new_session_recap_event(summary));
             }
             Err(err) => {
                 if automatic {
@@ -738,6 +764,19 @@ async fn start_mcp_server_oauth_login(
         })
         .await
         .wrap_err("mcpServer/oauth/login failed in TUI")
+}
+
+async fn reload_mcp_servers(
+    request_handle: AppServerRequestHandle,
+) -> Result<McpServerRefreshResponse> {
+    let request_id = RequestId::String(format!("mcp-reload-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::McpServerRefresh {
+            request_id,
+            params: None,
+        })
+        .await
+        .wrap_err("config/mcpServer/reload failed in TUI")
 }
 
 pub(super) async fn fetch_account_rate_limits(

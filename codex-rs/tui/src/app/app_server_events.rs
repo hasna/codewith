@@ -161,6 +161,13 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if self
+            .try_handle_ui_dynamic_tool_request(app_server_client, &request)
+            .await
+        {
+            return;
+        }
+
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)

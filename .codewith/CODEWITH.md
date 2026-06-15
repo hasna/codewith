@@ -6,6 +6,20 @@
 - Do not re-enable automatic update checks, update notifications, or update prompts. Codewith updates through explicit upstream merges and `@hasna/codewith` releases.
 - When merging upstream, preserve Codewith behavior including the `@hasna/codewith` package, auth profiles, `/profile`, auth-profile auto-switching, `/config`, `.codewith`, and `CODEWITH.md`.
 
+### Codewith release and CI policy
+
+- Do not treat the full upstream-style Rust/Bazel matrix as the default immediate publish gate for every small Codewith release fix. It is a full confidence backstop, not the fastest release path.
+- For urgent `@hasna/codewith` publishes, use a fast release gate unless the user explicitly asks to wait for the full matrix:
+  - targeted tests for the changed crates and workflows
+  - focused regressions for provider auth, model/provider selection, profiles, secrets, and TUI flows touched by the change
+  - package build plus tarball smoke test
+  - published package install smoke test before reporting success
+  - release tag alignment with the commit that produced the package
+- Keep the full Rust/Bazel matrix available as post-merge, nightly, or explicit confidence verification. If it is already running and a job fails with a real compiler/test/lint error, inspect the logs and fix it; do not ignore real regressions.
+- Cancel superseded GitHub Actions runs on `main` after pushing follow-up release commits. Obsolete full-matrix runs consume runner minutes and can hide the signal from the current commit.
+- Prefer branch/PR release work or workflow concurrency that cancels superseded runs over repeatedly pushing tiny fixes directly to `main` and letting every historical full matrix keep running.
+- Bigger runners can help only after the workflow shape is right. Use them for true bottlenecks such as Bazel Linux test/clippy, argument-comment-lint, and Windows build jobs; do not use longer timeouts as the primary speed strategy.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -61,10 +75,19 @@ In the codex-rs folder where the rust code lives:
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
+### Fast Rust test workflow
+
+- Use `just test-fast ...` for inner-loop package, test-binary, or named-test runs when the benchmark smoke check is not relevant. `just test ...` remains the official gate and still runs `bench-smoke`.
+- Prefer a persistent target directory for repeated work on a feature or goal when cold builds or target-lock contention dominate, for example `just test-fast-target /tmp/codewith-<scope>-target -p <crate>`.
+- When a filtered integration test is slow because it lives in a large aggregate binary, split that area into its own top-level `tests/<area>.rs` binary and run it with `just test-fast -p <crate> --test <area>`. New hot integration areas should start this way instead of being added only to an aggregate `tests/all.rs` binary.
+- Use `just check-fast -p <crate>` for compile-only API boundary checks, then run slower integration binaries at behavior checkpoints.
+- If compile/link time dominates test execution, gather evidence with `just build-timings -p <crate>` or `just test-binaries -p <crate>` before adding timeouts or larger runners.
+- Treat machine-level accelerators such as `RUSTC_WRAPPER=sccache` or custom linkers as local setup unless the repo installs and validates them for every developer and CI path.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
-1. Do not run `cargo test` directly. Use `just test` so test execution follows the repo defaults.
-2. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `just test -p codex-tui`.
+1. Do not run `cargo test` directly. Use `just test` for official gates and `just test-fast` for inner-loop runs so test execution follows the repo defaults.
+2. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `just test-fast -p codex-tui` while iterating and `just test -p codex-tui` for the final package gate.
 3. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `just test`. Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.

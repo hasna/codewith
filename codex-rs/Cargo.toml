@@ -4,6 +4,7 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "background-agent",
     "backend-client",
     "bwrap",
     "ansi-escape",
@@ -50,7 +51,9 @@ members = [
     "ext/memories",
     "ext/web-search",
     "external-agent-migration",
+    "external-agent",
     "external-agent-sessions",
+    "known-provider-models",
     "keyring-store",
     "file-search",
     "file-watcher",
@@ -117,7 +120,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.17"
+version = "0.1.30"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -131,6 +134,7 @@ app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
+codex-background-agent = { path = "background-agent" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
 codex-aws-auth = { path = "aws-auth" }
@@ -167,11 +171,13 @@ codex-goal-extension = { path = "ext/goal" }
 codex-guardian = { path = "ext/guardian" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
+codex-external-agent = { path = "external-agent" }
 codex-external-agent-sessions = { path = "external-agent-sessions" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-features = { path = "features" }
 codex-feedback = { path = "feedback" }
 codex-install-context = { path = "install-context" }
+codex-known-provider-models = { path = "known-provider-models" }
 codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }

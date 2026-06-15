@@ -251,10 +251,13 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     let turn_context = context.turn_context;
     let mut specs = Vec::new();
     let provider_capabilities = turn_context.provider.capabilities();
+    let hosted_web_search_provider = provider_capabilities.web_search;
+    let hosted_web_search_enabled =
+        hosted_web_search_provider.is_enabled() && search_tool_enabled(turn_context);
     let web_search_mode = (!standalone_web_run_available(context.extension_tool_executors)
-        && provider_capabilities.web_search)
+        && hosted_web_search_enabled)
         .then_some(turn_context.config.web_search_mode.value());
-    let web_search_config = if provider_capabilities.web_search {
+    let web_search_config = if hosted_web_search_enabled {
         turn_context.config.web_search_config.as_ref()
     } else {
         None
@@ -263,6 +266,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
         web_search_mode,
         web_search_config,
         web_search_tool_type: turn_context.model_info.web_search_tool_type,
+        hosted_web_search_provider,
     }) {
         specs.push(web_search_tool);
     }

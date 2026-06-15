@@ -1,6 +1,7 @@
 //! Session headers, onboarding guidance, and transcript cards.
 
 use super::*;
+use crate::style::accent_color;
 
 pub(crate) const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56; // Just an eyeballed value
 
@@ -337,9 +338,9 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ Hasna Codewith (vX)"
+        // Title line rendered inside the box: "⎔  Hasna Codewith (vX)"
         let title_spans: Vec<Span<'static>> = vec![
-            Span::from(">_ ").dim(),
+            Span::from("⎔  ").dim(),
             Span::from("Hasna Codewith").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
@@ -375,7 +376,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
                 spans.push(Span::styled("fast", self.model_style.magenta()));
             }
             spans.push("   ".dim());
-            spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
+            spans.push(CHANGE_MODEL_HINT_COMMAND.fg(accent_color()));
             spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
             spans
         };

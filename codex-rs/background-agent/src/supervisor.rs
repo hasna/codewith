@@ -1,0 +1,638 @@
+use std::ops::Deref;
+use std::time::Duration;
+
+use serde_json::json;
+
+use crate::AgentAttachSnapshot;
+use crate::AgentEventJournal;
+use crate::AgentExecution;
+use crate::AgentRunStore;
+use crate::AgentSnapshotStore;
+use crate::AgentSupervisor;
+use crate::BackgroundAgentDesiredState;
+use crate::BackgroundAgentExecutionHandleParams;
+use crate::BackgroundAgentPendingInteractionStatus;
+use crate::BackgroundAgentRun;
+use crate::BackgroundAgentRunStatus;
+use crate::BackgroundAgentStatusSnapshotParams;
+use crate::PendingInteractionLedger;
+use crate::SupervisorReconcileReport;
+
+const DEFAULT_RECONCILE_LIMIT: usize = 100;
+const DEFAULT_ATTACH_EVENT_LIMIT: usize = 200;
+const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableAgentSupervisorConfig {
+    pub supervisor_id: String,
+    pub reconcile_limit: usize,
+    pub attach_event_limit: usize,
+    pub heartbeat_timeout: Duration,
+}
+
+impl DurableAgentSupervisorConfig {
+    pub fn new(supervisor_id: impl Into<String>) -> Self {
+        Self {
+            supervisor_id: supervisor_id.into(),
+            reconcile_limit: DEFAULT_RECONCILE_LIMIT,
+            attach_event_limit: DEFAULT_ATTACH_EVENT_LIMIT,
+            heartbeat_timeout: DEFAULT_HEARTBEAT_TIMEOUT,
+        }
+    }
+}
+
+/// Durable supervisor orchestration over the runtime/store traits.
+///
+/// The supervisor claims a durable run before spawning a worker. That keeps
+/// duplicate workers out of the common race where two supervisors reconcile the
+/// same stale roster entry at the same time.
+#[derive(Debug, Clone)]
+pub struct DurableAgentSupervisor<S, E> {
+    store: S,
+    execution: E,
+    config: DurableAgentSupervisorConfig,
+}
+
+impl<S, E> DurableAgentSupervisor<S, E> {
+    pub fn new(store: S, execution: E, config: DurableAgentSupervisorConfig) -> Self {
+        Self {
+            store,
+            execution,
+            config,
+        }
+    }
+}
+
+impl<S, E> DurableAgentSupervisor<S, E>
+where
+    S: Deref + Send + Sync,
+    S::Target: AgentRunStore
+        + AgentEventJournal
+        + AgentSnapshotStore
+        + PendingInteractionLedger
+        + Send
+        + Sync,
+    E: AgentExecution + Send + Sync,
+{
+    fn store(&self) -> &S::Target {
+        self.store.deref()
+    }
+
+    pub async fn reconcile(&self) -> anyhow::Result<SupervisorReconcileReport> {
+        let stale_runs_orphaned = self
+            .store()
+            .orphan_stale_runs(self.config.heartbeat_timeout)
+            .await?;
+        let runs = self
+            .store()
+            .list_runs(Some(self.config.reconcile_limit))
+            .await?;
+        let mut adopted_runs = 0;
+        let mut orphaned_runs = 0;
+
+        for run in runs {
+            match run.status {
+                BackgroundAgentRunStatus::Queued | BackgroundAgentRunStatus::Orphaned => {
+                    if run.status == BackgroundAgentRunStatus::Orphaned {
+                        orphaned_runs += 1;
+                    }
+                    if run.desired_state == BackgroundAgentDesiredState::Running
+                        && self.start_run(run).await?
+                    {
+                        adopted_runs += 1;
+                    }
+                }
+                BackgroundAgentRunStatus::Running
+                    if run.supervisor_id.as_deref() == Some(self.config.supervisor_id.as_str()) =>
+                {
+                    let _ = self
+                        .store()
+                        .heartbeat(&run.id, self.config.supervisor_id.as_str(), run.generation)
+                        .await?;
+                }
+                BackgroundAgentRunStatus::Starting
+                | BackgroundAgentRunStatus::Running
+                | BackgroundAgentRunStatus::WaitingOnApproval
+                | BackgroundAgentRunStatus::WaitingOnUser
+                | BackgroundAgentRunStatus::Stopping
+                | BackgroundAgentRunStatus::Completed
+                | BackgroundAgentRunStatus::Failed
+                | BackgroundAgentRunStatus::Cancelled => {}
+            }
+        }
+
+        Ok(SupervisorReconcileReport {
+            stale_runs_orphaned,
+            adopted_runs,
+            orphaned_runs,
+        })
+    }
+
+    pub async fn attach(&self, run_id: &str) -> anyhow::Result<Option<AgentAttachSnapshot>> {
+        let Some(run) = self.store().get_run(run_id).await? else {
+            return Ok(None);
+        };
+        self.store().expire_timed_out_interactions().await?;
+        let status_snapshot = self.store().get_status_snapshot(run_id).await?;
+        let pending_interactions = self.store().list_pending_interactions(run_id, None).await?;
+        let events = self
+            .store()
+            .list_events_after(run_id, None, Some(self.config.attach_event_limit))
+            .await?;
+
+        for interaction in pending_interactions.iter().filter(|interaction| {
+            interaction.status == BackgroundAgentPendingInteractionStatus::Pending
+        }) {
+            self.store()
+                .mark_pending_interaction_delivered(interaction.id.as_str())
+                .await?;
+        }
+
+        Ok(Some(AgentAttachSnapshot {
+            run,
+            status_snapshot,
+            pending_interactions,
+            events,
+        }))
+    }
+
+    pub async fn detach(&self, _run_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    pub async fn request_stop(&self, run_id: &str) -> anyhow::Result<bool> {
+        let Some(run) = self.store().get_run(run_id).await? else {
+            return Ok(false);
+        };
+        self.store()
+            .set_desired_state(run_id, BackgroundAgentDesiredState::Stopped)
+            .await?;
+        if !is_terminal_agent_status(run.status) {
+            self.store()
+                .update_run_status(
+                    run_id,
+                    BackgroundAgentRunStatus::Stopping,
+                    Some("stop requested"),
+                )
+                .await?;
+            self.store()
+                .append_event(
+                    run_id,
+                    "agent.stopRequested",
+                    &json!({
+                        "reason": "supervisor_requested_stop",
+                    }),
+                )
+                .await?;
+        }
+        Ok(true)
+    }
+
+    async fn start_run(&self, run: BackgroundAgentRun) -> anyhow::Result<bool> {
+        let run_id = run.id.clone();
+        let process_lease_id = format!(
+            "{}:{}:{}",
+            self.config.supervisor_id,
+            run_id,
+            run.generation.saturating_add(1)
+        );
+        let Some(generation) = self
+            .store()
+            .claim_supervisor(
+                run_id.as_str(),
+                self.config.supervisor_id.as_str(),
+                process_lease_id.as_str(),
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        let claimed_run = self.store().get_run(run_id.as_str()).await?.unwrap_or(run);
+
+        match self
+            .execution
+            .start(claimed_run, process_lease_id.clone())
+            .await
+        {
+            Ok(handle) => {
+                let recorded = self
+                    .store()
+                    .record_execution_handle(BackgroundAgentExecutionHandleParams {
+                        run_id: run_id.as_str(),
+                        supervisor_id: self.config.supervisor_id.as_str(),
+                        generation,
+                        pid: handle.pid,
+                        pgid: handle.pgid,
+                        job_id: handle.job_id.as_deref(),
+                        start_token: None,
+                        stderr_log_path: None,
+                    })
+                    .await?;
+                if !recorded {
+                    self.execution.stop(handle).await?;
+                    return Ok(false);
+                }
+                self.store()
+                    .update_run_status(
+                        run_id.as_str(),
+                        BackgroundAgentRunStatus::Running,
+                        Some("worker started"),
+                    )
+                    .await?;
+                self.store()
+                    .append_event(
+                        run_id.as_str(),
+                        "agent.workerStarted",
+                        &json!({
+                            "processLeaseId": handle.process_lease_id,
+                            "pid": handle.pid,
+                            "pgid": handle.pgid,
+                            "jobId": handle.job_id,
+                            "generation": generation,
+                        }),
+                    )
+                    .await?;
+                self.store()
+                    .upsert_status_snapshot(BackgroundAgentStatusSnapshotParams {
+                        run_id: run_id.clone(),
+                        seq: generation,
+                        status: BackgroundAgentRunStatus::Running,
+                        desired_state: BackgroundAgentDesiredState::Running,
+                        summary: Some("Running".to_string()),
+                        pending_interaction_count: 0,
+                        last_event_seq: 0,
+                        payload_json: json!({
+                            "phase": "running",
+                        }),
+                    })
+                    .await?;
+                Ok(true)
+            }
+            Err(err) => {
+                let reason = format!("worker start failed: {err}");
+                self.store()
+                    .update_run_status(
+                        run_id.as_str(),
+                        BackgroundAgentRunStatus::Failed,
+                        Some(reason.as_str()),
+                    )
+                    .await?;
+                self.store()
+                    .append_event(
+                        run_id.as_str(),
+                        "agent.workerStartFailed",
+                        &json!({
+                            "generation": generation,
+                            "error": err.to_string(),
+                        }),
+                    )
+                    .await?;
+                Ok(false)
+            }
+        }
+    }
+}
+
+impl<S, E> AgentSupervisor for DurableAgentSupervisor<S, E>
+where
+    S: Deref + Send + Sync,
+    S::Target: AgentRunStore
+        + AgentEventJournal
+        + AgentSnapshotStore
+        + PendingInteractionLedger
+        + Send
+        + Sync,
+    E: AgentExecution + Send + Sync,
+{
+    async fn reconcile(&self) -> anyhow::Result<SupervisorReconcileReport> {
+        DurableAgentSupervisor::reconcile(self).await
+    }
+
+    async fn attach(&self, run_id: &str) -> anyhow::Result<AgentAttachSnapshot> {
+        DurableAgentSupervisor::attach(self, run_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("background agent run not found: {run_id}"))
+    }
+
+    async fn detach(&self, run_id: &str) -> anyhow::Result<()> {
+        DurableAgentSupervisor::detach(self, run_id).await
+    }
+
+    async fn request_stop(&self, run_id: &str) -> anyhow::Result<()> {
+        DurableAgentSupervisor::request_stop(self, run_id)
+            .await?
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("background agent run not found: {run_id}"))
+    }
+}
+
+fn is_terminal_agent_status(status: BackgroundAgentRunStatus) -> bool {
+    matches!(
+        status,
+        BackgroundAgentRunStatus::Completed
+            | BackgroundAgentRunStatus::Failed
+            | BackgroundAgentRunStatus::Cancelled
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use codex_state::BackgroundAgentPendingInteractionCreateParams;
+    use codex_state::BackgroundAgentPendingInteractionKind;
+    use codex_state::BackgroundAgentRunCreateParams;
+    use codex_state::StateRuntime;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::AgentExecutionHandle;
+
+    #[derive(Debug, Clone, Default)]
+    struct RecordingExecution {
+        starts: Arc<Mutex<Vec<BackgroundAgentRun>>>,
+        stops: Arc<Mutex<Vec<AgentExecutionHandle>>>,
+        fail_start: bool,
+    }
+
+    impl AgentExecution for RecordingExecution {
+        async fn start(
+            &self,
+            run: BackgroundAgentRun,
+            process_lease_id: String,
+        ) -> anyhow::Result<AgentExecutionHandle> {
+            self.starts.lock().expect("starts lock").push(run);
+            if self.fail_start {
+                anyhow::bail!("configured start failure");
+            }
+            Ok(AgentExecutionHandle {
+                process_lease_id,
+                pid: Some(42),
+                pgid: Some(42),
+                job_id: Some("job-42".to_string()),
+            })
+        }
+
+        async fn stop(&self, handle: AgentExecutionHandle) -> anyhow::Result<()> {
+            self.stops.lock().expect("stops lock").push(handle);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_claims_run_before_starting_worker() -> anyhow::Result<()> {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        let execution = RecordingExecution::default();
+        let supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            execution.clone(),
+            DurableAgentSupervisorConfig::new("supervisor-1"),
+        );
+
+        let report = supervisor.reconcile().await?;
+
+        assert_eq!(
+            report,
+            SupervisorReconcileReport {
+                stale_runs_orphaned: 0,
+                adopted_runs: 1,
+                orphaned_runs: 0,
+            }
+        );
+        let starts = execution.starts.lock().expect("starts lock").clone();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].status, BackgroundAgentRunStatus::Starting);
+        assert_eq!(starts[0].supervisor_id, Some("supervisor-1".to_string()));
+
+        let run = state
+            .runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Running);
+        assert_eq!(run.supervisor_id, Some("supervisor-1".to_string()));
+        assert_eq!(run.generation, 1);
+        assert_eq!(run.pid, Some(42));
+
+        let second_execution = RecordingExecution::default();
+        let second_supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            second_execution.clone(),
+            DurableAgentSupervisorConfig::new("supervisor-2"),
+        );
+        assert_eq!(
+            second_supervisor.reconcile().await?,
+            SupervisorReconcileReport {
+                stale_runs_orphaned: 0,
+                adopted_runs: 0,
+                orphaned_runs: 0,
+            }
+        );
+        assert!(
+            second_execution
+                .starts
+                .lock()
+                .expect("starts lock")
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_records_worker_start_failure() -> anyhow::Result<()> {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        let execution = RecordingExecution {
+            fail_start: true,
+            ..RecordingExecution::default()
+        };
+        let supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            execution,
+            DurableAgentSupervisorConfig::new("supervisor-1"),
+        );
+
+        let report = supervisor.reconcile().await?;
+
+        assert_eq!(
+            report,
+            SupervisorReconcileReport {
+                stale_runs_orphaned: 0,
+                adopted_runs: 0,
+                orphaned_runs: 0,
+            }
+        );
+        let run = state
+            .runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Failed);
+        assert_eq!(
+            state
+                .runtime
+                .list_background_agent_events_after("run-1", None, None)
+                .await?
+                .into_iter()
+                .map(|event| event.event_type)
+                .collect::<Vec<_>>(),
+            vec!["agent.workerStartFailed".to_string()]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_orphans_and_adopts_stale_owned_run() -> anyhow::Result<()> {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        let generation = state
+            .runtime
+            .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+            .await?
+            .expect("run should be claimed");
+        state
+            .runtime
+            .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                run_id: "run-1",
+                supervisor_id: "supervisor-1",
+                generation,
+                pid: Some(1),
+                pgid: Some(1),
+                job_id: Some("job-1"),
+                start_token: None,
+                stderr_log_path: None,
+            })
+            .await?;
+        let execution = RecordingExecution::default();
+        let mut config = DurableAgentSupervisorConfig::new("supervisor-2");
+        config.heartbeat_timeout = Duration::ZERO;
+        let supervisor =
+            DurableAgentSupervisor::new(state.runtime.clone(), execution.clone(), config);
+
+        let report = supervisor.reconcile().await?;
+
+        assert_eq!(
+            report,
+            SupervisorReconcileReport {
+                stale_runs_orphaned: 1,
+                adopted_runs: 1,
+                orphaned_runs: 1,
+            }
+        );
+        let starts = execution.starts.lock().expect("starts lock").clone();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].status, BackgroundAgentRunStatus::Starting);
+        assert_eq!(starts[0].supervisor_id, Some("supervisor-2".to_string()));
+        assert_eq!(starts[0].generation, generation + 1);
+
+        let run = state
+            .runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Running);
+        assert_eq!(run.supervisor_id, Some("supervisor-2".to_string()));
+        assert_eq!(run.generation, generation + 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn attach_marks_pending_interactions_delivered_after_replay() -> anyhow::Result<()> {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        state
+            .runtime
+            .create_background_agent_pending_interaction(
+                &BackgroundAgentPendingInteractionCreateParams {
+                    id: "pending-1".to_string(),
+                    run_id: "run-1".to_string(),
+                    worker_request_id: Some("worker-req-1".to_string()),
+                    kind: BackgroundAgentPendingInteractionKind::UserInput,
+                    request_payload_json: serde_json::json!({"prompt": "continue?"}),
+                    no_client_policy: "cancel".to_string(),
+                    timeout_at: None,
+                },
+            )
+            .await?;
+        let supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            RecordingExecution::default(),
+            DurableAgentSupervisorConfig::new("supervisor-1"),
+        );
+
+        let snapshot = supervisor
+            .attach("run-1")
+            .await?
+            .expect("run should be attachable");
+
+        assert_eq!(snapshot.pending_interactions.len(), 1);
+        assert_eq!(
+            snapshot.pending_interactions[0].status,
+            BackgroundAgentPendingInteractionStatus::Pending
+        );
+        let delivered = state
+            .runtime
+            .get_background_agent_pending_interaction("pending-1")
+            .await?
+            .expect("interaction should exist");
+        assert_eq!(
+            delivered.status,
+            BackgroundAgentPendingInteractionStatus::Delivered
+        );
+        assert_eq!(
+            state
+                .runtime
+                .list_background_agent_events_after("run-1", None, None)
+                .await?
+                .into_iter()
+                .map(|event| event.event_type)
+                .collect::<Vec<_>>(),
+            vec![
+                "interaction.created".to_string(),
+                "interaction.delivered".to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    struct TestState {
+        _temp: tempfile::TempDir,
+        runtime: Arc<StateRuntime>,
+    }
+
+    async fn temp_state() -> anyhow::Result<TestState> {
+        let temp = tempfile::tempdir()?;
+        let runtime =
+            StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string()).await?;
+        Ok(TestState {
+            _temp: temp,
+            runtime,
+        })
+    }
+
+    async fn create_run(runtime: &StateRuntime, id: &str) -> anyhow::Result<BackgroundAgentRun> {
+        runtime
+            .create_background_agent_run(&BackgroundAgentRunCreateParams {
+                id: id.to_string(),
+                idempotency_key: None,
+                request_id: None,
+                source: "test".to_string(),
+                prompt_snapshot_ref: format!("prompt://{id}"),
+                input_snapshot_ref: None,
+                thread_id: None,
+                thread_store_kind: "local".to_string(),
+                thread_store_id: None,
+                rollout_path: None,
+                parent_thread_id: None,
+                parent_agent_run_id: None,
+                spawn_linkage_json: None,
+                auth_profile_ref: None,
+                status_reason: Some("created".to_string()),
+                config_fingerprint: None,
+                version_fingerprint: None,
+            })
+            .await
+    }
+}

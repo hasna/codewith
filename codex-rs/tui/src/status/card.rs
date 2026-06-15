@@ -4,6 +4,8 @@ use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::plain_lines;
 use crate::history_cell::with_border_with_inner_width;
 use crate::legacy_core::config::Config;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
 use crate::version::CODEX_CLI_VERSION;
@@ -23,6 +25,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use ratatui::prelude::*;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -37,6 +40,7 @@ use super::format::truncate_line_to_width;
 use super::helpers::compose_account_display;
 use super::helpers::compose_model_display;
 use super::helpers::format_directory_display;
+use super::helpers::format_reset_timestamp;
 use super::helpers::format_tokens_compact;
 use super::rate_limits::RateLimitSnapshotDisplay;
 use super::rate_limits::StatusRateLimitData;
@@ -47,6 +51,8 @@ use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
 use super::remote_connection::RemoteConnectionStatus;
+use crate::minimax_usage::MiniMaxUsageSnapshot;
+use crate::minimax_usage::MiniMaxUsageWindow;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 use crate::wrapping::word_wrap_lines;
@@ -76,9 +82,23 @@ struct StatusRateLimitState {
     refreshing_rate_limits: bool,
 }
 
+#[derive(Debug)]
+struct StatusMiniMaxUsageState {
+    usage: StatusMiniMaxUsageData,
+    refreshing_usage: bool,
+}
+
+#[derive(Debug, Clone)]
+enum StatusMiniMaxUsageData {
+    Available(MiniMaxUsageSnapshot),
+    Unavailable(String),
+    Missing,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StatusHistoryHandle {
     rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
+    minimax_usage_state: Option<Arc<RwLock<StatusMiniMaxUsageState>>>,
 }
 
 impl StatusHistoryHandle {
@@ -100,6 +120,25 @@ impl StatusHistoryHandle {
         state.rate_limits = rate_limits;
         state.refreshing_rate_limits = false;
     }
+
+    pub(crate) fn finish_minimax_usage_refresh(
+        &self,
+        result: Result<MiniMaxUsageSnapshot, String>,
+    ) {
+        let Some(minimax_usage_state) = self.minimax_usage_state.as_ref() else {
+            return;
+        };
+
+        #[expect(clippy::expect_used)]
+        let mut state = minimax_usage_state
+            .write()
+            .expect("status history MiniMax usage state poisoned");
+        state.usage = match result {
+            Ok(snapshot) => StatusMiniMaxUsageData::Available(snapshot),
+            Err(err) => StatusMiniMaxUsageData::Unavailable(err),
+        };
+        state.refreshing_usage = false;
+    }
 }
 
 #[derive(Debug)]
@@ -119,6 +158,7 @@ struct StatusHistoryCell {
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
     rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
+    minimax_usage_state: Option<Arc<RwLock<StatusMiniMaxUsageState>>>,
 }
 
 #[cfg(test)]
@@ -197,6 +237,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     .0
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
@@ -217,7 +258,54 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     agents_summary: String,
     refreshing_rate_limits: bool,
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
-    let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
+    new_status_output_with_command_and_minimax_usage_handle(
+        "/status",
+        config,
+        runtime_model_provider_base_url,
+        remote_connection,
+        account_display,
+        token_info,
+        total_usage,
+        session_id,
+        thread_name,
+        forked_from,
+        rate_limits,
+        _plan_type,
+        now,
+        model_name,
+        collaboration_mode,
+        reasoning_effort_override,
+        agents_summary,
+        refreshing_rate_limits,
+        /*show_minimax_usage*/ false,
+        /*refreshing_minimax_usage*/ false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_status_output_with_command_and_minimax_usage_handle(
+    command_label: &'static str,
+    config: &Config,
+    runtime_model_provider_base_url: Option<&str>,
+    remote_connection: Option<&RemoteConnectionStatus>,
+    account_display: Option<&StatusAccountDisplay>,
+    token_info: Option<&TokenUsageInfo>,
+    total_usage: &TokenUsage,
+    session_id: &Option<ThreadId>,
+    thread_name: Option<String>,
+    forked_from: Option<ThreadId>,
+    rate_limits: &[RateLimitSnapshotDisplay],
+    _plan_type: Option<PlanType>,
+    now: DateTime<Local>,
+    model_name: &str,
+    collaboration_mode: Option<&str>,
+    reasoning_effort_override: Option<Option<ReasoningEffort>>,
+    agents_summary: String,
+    refreshing_rate_limits: bool,
+    show_minimax_usage: bool,
+    refreshing_minimax_usage: bool,
+) -> (CompositeHistoryCell, StatusHistoryHandle) {
+    let command = PlainHistoryCell::new(vec![command_label.magenta().into()]);
     let (card, handle) = StatusHistoryCell::new(
         config,
         runtime_model_provider_base_url,
@@ -236,6 +324,8 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         reasoning_effort_override,
         agents_summary,
         refreshing_rate_limits,
+        show_minimax_usage,
+        refreshing_minimax_usage,
     );
 
     (
@@ -264,6 +354,8 @@ impl StatusHistoryCell {
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
         agents_summary: String,
         refreshing_rate_limits: bool,
+        show_minimax_usage: bool,
+        refreshing_minimax_usage: bool,
     ) -> (Self, StatusHistoryHandle) {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
         let permission_profile = config.permissions.effective_permission_profile();
@@ -349,6 +441,12 @@ impl StatusHistoryCell {
             rate_limits,
             refreshing_rate_limits,
         }));
+        let minimax_usage_state = show_minimax_usage.then(|| {
+            Arc::new(RwLock::new(StatusMiniMaxUsageState {
+                usage: StatusMiniMaxUsageData::Missing,
+                refreshing_usage: refreshing_minimax_usage,
+            }))
+        });
         let agents_summary = Arc::new(RwLock::new(agents_summary));
 
         (
@@ -368,8 +466,12 @@ impl StatusHistoryCell {
                 token_usage,
                 agents_summary,
                 rate_limit_state: rate_limit_state.clone(),
+                minimax_usage_state: minimax_usage_state.clone(),
             },
-            StatusHistoryHandle { rate_limit_state },
+            StatusHistoryHandle {
+                rate_limit_state,
+                minimax_usage_state,
+            },
         )
     }
 
@@ -561,6 +663,105 @@ impl StatusHistoryCell {
             StatusRateLimitData::Missing => push_label(labels, seen, "Limits"),
         }
     }
+
+    fn minimax_usage_lines(
+        &self,
+        state: &StatusMiniMaxUsageState,
+        captured_at: DateTime<Local>,
+        formatter: &FieldFormatter,
+    ) -> Vec<Line<'static>> {
+        match &state.usage {
+            StatusMiniMaxUsageData::Available(snapshot) => {
+                let Some(bucket) = snapshot.primary_bucket() else {
+                    return vec![formatter.line(
+                        "MiniMax usage",
+                        vec![Span::from("not available for this key").dim()],
+                    )];
+                };
+                let bucket_name = if bucket.name.eq_ignore_ascii_case("general") {
+                    "general".to_string()
+                } else {
+                    bucket.name.clone()
+                };
+                vec![
+                    formatter.line(
+                        "MiniMax usage",
+                        vec![Span::from(format!("Token Plan {bucket_name} bucket"))],
+                    ),
+                    formatter.line(
+                        "MiniMax 5h",
+                        minimax_usage_window_spans(&bucket.interval, captured_at),
+                    ),
+                    formatter.line(
+                        "MiniMax weekly",
+                        minimax_usage_window_spans(&bucket.weekly, captured_at),
+                    ),
+                ]
+            }
+            StatusMiniMaxUsageData::Unavailable(message) => vec![formatter.line(
+                "MiniMax usage",
+                vec![Span::from(format!("not available ({message})")).dim()],
+            )],
+            StatusMiniMaxUsageData::Missing => vec![formatter.line(
+                "MiniMax usage",
+                vec![Span::from(if state.refreshing_usage {
+                    "refreshing Token Plan usage..."
+                } else {
+                    "data not available yet"
+                })
+                .dim()],
+            )],
+        }
+    }
+
+    fn collect_minimax_usage_labels(
+        &self,
+        state: &StatusMiniMaxUsageState,
+        seen: &mut BTreeSet<String>,
+        labels: &mut Vec<String>,
+    ) {
+        push_label(labels, seen, "MiniMax usage");
+        if matches!(state.usage, StatusMiniMaxUsageData::Available(_)) {
+            push_label(labels, seen, "MiniMax 5h");
+            push_label(labels, seen, "MiniMax weekly");
+        }
+    }
+}
+
+fn minimax_usage_window_spans(
+    window: &MiniMaxUsageWindow,
+    captured_at: DateTime<Local>,
+) -> Vec<Span<'static>> {
+    let percent_remaining = window.remaining_percent.clamp(0.0, 100.0);
+    let mut spans = vec![
+        Span::from(render_status_limit_progress_bar(percent_remaining)),
+        Span::from(" "),
+        Span::from(format_status_limit_summary(percent_remaining)),
+    ];
+    if let Some(counts) = minimax_usage_counts(window) {
+        spans.push(Span::from(" (").dim());
+        spans.push(Span::from(counts).dim());
+        spans.push(Span::from(")").dim());
+    }
+    if let Some(resets_at) = window.resets_at.as_ref() {
+        spans.push(Span::from(" ").dim());
+        spans.push(
+            Span::from(format!(
+                "(resets {})",
+                format_reset_timestamp(*resets_at, captured_at)
+            ))
+            .dim(),
+        );
+    }
+    spans
+}
+
+fn minimax_usage_counts(window: &MiniMaxUsageWindow) -> Option<String> {
+    match (window.used_count, window.total_count) {
+        (Some(used), Some(total)) if total > 0 => Some(format!("{used} / {total} used")),
+        (Some(used), _) if used > 0 => Some(format!("{used} used")),
+        _ => None,
+    }
 }
 
 fn status_permission_summary(
@@ -696,7 +897,7 @@ impl HistoryCell for StatusHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
-            Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
+            Span::from(format!("{}⎔  ", FieldFormatter::INDENT)).dim(),
             Span::from("Hasna Codewith").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
@@ -730,6 +931,12 @@ impl HistoryCell for StatusHistoryCell {
             .rate_limit_state
             .read()
             .expect("status history rate-limit state poisoned");
+        let minimax_usage_state = self.minimax_usage_state.as_ref().map(|state| {
+            #[expect(clippy::expect_used)]
+            state
+                .read()
+                .expect("status history MiniMax usage state poisoned")
+        });
         #[expect(clippy::expect_used)]
         let agents_summary = self
             .agents_summary
@@ -760,18 +967,28 @@ impl HistoryCell for StatusHistoryCell {
             push_label(&mut labels, &mut seen, "Context window");
         }
 
-        self.collect_rate_limit_labels(&rate_limit_state, &mut seen, &mut labels);
+        let show_rate_limits = minimax_usage_state.is_none()
+            || !matches!(
+                rate_limit_state.rate_limits,
+                StatusRateLimitData::Missing | StatusRateLimitData::Unavailable
+            );
+        if show_rate_limits {
+            self.collect_rate_limit_labels(&rate_limit_state, &mut seen, &mut labels);
+        }
+        if let Some(minimax_usage_state) = minimax_usage_state.as_deref() {
+            self.collect_minimax_usage_labels(minimax_usage_state, &mut seen, &mut labels);
+        }
 
         let formatter = FieldFormatter::from_labels(labels.iter().map(String::as_str));
         let value_width = formatter.value_width(available_inner_width);
 
         let note_first_line = Line::from(vec![
-            Span::from("Visit ").cyan(),
-            CHATGPT_USAGE_URL.cyan().underlined(),
-            Span::from(" for up-to-date").cyan(),
+            Span::from("Visit ").fg(accent_color()),
+            CHATGPT_USAGE_URL.set_style(accent_link_style()),
+            Span::from(" for up-to-date").fg(accent_color()),
         ]);
         let note_second_line = Line::from(vec![
-            Span::from("information on rate limits and credits").cyan(),
+            Span::from("information on rate limits and credits").fg(accent_color()),
         ]);
         let note_lines = adaptive_wrap_lines(
             [note_first_line, note_second_line],
@@ -848,7 +1065,16 @@ impl HistoryCell for StatusHistoryCell {
             lines.push(formatter.line("Context window", spans));
         }
 
-        lines.extend(self.rate_limit_lines(&rate_limit_state, available_inner_width, &formatter));
+        if show_rate_limits {
+            lines.extend(self.rate_limit_lines(
+                &rate_limit_state,
+                available_inner_width,
+                &formatter,
+            ));
+        }
+        if let Some(minimax_usage_state) = minimax_usage_state.as_deref() {
+            lines.extend(self.minimax_usage_lines(minimax_usage_state, Local::now(), &formatter));
+        }
 
         let content_width = lines.iter().map(line_display_width).max().unwrap_or(0);
         let inner_width = content_width.min(available_inner_width);

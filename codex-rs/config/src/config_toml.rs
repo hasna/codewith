@@ -31,17 +31,16 @@ use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
-use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
-use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::allows_partial_builtin_provider_override;
+use codex_model_provider_info::default_wire_api_for_builtin_provider_override;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
@@ -943,10 +942,7 @@ pub fn validate_model_providers(
 }
 
 fn is_partial_builtin_provider_override(key: &str) -> bool {
-    matches!(
-        key,
-        CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID | OPENROUTER_PROVIDER_ID
-    )
+    allows_partial_builtin_provider_override(key)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1001,10 +997,7 @@ impl ModelProviderInfoToml {
 }
 
 fn default_wire_api_for_provider_override(provider_id: &str) -> WireApi {
-    match provider_id {
-        CEREBRAS_PROVIDER_ID | NVIDIA_PROVIDER_ID => WireApi::Chat,
-        _ => WireApi::Responses,
-    }
+    default_wire_api_for_builtin_provider_override(provider_id)
 }
 
 fn deserialize_model_providers<'de, D>(
@@ -1043,6 +1036,8 @@ pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
+    use codex_model_provider_info::NVIDIA_PROVIDER_ID;
     use pretty_assertions::assert_eq;
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";

@@ -39,6 +39,7 @@ use crate::keymap::primary_binding;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
 use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::FileChangeApprovalDecision;
@@ -57,6 +58,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_approval_presets::ApprovalPreset;
 use codex_utils_approval_presets::builtin_approval_presets;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -308,8 +310,9 @@ impl ApprovalOverlay {
         let Some(option) = self.options.get(actual_idx) else {
             return;
         };
-        if let Some(request) = self.current_request.as_ref() {
-            match (request, &option.decision) {
+        let decision = option.decision.clone();
+        if let Some(request) = self.current_request.clone() {
+            match (&request, &decision) {
                 (
                     ApprovalRequest::Exec { id, command, .. },
                     ApprovalDecision::Command(decision),
@@ -317,15 +320,20 @@ impl ApprovalOverlay {
                     self.handle_exec_decision(id, command, decision.clone());
                 }
                 (
-                    ApprovalRequest::Exec {
-                        thread_id,
-                        id,
-                        command,
-                        ..
-                    },
+                    ApprovalRequest::Exec { thread_id, .. },
                     ApprovalDecision::CommandWithFullAccess,
                 ) => {
-                    self.handle_full_access_exec_decision(*thread_id, id, command);
+                    self.handle_full_access_decision(*thread_id);
+                    self.approve_request_after_full_access(&request);
+                    self.approve_queued_requests_after_full_access(*thread_id);
+                }
+                (
+                    ApprovalRequest::Permissions { thread_id, .. },
+                    ApprovalDecision::PermissionsWithFullAccess,
+                ) => {
+                    self.handle_full_access_decision(*thread_id);
+                    self.approve_request_after_full_access(&request);
+                    self.approve_queued_requests_after_full_access(*thread_id);
                 }
                 (
                     ApprovalRequest::Permissions {
@@ -398,13 +406,14 @@ impl ApprovalOverlay {
             .exec_approval(thread_id, id.to_string(), decision);
     }
 
-    fn handle_full_access_exec_decision(&self, thread_id: ThreadId, id: &str, command: &[String]) {
-        let Some(full_access) = builtin_approval_presets()
-            .into_iter()
-            .find(|preset| preset.id == "full-access")
-        else {
+    fn handle_full_access_decision(&self, thread_id: ThreadId) {
+        let Some(full_access) = full_access_preset() else {
             return;
         };
+        self.apply_full_access_preset(thread_id, &full_access);
+    }
+
+    fn apply_full_access_preset(&self, thread_id: ThreadId, full_access: &ApprovalPreset) {
         let approval = codex_app_server_protocol::AskForApproval::from(full_access.approval);
         let active_permission_profile = full_access.active_permission_profile.clone();
 
@@ -414,7 +423,7 @@ impl ApprovalOverlay {
                 /*cwd*/ None,
                 Some(approval),
                 Some(ApprovalsReviewer::User),
-                Some(full_access.permission_profile),
+                Some(full_access.permission_profile.clone()),
                 Some(active_permission_profile.clone()),
                 /*windows_sandbox_level*/ None,
                 /*model*/ None,
@@ -439,7 +448,54 @@ impl ApprovalOverlay {
                 /*hint*/ None,
             ),
         )));
-        self.handle_exec_decision(id, command, CommandExecutionApprovalDecision::Accept);
+    }
+
+    fn approve_queued_requests_after_full_access(&mut self, thread_id: ThreadId) {
+        let mut remaining_requests = Vec::new();
+        for request in std::mem::take(&mut self.queue) {
+            if request.thread_id() == thread_id && is_full_access_covered_request(&request) {
+                self.approve_request_after_full_access(&request);
+            } else {
+                remaining_requests.push(request);
+            }
+        }
+        self.queue = remaining_requests;
+    }
+
+    fn approve_request_after_full_access(&self, request: &ApprovalRequest) {
+        match request {
+            ApprovalRequest::Exec { thread_id, id, .. } => {
+                self.app_event_tx.exec_approval(
+                    *thread_id,
+                    id.to_string(),
+                    CommandExecutionApprovalDecision::Accept,
+                );
+            }
+            ApprovalRequest::Permissions {
+                thread_id,
+                call_id,
+                permissions,
+                ..
+            } => {
+                self.app_event_tx.request_permissions_response(
+                    *thread_id,
+                    call_id.to_string(),
+                    codex_protocol::request_permissions::RequestPermissionsResponse {
+                        permissions: permissions.clone(),
+                        scope: PermissionGrantScope::Session,
+                        strict_auto_review: false,
+                    },
+                );
+            }
+            ApprovalRequest::ApplyPatch { thread_id, id, .. } => {
+                self.app_event_tx.patch_approval(
+                    *thread_id,
+                    id.to_string(),
+                    FileChangeApprovalDecision::Accept,
+                );
+            }
+            ApprovalRequest::McpElicitation { .. } => {}
+        }
     }
 
     fn handle_permissions_decision(
@@ -755,7 +811,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
             {
                 header.push(Line::from(vec![
                     "Permission rule: ".into(),
-                    rule_line.cyan(),
+                    rule_line.fg(accent_color()),
                 ]));
                 header.push(Line::from(""));
             }
@@ -790,7 +846,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
             if let Some(rule_line) = format_requested_permissions_rule(permissions) {
                 header.push(Line::from(vec![
                     "Permission rule: ".into(),
-                    rule_line.cyan(),
+                    rule_line.fg(accent_color()),
                 ]));
             }
             Box::new(Paragraph::new(header).wrap(Wrap { trim: false }))
@@ -854,6 +910,7 @@ enum ApprovalDecision {
     CommandWithFullAccess,
     FileChange(FileChangeApprovalDecision),
     Permissions(PermissionsDecision),
+    PermissionsWithFullAccess,
     McpElicitation(McpServerElicitationAction),
 }
 
@@ -891,6 +948,21 @@ fn command_decision_to_review_decision(
         CommandExecutionApprovalDecision::Decline => ReviewDecision::Denied,
         CommandExecutionApprovalDecision::Cancel => ReviewDecision::Abort,
     }
+}
+
+fn full_access_preset() -> Option<ApprovalPreset> {
+    builtin_approval_presets()
+        .into_iter()
+        .find(|preset| preset.id == "full-access")
+}
+
+fn is_full_access_covered_request(request: &ApprovalRequest) -> bool {
+    matches!(
+        request,
+        ApprovalRequest::Exec { .. }
+            | ApprovalRequest::Permissions { .. }
+            | ApprovalRequest::ApplyPatch { .. }
+    )
 }
 
 fn exec_options(
@@ -981,16 +1053,16 @@ fn exec_options(
         .collect::<Vec<_>>();
 
     let should_insert_full_access = network_approval_context.is_none()
-        && additional_permissions.is_none()
-        && options.iter().any(|option| {
-            matches!(
-                option.decision,
-                ApprovalDecision::Command(
-                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
-                        | CommandExecutionApprovalDecision::AcceptForSession
+        && (additional_permissions.is_some()
+            || options.iter().any(|option| {
+                matches!(
+                    option.decision,
+                    ApprovalDecision::Command(
+                        CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
+                            | CommandExecutionApprovalDecision::AcceptForSession
+                    )
                 )
-            )
-        });
+            }));
     if should_insert_full_access {
         let insert_at = options
             .iter()
@@ -1159,6 +1231,11 @@ fn permissions_options(keymap: &ApprovalKeymap) -> Vec<ApprovalOption> {
             shortcuts: keymap.approve_for_session.clone(),
         },
         ApprovalOption {
+            label: "Yes, switch to full access and grant these permissions".to_string(),
+            decision: ApprovalDecision::PermissionsWithFullAccess,
+            shortcuts: vec![key_hint::plain(KeyCode::Char('f'))],
+        },
+        ApprovalOption {
             label: "No, continue without permissions".to_string(),
             decision: ApprovalDecision::Permissions(PermissionsDecision::Deny),
             shortcuts: deny_shortcuts,
@@ -1257,6 +1334,28 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn rendered_history_events(events: &[AppEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AppEvent::InsertHistoryCell(cell) => Some(
+                    cell.display_lines(/*width*/ 100)
+                        .iter()
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .map(|span| span.content.as_ref())
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn normalize_snapshot_paths(rendered: String) -> String {
@@ -1825,6 +1924,159 @@ mod tests {
             }),
             "expected command approval after full-access override, got {events:?}"
         );
+        let rendered_history = rendered_history_events(&events);
+        assert!(
+            rendered_history.contains("Permissions updated to Full Access"),
+            "expected full-access history message, got {rendered_history:?}"
+        );
+        assert!(
+            !rendered_history.contains("this time"),
+            "full-access shortcut should not render a one-time approval message, got {rendered_history:?}"
+        );
+    }
+
+    #[test]
+    fn permissions_full_access_shortcut_updates_permissions_then_grants_request() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let request = make_permissions_request();
+        let thread_id = request.thread_id();
+        let mut view = make_overlay(request, tx, Features::with_defaults());
+
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AppEvent::SubmitThreadOp {
+                        thread_id: event_thread_id,
+                        op: Op::OverrideTurnContext {
+                            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                            permission_profile: Some(codex_protocol::models::PermissionProfile::Disabled),
+                            active_permission_profile: Some(active_permission_profile),
+                            ..
+                        },
+                    } if *event_thread_id == thread_id
+                        && active_permission_profile.id == codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                )
+            }),
+            "expected full-access permission override before granting permissions, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AppEvent::SubmitThreadOp {
+                        thread_id: event_thread_id,
+                        op: Op::RequestPermissionsResponse { response, .. },
+                    } if *event_thread_id == thread_id
+                        && response.scope == PermissionGrantScope::Session
+                        && !response.strict_auto_review
+                        && !response.permissions.is_empty()
+                )
+            }),
+            "expected full-access shortcut to grant the pending permissions request, got {events:?}"
+        );
+        let rendered_history = rendered_history_events(&events);
+        assert!(
+            rendered_history.contains("Permissions updated to Full Access"),
+            "expected full-access history message, got {rendered_history:?}"
+        );
+    }
+
+    #[test]
+    fn full_access_shortcut_approves_same_thread_queued_permission_requests() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let thread_id = ThreadId::new();
+        let mut view = make_overlay(
+            ApprovalRequest::Exec {
+                thread_id,
+                thread_label: None,
+                id: "first".to_string(),
+                command: vec!["pwd".to_string()],
+                reason: None,
+                available_decisions: vec![
+                    CommandExecutionApprovalDecision::Accept,
+                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                        execpolicy_amendment: ExecPolicyAmendment {
+                            command: vec!["pwd".to_string()],
+                        },
+                    },
+                    CommandExecutionApprovalDecision::Cancel,
+                ],
+                network_approval_context: None,
+                additional_permissions: None,
+            },
+            tx,
+            Features::with_defaults(),
+        );
+        view.enqueue_request(ApprovalRequest::Exec {
+            thread_id,
+            thread_label: None,
+            id: "second".to_string(),
+            command: vec!["ls".to_string()],
+            reason: None,
+            available_decisions: vec![
+                CommandExecutionApprovalDecision::Accept,
+                CommandExecutionApprovalDecision::Cancel,
+            ],
+            network_approval_context: None,
+            additional_permissions: None,
+        });
+        view.enqueue_request(ApprovalRequest::Permissions {
+            thread_id,
+            thread_label: None,
+            call_id: "permissions".to_string(),
+            reason: None,
+            permissions: RequestPermissionProfile {
+                network: Some(NetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: None,
+            },
+        });
+
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+
+        assert!(
+            view.is_complete(),
+            "same-thread queued approvals should be resolved after full access"
+        );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let exec_approval_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                AppEvent::SubmitThreadOp {
+                    thread_id: event_thread_id,
+                    op:
+                        Op::ExecApproval {
+                            id,
+                            decision: CommandExecutionApprovalDecision::Accept,
+                            ..
+                        },
+                } if *event_thread_id == thread_id => Some(id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(exec_approval_ids, vec!["first", "second"]);
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AppEvent::SubmitThreadOp {
+                        thread_id: event_thread_id,
+                        op: Op::RequestPermissionsResponse { id, response },
+                    } if *event_thread_id == thread_id
+                        && id == "permissions"
+                        && response.scope == PermissionGrantScope::Session
+                        && !response.permissions.is_empty()
+                )
+            }),
+            "expected queued permissions request to be granted after full access, got {events:?}"
+        );
     }
 
     #[test]
@@ -1997,6 +2249,7 @@ mod tests {
             labels,
             vec![
                 "Yes, proceed".to_string(),
+                "Yes, run everything with full access".to_string(),
                 "No, and tell Codewith what to do differently".to_string(),
             ]
         );
@@ -2015,6 +2268,7 @@ mod tests {
                 "Yes, grant these permissions for this turn".to_string(),
                 "Yes, grant for this turn with strict auto review".to_string(),
                 "Yes, grant these permissions for this session".to_string(),
+                "Yes, switch to full access and grant these permissions".to_string(),
                 "No, continue without permissions".to_string(),
             ]
         );

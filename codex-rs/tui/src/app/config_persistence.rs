@@ -212,17 +212,33 @@ impl App {
 
     pub(super) async fn update_config_value_with_app_server(
         &mut self,
-        app_server: &mut AppServerSession,
+        app_server: &AppServerSession,
         key_path: String,
         value: serde_json::Value,
         label: String,
     ) {
+        if let Err(err) = self
+            .try_update_config_value_with_app_server(app_server, key_path.clone(), value, label)
+            .await
+        {
+            tracing::error!(error = %err, %key_path, "failed to update config value");
+            self.chat_widget.add_error_message(err);
+        }
+    }
+
+    pub(super) async fn try_update_config_value_with_app_server(
+        &mut self,
+        app_server: &AppServerSession,
+        key_path: String,
+        value: serde_json::Value,
+        label: String,
+    ) -> Result<(), String> {
         let value = if key_path == "check_for_update_on_startup" {
             serde_json::json!(false)
         } else {
             value
         };
-        match crate::config_update::write_config_batch(
+        crate::config_update::write_config_batch(
             app_server.request_handle(),
             vec![crate::config_update::replace_config_value(
                 key_path.clone(),
@@ -230,72 +246,66 @@ impl App {
             )],
         )
         .await
-        {
-            Ok(_) => {
-                if let Some(enabled) = value.as_bool() {
-                    match key_path.as_str() {
-                        "auth_profile_auto_switch.enabled" => {
-                            self.config.auth_profile_auto_switch.enabled = enabled;
-                        }
-                        "auth_profile_auto_switch.on_5h_limit" => {
-                            self.config.auth_profile_auto_switch.on_5h_limit = enabled;
-                        }
-                        "auth_profile_auto_switch.on_weekly_limit" => {
-                            self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
-                        }
-                        "check_for_update_on_startup" => {
-                            self.config.check_for_update_on_startup = false;
-                        }
-                        "disable_paste_burst" => {
-                            self.config.disable_paste_burst = enabled;
-                        }
-                        "session_recap.enabled" => {
-                            self.config.session_recap.enabled = enabled;
-                        }
-                        "hide_agent_reasoning" => {
-                            self.config.hide_agent_reasoning = enabled;
-                        }
-                        "show_raw_agent_reasoning" => {
-                            self.config.show_raw_agent_reasoning = enabled;
-                        }
-                        "include_environment_context" => {
-                            self.config.include_environment_context = enabled;
-                        }
-                        "include_permissions_instructions" => {
-                            self.config.include_permissions_instructions = enabled;
-                        }
-                        "include_apps_instructions" => {
-                            self.config.include_apps_instructions = enabled;
-                        }
-                        "include_collaboration_mode_instructions" => {
-                            self.config.include_collaboration_mode_instructions = enabled;
-                        }
-                        "skills.include_instructions" => {
-                            self.config.include_skill_instructions = enabled;
-                        }
-                        "suppress_unstable_features_warning" => {
-                            self.config.suppress_unstable_features_warning = enabled;
-                        }
-                        "analytics.enabled" => {
-                            self.config.analytics_enabled = Some(enabled);
-                        }
-                        "feedback.enabled" => {
-                            self.config.feedback_enabled = enabled;
-                        }
-                        _ => {}
-                    }
-                    self.refresh_status_line();
+        .map_err(|err| format!("Failed to update {label}: {err}"))?;
+
+        if let Some(enabled) = value.as_bool() {
+            match key_path.as_str() {
+                "auth_profile_auto_switch.enabled" => {
+                    self.config.auth_profile_auto_switch.enabled = enabled;
                 }
-                self.chat_widget.apply_config_popup_value(&key_path, &value);
-                self.chat_widget
-                    .add_info_message(format!("{label} updated"), /*hint*/ None);
+                "auth_profile_auto_switch.on_5h_limit" => {
+                    self.config.auth_profile_auto_switch.on_5h_limit = enabled;
+                }
+                "auth_profile_auto_switch.on_weekly_limit" => {
+                    self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
+                }
+                "check_for_update_on_startup" => {
+                    self.config.check_for_update_on_startup = false;
+                }
+                "disable_paste_burst" => {
+                    self.config.disable_paste_burst = enabled;
+                }
+                "session_recap.enabled" => {
+                    self.config.session_recap.enabled = enabled;
+                }
+                "hide_agent_reasoning" => {
+                    self.config.hide_agent_reasoning = enabled;
+                }
+                "show_raw_agent_reasoning" => {
+                    self.config.show_raw_agent_reasoning = enabled;
+                }
+                "include_environment_context" => {
+                    self.config.include_environment_context = enabled;
+                }
+                "include_permissions_instructions" => {
+                    self.config.include_permissions_instructions = enabled;
+                }
+                "include_apps_instructions" => {
+                    self.config.include_apps_instructions = enabled;
+                }
+                "include_collaboration_mode_instructions" => {
+                    self.config.include_collaboration_mode_instructions = enabled;
+                }
+                "skills.include_instructions" => {
+                    self.config.include_skill_instructions = enabled;
+                }
+                "suppress_unstable_features_warning" => {
+                    self.config.suppress_unstable_features_warning = enabled;
+                }
+                "analytics.enabled" => {
+                    self.config.analytics_enabled = Some(enabled);
+                }
+                "feedback.enabled" => {
+                    self.config.feedback_enabled = enabled;
+                }
+                _ => {}
             }
-            Err(err) => {
-                tracing::error!(error = %err, %key_path, "failed to update config value");
-                self.chat_widget
-                    .add_error_message(format!("Failed to update {label}: {err}"));
-            }
+            self.refresh_status_line();
         }
+        self.chat_widget.apply_config_popup_value(&key_path, &value);
+        self.chat_widget
+            .add_info_message(format!("{label} updated"), /*hint*/ None);
+        Ok(())
     }
 
     pub(super) async fn read_effective_config_after_overridden_write(

@@ -78,6 +78,7 @@ macro_rules! experimental_type_entry {
 pub enum ClientRequestSerializationScope {
     Global(&'static str),
     GlobalSharedRead(&'static str),
+    Agent { agent_id: String },
     Thread { thread_id: String },
     ThreadPath { path: PathBuf },
     CommandExecProcess { process_id: String },
@@ -96,6 +97,11 @@ macro_rules! serialization_scope_expr {
     };
     ($actual_params:ident, global_shared_read($key:literal)) => {
         Some(ClientRequestSerializationScope::GlobalSharedRead($key))
+    };
+    ($actual_params:ident, agent_id($params:ident . $field:ident)) => {
+        Some(ClientRequestSerializationScope::Agent {
+            agent_id: $actual_params.$field.clone(),
+        })
     };
     ($actual_params:ident, thread_id($params:ident . $field:ident)) => {
         Some(ClientRequestSerializationScope::Thread {
@@ -579,6 +585,66 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMonitorDeleteResponse,
     },
+    #[experimental("agent/start")]
+    AgentStart => "agent/start" {
+        params: v2::AgentStartParams,
+        serialization: global("agent/start"),
+        response: v2::AgentStartResponse,
+    },
+    #[experimental("agent/list")]
+    AgentList => "agent/list" {
+        params: v2::AgentListParams,
+        serialization: global_shared_read("agent"),
+        response: v2::AgentListResponse,
+    },
+    #[experimental("agent/read")]
+    AgentRead => "agent/read" {
+        params: v2::AgentReadParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentReadResponse,
+    },
+    #[experimental("agent/attach")]
+    AgentAttach => "agent/attach" {
+        params: v2::AgentAttachParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentAttachResponse,
+    },
+    #[experimental("agent/detach")]
+    AgentDetach => "agent/detach" {
+        params: v2::AgentDetachParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentDetachResponse,
+    },
+    #[experimental("agent/stop")]
+    AgentStop => "agent/stop" {
+        params: v2::AgentStopParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentStopResponse,
+    },
+    #[experimental("agent/delete")]
+    AgentDelete => "agent/delete" {
+        params: v2::AgentDeleteParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentDeleteResponse,
+    },
+    #[experimental("agent/events/list")]
+    AgentEventsList => "agent/events/list" {
+        params: v2::AgentEventsListParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentEventsListResponse,
+    },
+    #[experimental("agent/pendingInteraction/respond")]
+    AgentPendingInteractionRespond => "agent/pendingInteraction/respond" {
+        params: v2::AgentPendingInteractionRespondParams,
+        serialization: agent_id(params.agent_id),
+        response: v2::AgentPendingInteractionRespondResponse,
+    },
+    #[experimental("agent/daemon/diagnostics")]
+    AgentDaemonDiagnostics => "agent/daemon/diagnostics" {
+        params: v2::AgentDaemonDiagnosticsParams,
+        serialization: global_shared_read("agent"),
+        response: v2::AgentDaemonDiagnosticsResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -622,6 +688,12 @@ client_request_definitions! {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
+    },
+    #[experimental("thread/externalAgent/start")]
+    ThreadExternalAgentStart => "thread/externalAgent/start" {
+        params: v2::ThreadExternalAgentStartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadExternalAgentStartResponse,
     },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
@@ -1569,6 +1641,8 @@ server_notification_definitions! {
     ThreadMonitorUpdated => "thread/monitor/updated" (v2::ThreadMonitorUpdatedNotification),
     ThreadMonitorDeleted => "thread/monitor/deleted" (v2::ThreadMonitorDeletedNotification),
     ThreadMonitorEvent => "thread/monitor/event" (v2::ThreadMonitorEventNotification),
+    #[experimental("thread/externalAgent/event")]
+    ThreadExternalAgentEvent => "thread/externalAgent/event" (v2::ThreadExternalAgentEventNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
@@ -3113,6 +3187,27 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("mock/experimentalMethod"));
+    }
+
+    #[test]
+    fn agent_methods_are_marked_experimental() {
+        for method in [
+            "agent/start",
+            "agent/list",
+            "agent/read",
+            "agent/attach",
+            "agent/detach",
+            "agent/stop",
+            "agent/delete",
+            "agent/events/list",
+            "agent/pendingInteraction/respond",
+            "agent/daemon/diagnostics",
+        ] {
+            assert!(
+                EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should be experimental"
+            );
+        }
     }
 
     #[test]

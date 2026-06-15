@@ -8,6 +8,7 @@ use ratatui::text::Span;
 
 use super::status_line_setup::StatusLineItem;
 use crate::render::highlight::foreground_style_for_scopes;
+use crate::style::accent_color;
 
 const STATUS_LINE_SEPARATOR: &str = " · ";
 const STATUS_LINE_COLOR_SATURATION_PERCENT: u16 = 85;
@@ -71,7 +72,9 @@ impl StatusLineAccent {
 
     fn fallback_style(self) -> Style {
         match self {
-            Self::Model | Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
+            Self::Model | Self::State | Self::Metadata | Self::Mode => {
+                Style::default().fg(accent_color())
+            }
             Self::Path | Self::Usage | Self::Progress => Style::default().green(),
             Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
         }
@@ -203,7 +206,10 @@ mod tests {
         .expect("status line");
 
         assert_eq!(line_text(&line), "gpt-5 · /repo · main");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(soften_status_line_color(accent_color()))
+        );
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
         assert!(!line.spans[2].style.add_modifier.contains(Modifier::DIM));

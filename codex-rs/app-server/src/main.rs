@@ -53,6 +53,14 @@ struct AppServerArgs {
     /// Enable remote control for this app-server process.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
+
+    /// Internal: run as the transport-free background-agent worker host.
+    #[arg(long = "background-agent-host", hide = true)]
+    background_agent_host: bool,
+
+    /// Internal: run one durable background-agent worker and exit.
+    #[arg(long = "background-agent-worker", value_name = "RUN_ID", hide = true)]
+    background_agent_worker_run_id: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,6 +73,8 @@ fn main() -> anyhow::Result<()> {
             #[cfg(debug_assertions)]
             disable_plugin_startup_tasks_for_tests,
             remote_control,
+            background_agent_host,
+            background_agent_worker_run_id,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -81,6 +91,8 @@ fn main() -> anyhow::Result<()> {
             runtime_options.plugin_startup_tasks = PluginStartupTasks::Skip;
         }
         runtime_options.remote_control_enabled = remote_control;
+        runtime_options.background_agent_host = background_agent_host;
+        runtime_options.background_agent_worker_run_id = background_agent_worker_run_id;
 
         run_main_with_transport_options(
             arg0_paths,

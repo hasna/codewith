@@ -403,11 +403,12 @@ impl PluginRequestProcessor {
         })
     }
 
-    fn on_effective_plugins_changed(&self) {
-        Self::spawn_effective_plugins_changed_task(
+    async fn on_effective_plugins_changed(&self) {
+        Self::handle_effective_plugins_changed(
             Arc::clone(&self.thread_manager),
             self.config_manager.clone(),
-        );
+        )
+        .await;
     }
 
     fn spawn_effective_plugins_changed_task(
@@ -415,13 +416,20 @@ impl PluginRequestProcessor {
         config_manager: ConfigManager,
     ) {
         tokio::spawn(async move {
-            thread_manager.plugins_manager().clear_cache();
-            thread_manager.skills_manager().clear_cache();
-            if thread_manager.list_thread_ids().await.is_empty() {
-                return;
-            }
-            crate::mcp_refresh::queue_best_effort_refresh(&thread_manager, &config_manager).await;
+            Self::handle_effective_plugins_changed(thread_manager, config_manager).await;
         });
+    }
+
+    async fn handle_effective_plugins_changed(
+        thread_manager: Arc<ThreadManager>,
+        config_manager: ConfigManager,
+    ) {
+        thread_manager.plugins_manager().clear_cache();
+        thread_manager.skills_manager().clear_cache();
+        if thread_manager.list_thread_ids().await.is_empty() {
+            return;
+        }
+        crate::mcp_refresh::queue_best_effort_refresh(&thread_manager, &config_manager).await;
     }
 
     fn clear_plugin_related_caches(&self) {
@@ -1356,7 +1364,7 @@ impl PluginRequestProcessor {
             }
         };
 
-        self.on_effective_plugins_changed();
+        self.on_effective_plugins_changed().await;
 
         let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path()).await;
         if !plugin_mcp_servers.is_empty() {
@@ -1661,7 +1669,7 @@ impl PluginRequestProcessor {
             .await
             .map_err(Self::plugin_uninstall_error)?;
         match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(_) => self.on_effective_plugins_changed(),
+            Ok(_) => self.on_effective_plugins_changed().await,
             Err(err) => {
                 warn!(
                     "failed to reload config after plugin uninstall, clearing plugin-related caches only: {err:?}"
@@ -1760,7 +1768,7 @@ impl PluginRequestProcessor {
         ) {
             let plugins_manager = self.thread_manager.plugins_manager();
             if plugins_manager.clear_remote_installed_plugins_cache() {
-                self.on_effective_plugins_changed();
+                self.on_effective_plugins_changed().await;
             }
             plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
                 &config.plugins_config_input(),

@@ -399,11 +399,13 @@ pub enum PluginStartupTasks {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_enabled: bool,
     pub install_shutdown_signal_handler: bool,
+    pub background_agent_host: bool,
+    pub background_agent_worker_run_id: Option<String>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -412,6 +414,8 @@ impl Default for AppServerRuntimeOptions {
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_enabled: false,
             install_shutdown_signal_handler: true,
+            background_agent_host: false,
+            background_agent_worker_run_id: None,
         }
     }
 }
@@ -704,13 +708,18 @@ pub async fn run_main_with_transport_options(
     if remote_control_requested && state_db.is_none() {
         error!("remote control disabled because sqlite state db is unavailable");
     }
-    if transport_accept_handles.is_empty() && !remote_control_enabled {
+    let background_agent_runtime_enabled = runtime_options.background_agent_host
+        || runtime_options.background_agent_worker_run_id.is_some();
+    if transport_accept_handles.is_empty()
+        && !remote_control_enabled
+        && !background_agent_runtime_enabled
+    {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
             if remote_control_requested && state_db.is_none() {
                 "no transport configured; remote control disabled because sqlite state db is unavailable"
             } else {
-                "no transport configured; use --listen or enable remote control"
+                "no transport configured; use --listen, enable remote control, or run a background-agent host"
             },
         ));
     }
@@ -812,7 +821,10 @@ pub async fn run_main_with_transport_options(
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle.clone()),
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
+            background_agent_host: runtime_options.background_agent_host,
+            background_agent_worker_run_id: runtime_options.background_agent_worker_run_id.clone(),
         }));
+        let background_agent_worker_run_id = runtime_options.background_agent_worker_run_id.clone();
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
@@ -820,6 +832,12 @@ pub async fn run_main_with_transport_options(
         let mut remote_control_status = remote_control_status_rx.borrow().clone();
         let transport_shutdown_token = transport_shutdown_token.clone();
         async move {
+            if let Some(run_id) = background_agent_worker_run_id {
+                if let Err(err) = processor.run_background_agent_worker_once(run_id).await {
+                    error!("background-agent worker process failed: {err}");
+                }
+                return;
+            }
             let mut listen_for_threads = true;
             let mut shutdown_state = ShutdownState::default();
             loop {

@@ -34,6 +34,100 @@
       ],
       "type": "string"
     },
+    "AgentExecutionContextParams": {
+      "properties": {
+        "approvalPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AskForApproval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configSourceHashes": true,
+        "envSnapshotPolicy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxRuntimeSeconds": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxTokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mcpToolAllowlist": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "networkPolicy": true,
+        "permissionProfile": true,
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recoveryPolicy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandboxPolicy": true,
+        "serviceTier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shellSnapshot": true,
+        "workspaceRoots": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AgentPendingInteractionTerminalStatus": {
+      "enum": [
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "workerNoLongerWaiting"
+      ],
+      "type": "string"
+    },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -3105,6 +3199,13 @@
         "threadId"
       ],
       "type": "object"
+    },
+    "ThreadExternalAgentMode": {
+      "enum": [
+        "plan",
+        "propose"
+      ],
+      "type": "string"
     },
     "ThreadForkParams": {
       "description": "There are two ways to fork a thread: 1. By thread_id: load the thread from disk by thread_id and fork it into a new thread. 2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored. Empty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",

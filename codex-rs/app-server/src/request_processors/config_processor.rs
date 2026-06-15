@@ -132,18 +132,31 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigValueWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.write_value(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigValueWrite)
+        let should_refresh_mcp_servers = config_key_path_touches_mcp_sources(&params.key_path);
+        let response = self
+            .handle_config_mutation_result(self.write_value(params).await)
+            .await?;
+        if should_refresh_mcp_servers {
+            self.queue_mcp_refresh_after_config_mutation().await;
+        }
+        Ok(ClientResponsePayload::ConfigValueWrite(response))
     }
 
     pub(crate) async fn batch_write(
         &self,
         params: ConfigBatchWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.batch_write_inner(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigBatchWrite)
+        let should_refresh_mcp_servers = params
+            .edits
+            .iter()
+            .any(|edit| config_key_path_touches_mcp_sources(&edit.key_path));
+        let response = self
+            .handle_config_mutation_result(self.batch_write_inner(params).await)
+            .await?;
+        if should_refresh_mcp_servers {
+            self.queue_mcp_refresh_after_config_mutation().await;
+        }
+        Ok(ClientResponsePayload::ConfigBatchWrite(response))
     }
 
     pub(crate) async fn experimental_feature_enablement_set(
@@ -177,13 +190,18 @@ impl ConfigRequestProcessor {
         Ok(ModelProviderCapabilitiesReadResponse {
             namespace_tools: capabilities.namespace_tools,
             image_generation: capabilities.image_generation,
-            web_search: capabilities.web_search,
+            web_search: capabilities.web_search.is_enabled(),
         })
     }
 
     pub(crate) async fn handle_config_mutation(&self) {
         self.thread_manager.plugins_manager().clear_cache();
         self.thread_manager.skills_manager().clear_cache();
+    }
+
+    async fn queue_mcp_refresh_after_config_mutation(&self) {
+        crate::mcp_refresh::queue_best_effort_refresh(&self.thread_manager, &self.config_manager)
+            .await;
     }
 
     async fn handle_config_mutation_result<T>(
@@ -465,6 +483,40 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
     }
 }
 
+fn config_key_path_touches_mcp_sources(key_path: &str) -> bool {
+    matches!(
+        config_key_path_first_segment(key_path).as_deref(),
+        Some("mcp_servers" | "plugins")
+    )
+}
+
+fn config_key_path_first_segment(key_path: &str) -> Option<String> {
+    let mut chars = key_path.chars();
+    if !matches!(chars.next(), Some('"')) {
+        return key_path
+            .split('.')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string);
+    }
+
+    let mut segment = String::new();
+    let mut escaped = false;
+    for ch in chars {
+        if escaped {
+            segment.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(segment),
+            _ => segment.push(ch),
+        }
+    }
+    None
+}
+
 fn map_computer_use_requirements_to_api(
     computer_use: codex_config::ComputerUseRequirementsToml,
 ) -> ComputerUseRequirements {
@@ -651,6 +703,7 @@ fn config_write_error(code: ConfigWriteErrorCode, message: impl Into<String>) ->
 
 #[cfg(test)]
 mod tests {
+    use super::config_key_path_touches_mcp_sources;
     use super::map_requirements_toml_to_api;
     use codex_app_server_protocol::WindowsSandboxSetupMode;
     use codex_config::ComputerUseRequirementsToml;
@@ -727,5 +780,21 @@ mod tests {
                 WindowsSandboxSetupMode::Unelevated,
             ])
         );
+    }
+
+    #[test]
+    fn detects_mcp_server_config_mutations() {
+        assert!(config_key_path_touches_mcp_sources("mcp_servers"));
+        assert!(config_key_path_touches_mcp_sources("mcp_servers.docs"));
+        assert!(config_key_path_touches_mcp_sources(
+            "mcp_servers.docs.default_tools_approval_mode"
+        ));
+        assert!(config_key_path_touches_mcp_sources("\"mcp_servers\".docs"));
+        assert!(config_key_path_touches_mcp_sources("plugins.github"));
+        assert!(config_key_path_touches_mcp_sources("\"plugins\".github"));
+
+        assert!(!config_key_path_touches_mcp_sources("mcp"));
+        assert!(!config_key_path_touches_mcp_sources("mcp_server"));
+        assert!(!config_key_path_touches_mcp_sources("features.plugins"));
     }
 }

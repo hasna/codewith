@@ -528,7 +528,7 @@ pub(crate) fn construct_model_info_from_candidates(
             ..remote
         }
     } else {
-        model_info::model_info_from_slug(model)
+        model_info::model_info_from_slug_for_provider(model, config.model_provider_id.as_deref())
     };
     model_info::with_config_overrides(model_info, config)
 }

@@ -14,6 +14,7 @@ use ratatui::text::Line;
 use super::InputResult;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::textarea::TextArea;
+use crate::style::accent_color;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::user_input::TextElement;
 
@@ -144,9 +145,9 @@ impl AttachmentState {
             .map(|(index, _)| {
                 let label = local_image_label_text(index + 1);
                 if self.selected_remote_image_index == Some(index) {
-                    label.cyan().reversed().into()
+                    label.fg(accent_color()).reversed().into()
                 } else {
-                    label.cyan().into()
+                    label.fg(accent_color()).into()
                 }
             })
             .collect()

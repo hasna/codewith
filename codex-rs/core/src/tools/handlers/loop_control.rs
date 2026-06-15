@@ -24,6 +24,11 @@ use std::fmt::Write as _;
 use std::str::FromStr;
 use std::sync::Arc;
 
+const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
+const DEFAULT_LOOP_EXPIRATION_DAYS: i64 = 7;
+const MAX_THREAD_SCHEDULE_PROMPT_CHARS: usize = 4_000;
+const MAX_THREAD_SCHEDULES: usize = 50;
+
 pub struct ManageLoopHandler;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -31,18 +36,46 @@ pub struct ManageLoopHandler;
 struct ManageLoopArgs {
     action: LoopAction,
     schedule_id: Option<String>,
+    prompt: Option<String>,
+    schedule: Option<LoopScheduleSpecArg>,
+    timezone: Option<String>,
+    next_run_at: Option<i64>,
+    expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LoopAction {
+    Create,
     List,
     #[serde(alias = "pause")]
     Stop,
-    #[serde(alias = "start")]
     Resume,
+    Start,
     #[serde(alias = "delete", alias = "remove", alias = "cancel")]
     Clear,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum LoopScheduleSpecArg {
+    Once,
+    Dynamic,
+    Interval {
+        amount: i64,
+        unit: LoopScheduleIntervalUnitArg,
+    },
+    Cron {
+        expression: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LoopScheduleIntervalUnitArg {
+    Minutes,
+    Hours,
+    Days,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -127,7 +160,28 @@ async fn manage_loop(
     thread_id: ThreadId,
     args: ManageLoopArgs,
 ) -> Result<ManageLoopResponse, FunctionCallError> {
-    match args.action {
+    let action = match args.action {
+        LoopAction::Start => {
+            let schedule_id_present = args
+                .schedule_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+            let has_create_fields = args
+                .prompt
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+                || args.schedule.is_some();
+            if !schedule_id_present && has_create_fields {
+                LoopAction::Create
+            } else {
+                LoopAction::Resume
+            }
+        }
+        action => action,
+    };
+
+    match action {
+        LoopAction::Create => create_loop(state_db, thread_id, args).await,
         LoopAction::List => {
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             Ok(ManageLoopResponse {
@@ -148,16 +202,17 @@ async fn manage_loop(
         }
         LoopAction::Stop | LoopAction::Resume => {
             let schedule_id =
-                resolve_loop_schedule_id(&state_db, thread_id, args.schedule_id, args.action)
-                    .await?;
+                resolve_loop_schedule_id(&state_db, thread_id, args.schedule_id, action).await?;
             let existing =
                 ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
-            let status = match args.action {
+            let status = match action {
                 LoopAction::Stop => codex_state::ThreadScheduleStatus::Paused,
                 LoopAction::Resume => codex_state::ThreadScheduleStatus::Active,
-                LoopAction::List | LoopAction::Clear => unreachable!("action matched above"),
+                LoopAction::Create | LoopAction::List | LoopAction::Start | LoopAction::Clear => {
+                    unreachable!("action matched above")
+                }
             };
-            let schedule = if args.action == LoopAction::Resume && existing.next_run_at.is_none() {
+            let schedule = if action == LoopAction::Resume && existing.next_run_at.is_none() {
                 let next_run_at =
                     next_loop_run_at(&existing.schedule, &existing.timezone, Utc::now())?
                         .ok_or_else(|| {
@@ -201,17 +256,19 @@ async fn manage_loop(
             }
             let affected_schedule = LoopScheduleSnapshot::from(schedule);
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
-            let message = match args.action {
+            let message = match action {
                 LoopAction::Stop => {
                     format!("Loop {schedule_id} stopped; future runs are paused.")
                 }
                 LoopAction::Resume => {
                     format!("Loop {schedule_id} resumed; future runs are active.")
                 }
-                LoopAction::List | LoopAction::Clear => unreachable!("action matched above"),
+                LoopAction::Create | LoopAction::List | LoopAction::Start | LoopAction::Clear => {
+                    unreachable!("action matched above")
+                }
             };
             Ok(ManageLoopResponse {
-                action: args.action,
+                action,
                 schedule_id: Some(schedule_id),
                 affected_schedule: Some(affected_schedule),
                 schedules,
@@ -244,7 +301,71 @@ async fn manage_loop(
                 },
             })
         }
+        LoopAction::Start => unreachable!("start action is normalized before dispatch"),
     }
+}
+
+async fn create_loop(
+    state_db: Arc<codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    args: ManageLoopArgs,
+) -> Result<ManageLoopResponse, FunctionCallError> {
+    ensure_schedule_capacity(&state_db, thread_id).await?;
+    let prompt = validate_loop_prompt(
+        args.prompt
+            .as_deref()
+            .ok_or_else(|| model_error("prompt is required when action is create"))?,
+    )?;
+    let schedule = args
+        .schedule
+        .ok_or_else(|| model_error("schedule is required when action is create"))
+        .and_then(loop_schedule_spec_arg_to_state)?;
+    let timezone = normalize_timezone(args.timezone)?;
+    let now = Utc::now();
+    let explicit_next_run_at = args
+        .next_run_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "next_run_at"))
+        .transpose()?;
+    let next_run_at = match explicit_next_run_at {
+        Some(next_run_at) => Some(next_run_at),
+        None => Some(
+            next_loop_run_at(&schedule, timezone.as_str(), now)?.ok_or_else(|| {
+                model_error("cannot create loop because no next run time could be computed")
+            })?,
+        ),
+    };
+    let expires_at = args
+        .expires_at
+        .map(|timestamp| timestamp_to_datetime(timestamp, "expires_at"))
+        .transpose()?
+        .or_else(|| default_loop_expires_at(now));
+    validate_loop_expiry(next_run_at, expires_at)?;
+
+    let schedule = state_db
+        .thread_schedules()
+        .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+            thread_id,
+            prompt,
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            schedule,
+            timezone,
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at,
+            expires_at,
+        })
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    let affected_schedule = LoopScheduleSnapshot::from(schedule);
+    let schedules = list_loop_snapshots(&state_db, thread_id).await?;
+    let schedule_id = affected_schedule.schedule_id.clone();
+    Ok(ManageLoopResponse {
+        action: LoopAction::Create,
+        schedule_id: Some(schedule_id.clone()),
+        affected_schedule: Some(affected_schedule),
+        schedules,
+        deleted: None,
+        message: format!("Loop {schedule_id} created; future runs are active."),
+    })
 }
 
 async fn list_loop_snapshots(
@@ -261,6 +382,23 @@ async fn list_loop_snapshots(
         .filter(is_loop_schedule)
         .map(LoopScheduleSnapshot::from)
         .collect())
+}
+
+async fn ensure_schedule_capacity(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+) -> Result<(), FunctionCallError> {
+    let schedules = state_db
+        .thread_schedules()
+        .list_thread_schedules(thread_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    if schedules.len() >= MAX_THREAD_SCHEDULES {
+        return Err(model_error(format!(
+            "thread already has the maximum of {MAX_THREAD_SCHEDULES} schedules"
+        )));
+    }
+    Ok(())
 }
 
 async fn resolve_loop_schedule_id(
@@ -318,6 +456,106 @@ fn is_loop_schedule(schedule: &codex_state::ThreadSchedule) -> bool {
     !matches!(schedule.schedule, codex_state::ThreadScheduleSpec::Once)
 }
 
+fn validate_loop_prompt(prompt: &str) -> Result<String, FunctionCallError> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(model_error("loop prompt must not be empty"));
+    }
+    if prompt.chars().count() > MAX_THREAD_SCHEDULE_PROMPT_CHARS {
+        return Err(model_error(format!(
+            "loop prompt must be at most {MAX_THREAD_SCHEDULE_PROMPT_CHARS} characters"
+        )));
+    }
+    Ok(prompt.to_string())
+}
+
+fn loop_schedule_spec_arg_to_state(
+    schedule: LoopScheduleSpecArg,
+) -> Result<codex_state::ThreadScheduleSpec, FunctionCallError> {
+    match schedule {
+        LoopScheduleSpecArg::Once => Err(model_error(
+            "one-time schedules belong in /schedule; use interval, cron, or dynamic for /loop",
+        )),
+        LoopScheduleSpecArg::Dynamic => Ok(codex_state::ThreadScheduleSpec::Dynamic),
+        LoopScheduleSpecArg::Interval { amount, unit } => {
+            if amount <= 0 {
+                return Err(model_error("loop interval amount must be positive"));
+            }
+            Ok(codex_state::ThreadScheduleSpec::Interval(
+                codex_state::ThreadScheduleInterval {
+                    amount,
+                    unit: match unit {
+                        LoopScheduleIntervalUnitArg::Minutes => {
+                            codex_state::ThreadScheduleIntervalUnit::Minutes
+                        }
+                        LoopScheduleIntervalUnitArg::Hours => {
+                            codex_state::ThreadScheduleIntervalUnit::Hours
+                        }
+                        LoopScheduleIntervalUnitArg::Days => {
+                            codex_state::ThreadScheduleIntervalUnit::Days
+                        }
+                    },
+                },
+            ))
+        }
+        LoopScheduleSpecArg::Cron { expression } => {
+            if expression.trim().is_empty() {
+                return Err(model_error("loop cron expression must not be empty"));
+            }
+            Ok(codex_state::ThreadScheduleSpec::Cron {
+                expression: expression.trim().to_string(),
+            })
+        }
+    }
+}
+
+fn normalize_timezone(timezone: Option<String>) -> Result<String, FunctionCallError> {
+    timezone.map_or_else(
+        || {
+            let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
+            normalize_timezone_value(timezone)
+        },
+        normalize_timezone_value,
+    )
+}
+
+fn normalize_timezone_value(timezone: String) -> Result<String, FunctionCallError> {
+    let timezone = timezone.trim();
+    if timezone.is_empty() {
+        return Err(model_error("loop timezone must not be empty"));
+    }
+    parse_loop_timezone(timezone).map(|timezone| timezone.name().to_string())
+}
+
+fn parse_loop_timezone(timezone: &str) -> Result<Tz, FunctionCallError> {
+    timezone
+        .parse::<Tz>()
+        .map_err(|err| model_error(format!("invalid loop timezone `{timezone}`: {err}")))
+}
+
+fn timestamp_to_datetime(value: i64, field_name: &str) -> Result<DateTime<Utc>, FunctionCallError> {
+    DateTime::<Utc>::from_timestamp(value, 0)
+        .ok_or_else(|| model_error(format!("{field_name} must be a valid Unix timestamp")))
+}
+
+fn default_loop_expires_at(now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    now.checked_add_signed(ChronoDuration::days(DEFAULT_LOOP_EXPIRATION_DAYS))
+}
+
+fn validate_loop_expiry(
+    next_run_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<(), FunctionCallError> {
+    if let (Some(next_run_at), Some(expires_at)) = (next_run_at, expires_at)
+        && expires_at <= next_run_at
+    {
+        return Err(model_error(
+            "loop expires_at must be later than next_run_at",
+        ));
+    }
+    Ok(())
+}
+
 fn next_loop_run_at(
     schedule: &codex_state::ThreadScheduleSpec,
     timezone: &str,
@@ -326,7 +564,7 @@ fn next_loop_run_at(
     let next = match schedule {
         codex_state::ThreadScheduleSpec::Once => None,
         codex_state::ThreadScheduleSpec::Dynamic => {
-            after.checked_add_signed(ChronoDuration::minutes(1))
+            after.checked_add_signed(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
         }
         codex_state::ThreadScheduleSpec::Interval(interval) => {
             let duration = match interval.unit {
@@ -343,20 +581,14 @@ fn next_loop_run_at(
             after.checked_add_signed(duration)
         }
         codex_state::ThreadScheduleSpec::Cron { expression } => {
-            let timezone = timezone.parse::<Tz>().map_err(|err| {
-                FunctionCallError::RespondToModel(format!(
-                    "invalid loop timezone `{timezone}`: {err}"
-                ))
-            })?;
+            let timezone = parse_loop_timezone(timezone)?;
             let cron = Cron::from_str(expression).map_err(|err| {
-                FunctionCallError::RespondToModel(format!(
-                    "invalid cron expression `{expression}`: {err}"
-                ))
+                model_error(format!("invalid cron expression `{expression}`: {err}"))
             })?;
             let local_after = after.with_timezone(&timezone);
             let next = cron
                 .find_next_occurrence(&local_after, /*inclusive*/ false)
-                .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+                .map_err(|err| model_error(err.to_string()))?;
             Some(next.with_timezone(&Utc))
         }
     };
@@ -366,9 +598,11 @@ fn next_loop_run_at(
 impl LoopAction {
     fn verb(self) -> &'static str {
         match self {
+            Self::Create => "create",
             Self::List => "list",
             Self::Stop => "stop",
             Self::Resume => "resume",
+            Self::Start => "start",
             Self::Clear => "clear",
         }
     }
@@ -433,6 +667,10 @@ fn loop_response(response: ManageLoopResponse) -> Result<FunctionToolOutput, Fun
     Ok(FunctionToolOutput::from_text(response, Some(true)))
 }
 
+fn model_error(message: impl Into<String>) -> FunctionCallError {
+    FunctionCallError::RespondToModel(message.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +698,18 @@ mod tests {
         Utc.timestamp_opt(seconds, 0)
             .single()
             .expect("valid timestamp")
+    }
+
+    fn loop_args(action: LoopAction) -> ManageLoopArgs {
+        ManageLoopArgs {
+            action,
+            schedule_id: None,
+            prompt: None,
+            schedule: None,
+            timezone: None,
+            next_run_at: None,
+            expires_at: None,
+        }
     }
 
     async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {
@@ -503,6 +753,224 @@ mod tests {
             .expect("schedule should be created")
     }
 
+    #[test]
+    fn create_action_deserializes() {
+        let args: ManageLoopArgs = serde_json::from_str(
+            r#"{
+                "action": "create",
+                "prompt": "Ask for status",
+                "schedule": {
+                    "type": "interval",
+                    "amount": 15,
+                    "unit": "minutes"
+                },
+                "timezone": "UTC"
+            }"#,
+        )
+        .expect("create action should deserialize");
+
+        assert_eq!(args.action, LoopAction::Create);
+        assert_eq!(args.prompt.as_deref(), Some("Ask for status"));
+        assert_eq!(
+            args.schedule,
+            Some(LoopScheduleSpecArg::Interval {
+                amount: 15,
+                unit: LoopScheduleIntervalUnitArg::Minutes,
+            })
+        );
+    }
+
+    #[test]
+    fn start_action_deserializes_separately_from_resume() {
+        let args: ManageLoopArgs = serde_json::from_str(r#"{"action": "start"}"#)
+            .expect("start action should deserialize");
+
+        assert_eq!(args.action, LoopAction::Start);
+    }
+
+    #[tokio::test]
+    async fn create_interval_loop_creates_active_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(7);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            ManageLoopArgs {
+                prompt: Some("Ask for status".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 15,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("loop should be created");
+
+        assert_eq!(response.action, LoopAction::Create);
+        assert_eq!(response.deleted, None);
+        let affected_schedule = response
+            .affected_schedule
+            .clone()
+            .expect("affected schedule should be returned");
+        assert_eq!(
+            response.schedule_id.as_deref(),
+            Some(affected_schedule.schedule_id.as_str())
+        );
+        assert_eq!(affected_schedule.prompt, "Ask for status");
+        assert_eq!(affected_schedule.prompt_source, "inline");
+        assert_eq!(affected_schedule.timezone, "UTC");
+        assert_eq!(affected_schedule.status, "active");
+        assert_eq!(
+            affected_schedule.schedule,
+            LoopScheduleSpecSnapshot::Interval {
+                amount: 15,
+                unit: "minutes".to_string(),
+            }
+        );
+        assert!(affected_schedule.next_run_at.is_some());
+        assert!(affected_schedule.expires_at.is_some());
+        assert_eq!(response.schedules, vec![affected_schedule.clone()]);
+
+        let saved_schedule = runtime
+            .thread_schedules()
+            .get_thread_schedule(&affected_schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert!(is_loop_schedule(&saved_schedule));
+        assert_eq!(saved_schedule.prompt, "Ask for status");
+        assert_eq!(
+            saved_schedule.status,
+            codex_state::ThreadScheduleStatus::Active
+        );
+        assert_eq!(
+            saved_schedule.schedule,
+            codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                amount: 15,
+                unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn start_with_loop_fields_creates_active_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(9);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            ManageLoopArgs {
+                prompt: Some("Ask for status".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Cron {
+                    expression: "*/15 * * * *".to_string(),
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Start)
+            },
+        )
+        .await
+        .expect("start with create fields should create a loop");
+
+        assert_eq!(response.action, LoopAction::Create);
+        let affected_schedule = response
+            .affected_schedule
+            .clone()
+            .expect("affected schedule should be returned");
+        assert_eq!(affected_schedule.prompt, "Ask for status");
+        assert_eq!(
+            affected_schedule.schedule,
+            LoopScheduleSpecSnapshot::Cron {
+                expression: "*/15 * * * *".to_string(),
+            }
+        );
+        assert_eq!(affected_schedule.status, "active");
+
+        let saved_schedule = runtime
+            .thread_schedules()
+            .get_thread_schedule(&affected_schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(
+            saved_schedule.schedule,
+            codex_state::ThreadScheduleSpec::Cron {
+                expression: "*/15 * * * *".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn start_without_loop_fields_resumes_single_loop() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(10);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Paused,
+        )
+        .await;
+
+        let response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            ManageLoopArgs {
+                ..loop_args(LoopAction::Start)
+            },
+        )
+        .await
+        .expect("bare start should resume a single loop");
+
+        assert_eq!(response.action, LoopAction::Resume);
+        assert_eq!(response.schedule_id, Some(schedule.schedule_id.clone()));
+        assert_eq!(
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&schedule.schedule_id)
+                .await
+                .expect("schedule should load")
+                .expect("schedule should exist")
+                .status,
+            codex_state::ThreadScheduleStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn create_loop_rejects_once_schedule() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(8);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            ManageLoopArgs {
+                prompt: Some("Ask once".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Once),
+                timezone: Some("UTC".to_string()),
+                next_run_at: Some(1_700_000_300),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("one-time loop should be rejected");
+
+        match err {
+            FunctionCallError::RespondToModel(message) => assert_eq!(
+                message,
+                "one-time schedules belong in /schedule; use interval, cron, or dynamic for /loop"
+            ),
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn stop_without_schedule_id_pauses_single_loop() {
         let (_temp_dir, runtime) = test_runtime().await;
@@ -520,8 +988,7 @@ mod tests {
             runtime.clone(),
             thread_id,
             ManageLoopArgs {
-                action: LoopAction::Stop,
-                schedule_id: None,
+                ..loop_args(LoopAction::Stop)
             },
         )
         .await
@@ -572,8 +1039,8 @@ mod tests {
             runtime.clone(),
             thread_id,
             ManageLoopArgs {
-                action: LoopAction::Clear,
                 schedule_id: Some(first.schedule_id.clone()),
+                ..loop_args(LoopAction::Clear)
             },
         )
         .await
@@ -637,8 +1104,8 @@ mod tests {
             runtime.clone(),
             thread_id,
             ManageLoopArgs {
-                action: LoopAction::Resume,
                 schedule_id: Some(schedule.schedule_id.clone()),
+                ..loop_args(LoopAction::Resume)
             },
         )
         .await
@@ -678,8 +1145,8 @@ mod tests {
             runtime.clone(),
             thread_id,
             ManageLoopArgs {
-                action: LoopAction::Stop,
                 schedule_id: Some(other_schedule.schedule_id.clone()),
+                ..loop_args(LoopAction::Stop)
             },
         )
         .await
@@ -721,8 +1188,7 @@ mod tests {
             runtime,
             thread_id,
             ManageLoopArgs {
-                action: LoopAction::Clear,
-                schedule_id: None,
+                ..loop_args(LoopAction::Clear)
             },
         )
         .await

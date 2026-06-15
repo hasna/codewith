@@ -1,15 +1,23 @@
 use super::*;
+use crate::style::accent_color;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
+use codex_config::types::McpServerConfig;
 use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::mcp::Tool;
 use ratatui::text::Span;
+use std::collections::HashSet;
 
 const MCP_MANAGER_VIEW_ID: &str = "mcp-manager";
 
 impl ChatWidget {
+    pub(crate) fn open_mcp_control_center(&mut self) {
+        self.replace_or_show_mcp_manager_popup(self.mcp_control_center_popup_params());
+        self.request_redraw();
+    }
+
     pub(crate) fn open_mcp_manager(&mut self, detail: McpServerStatusDetail) {
         self.open_mcp_manager_loading_popup();
         self.app_event_tx.send(AppEvent::FetchMcpInventory {
@@ -43,6 +51,11 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn open_mcp_add_server(&mut self) {
+        self.replace_or_show_mcp_manager_popup(self.mcp_add_server_popup_params());
+        self.request_redraw();
+    }
+
     fn open_mcp_manager_loading_popup(&mut self) {
         self.replace_or_show_mcp_manager_popup(self.mcp_manager_loading_popup_params());
     }
@@ -55,6 +68,46 @@ impl ChatWidget {
             debug_assert!(replaced);
         } else {
             self.bottom_pane.show_selection_view(params);
+        }
+    }
+
+    fn mcp_control_center_popup_params(&self) -> SelectionViewParams {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("MCP".bold()));
+        header.push(Line::from(
+            "View configured MCPs or add a new MCP server.".dim(),
+        ));
+
+        SelectionViewParams {
+            view_id: Some(MCP_MANAGER_VIEW_ID),
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
+            items: vec![view_all_mcp_servers_item(), add_new_mcp_server_item()],
+            col_width_mode: ColumnWidthMode::Fixed,
+            ..Default::default()
+        }
+    }
+
+    fn mcp_add_server_popup_params(&self) -> SelectionViewParams {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Add MCP".bold()));
+        header.push(Line::from(
+            "Paste a command or URL, then add any env keys it needs.".dim(),
+        ));
+
+        SelectionViewParams {
+            view_id: Some(MCP_MANAGER_VIEW_ID),
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
+            items: vec![
+                add_stdio_mcp_example_item(),
+                add_http_mcp_example_item(),
+                mcp_setup_help_item(),
+            ],
+            is_searchable: true,
+            search_placeholder: Some("Search MCP setup options".to_string()),
+            col_width_mode: ColumnWidthMode::Fixed,
+            ..Default::default()
         }
     }
 
@@ -101,18 +154,43 @@ impl ChatWidget {
     fn mcp_manager_popup_params(&self, statuses: &[McpServerStatus]) -> SelectionViewParams {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("MCP Servers".bold()));
-        header.push(Line::from(mcp_manager_summary(statuses).dim()));
 
+        let configured_servers = self.config.mcp_servers.get();
+        let configured_count = configured_servers.len();
+        let disabled_configured_count = configured_servers
+            .values()
+            .filter(|config| !config.enabled)
+            .count();
+        header.push(Line::from(
+            mcp_manager_summary(statuses, configured_count, disabled_configured_count).dim(),
+        ));
+
+        let status_names = statuses
+            .iter()
+            .map(|status| status.name.as_str())
+            .collect::<HashSet<_>>();
         let mut items = vec![refresh_mcp_manager_item()];
-        if statuses.is_empty() {
+        if statuses.is_empty() && configured_servers.is_empty() {
+            items.push(add_new_mcp_server_item());
             items.push(SelectionItem {
                 name: "No MCP servers configured".to_string(),
-                description: Some("Add servers in config.toml to use MCP tools.".to_string()),
+                description: Some(
+                    "Use Add new MCP to paste a command, URL, and env keys.".to_string(),
+                ),
                 is_disabled: true,
                 ..Default::default()
             });
         } else {
-            items.extend(statuses.iter().cloned().map(mcp_server_status_item));
+            items.extend(statuses.iter().cloned().map(|status| {
+                let config = configured_servers.get(&status.name);
+                mcp_server_status_item(status, config)
+            }));
+            for (name, config) in configured_servers {
+                if !status_names.contains(name.as_str()) {
+                    items.push(configured_mcp_server_item(name, config));
+                }
+            }
+            items.push(add_new_mcp_server_item());
         }
 
         SelectionViewParams {
@@ -132,18 +210,27 @@ impl ChatWidget {
         header.push(Line::from(format!("MCP: {}", status.name).bold()));
         header.push(Line::from(mcp_server_detail_summary(&status).dim()));
         if let Some(info) = &status.server_info
-            && let Some(description) = non_empty(info.description.as_deref()) {
-                header.push(Line::from(description.to_string().dim()));
-            }
+            && let Some(description) = non_empty(info.description.as_deref())
+        {
+            header.push(Line::from(description.to_string().dim()));
+        }
 
+        let has_inventory = !status.tools.is_empty()
+            || !status.resources.is_empty()
+            || !status.resource_templates.is_empty();
+        let config = self.config.mcp_servers.get().get(&status.name);
         let mut items = vec![refresh_mcp_manager_item()];
+        items.push(mcp_server_enablement_item(&status.name, config));
         if status.auth_status == McpAuthStatus::NotLoggedIn {
             items.push(mcp_oauth_login_item(status.name.clone()));
         }
-        push_tool_items(&mut items, &status);
+        items.push(mcp_diagnostics_help_item(status.name.clone()));
+        items.push(mcp_scale_guidance_item());
+        push_tool_items(&mut items, &status, config);
+        push_configured_disabled_tool_items(&mut items, &status, config);
         push_resource_items(&mut items, &status);
         push_resource_template_items(&mut items, &status);
-        if items.len() == 1 {
+        if !has_inventory {
             items.push(SelectionItem {
                 name: "No tools or resources advertised".to_string(),
                 description: Some("This server is reachable but has no inventory.".to_string()),
@@ -158,17 +245,18 @@ impl ChatWidget {
             footer_hint: Some(standard_popup_hint_line()),
             items,
             is_searchable: true,
-            search_placeholder: Some("Search tools and resources".to_string()),
+            search_placeholder: Some("Search actions, tools, and resources".to_string()),
             col_width_mode: ColumnWidthMode::Fixed,
             ..Default::default()
         }
     }
 }
 
-fn refresh_mcp_manager_item() -> SelectionItem {
+fn view_all_mcp_servers_item() -> SelectionItem {
     SelectionItem {
-        name: "Refresh".to_string(),
-        description: Some("Reload MCP server status and inventory.".to_string()),
+        name: "View all MCPs".to_string(),
+        description: Some("Open the full MCP inventory and per-server controls.".to_string()),
+        search_value: Some("view all mcp servers inventory manage".to_string()),
         actions: vec![Box::new(|tx| {
             tx.send(AppEvent::OpenMcpManager {
                 detail: McpServerStatusDetail::Full,
@@ -179,10 +267,134 @@ fn refresh_mcp_manager_item() -> SelectionItem {
     }
 }
 
+fn add_new_mcp_server_item() -> SelectionItem {
+    SelectionItem {
+        name: "Add new MCP".to_string(),
+        description: Some("Paste a package command, HTTP URL, env keys, or headers.".to_string()),
+        search_value: Some("add new mcp setup configure paste env url command".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::OpenMcpAddServer);
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn add_stdio_mcp_example_item() -> SelectionItem {
+    SelectionItem {
+        name: "Paste stdio command".to_string(),
+        description: Some("For npm/bun/uvx/local MCP servers that run as a process.".to_string()),
+        selected_description: Some(
+            "Edit NAME, command args, and env keys; submit to save and auto-refresh MCP tools."
+                .to_string(),
+        ),
+        search_value: Some("stdio command npm npx bun uvx env".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::PrefillComposer {
+                text: "/mcp add NAME npx -y @scope/mcp-server --env-var API_KEY".to_string(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn add_http_mcp_example_item() -> SelectionItem {
+    SelectionItem {
+        name: "Paste HTTP URL".to_string(),
+        description: Some("For streamable HTTP MCP servers.".to_string()),
+        selected_description: Some(
+            "Edit NAME, URL, and bearer env key; submit to save and auto-refresh MCP tools."
+                .to_string(),
+        ),
+        search_value: Some("http streamable url bearer env".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::PrefillComposer {
+                text: "/mcp add NAME https://example.com/mcp --bearer-env API_KEY".to_string(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn refresh_mcp_manager_item() -> SelectionItem {
+    SelectionItem {
+        name: "Refresh".to_string(),
+        description: Some("Refresh MCP server status and inventory.".to_string()),
+        search_value: Some("refresh inventory status".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::OpenMcpManager {
+                detail: McpServerStatusDetail::Full,
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_setup_help_item() -> SelectionItem {
+    SelectionItem {
+        name: "Add server".to_string(),
+        description: Some("Show config guidance for stdio and HTTP MCP servers.".to_string()),
+        selected_description: Some(
+            "Stdio is fine for normal local MCPs; use streamable HTTP or plugins for heavier fleets.".to_string(),
+        ),
+        search_value: Some("add setup configure config stdio http streamable plugin".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::ShowMcpSetupHelp);
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_server_enablement_item(name: &str, config: Option<&McpServerConfig>) -> SelectionItem {
+    let Some(config) = config else {
+        return SelectionItem {
+            name: "Managed outside mcp_servers".to_string(),
+            description: Some(
+                "This MCP may come from a plugin or runtime source; disable that source instead."
+                    .to_string(),
+            ),
+            is_disabled: true,
+            search_value: Some("plugin runtime managed disable enable".to_string()),
+            ..Default::default()
+        };
+    };
+
+    let enabled = !config.enabled;
+    SelectionItem {
+        name: if config.enabled {
+            "Disable MCP server".to_string()
+        } else {
+            "Enable MCP server".to_string()
+        },
+        description: Some(if config.enabled {
+            "Stop advertising this server's tools after the automatic refresh.".to_string()
+        } else {
+            "Start advertising this server's tools after the automatic refresh.".to_string()
+        }),
+        search_value: Some("enable disable server mcp".to_string()),
+        actions: vec![Box::new({
+            let name = name.to_string();
+            move |tx| {
+                tx.send(AppEvent::SetMcpServerEnabled {
+                    name: name.clone(),
+                    enabled,
+                });
+            }
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
 fn mcp_oauth_login_item(server_name: String) -> SelectionItem {
     SelectionItem {
         name: "OAuth login".to_string(),
         description: Some("Open the browser login flow for this server.".to_string()),
+        search_value: Some("oauth login auth browser".to_string()),
         actions: vec![Box::new(move |tx| {
             tx.send(AppEvent::StartMcpServerOauthLogin {
                 name: server_name.clone(),
@@ -193,10 +405,43 @@ fn mcp_oauth_login_item(server_name: String) -> SelectionItem {
     }
 }
 
-fn mcp_server_status_item(status: McpServerStatus) -> SelectionItem {
+fn mcp_diagnostics_help_item(server_name: String) -> SelectionItem {
+    SelectionItem {
+        name: "Diagnose".to_string(),
+        description: Some(
+            "Show checks for this server's command, env, auth, and inventory.".to_string(),
+        ),
+        search_value: Some("diagnose debug troubleshoot command env auth inventory".to_string()),
+        actions: vec![Box::new(move |tx| {
+            tx.send(AppEvent::ShowMcpDiagnosticsHelp {
+                name: server_name.clone(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_scale_guidance_item() -> SelectionItem {
+    SelectionItem {
+        name: "Scale guidance".to_string(),
+        description: Some(
+            "Many stdio MCPs spawn many local processes; HTTP/plugin MCPs reduce local load."
+                .to_string(),
+        ),
+        search_value: Some("scale stdio http streamable plugin process load".to_string()),
+        is_disabled: true,
+        ..Default::default()
+    }
+}
+
+fn mcp_server_status_item(
+    status: McpServerStatus,
+    config: Option<&McpServerConfig>,
+) -> SelectionItem {
     let name = status.name.clone();
     let selected_description = Some(mcp_server_selected_description(&status));
-    let description = Some(mcp_server_row_description(&status));
+    let description = Some(mcp_server_row_description_with_config(&status, config));
     let search_value = Some(mcp_server_search_value(&status));
     SelectionItem {
         name,
@@ -214,11 +459,72 @@ fn mcp_server_status_item(status: McpServerStatus) -> SelectionItem {
     }
 }
 
-fn push_tool_items(items: &mut Vec<SelectionItem>, status: &McpServerStatus) {
+fn configured_mcp_server_item(name: &str, config: &McpServerConfig) -> SelectionItem {
+    let status = McpServerStatus {
+        name: name.to_string(),
+        server_info: None,
+        tools: HashMap::new(),
+        resources: Vec::new(),
+        resource_templates: Vec::new(),
+        auth_status: McpAuthStatus::Unsupported,
+    };
+    SelectionItem {
+        name: name.to_string(),
+        name_prefix_spans: vec![if config.enabled {
+            "? ".dim()
+        } else {
+            "- ".dim()
+        }],
+        description: Some(if config.enabled {
+            "Configured; inventory unavailable".to_string()
+        } else {
+            "Disabled in config".to_string()
+        }),
+        selected_description: Some(mcp_config_transport_description(config)),
+        search_value: Some(format!(
+            "{name} {} configured disabled enable",
+            mcp_config_transport_description(config)
+        )),
+        actions: vec![Box::new(move |tx| {
+            tx.send(AppEvent::OpenMcpServerDetails {
+                status: status.clone(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn push_tool_items(
+    items: &mut Vec<SelectionItem>,
+    status: &McpServerStatus,
+    config: Option<&McpServerConfig>,
+) {
     let mut tools = status.tools.values().collect::<Vec<_>>();
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     for tool in tools {
-        items.push(tool_item(tool));
+        items.push(tool_item(&status.name, tool, config));
+    }
+}
+
+fn push_configured_disabled_tool_items(
+    items: &mut Vec<SelectionItem>,
+    status: &McpServerStatus,
+    config: Option<&McpServerConfig>,
+) {
+    let Some(config) = config else {
+        return;
+    };
+    let Some(disabled_tools) = &config.disabled_tools else {
+        return;
+    };
+    let mut disabled_tools = disabled_tools
+        .iter()
+        .filter(|tool| !status.tools.contains_key(tool.as_str()))
+        .collect::<Vec<_>>();
+    disabled_tools.sort();
+    for tool in disabled_tools {
+        items.push(configured_disabled_tool_item(&status.name, tool));
     }
 }
 
@@ -238,18 +544,69 @@ fn push_resource_template_items(items: &mut Vec<SelectionItem>, status: &McpServ
     }
 }
 
-fn tool_item(tool: &Tool) -> SelectionItem {
+fn tool_item(server_name: &str, tool: &Tool, config: Option<&McpServerConfig>) -> SelectionItem {
+    let enabled = config
+        .map(|config| mcp_tool_is_enabled(config, &tool.name))
+        .unwrap_or(true);
+    let next_enabled = !enabled;
     SelectionItem {
         name: display_name(tool.title.as_deref(), &tool.name),
-        name_prefix_spans: vec!["T ".cyan()],
-        description: tool.description.clone().or_else(|| Some(tool.name.clone())),
-        selected_description: Some(format!("Tool name: {}", tool.name)),
-        is_disabled: true,
+        name_prefix_spans: vec![if enabled {
+            "T ".fg(accent_color())
+        } else {
+            "- ".dim()
+        }],
+        description: Some(format!(
+            "{} · {}",
+            if enabled { "Enabled" } else { "Disabled" },
+            tool.description.as_deref().unwrap_or(&tool.name)
+        )),
+        selected_description: Some(format!(
+            "{} tool `{}` for `{}`.",
+            if enabled { "Disable" } else { "Enable" },
+            tool.name,
+            server_name
+        )),
+        actions: vec![Box::new({
+            let server = server_name.to_string();
+            let tool = tool.name.clone();
+            move |tx| {
+                tx.send(AppEvent::SetMcpToolEnabled {
+                    server: server.clone(),
+                    tool: tool.clone(),
+                    enabled: next_enabled,
+                });
+            }
+        })],
+        dismiss_on_select: true,
         search_value: Some(format!(
             "{} {}",
             tool.name,
             tool.description.clone().unwrap_or_default()
         )),
+        ..Default::default()
+    }
+}
+
+fn configured_disabled_tool_item(server_name: &str, tool: &str) -> SelectionItem {
+    SelectionItem {
+        name: tool.to_string(),
+        name_prefix_spans: vec!["- ".dim()],
+        description: Some("Disabled in config".to_string()),
+        selected_description: Some(format!("Enable tool `{tool}` for `{server_name}`.")),
+        actions: vec![Box::new({
+            let server = server_name.to_string();
+            let tool = tool.to_string();
+            move |tx| {
+                tx.send(AppEvent::SetMcpToolEnabled {
+                    server: server.clone(),
+                    tool: tool.clone(),
+                    enabled: true,
+                });
+            }
+        })],
+        dismiss_on_select: true,
+        search_value: Some(format!("{tool} disabled enable")),
         ..Default::default()
     }
 }
@@ -313,7 +670,7 @@ fn auth_status_order(status: McpAuthStatus) -> usize {
 fn auth_status_prefix(status: McpAuthStatus) -> Span<'static> {
     match status {
         McpAuthStatus::NotLoggedIn => "! ".red(),
-        McpAuthStatus::BearerToken => "K ".cyan(),
+        McpAuthStatus::BearerToken => "K ".fg(accent_color()),
         McpAuthStatus::OAuth => "O ".green(),
         McpAuthStatus::Unsupported => "- ".dim(),
     }
@@ -328,17 +685,33 @@ fn auth_status_label(status: McpAuthStatus) -> &'static str {
     }
 }
 
-fn mcp_manager_summary(statuses: &[McpServerStatus]) -> String {
+fn mcp_manager_summary(
+    statuses: &[McpServerStatus],
+    configured_count: usize,
+    disabled_configured_count: usize,
+) -> String {
     let server_count = statuses.len();
     let tool_count: usize = statuses.iter().map(|status| status.tools.len()).sum();
     let auth_needed = statuses
         .iter()
         .filter(|status| status.auth_status == McpAuthStatus::NotLoggedIn)
         .count();
-    if auth_needed > 0 {
-        format!("{server_count} servers, {tool_count} tools, {auth_needed} need login")
+    let configured_suffix = if configured_count > server_count {
+        format!(", {configured_count} configured")
     } else {
-        format!("{server_count} servers, {tool_count} tools")
+        String::new()
+    };
+    let disabled_suffix = if disabled_configured_count > 0 {
+        format!(", {disabled_configured_count} disabled")
+    } else {
+        String::new()
+    };
+    if auth_needed > 0 {
+        format!(
+            "{server_count} servers, {tool_count} tools, {auth_needed} need login{configured_suffix}{disabled_suffix}"
+        )
+    } else {
+        format!("{server_count} servers, {tool_count} tools{configured_suffix}{disabled_suffix}")
     }
 }
 
@@ -350,6 +723,19 @@ fn mcp_server_row_description(status: &McpServerStatus) -> String {
         count_label(status.resources.len(), "resource"),
         count_label(status.resource_templates.len(), "template")
     )
+}
+
+fn mcp_server_row_description_with_config(
+    status: &McpServerStatus,
+    config: Option<&McpServerConfig>,
+) -> String {
+    match config {
+        Some(config) if !config.enabled => {
+            format!("Disabled · {}", mcp_server_row_description(status))
+        }
+        Some(_) => format!("Enabled · {}", mcp_server_row_description(status)),
+        None => format!("Runtime · {}", mcp_server_row_description(status)),
+    }
 }
 
 fn mcp_server_selected_description(status: &McpServerStatus) -> String {
@@ -393,6 +779,34 @@ fn mcp_server_search_value(status: &McpServerStatus) -> String {
         auth_status_label(status.auth_status),
         tool_names
     )
+}
+
+fn mcp_config_transport_description(config: &McpServerConfig) -> String {
+    match &config.transport {
+        codex_config::types::McpServerTransportConfig::Stdio { command, args, .. } => {
+            if args.is_empty() {
+                format!("stdio: {command}")
+            } else {
+                format!("stdio: {command} {}", args.join(" "))
+            }
+        }
+        codex_config::types::McpServerTransportConfig::StreamableHttp { url, .. } => {
+            format!("streamable HTTP: {url}")
+        }
+    }
+}
+
+fn mcp_tool_is_enabled(config: &McpServerConfig, tool_name: &str) -> bool {
+    if !config.enabled {
+        return false;
+    }
+    if let Some(enabled_tools) = &config.enabled_tools {
+        return enabled_tools.iter().any(|tool| tool == tool_name);
+    }
+    !config
+        .disabled_tools
+        .as_ref()
+        .is_some_and(|tools| tools.iter().any(|tool| tool == tool_name))
 }
 
 fn display_name(title: Option<&str>, name: &str) -> String {

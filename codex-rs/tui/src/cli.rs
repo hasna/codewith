@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
     pub prompt: Option<String>,
 
+    /// Enqueue the prompt as a durable background agent and exit.
+    #[arg(long = "bg", visible_alias = "background", default_value_t = false)]
+    pub background_agent: bool,
+
     /// Error out when config.toml contains fields that are not recognized by this version of Codewith.
     #[arg(long = "strict-config", default_value_t = false)]
     pub strict_config: bool,

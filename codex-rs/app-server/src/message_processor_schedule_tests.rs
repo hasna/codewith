@@ -64,7 +64,11 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
+use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const TEST_CONNECTION_ID: ConnectionId = ConnectionId(8);
 
@@ -90,10 +94,18 @@ impl ScheduleHarness {
 
     async fn new_with_cli_overrides(cli_overrides: Vec<(String, TomlValue)>) -> Result<Self> {
         let server = create_mock_responses_server_repeating_assistant("Scheduled done").await;
+        Self::new_with_mock_server(server, cli_overrides).await
+    }
+
+    async fn new_with_mock_server(
+        server: MockServer,
+        cli_overrides: Vec<(String, TomlValue)>,
+    ) -> Result<Self> {
+        let server_uri = server.uri();
         let codex_home = TempDir::new()?;
         let workspace = TempDir::new()?;
         let config =
-            Arc::new(build_test_config(codex_home.path(), &server.uri(), cli_overrides).await?);
+            Arc::new(build_test_config(codex_home.path(), &server_uri, cli_overrides).await?);
         let state_db = codex_state::StateRuntime::init(
             config.sqlite_home.clone(),
             config.model_provider_id.clone(),
@@ -375,6 +387,40 @@ impl ScheduleHarness {
         }
     }
 
+    async fn read_failed_run_and_schedule_update(
+        &mut self,
+        thread_id: &str,
+        run_id: &str,
+    ) -> (
+        ThreadScheduleUpdatedNotification,
+        ThreadScheduleRunUpdatedNotification,
+    ) {
+        let mut schedule_update = None;
+        let mut run_update = None;
+        loop {
+            let notification = self.read_server_notification().await;
+            match notification {
+                ServerNotification::ThreadScheduleUpdated(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    schedule_update = Some(notification);
+                }
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.run_id == run_id
+                        && notification.run.status == ThreadScheduleRunStatus::Failed =>
+                {
+                    run_update = Some(notification);
+                }
+                _ => {}
+            }
+            if let (Some(schedule_update), Some(run_update)) =
+                (schedule_update.clone(), run_update.clone())
+            {
+                return (schedule_update, run_update);
+            }
+        }
+    }
+
     async fn read_server_notification(&mut self) -> ServerNotification {
         loop {
             let envelope =
@@ -400,6 +446,23 @@ impl ScheduleHarness {
             }
         }
     }
+}
+
+async fn create_mock_responses_server_unauthorized() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {
+                "message": "Incorrect API key provided: sk-test-schedule-secret",
+                "type": "invalid_request_error",
+                "param": null,
+                "code": "invalid_api_key"
+            }
+        })))
+        .mount(&server)
+        .await;
+    server
 }
 
 fn run_schedule_harness_test<F>(future: F) -> Result<()>
@@ -481,6 +544,8 @@ async fn build_test_processor(
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
+        background_agent_host: false,
+        background_agent_worker_run_id: None,
     }));
     (processor, outgoing_rx)
 }
@@ -1156,6 +1221,89 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
                 && body.contains("summarize the latest test status")),
             "scheduled prompt should be wrapped as one scheduled run: {response_request_bodies:#?}"
         );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_run_now_records_model_errors_as_failed_runs() -> Result<()> {
+    run_schedule_harness_test(async {
+        let server = create_mock_responses_server_unauthorized().await;
+        let mut harness = ScheduleHarness::new_with_mock_server(server, Vec::new()).await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check whether the dev server is healthy".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Hours,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_800_000_000),
+                    expires_at: Some(1_800_086_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        harness
+            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+            .await;
+
+        let (updated_schedule, failed) = harness
+            .read_failed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+        let error = failed
+            .run
+            .error
+            .as_deref()
+            .expect("failed scheduled run should record an error");
+        assert!(error.contains("scheduled turn failed"));
+        assert!(error.contains("Incorrect API key provided"));
+        assert!(
+            !error.contains("sk-test-schedule-secret"),
+            "schedule run error should redact API keys: {error}"
+        );
+        assert!(failed.run.completed_at.is_some());
+        assert_eq!(1, updated_schedule.schedule.failure_count);
+
+        let request_id = harness.request_id();
+        let get_response: ThreadScheduleGetResponse = harness
+            .request(ClientRequest::ThreadScheduleGet {
+                request_id,
+                params: ThreadScheduleGetParams {
+                    thread_id,
+                    schedule_id: schedule.schedule_id,
+                },
+            })
+            .await;
+        assert_eq!(1, get_response.stats.total_runs);
+        assert_eq!(0, get_response.stats.completed_runs);
+        assert_eq!(1, get_response.stats.failed_runs);
+        assert_eq!(Some(error.to_string()), get_response.stats.last_error);
 
         harness.shutdown().await;
         Ok(())

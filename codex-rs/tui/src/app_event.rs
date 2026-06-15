@@ -140,6 +140,14 @@ pub(crate) enum RateLimitRefreshOrigin {
     StatusCommand { request_id: u64 },
 }
 
+/// Distinguishes why a MiniMax usage refresh was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MiniMaxUsageRefreshOrigin {
+    /// User-initiated via `/status` or `/stats`; the `request_id` correlates with
+    /// the status card that should be updated when the fetch completes.
+    StatusCommand { request_id: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeymapEditIntent {
     ReplaceAll,
@@ -154,6 +162,12 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Prompt for a persisted name for a selected agent thread.
+    OpenAgentRenamePrompt {
+        thread_id: ThreadId,
+        current_name: Option<String>,
+        label: String,
+    },
 
     /// Fork the current thread into a transient side conversation.
     StartSide {
@@ -246,6 +260,12 @@ pub(crate) enum AppEvent {
     /// Archive the current active main thread and exit after it succeeds.
     ArchiveCurrentThread,
 
+    /// Create a tmux session for the current thread and exit into it.
+    OpenInTmux {
+        name: Option<String>,
+        replace_existing: bool,
+    },
+
     /// Fork the current session into a new thread.
     ForkCurrentSession,
 
@@ -290,6 +310,11 @@ pub(crate) enum AppEvent {
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,
+    },
+
+    /// Refresh MiniMax Token Plan usage in the background.
+    RefreshMiniMaxUsage {
+        origin: MiniMaxUsageRefreshOrigin,
     },
 
     /// Open the current thread goal summary/action menu.
@@ -460,8 +485,45 @@ pub(crate) enum AppEvent {
         status: McpServerStatus,
     },
 
+    /// Start the add-new-MCP flow.
+    OpenMcpAddServer,
+
+    /// Add a new MCP server from a slash-command style spec.
+    AddMcpServer {
+        spec: String,
+    },
+
+    /// Enable or disable a configured MCP server.
+    SetMcpServerEnabled {
+        name: String,
+        enabled: bool,
+    },
+
+    /// Enable or disable a configured MCP tool.
+    SetMcpToolEnabled {
+        server: String,
+        tool: String,
+        enabled: bool,
+    },
+
     /// Start OAuth login for a configured MCP server.
     StartMcpServerOauthLogin {
+        name: String,
+    },
+
+    /// Reload MCP server connections for loaded threads.
+    ReloadMcpServers,
+
+    /// Result of reloading MCP server connections for loaded threads.
+    McpServersReloaded {
+        result: Result<(), String>,
+    },
+
+    /// Show setup guidance for configuring MCP servers.
+    ShowMcpSetupHelp,
+
+    /// Show diagnostic guidance for one MCP server.
+    ShowMcpDiagnosticsHelp {
         name: String,
     },
 
@@ -501,6 +563,52 @@ pub(crate) enum AppEvent {
         monitor_id: Option<String>,
     },
 
+    /// Open the durable background-agent manager.
+    OpenBackgroundAgentManager,
+
+    /// Open actions for one durable background agent.
+    OpenBackgroundAgentActions {
+        agent_id: String,
+    },
+
+    /// Start a durable background agent.
+    StartBackgroundAgent {
+        prompt: String,
+    },
+
+    /// Show the latest state for one durable background agent.
+    ReadBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Attach to one durable background agent and replay its event journal.
+    AttachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show one durable background agent event journal without attaching.
+    ShowBackgroundAgentLogs {
+        agent_id: Option<String>,
+    },
+
+    /// Detach from one durable background agent.
+    DetachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Request that one durable background agent stop.
+    StopBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Delete or mark one durable background agent for deletion.
+    DeleteBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show durable background-agent daemon diagnostics.
+    ShowBackgroundAgentDiagnostics,
+
     /// Fill the composer with text from an interactive action.
     PrefillComposer {
         text: String,
@@ -511,6 +619,13 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
+    },
+
+    /// Result of refreshing MiniMax Token Plan usage.
+    MiniMaxUsageLoaded {
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
     },
 
     /// Send a user-confirmed request to notify the workspace owner.
@@ -871,9 +986,25 @@ pub(crate) enum AppEvent {
         profile: String,
     },
 
+    /// Open settings for a saved auth profile.
+    OpenAuthProfileSettings {
+        profile: String,
+    },
+
     /// Prompt for confirming saved auth profile deletion.
     OpenAuthProfileDeleteConfirm {
         profile: String,
+    },
+
+    /// Start ChatGPT relogin for a saved auth profile.
+    ReloginAuthProfile {
+        profile: String,
+    },
+
+    /// Result of ChatGPT relogin for a saved auth profile.
+    AuthProfileReloginFinished {
+        profile: String,
+        result: Result<(), String>,
     },
 
     /// Rename a saved auth profile.

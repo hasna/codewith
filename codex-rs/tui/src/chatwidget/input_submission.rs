@@ -1,6 +1,7 @@
 //! User-message and shell-prompt submission behavior for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::user_messages::QueueInsertionPosition;
 
 impl ChatWidget {
     pub(super) fn user_message_from_submission(
@@ -74,10 +75,36 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
     ) -> bool {
+        self.submit_user_message_with_history_record_at_position(
+            user_message,
+            history_record,
+            QueueInsertionPosition::Back,
+        )
+    }
+
+    pub(super) fn resubmit_queued_user_message_with_history_record(
+        &mut self,
+        user_message: UserMessage,
+        history_record: UserMessageHistoryRecord,
+    ) -> bool {
+        self.submit_user_message_with_history_record_at_position(
+            user_message,
+            history_record,
+            QueueInsertionPosition::Front,
+        )
+    }
+
+    fn submit_user_message_with_history_record_at_position(
+        &mut self,
+        user_message: UserMessage,
+        history_record: UserMessageHistoryRecord,
+        auth_switch_queue_position: QueueInsertionPosition,
+    ) -> bool {
         self.submit_user_message_with_history_and_shell_escape_policy(
             user_message,
             history_record,
             ShellEscapePolicy::Allow,
+            auth_switch_queue_position,
         )
         .0
     }
@@ -91,6 +118,7 @@ impl ChatWidget {
             user_message,
             UserMessageHistoryRecord::UserMessageText,
             shell_escape_policy,
+            QueueInsertionPosition::Back,
         )
         .1
     }
@@ -100,6 +128,7 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
         shell_escape_policy: ShellEscapePolicy,
+        auth_switch_queue_position: QueueInsertionPosition,
     ) -> (bool, Option<AppCommand>) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
@@ -165,7 +194,11 @@ impl ChatWidget {
             text_elements,
             mention_bindings,
         };
-        if self.maybe_auto_switch_auth_profile_before_user_turn(&user_message, &history_record) {
+        if self.maybe_auto_switch_auth_profile_before_user_turn(
+            &user_message,
+            &history_record,
+            auth_switch_queue_position,
+        ) {
             return (true, None);
         }
         let UserMessage {

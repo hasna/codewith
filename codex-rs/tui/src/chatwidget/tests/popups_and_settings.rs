@@ -10,6 +10,8 @@ use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
 use codex_features::Stage;
 use codex_login::AuthDotJson;
 use codex_login::save_auth_profile;
@@ -149,6 +151,41 @@ fn mcp_tool(name: &str, title: Option<&str>, description: Option<&str>) -> Tool 
     }
 }
 
+fn mcp_test_config(enabled: bool, disabled_tools: Option<Vec<&str>>) -> McpServerConfig {
+    McpServerConfig {
+        transport: McpServerTransportConfig::Stdio {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@scope/mcp-server".to_string()],
+            env: None,
+            env_vars: Vec::new(),
+            cwd: None,
+        },
+        environment_id: "local".to_string(),
+        enabled,
+        required: false,
+        supports_parallel_tool_calls: false,
+        disabled_reason: None,
+        startup_timeout_sec: None,
+        tool_timeout_sec: None,
+        default_tools_approval_mode: None,
+        enabled_tools: None,
+        disabled_tools: disabled_tools.map(|tools| tools.into_iter().map(str::to_string).collect()),
+        scopes: None,
+        oauth: None,
+        oauth_resource: None,
+        tools: HashMap::new(),
+    }
+}
+
+fn set_mcp_test_config(chat: &mut ChatWidget, entries: Vec<(&str, McpServerConfig)>) {
+    chat.config.mcp_servers = crate::legacy_core::config::Constrained::allow_any(
+        entries
+            .into_iter()
+            .map(|(name, config)| (name.to_string(), config))
+            .collect(),
+    );
+}
+
 fn mcp_resource(name: &str, uri: &str, description: Option<&str>) -> Resource {
     Resource {
         annotations: None,
@@ -281,6 +318,27 @@ async fn plugins_popup_loading_state_snapshot() {
 }
 
 #[tokio::test]
+async fn mcp_control_center_popup_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_mcp_control_center();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("View all MCPs"));
+    assert!(popup.contains("Add new MCP"));
+    assert_chatwidget_snapshot!("mcp_control_center_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenMcpManager {
+            detail: McpServerStatusDetail::Full,
+        })
+    );
+}
+
+#[tokio::test]
 async fn mcp_manager_loading_popup_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
@@ -303,7 +361,7 @@ async fn mcp_manager_loading_popup_snapshot() {
 
 #[tokio::test]
 async fn mcp_manager_empty_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.on_mcp_manager_loaded(
         Ok(Vec::new()),
@@ -313,7 +371,33 @@ async fn mcp_manager_empty_popup_snapshot() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert!(popup.contains("No MCP servers configured"));
+    assert!(popup.contains("Add new MCP"));
+    assert!(!popup.contains("Reload MCP tools"));
     assert_chatwidget_snapshot!("mcp_manager_empty_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenMcpAddServer));
+}
+
+#[tokio::test]
+async fn mcp_manager_configured_only_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_mcp_test_config(&mut chat, vec![("docs", mcp_test_config(false, None))]);
+
+    chat.on_mcp_manager_loaded(
+        Ok(Vec::new()),
+        McpServerStatusDetail::Full,
+        /*thread_id*/ None,
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("0 servers, 0 tools, 1 configured, 1 disabled"));
+    assert!(popup.contains("docs"));
+    assert!(popup.contains("Disabled in config"));
+    assert!(!popup.contains("No MCP servers configured"));
+    assert_chatwidget_snapshot!("mcp_manager_configured_only_popup", popup);
 }
 
 #[tokio::test]
@@ -362,6 +446,9 @@ async fn mcp_manager_server_detail_snapshot_and_oauth_action() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 112);
     assert!(popup.contains("OAuth login"));
+    assert!(popup.contains("Diagnose"));
+    assert!(popup.contains("Managed outside mcp_servers"));
+    assert!(!popup.contains("Reload MCP tools"));
     assert!(popup.contains("Search docs"));
     assert_chatwidget_snapshot!("mcp_manager_server_detail_popup", popup);
 
@@ -371,6 +458,48 @@ async fn mcp_manager_server_detail_snapshot_and_oauth_action() {
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::StartMcpServerOauthLogin { name }) if name == "docs"
+    );
+}
+
+#[tokio::test]
+async fn mcp_manager_server_and_tool_config_actions() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_mcp_test_config(
+        &mut chat,
+        vec![("linear", mcp_test_config(true, Some(vec!["create_issue"])))],
+    );
+    let linear = mcp_test_statuses()
+        .into_iter()
+        .find(|status| status.name == "linear")
+        .expect("linear MCP status");
+
+    chat.open_mcp_server_details(linear.clone());
+
+    let popup = render_bottom_popup(&chat, /*width*/ 112);
+    assert!(popup.contains("Disable MCP server"));
+    assert!(popup.contains("Disabled · Create a Linear issue."));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SetMcpServerEnabled { name, enabled }) if name == "linear" && !enabled
+    );
+
+    chat.open_mcp_server_details(linear);
+    for _ in 0..3 {
+        chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    }
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SetMcpToolEnabled {
+            server,
+            tool,
+            enabled,
+        }) if server == "linear" && tool == "create_issue" && enabled
     );
 }
 
@@ -2547,6 +2676,11 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("work"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_selection_popup_profile_actions", popup);
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_matches!(
@@ -2563,15 +2697,33 @@ async fn profile_selection_popup_snapshot_and_selection() {
 
     chat.open_profile_popup();
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ReloginAuthProfile { profile }) if profile == "personal"
+    );
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileSettings { profile }) if profile == "personal"
+    );
+
+    chat.open_auth_profile_settings_popup("personal".to_string());
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_settings_popup", popup);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileRenamePrompt { profile }) if profile == "personal"
     );
 
-    chat.open_profile_popup();
+    chat.open_auth_profile_settings_popup("personal".to_string());
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
@@ -2766,6 +2918,38 @@ async fn current_provider_model_selection_sends_provider_and_model() {
                 | AppEvent::PersistModelSelection { .. }
         )),
         "provider-scoped selection should own the active thread mutation; events: {events:?}"
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn current_provider_model_selection_without_reasoning_options_closes_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_provider_id = "openrouter".to_string();
+    let mut preset =
+        provider_picker_preset("deepseek/deepseek-v4-flash", ReasoningEffortConfig::None);
+    preset.supported_reasoning_efforts.clear();
+    chat.set_model_catalog(Arc::new(ModelCatalog::new_for_provider(
+        "openrouter".to_string(),
+        vec![preset.clone()],
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectModelProviderModel {
+                provider_id,
+                model,
+                effort: Some(ReasoningEffortConfig::None),
+            } if provider_id == "openrouter" && model == "deepseek/deepseek-v4-flash"
+        )),
+        "expected provider-scoped model selection event; events: {events:?}"
     );
     assert!(chat.bottom_pane.no_modal_or_popup_active());
 }

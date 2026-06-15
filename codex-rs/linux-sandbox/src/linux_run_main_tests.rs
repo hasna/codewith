@@ -199,6 +199,25 @@ fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
 }
 
 #[test]
+fn omits_unshare_net_when_full_network_requested() {
+    let file_system_sandbox_policy = read_only_file_system_policy();
+    let argv = build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &file_system_sandbox_policy,
+        Path::new("/"),
+        Path::new("/"),
+        BwrapOptions {
+            mount_proc: true,
+            network_mode: BwrapNetworkMode::FullAccess,
+            ..Default::default()
+        },
+    )
+    .expect("build bwrap argv")
+    .args;
+    assert!(!argv.contains(&"--unshare-net".to_string()));
+}
+
+#[test]
 fn proxy_only_mode_takes_precedence_over_full_network_policy() {
     let mode = bwrap_network_mode(
         NetworkSandboxPolicy::Enabled,

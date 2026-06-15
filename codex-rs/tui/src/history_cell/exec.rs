@@ -1,6 +1,7 @@
 //! Background terminal interaction and process-summary history cells.
 
 use super::*;
+use crate::style::accent_color;
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecInteractionCell {
@@ -175,10 +176,17 @@ impl HistoryCell for UnifiedExecProcessesCell {
             if needs_suffix && budget > truncation_suffix_width {
                 let available = budget.saturating_sub(truncation_suffix_width);
                 let (truncated, _, _) = take_prefix_by_width(&snippet, available);
-                out.push(vec![prefix.dim(), truncated.cyan(), truncation_suffix.dim()].into());
+                out.push(
+                    vec![
+                        prefix.dim(),
+                        truncated.fg(accent_color()),
+                        truncation_suffix.dim(),
+                    ]
+                    .into(),
+                );
             } else {
                 let (truncated, _, _) = take_prefix_by_width(&snippet, budget);
-                out.push(vec![prefix.dim(), truncated.cyan()].into());
+                out.push(vec![prefix.dim(), truncated.fg(accent_color())].into());
             }
 
             let chunk_prefix_first = "    ↳ ";

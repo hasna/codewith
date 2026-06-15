@@ -1,1 +1,451 @@
-The changelog can be found on the [releases page](https://github.com/hasna/codewith/releases).
+# Changelog
+
+This is the canonical product changelog for Codewith, the `@hasna/codewith`
+CLI, and the stable Codewith `rust-v0.1.*` product release tags in this fork.
+GitHub Releases remain the place for binaries, checksums, installers, and
+DotSlash artifacts, but release notes should be copied from this file instead
+of generated from the release bump commit.
+
+The fork-specific history starts after upstream commit `20fedafff8` on
+2026-05-21. The first fork-only commit is `809fe3130c`, `feat: add scheduled
+loop tasks`.
+
+Sources used to rebuild this changelog: local git history and tags,
+`origin/main`, release branches for `0.1.27` and `0.1.28`, GitHub Releases for
+`rust-v0.1.26` through `rust-v0.1.28`, and npm metadata for `@hasna/codewith`.
+
+Known evidence gaps:
+
+- GitHub Releases currently exist only for `0.1.26`, `0.1.27`, and `0.1.28`.
+- npm has published `0.1.4`, `0.1.6`, and `0.1.15`, but no matching local tag
+  or committed release bump was found in the current refs.
+- npm metadata still has old timestamps for `0.1.0` and `0.1.1`, but
+  `npm view @hasna/codewith versions` currently starts at `0.1.2`.
+- `0.1.27` and `0.1.28` live on release branches, not `origin/main`.
+- This file intentionally excludes pre-fork alpha tags
+  `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
+  SDK tags, and `rusty-v8-v*` dependency artifact tags.
+
+## [Unreleased]
+
+### Added
+
+- Added local, unreleased support for an xAI built-in provider.
+- Added a config MCP self-heal workflow.
+- Added a slash command path for opening the MCP manager.
+- Added monitor manager creation support.
+- Added fuzzy ranking for slash command matches.
+
+### Changed
+
+- Refresh status rate-limit completions by auth profile.
+
+## [0.1.28] - 2026-06-12
+
+Tag: `rust-v0.1.28`
+Release: <https://github.com/hasna/codewith/releases/tag/rust-v0.1.28>
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.28>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.27...rust-v0.1.28>
+
+### Fixed
+
+- Continued auth profile auto-switching across profiles instead of stopping
+  after the first profile transition.
+
+## [0.1.27] - 2026-06-12
+
+Tag: `rust-v0.1.27`
+Release: <https://github.com/hasna/codewith/releases/tag/rust-v0.1.27>
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.27>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.26...rust-v0.1.27>
+
+### Added
+
+- Added the durable background-agent runtime foundation, including the
+  `codex-rs/background-agent` crate, daemon, supervisor, and process lifecycle
+  handling.
+- Added persisted background-agent state for runs, events, snapshots,
+  interactions, worktrees, and process handles.
+- Added app-server background-agent APIs for starting, listing, reading,
+  attaching, detaching, stopping, deleting, reading events, responding to
+  pending interactions, and retrieving daemon diagnostics.
+- Added CLI controls for starting, listing, reading, attaching to, viewing logs
+  for, stopping, deleting, and diagnosing background agents.
+- Added TUI background-agent slash surfaces through `/agent`,
+  `/background-agent`, and `/bg-agent`.
+
+### Release
+
+- Gated optional release follow-up work so it does not block the package path
+  unexpectedly.
+
+## [0.1.26] - 2026-06-11
+
+Tag: `rust-v0.1.26`
+Release: <https://github.com/hasna/codewith/releases/tag/rust-v0.1.26>
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.26>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.25...rust-v0.1.26>
+
+### Fixed
+
+- Reduced Linux release build pressure and made artifact compression faster.
+- Gave cold release builds more headroom.
+- Allowed unsigned macOS publishing for the Codewith release path.
+- Satisfied provider model checks required by the release gate.
+
+## [0.1.25] - 2026-06-09
+
+Tag: `rust-v0.1.25`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.25>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.24...rust-v0.1.25>
+
+### Added
+
+- Added Anthropic as a built-in model provider.
+
+## [0.1.24] - 2026-06-09
+
+Tag: `rust-v0.1.24`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.24>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.23...rust-v0.1.24>
+
+### Added
+
+- Added Xiaomi MiMo as a built-in model provider.
+
+### Documentation
+
+- Documented the fast Codewith release gate policy.
+
+## [0.1.23] - 2026-06-09
+
+Tag: `rust-v0.1.23`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.23>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.22...rust-v0.1.23>
+
+### Changed
+
+- Merged upstream Codex through the V8 update while preserving Codewith
+  provider, auth-profile, and release behavior.
+- Increased Bazel and argument-comment-lint timeouts for slower CI jobs.
+- Adjusted Linux ARM test and archive jobs to reduce release pressure.
+
+### Fixed
+
+- Preserved provider auth and active provider state through compaction.
+- Reported auth profile settings through app-server thread settings.
+- Fixed provider model cache metadata, identity, source, and TTL behavior.
+- Hardened Windows PTY, Guardian, remote-control, websocket, schedule, hook,
+  and remote exec tests.
+- Stabilized fork-specific CI snapshots, codespell checks, argument comments,
+  advisory baselines, and platform-specific imports.
+
+## [0.1.22] - 2026-06-06
+
+Tag: `rust-v0.1.22`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.22>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.21...rust-v0.1.22>
+
+### Fixed
+
+- Refreshed NVIDIA fallback model metadata.
+
+## [0.1.21] - 2026-06-06
+
+Tag: `rust-v0.1.21`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.21>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.20...rust-v0.1.21>
+
+### Added
+
+- Added thread monitor workflows.
+
+## [0.1.20] - 2026-06-06
+
+Tag: `rust-v0.1.20`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.20>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.19...rust-v0.1.20>
+
+### Fixed
+
+- Refreshed provider fallback models.
+
+## [0.1.19] - 2026-06-06
+
+Tag: `rust-v0.1.19`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.19>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.18...rust-v0.1.19>
+
+### Fixed
+
+- Repaired provider switching.
+
+## [0.1.18] - 2026-06-05
+
+Tag: `rust-v0.1.18`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.18>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.17...rust-v0.1.18>
+
+### Added
+
+- Added the provider-scoped metadata catalog.
+
+### Fixed
+
+- Clarified MCP startup failures.
+
+## [0.1.17] - 2026-06-05
+
+Tag: `rust-v0.1.17`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.17>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.16...rust-v0.1.17>
+
+### Fixed
+
+- Preserved the selected model provider for turns.
+
+## [0.1.16] - 2026-06-05
+
+Tag: `rust-v0.1.16`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.16>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.9...rust-v0.1.16>
+
+### Notes
+
+- This is an aggregate tagged release covering the npm-only `0.1.10` through
+  `0.1.15` publications. The entries below preserve the per-publication npm
+  history, while this tagged section records the complete tag delta from
+  `rust-v0.1.9` to `rust-v0.1.16`.
+- No additional user-facing delta beyond release/tag catch-up was found between
+  the committed `0.1.14` release bump and the `0.1.16` tag in the available
+  refs.
+
+## [0.1.15] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.15>
+
+### Notes
+
+- Historical npm publication. No matching local tag or committed release bump
+  was found in the available refs; changes are covered by the surrounding
+  `0.1.14` to `0.1.16` release range.
+
+## [0.1.14] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.14>
+
+### Tests
+
+- Isolated Codewith home in integration tests.
+- Added coverage for shell and network permission hooks.
+
+## [0.1.13] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.13>
+
+### Fixed
+
+- Preserved live schedule leases through expiry.
+
+## [0.1.12] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.12>
+
+### Fixed
+
+- Recomputed recurring next runs when loops resume.
+
+## [0.1.11] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.11>
+
+### Fixed
+
+- Expired completed one-time schedules.
+- Scoped schedule and loop actions to the current thread.
+
+## [0.1.10] - 2026-06-04
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.10>
+
+### Added
+
+- Added Codewith workflow skills.
+- Made schedules one-time events.
+
+## [0.1.9] - 2026-06-03
+
+Tag: `rust-v0.1.9`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.9>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.0...rust-v0.1.9>
+
+### Added
+
+- Added thread schedule controls.
+- Added an auth profile status item.
+- Added spec-plan loop tools, TUI approval overlay updates, and skills
+  rendering.
+
+### Changed
+
+- Switched provider selection from prefixed model IDs to explicit providers.
+- Bundled third-party licenses in the Codewith package layout.
+
+### Fixed
+
+- Wrapped the passive footer status line.
+
+## [0.1.8] - 2026-06-03
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.8>
+
+### Fixed
+
+- Advertised a Codex API-compatible version during login so `gpt-5.5` is not
+  incorrectly gated.
+
+## [0.1.7] - 2026-06-03
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.7>
+
+### Changed
+
+- Completed the broad Codex to Codewith rebrand across `codex-rs`, CI,
+  scripts, docs, root config, and release metadata.
+- Migrated project configuration and skill paths from `.codex` to `.codewith`.
+- Rebranded the Python and TypeScript SDK surfaces to Codewith.
+
+### Fixed
+
+- Resolved Codewith package layout directories while keeping legacy Codex
+  fallback paths.
+- Preferred Codewith instruction paths.
+- Stabilized cross-platform CI expectations and remote unified exec tests.
+
+## [0.1.6] - 2026-06-03
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.6>
+
+### Notes
+
+- Historical npm publication. No matching local tag or committed release bump
+  was found in the available refs. Available history around this publication is
+  the early release-workflow hardening window after `rust-v0.1.0`.
+
+## [0.1.4] - 2026-06-03
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.4>
+
+### Notes
+
+- Historical npm publication. No matching local tag or committed release bump
+  was found in the available refs. Available history before this npm timestamp
+  includes native binary exposure, Codewith package metadata and release
+  workflow hardening, runtime/docs alignment, bundled prompt branding, model
+  catalog fixes, and CI/test stabilization.
+
+## [0.1.3] - 2026-06-02
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.3>
+
+### Changed
+
+- Aligned repository metadata with Codewith.
+- Completed the Codewith runtime rename.
+- Preferred `.codewith` project instructions.
+
+### Fixed
+
+- Refreshed stale workspace fixtures.
+
+## [0.1.2] - 2026-06-02
+
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.2>
+
+### Changed
+
+- Rebranded the CLI as Codewith.
+
+### Fixed
+
+- Reconstructed raw command history.
+- Preserved large code-mode text output.
+- Stabilized scheduled loop acknowledgements.
+
+## [0.1.1] - 2026-06-02
+
+### Notes
+
+- Historical Codewith release bump found in git history. npm no longer lists
+  this version in the current `versions` array.
+
+## [0.1.0] - 2026-06-03
+
+Tag: `rust-v0.1.0`
+Compare: <https://github.com/hasna/codewith/compare/20fedafff8...rust-v0.1.0>
+
+### Notes
+
+- This is the first stable Codewith `rust-v0.1.*` tag. It aggregates the early
+  fork work and overlaps the first npm publications, whose registry history is
+  less complete than the tag history.
+
+### Added
+
+- Added scheduled loop tasks.
+- Added provider picker and OpenRouter model support.
+- Added provider-scoped model selection.
+- Added auth profile switching, concurrent auth profiles, and session auth
+  profile switching.
+- Added the `/config` popup.
+- Added explicit goal replacement.
+- Added OpenRouter cache routing and live pricing metadata.
+
+### Changed
+
+- Packaged the private `iappcodex` CLI and pointed early package metadata at
+  the fork repository.
+- Rebranded the CLI as Codewith.
+- Shared config value persistence.
+- Included local agent state.
+
+### Fixed
+
+- Disabled managed automatic update prompts for the fork.
+- Hardened auth-home isolation for the private package.
+- Refreshed status after auth profile switches.
+- Used musl Linux platform artifacts for npm packages.
+- Stabilized stack-heavy TUI tests.
+
+## Maintenance Process
+
+Use this process when preparing or auditing Codewith release notes:
+
+1. Determine published npm versions:
+   `npm view @hasna/codewith versions --json` and
+   `npm view @hasna/codewith time --json`.
+2. Determine relevant Codewith tags:
+   `git tag --list 'rust-v0.1.*' --sort=v:refname`.
+3. Check GitHub release coverage:
+   `gh release list --repo hasna/codewith --limit 40`.
+4. For each release, choose the previous Codewith boundary. Prefer the previous
+   stable `rust-v0.1.*` tag; when npm publications exist without tags, add
+   explicit npm-only entries or an aggregate tagged-release note.
+5. Audit `git log <previous-boundary>..<new-boundary>` and filter out
+   upstream-only noise with `--cherry-pick`, `--right-only`, and first-parent
+   history as needed.
+6. Classify user-facing changes under Added, Changed, Fixed, Security,
+   Release, Documentation, Tests, or Notes. Do not paste raw commit dumps.
+7. Record evidence gaps explicitly when a published npm version has no matching
+   local tag or committed release bump.
+8. Do not record uncommitted dirty-worktree state as release notes. Move active
+   work into `Unreleased` only after it is committed or otherwise has a durable
+   review boundary.
+9. Before every public `rust-v*` release, verify that `codex-rs/Cargo.toml`,
+   `codex-cli/package.json`, the `rust-v*` tag, GitHub Release name, and npm
+   version agree.
+10. The release workflow or release operator must stop if the matching
+    `CHANGELOG.md` section is missing. GitHub Release bodies must come from the
+    matching section, not from the tagged release bump commit.
+11. If a release is cut from a release branch, merge or backport the changelog
+    update to the durable branch.

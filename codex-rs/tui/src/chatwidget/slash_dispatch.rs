@@ -16,16 +16,23 @@ use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
 use super::*;
+use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::external_agents::external_agent_picker_params;
 use chrono::Utc;
+use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_external_agent::ExternalAgentReadinessStatus;
+use codex_external_agent::external_agent_runtime_readiness;
+use codex_external_agent::find_external_agent_runtime;
+use codex_model_provider_info::MINIMAX_PROVIDER_ID;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 
 const DEFAULT_LOOP_PROMPT_DISPLAY: &str = "Default loop prompt";
@@ -61,9 +68,28 @@ enum MonitorManageCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum BackgroundAgentSlashCommand {
+    List,
+    Start { prompt: String },
+    Read { agent_id: Option<String> },
+    Logs { agent_id: Option<String> },
+    Attach { agent_id: Option<String> },
+    Detach { agent_id: Option<String> },
+    Stop { agent_id: Option<String> },
+    Delete { agent_id: Option<String> },
+    Diagnostics,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct MonitorSlashParseError {
     message: String,
     hint: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TmuxSlashCommand {
+    name: Option<String>,
+    replace_existing: bool,
 }
 
 const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
@@ -80,7 +106,48 @@ const MONITOR_USAGE: &str =
     "Usage: /monitor <request> | /monitor [list|read|stop|restart|delete] [id]";
 const MONITOR_USAGE_HINT: &str =
     "Examples: /monitor watch CI, /monitor list, /monitor read mon-123";
+const BACKGROUND_AGENT_USAGE: &str =
+    "Usage: /agent [list|diagnostics|start <prompt>|read|attach|detach|stop|delete] [id]";
+const BACKGROUND_AGENT_USAGE_HINT: &str =
+    "Examples: /agent start fix the flaky test, /background-agent attach abc123";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
+const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build] [task]";
+const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
+
+fn parse_external_agent_args(trimmed: &str) -> Option<(&str, &str)> {
+    let trimmed = trimmed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let runtime_id = parts.next()?;
+    let prompt = parts.next().unwrap_or_default().trim();
+    Some((runtime_id, prompt))
+}
+
+fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
+    let Some(parts) = shlex::split(input) else {
+        return Err(format!("{TMUX_USAGE}. Check quotes in the session name."));
+    };
+    let mut replace_existing = true;
+    let mut name_parts = Vec::new();
+    for part in parts {
+        match part.as_str() {
+            "--replace" | "-r" => replace_existing = true,
+            "--no-replace" => replace_existing = false,
+            "--help" | "-h" => return Err(TMUX_USAGE.to_string()),
+            option if option.starts_with('-') => {
+                return Err(format!("Unknown /tmux option `{option}`. {TMUX_USAGE}"));
+            }
+            _ => name_parts.push(part),
+        }
+    }
+    let name = (!name_parts.is_empty()).then(|| name_parts.join(" "));
+    Ok(TmuxSlashCommand {
+        name,
+        replace_existing,
+    })
+}
 
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
@@ -96,6 +163,9 @@ impl ChatWidget {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
+                | SlashCommand::Tmux
         ) {
             self.bottom_pane.drain_pending_submission_state();
         }
@@ -220,6 +290,110 @@ impl ChatWidget {
             .send(AppEvent::RawOutputModeChanged { enabled });
     }
 
+    fn next_status_request_id(&mut self) -> u64 {
+        let request_id = self.next_status_refresh_request_id;
+        self.next_status_refresh_request_id = self.next_status_refresh_request_id.wrapping_add(1);
+        request_id
+    }
+
+    fn is_minimax_provider_active(&self) -> bool {
+        self.config
+            .model_provider_id
+            .eq_ignore_ascii_case(MINIMAX_PROVIDER_ID)
+    }
+
+    fn dispatch_status_command(&mut self, command_label: &'static str) {
+        let rate_limit_request_id = if self.should_prefetch_rate_limits() {
+            Some(self.next_status_request_id())
+        } else {
+            None
+        };
+        let minimax_request_id = if self.is_minimax_provider_active() {
+            Some(self.next_status_request_id())
+        } else {
+            None
+        };
+
+        self.add_status_output_with_command(
+            command_label,
+            rate_limit_request_id.is_some(),
+            rate_limit_request_id,
+            minimax_request_id.is_some(),
+            minimax_request_id.is_some(),
+            minimax_request_id,
+        );
+
+        if let Some(request_id) = rate_limit_request_id {
+            self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+            });
+        }
+        if let Some(request_id) = minimax_request_id {
+            self.app_event_tx.send(AppEvent::RefreshMiniMaxUsage {
+                origin: MiniMaxUsageRefreshOrigin::StatusCommand { request_id },
+            });
+        }
+    }
+
+    fn open_external_agent_picker(&mut self) {
+        self.bottom_pane
+            .show_selection_view(external_agent_picker_params());
+    }
+
+    fn handle_external_agent_command_args(&mut self, trimmed: &str) {
+        let Some((runtime_id, prompt)) = parse_external_agent_args(trimmed) else {
+            self.add_error_message(EXTERNAL_AGENT_USAGE.to_string());
+            return;
+        };
+        if runtime_id == "grok" {
+            self.add_error_message("Use `/external-agent grok-build` for Grok Build.".to_string());
+            return;
+        }
+        let Some(runtime) =
+            find_external_agent_runtime(runtime_id).filter(|runtime| runtime.visible)
+        else {
+            self.add_error_message(EXTERNAL_AGENT_USAGE.to_string());
+            return;
+        };
+        let readiness = external_agent_runtime_readiness(runtime);
+        let readiness_status = match readiness.status {
+            ExternalAgentReadinessStatus::Ready => "ready",
+            ExternalAgentReadinessStatus::MissingRuntime => "missing command",
+            ExternalAgentReadinessStatus::MissingAuth => "missing auth",
+            ExternalAgentReadinessStatus::Unsupported => "unsupported",
+            ExternalAgentReadinessStatus::Disabled => "disabled",
+        };
+        let command = format!(
+            "{} {}",
+            runtime.command.program,
+            runtime.command.args.join(" ")
+        );
+        if prompt.is_empty() {
+            self.add_info_message(
+                format!("External agent runtime `{runtime_id}` selected ({readiness_status})."),
+                Some(format!(
+                    "Command: {command}. Add a task after the runtime id to stage it."
+                )),
+            );
+        } else {
+            if self.thread_id.is_none() {
+                self.add_error_message(
+                    "'/external-agent' is unavailable before the session starts.".to_string(),
+                );
+                return;
+            }
+            self.submit_op(AppCommand::start_external_agent(
+                runtime_id.to_string(),
+                prompt.to_string(),
+                ThreadExternalAgentMode::Plan,
+            ));
+            self.add_info_message(
+                format!("{} external-agent task routed.", runtime.display_name),
+                Some("Mode: plan. The app-server host will keep execution gated until the runtime bridge is ready.".to_string()),
+            );
+        }
+    }
+
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
@@ -289,6 +463,12 @@ impl ChatWidget {
             }
             SlashCommand::Resume => {
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
+            }
+            SlashCommand::Tmux => {
+                self.app_event_tx.send(AppEvent::OpenInTmux {
+                    name: None,
+                    replace_existing: true,
+                });
             }
             SlashCommand::Fork => {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
@@ -420,8 +600,19 @@ impl ChatWidget {
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
-            SlashCommand::Agent | SlashCommand::MultiAgents => {
+            SlashCommand::Agent => {
+                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
+                self.append_message_history_entry("/agent".to_string());
+            }
+            SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
+            }
+            SlashCommand::BackgroundAgent => {
+                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
+                self.append_message_history_entry("/background-agent".to_string());
+            }
+            SlashCommand::ExternalAgent => {
+                self.open_external_agent_picker();
             }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
@@ -547,20 +738,8 @@ impl ChatWidget {
             SlashCommand::Hooks => {
                 self.add_hooks_output();
             }
-            SlashCommand::Status => {
-                if self.should_prefetch_rate_limits() {
-                    let request_id = self.next_status_refresh_request_id;
-                    self.next_status_refresh_request_id =
-                        self.next_status_refresh_request_id.wrapping_add(1);
-                    self.add_status_output(/*refreshing_rate_limits*/ true, Some(request_id));
-                    self.app_event_tx.send(AppEvent::RefreshRateLimits {
-                        origin: RateLimitRefreshOrigin::StatusCommand { request_id },
-                    });
-                } else {
-                    self.add_status_output(
-                        /*refreshing_rate_limits*/ false, /*request_id*/ None,
-                    );
-                }
+            SlashCommand::Status | SlashCommand::Stats => {
+                self.dispatch_status_command(cmd.command());
             }
             SlashCommand::Ide => {
                 self.handle_ide_command();
@@ -593,7 +772,7 @@ impl ChatWidget {
                 self.add_app_server_stub_message("Memory maintenance");
             }
             SlashCommand::Mcp => {
-                self.open_mcp_manager(McpServerStatusDetail::Full);
+                self.open_mcp_control_center();
             }
             SlashCommand::Apps => {
                 self.add_connectors_output();
@@ -766,11 +945,21 @@ impl ChatWidget {
                 self.handle_ide_command_args(trimmed);
             }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
-                "" | "verbose" | "manager" => self.open_mcp_manager(McpServerStatusDetail::Full),
+                "" | "s" => self.open_mcp_control_center(),
+                "verbose" | "manager" | "view" | "all" | "view all" => {
+                    self.open_mcp_manager(McpServerStatusDetail::Full)
+                }
                 "list" => self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly),
                 "list verbose" | "verbose list" => self.add_mcp_output(McpServerStatusDetail::Full),
+                "reload" | "refresh tools" => self.app_event_tx.send(AppEvent::ReloadMcpServers),
+                "add" | "setup" => self.app_event_tx.send(AppEvent::OpenMcpAddServer),
+                _ if trimmed.starts_with("add ") => {
+                    self.app_event_tx.send(AppEvent::AddMcpServer {
+                        spec: trimmed["add ".len()..].trim().to_string(),
+                    });
+                }
                 _ => self.add_error_message(
-                    "Usage: /mcp [verbose|manager|list|list verbose]".to_string(),
+                    "Usage: /mcp [manager|list|list verbose|reload|add [name spec...]]".to_string(),
                 ),
             },
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
@@ -798,6 +987,9 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::ExternalAgent => {
+                self.handle_external_agent_command_args(trimmed);
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -1006,6 +1198,27 @@ impl ChatWidget {
                     self.queue_user_message(user_message);
                 }
             }
+            SlashCommand::Agent | SlashCommand::BackgroundAgent if !trimmed.is_empty() => {
+                let command = match parse_background_agent_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(BACKGROUND_AGENT_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.dispatch_background_agent_slash_command(
+                    cmd.command(),
+                    command,
+                    trimmed,
+                    source,
+                );
+            }
             SlashCommand::Recap if !trimmed.is_empty() => {
                 self.dispatch_recap_slash_command(Some(trimmed.to_string()));
             }
@@ -1036,6 +1249,15 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::ResumeSessionByIdOrName(args));
             }
+            SlashCommand::Tmux if !trimmed.is_empty() => match parse_tmux_slash_args(trimmed) {
+                Ok(command) => {
+                    self.app_event_tx.send(AppEvent::OpenInTmux {
+                        name: command.name,
+                        replace_existing: command.replace_existing,
+                    });
+                }
+                Err(message) => self.add_error_message(message),
+            },
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot { path: args });
@@ -1314,6 +1536,56 @@ impl ChatWidget {
         }
     }
 
+    fn dispatch_background_agent_slash_command(
+        &mut self,
+        command_name: &str,
+        command: BackgroundAgentSlashCommand,
+        trimmed: &str,
+        source: SlashCommandDispatchSource,
+    ) {
+        match command {
+            BackgroundAgentSlashCommand::List => {
+                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
+            }
+            BackgroundAgentSlashCommand::Start { prompt } => {
+                self.app_event_tx
+                    .send(AppEvent::StartBackgroundAgent { prompt });
+            }
+            BackgroundAgentSlashCommand::Read { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::ReadBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Logs { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::ShowBackgroundAgentLogs { agent_id });
+            }
+            BackgroundAgentSlashCommand::Attach { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::AttachBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Detach { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::DetachBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Stop { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::StopBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Delete { agent_id } => {
+                self.app_event_tx
+                    .send(AppEvent::DeleteBackgroundAgent { agent_id });
+            }
+            BackgroundAgentSlashCommand::Diagnostics => {
+                self.app_event_tx
+                    .send(AppEvent::ShowBackgroundAgentDiagnostics);
+            }
+        }
+        self.append_message_history_entry(format!("/{command_name} {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
     pub(super) fn submit_queued_slash_prompt(&mut self, user_message: UserMessage) -> QueueDrain {
         let UserMessage {
             text,
@@ -1454,6 +1726,7 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Stats
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -1483,6 +1756,7 @@ impl ChatWidget {
             | SlashCommand::Profile
             | SlashCommand::Provider
             | SlashCommand::Config
+            | SlashCommand::Tmux
             | SlashCommand::Realtime
             | SlashCommand::Settings
             | SlashCommand::Personality
@@ -1491,10 +1765,12 @@ impl ChatWidget {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::BackgroundAgent
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
             | SlashCommand::Agent
+            | SlashCommand::ExternalAgent
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
@@ -1637,6 +1913,109 @@ fn monitor_usage_error(usage: &'static str) -> MonitorSlashParseError {
     }
 }
 
+fn parse_background_agent_slash_args(
+    input: &str,
+) -> Result<BackgroundAgentSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(BackgroundAgentSlashCommand::List);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::List)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent list",
+                ))
+            }
+        }
+        "diagnostics" | "diag" | "daemon" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::Diagnostics)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent diagnostics",
+                ))
+            }
+        }
+        "start" | "run" | "spawn" => {
+            if rest.is_empty() {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent start <prompt>",
+                ))
+            } else {
+                Ok(BackgroundAgentSlashCommand::Start {
+                    prompt: rest.to_string(),
+                })
+            }
+        }
+        "read" | "show" => Ok(BackgroundAgentSlashCommand::Read {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent read [id]",
+            )?,
+        }),
+        "logs" | "log" => Ok(BackgroundAgentSlashCommand::Logs {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent logs [id]",
+            )?,
+        }),
+        "attach" => Ok(BackgroundAgentSlashCommand::Attach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent attach [id]",
+            )?,
+        }),
+        "detach" => Ok(BackgroundAgentSlashCommand::Detach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent detach [id]",
+            )?,
+        }),
+        "stop" | "cancel" => Ok(BackgroundAgentSlashCommand::Stop {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent stop [id]",
+            )?,
+        }),
+        "delete" | "remove" | "rm" => Ok(BackgroundAgentSlashCommand::Delete {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent delete [id]",
+            )?,
+        }),
+        _ => Err(background_agent_usage_error(BACKGROUND_AGENT_USAGE)),
+    }
+}
+
+fn parse_optional_background_agent_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, MonitorSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let Some(agent_id) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        return Err(background_agent_usage_error(usage));
+    }
+    Ok(Some(agent_id.to_string()))
+}
+
+fn background_agent_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(BACKGROUND_AGENT_USAGE_HINT.to_string()),
+    }
+}
+
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
 ) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {
@@ -1721,5 +2100,48 @@ fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
         "on" | "enable" | "enabled" => Some(ServiceTierStateArg::On),
         "off" | "disable" | "disabled" | "default" => Some(ServiceTierStateArg::Off),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod external_agent_arg_tests {
+    use super::TmuxSlashCommand;
+    use super::parse_external_agent_args;
+    use super::parse_tmux_slash_args;
+
+    #[test]
+    fn parses_external_agent_runtime_and_prompt() {
+        assert_eq!(
+            parse_external_agent_args("grok-build inspect this repo"),
+            Some(("grok-build", "inspect this repo"))
+        );
+        assert_eq!(parse_external_agent_args("cursor"), Some(("cursor", "")));
+        assert_eq!(parse_external_agent_args("   "), None);
+    }
+
+    #[test]
+    fn parses_tmux_name_and_replace_flags() {
+        assert_eq!(
+            parse_tmux_slash_args("worktree").expect("tmux args"),
+            TmuxSlashCommand {
+                name: Some("worktree".to_string()),
+                replace_existing: true,
+            }
+        );
+        assert_eq!(
+            parse_tmux_slash_args("--no-replace \"named session\"").expect("tmux args"),
+            TmuxSlashCommand {
+                name: Some("named session".to_string()),
+                replace_existing: false,
+            }
+        );
+        assert_eq!(
+            parse_tmux_slash_args("-r named session").expect("tmux args"),
+            TmuxSlashCommand {
+                name: Some("named session".to_string()),
+                replace_existing: true,
+            }
+        );
+        assert!(parse_tmux_slash_args("--bad").is_err());
     }
 }

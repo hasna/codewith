@@ -1381,7 +1381,7 @@ them."#
     fn line_contains_url_like_checks_across_spans() {
         let line = Line::from(vec![
             "see ".into(),
-            "https://example.com/a/very/long/path".cyan(),
+            "https://example.com/a/very/long/path".fg(crate::style::accent_color()),
             " for details".into(),
         ]);
 

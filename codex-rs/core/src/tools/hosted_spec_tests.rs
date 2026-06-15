@@ -1,4 +1,5 @@
 use super::*;
+use codex_model_provider::HostedWebSearchProvider;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation;
@@ -36,6 +37,7 @@ fn web_search_tool_preserves_configured_options() {
                 search_context_size: Some(WebSearchContextSize::Low),
             }),
             web_search_tool_type: WebSearchToolType::TextAndImage,
+            hosted_web_search_provider: HostedWebSearchProvider::OpenAiResponses,
         }),
         Some(ToolSpec::WebSearch {
             external_web_access: Some(true),
@@ -62,7 +64,37 @@ fn web_search_tool_is_absent_when_disabled() {
             web_search_mode: Some(WebSearchMode::Disabled),
             web_search_config: None,
             web_search_tool_type: WebSearchToolType::Text,
+            hosted_web_search_provider: HostedWebSearchProvider::OpenAiResponses,
         }),
         None
+    );
+}
+
+#[test]
+fn provider_native_web_search_uses_provider_shape() {
+    assert_eq!(
+        create_web_search_tool(WebSearchToolOptions {
+            web_search_mode: Some(WebSearchMode::Live),
+            web_search_config: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            hosted_web_search_provider: HostedWebSearchProvider::OpenRouter,
+        }),
+        Some(ToolSpec::OpenRouterWebSearch {})
+    );
+
+    assert_eq!(
+        create_web_search_tool(WebSearchToolOptions {
+            web_search_mode: Some(WebSearchMode::Live),
+            web_search_config: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            hosted_web_search_provider: HostedWebSearchProvider::Zai,
+        }),
+        Some(ToolSpec::ZaiWebSearch {
+            web_search: ZaiWebSearchConfig {
+                enable: true,
+                search_engine: "search-prime".to_string(),
+                search_result: true,
+            },
+        })
     );
 }

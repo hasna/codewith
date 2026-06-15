@@ -1,10 +1,40 @@
 # Configuration
 
-For basic Codewith configuration instructions, see the [upstream compatibility reference](https://developers.openai.com/codex/config-basic).
+Codewith reads configuration from `config.toml` under `CODEWITH_HOME`, which
+defaults to `~/.codewith`.
 
-For advanced Codewith configuration instructions, see the [upstream compatibility reference](https://developers.openai.com/codex/config-advanced).
+```text
+~/.codewith/config.toml
+```
 
-For the full configuration reference, see the [upstream compatibility reference](https://developers.openai.com/codex/config-reference).
+Use `/config` in the TUI for interactive configuration, or edit the file
+directly.
+
+## Common Settings
+
+```toml
+model = "gpt-5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[history]
+persistence = "save-all"
+
+[analytics]
+enabled = true
+```
+
+Use CLI overrides for one run:
+
+```shell
+codewith --model gpt-5
+codewith --profile work
+codewith exec --model gpt-5 "summarize this repo"
+```
+
+`codewith --profile <name>` selects a runtime configuration profile. Auth
+profiles are separate; use `--auth-profile <name>` or `codewith profile ...`
+for credential profiles.
 
 ## Lifecycle hooks
 

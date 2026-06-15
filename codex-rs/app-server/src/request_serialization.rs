@@ -18,6 +18,9 @@ type BoxFutureUnit = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RequestSerializationQueueKey {
     Global(&'static str),
+    Agent {
+        agent_id: String,
+    },
     Thread {
         thread_id: String,
     },
@@ -62,6 +65,10 @@ impl RequestSerializationQueueKey {
             ClientRequestSerializationScope::GlobalSharedRead(name) => {
                 (Self::Global(name), RequestSerializationAccess::SharedRead)
             }
+            ClientRequestSerializationScope::Agent { agent_id } => (
+                Self::Agent { agent_id },
+                RequestSerializationAccess::Exclusive,
+            ),
             ClientRequestSerializationScope::Thread { thread_id } => (
                 Self::Thread { thread_id },
                 RequestSerializationAccess::Exclusive,

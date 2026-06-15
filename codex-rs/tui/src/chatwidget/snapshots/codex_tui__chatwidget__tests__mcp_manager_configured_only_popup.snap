@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 400
+expression: popup
+---
+  MCP Servers
+  0 servers, 0 tools, 1 configured, 1 disabled
+
+  Search MCP servers
+› Refresh                    Refresh MCP server status and inventory.
+  - docs                     Disabled in config
+  Add new MCP                Paste a package command, HTTP URL, env keys, or headers.
+
+  Press enter to confirm or esc to go back

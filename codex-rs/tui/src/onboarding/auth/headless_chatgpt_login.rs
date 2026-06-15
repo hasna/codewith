@@ -4,6 +4,7 @@ use codex_app_server_protocol::LoginAccountResponse;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -12,6 +13,8 @@ use uuid::Uuid;
 
 use crate::motion::MotionMode;
 use crate::motion::shimmer_text;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 
 use super::AuthModeWidget;
 use super::ContinueWithDeviceCodeState;
@@ -113,7 +116,7 @@ pub(super) fn render_device_code_login(
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),
-            verification_url.as_str().cyan().underlined(),
+            verification_url.as_str().set_style(accent_link_style()),
         ]));
         lines.push("".into());
         lines.push(
@@ -122,7 +125,7 @@ pub(super) fn render_device_code_login(
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),
-            user_code.as_str().cyan().bold(),
+            user_code.as_str().fg(accent_color()).bold(),
         ]));
         lines.push("".into());
         lines.push(

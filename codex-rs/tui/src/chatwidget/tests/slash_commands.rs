@@ -1,6 +1,11 @@
 use super::*;
 use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use codex_app_server_protocol::AgentDesiredState;
+use codex_app_server_protocol::AgentRetentionState;
+use codex_app_server_protocol::AgentRun;
+use codex_app_server_protocol::AgentRunStatus;
+use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
@@ -57,6 +62,51 @@ fn submit_composer_text(chat: &mut ChatWidget, text: &str) {
     submit_current_composer(chat);
 }
 
+fn test_background_agent(agent_id: &str, status: AgentRunStatus, updated_at: i64) -> AgentRun {
+    AgentRun {
+        agent_id: agent_id.to_string(),
+        idempotency_key: None,
+        request_id: None,
+        source: "test".to_string(),
+        prompt_snapshot_ref: "inline:test:prompt".to_string(),
+        input_snapshot_ref: None,
+        thread_id: None,
+        thread_store_kind: "background-agent".to_string(),
+        thread_store_id: None,
+        rollout_path: None,
+        parent_thread_id: None,
+        parent_agent_run_id: None,
+        spawn_linkage: None,
+        worktree_lease_id: None,
+        auth_profile_ref: None,
+        desired_state: AgentDesiredState::Running,
+        status,
+        status_reason: None,
+        config_fingerprint: None,
+        version_fingerprint: None,
+        retention_state: AgentRetentionState::Active,
+        archive_after: None,
+        delete_after: None,
+        archived_at: None,
+        deleted_at: None,
+        supervisor_id: None,
+        generation: 0,
+        pid: None,
+        pgid: None,
+        job_id: None,
+        heartbeat_at: None,
+        crash_reason: None,
+        exit_code: None,
+        exit_signal: None,
+        last_event_seq: 0,
+        last_snapshot_seq: 0,
+        created_at: 1,
+        updated_at,
+        started_at: None,
+        completed_at: None,
+    }
+}
+
 fn submit_current_composer(chat: &mut ChatWidget) {
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -74,6 +124,45 @@ fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
         .set_composer_text(String::new(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     chat.bottom_pane.composer_text()
+}
+
+#[tokio::test]
+async fn external_agent_slash_with_task_submits_thread_scoped_op() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::ExternalAgent,
+        "grok-build inspect the diff".to_string(),
+        Vec::new(),
+    );
+
+    match op_rx.try_recv() {
+        Ok(Op::StartExternalAgent {
+            runtime_id,
+            task,
+            mode,
+        }) => {
+            assert_eq!(runtime_id, "grok-build");
+            assert_eq!(task, "inspect the diff");
+            assert_eq!(mode, ThreadExternalAgentMode::Plan);
+        }
+        other => panic!("expected external-agent op, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn external_agent_slash_rejects_grok_alias_without_submitting_op() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::ExternalAgent,
+        "grok inspect the diff".to_string(),
+        Vec::new(),
+    );
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }
 
 fn next_add_to_history_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
@@ -1218,6 +1307,116 @@ async fn monitor_manage_slash_command_rejects_extra_args() {
 }
 
 #[tokio::test]
+async fn background_agent_slash_command_emits_manage_events() {
+    let cases = [
+        ("/agent list", "list", None, None),
+        (
+            "/agent start fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+        ),
+        ("/background-agent list", "list", None, None),
+        ("/background-agent diagnostics", "diagnostics", None, None),
+        (
+            "/background-agent start fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+        ),
+        ("/background-agent read", "read", None, None),
+        (
+            "/background-agent read agent-1",
+            "read",
+            Some("agent-1"),
+            None,
+        ),
+        (
+            "/background-agent logs agent-1",
+            "logs",
+            Some("agent-1"),
+            None,
+        ),
+        (
+            "/background-agent attach agent-1",
+            "attach",
+            Some("agent-1"),
+            None,
+        ),
+        (
+            "/background-agent detach agent-1",
+            "detach",
+            Some("agent-1"),
+            None,
+        ),
+        (
+            "/background-agent stop agent-1",
+            "stop",
+            Some("agent-1"),
+            None,
+        ),
+        (
+            "/background-agent delete agent-1",
+            "delete",
+            Some("agent-1"),
+            None,
+        ),
+    ];
+
+    for (command, expected_kind, expected_agent_id, expected_prompt) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx
+            .try_recv()
+            .expect("expected background-agent management event");
+        match (expected_kind, event) {
+            ("list", AppEvent::OpenBackgroundAgentManager) => {}
+            ("diagnostics", AppEvent::ShowBackgroundAgentDiagnostics) => {}
+            ("start", AppEvent::StartBackgroundAgent { prompt }) => {
+                assert_eq!(Some(prompt.as_str()), expected_prompt);
+            }
+            ("read", AppEvent::ReadBackgroundAgent { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            ("logs", AppEvent::ShowBackgroundAgentLogs { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            ("attach", AppEvent::AttachBackgroundAgent { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            ("detach", AppEvent::DetachBackgroundAgent { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            ("stop", AppEvent::StopBackgroundAgent { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            ("delete", AppEvent::DeleteBackgroundAgent { agent_id }) => {
+                assert_eq!(agent_id.as_deref(), expected_agent_id);
+            }
+            (kind, event) => panic!("expected {kind} background-agent event, got {event:?}"),
+        }
+        assert_no_submit_op(&mut op_rx);
+        assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
+}
+
+#[tokio::test]
+async fn background_agent_manager_grouped_roster_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_background_agent_manager(vec![
+        test_background_agent("done-agent", AgentRunStatus::Completed, 3),
+        test_background_agent("run-agent", AgentRunStatus::Running, 2),
+        test_background_agent("wait-agent", AgentRunStatus::WaitingOnUser, 1),
+        test_background_agent("stop-agent", AgentRunStatus::Cancelled, 4),
+    ]);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert_chatwidget_snapshot!("background_agent_manager_grouped_roster", popup);
+}
+
+#[tokio::test]
 async fn bare_loop_slash_command_opens_manager_and_drains_attachments() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
@@ -1279,6 +1478,41 @@ async fn bare_monitor_slash_command_opens_manager_and_drains_attachments() {
         rx.try_recv(),
         Ok(AppEvent::OpenThreadMonitorManager { thread_id: opened }) if opened == thread_id
     );
+    assert!(chat.remote_image_urls().is_empty());
+    assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
+}
+
+#[tokio::test]
+async fn bare_background_agent_slash_command_opens_manager_and_drains_attachments() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let remote_url = "https://example.com/background-agent.png".to_string();
+    let local_image = PathBuf::from("/tmp/background-agent-local.png");
+    chat.set_remote_image_urls(vec![remote_url]);
+    chat.bottom_pane.set_composer_text(
+        "/background-agent".to_string(),
+        Vec::new(),
+        vec![local_image],
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenBackgroundAgentManager));
+    assert!(chat.remote_image_urls().is_empty());
+    assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
+}
+
+#[tokio::test]
+async fn bare_agent_slash_command_opens_background_agent_manager_and_drains_attachments() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let remote_url = "https://example.com/agent.png".to_string();
+    let local_image = PathBuf::from("/tmp/agent-local.png");
+    chat.set_remote_image_urls(vec![remote_url]);
+    chat.bottom_pane
+        .set_composer_text("/agent".to_string(), Vec::new(), vec![local_image]);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenBackgroundAgentManager));
     assert!(chat.remote_image_urls().is_empty());
     assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
 }
@@ -1741,6 +1975,31 @@ async fn slash_rename_without_existing_thread_name_starts_empty() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn agent_rename_prompt_submits_thread_scoped_name_update() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let agent_thread_id = ThreadId::new();
+
+    chat.show_agent_rename_prompt(
+        agent_thread_id,
+        Some("Existing agent title".to_string()),
+        "Agent".to_string(),
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("agent_rename_prefilled_prompt", popup);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SubmitThreadOp {
+            thread_id,
+            op: Op::SetThreadName { name },
+        }) if thread_id == agent_thread_id && name == "Existing agent title"
+    );
 }
 
 #[tokio::test]
@@ -2356,6 +2615,27 @@ async fn slash_clear_is_disabled_while_task_running() {
 }
 
 #[tokio::test]
+async fn slash_tmux_is_disabled_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.dispatch_command(SlashCommand::Tmux);
+
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(
+                rendered.contains("'/tmux' is disabled while a task is in progress."),
+                "expected /tmux task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+}
+
+#[tokio::test]
 async fn slash_archive_is_disabled_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
@@ -2397,42 +2677,30 @@ async fn slash_memory_drop_reports_stubbed_feature() {
 }
 
 #[tokio::test]
-async fn slash_mcp_requests_inventory_via_app_server() {
+async fn slash_mcp_opens_control_center() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
 
     chat.dispatch_command(SlashCommand::Mcp);
 
-    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Loading configured servers"));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::FetchMcpInventory {
-            detail: McpServerStatusDetail::Full,
-            thread_id: Some(actual_thread_id),
-            target: McpInventoryTarget::Manager,
-        }) if actual_thread_id == thread_id
-    );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("View all MCPs"));
+    assert!(popup.contains("Add new MCP"));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 
 #[tokio::test]
-async fn slash_mcps_alias_requests_manager_inventory_via_app_server() {
+async fn slash_mcps_alias_opens_control_center() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
 
-    submit_composer_text(&mut chat, "/mcps");
+    chat.bottom_pane
+        .set_composer_text("/mcps".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Loading configured servers"));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::FetchMcpInventory {
-            detail: McpServerStatusDetail::Full,
-            thread_id: Some(actual_thread_id),
-            target: McpInventoryTarget::Manager,
-        }) if actual_thread_id == thread_id
-    );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("View all MCPs"), "got popup:\n{popup}");
+    assert!(popup.contains("Add new MCP"), "got popup:\n{popup}");
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 
@@ -2457,6 +2725,42 @@ async fn slash_mcp_list_requests_history_inventory_via_app_server() {
 }
 
 #[tokio::test]
+async fn slash_mcp_reload_requests_mcp_reload() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/mcp reload");
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ReloadMcpServers));
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_mcp_add_opens_add_flow() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/mcp add");
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenMcpAddServer));
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_mcp_add_spec_requests_config_write() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(
+        &mut chat,
+        "/mcp add docs npx -y @scope/docs --env-var DOCS_KEY",
+    );
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::AddMcpServer { spec }) if spec == "docs npx -y @scope/docs --env-var DOCS_KEY"
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
 async fn slash_mcp_invalid_args_show_usage() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -2469,7 +2773,7 @@ async fn slash_mcp_invalid_args_show_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /mcp [verbose|manager|list|list verbose]"),
+        rendered.contains("Usage: /mcp [manager|list|list verbose|reload|add [name spec...]]"),
         "expected usage message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/mcp full");
@@ -2518,6 +2822,19 @@ async fn slash_resume_opens_picker() {
 }
 
 #[tokio::test]
+async fn slash_tmux_requests_default_handoff() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Tmux);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenInTmux { name, replace_existing })
+            if name.is_none() && replace_existing
+    );
+}
+
+#[tokio::test]
 async fn slash_archive_confirmation_requests_current_thread_archive() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -2549,6 +2866,25 @@ async fn slash_resume_with_arg_requests_named_session() {
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::ResumeSessionByIdOrName(id_or_name)) if id_or_name == "my-saved-thread"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn slash_tmux_with_args_requests_named_handoff() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        "/tmux --no-replace \"named session\"".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenInTmux { name, replace_existing })
+            if name.as_deref() == Some("named session") && !replace_existing
     );
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }

@@ -188,10 +188,30 @@ impl ChatWidget {
         self.refresh_status_surfaces();
     }
 
+    #[cfg(test)]
     pub(crate) fn add_status_output(
         &mut self,
         refreshing_rate_limits: bool,
         request_id: Option<u64>,
+    ) {
+        self.add_status_output_with_command(
+            "/status",
+            refreshing_rate_limits,
+            request_id,
+            /*show_minimax_usage*/ false,
+            /*refreshing_minimax_usage*/ false,
+            /*minimax_request_id*/ None,
+        );
+    }
+
+    pub(crate) fn add_status_output_with_command(
+        &mut self,
+        command_label: &'static str,
+        refreshing_rate_limits: bool,
+        request_id: Option<u64>,
+        show_minimax_usage: bool,
+        refreshing_minimax_usage: bool,
+        minimax_request_id: Option<u64>,
     ) {
         let default_usage = TokenUsage::default();
         let token_info = self.token_info.as_ref();
@@ -222,7 +242,8 @@ impl ChatWidget {
             .collect();
         let agents_summary =
             crate::status::compose_agents_summary(&self.config, &self.instruction_source_paths);
-        let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
+        let (cell, handle) = crate::status::new_status_output_with_command_and_minimax_usage_handle(
+            command_label,
             &self.config,
             self.runtime_model_provider_base_url.as_deref(),
             self.remote_connection.as_ref(),
@@ -240,7 +261,13 @@ impl ChatWidget {
             reasoning_effort_override,
             agents_summary,
             refreshing_rate_limits,
+            show_minimax_usage,
+            refreshing_minimax_usage,
         );
+        if let Some(request_id) = minimax_request_id {
+            self.refreshing_minimax_usage_status_outputs
+                .push((request_id, handle.clone()));
+        }
         if let Some(request_id) = request_id {
             self.refreshing_status_outputs.push((request_id, handle));
         }
@@ -269,6 +296,31 @@ impl ChatWidget {
             }
         }
         self.refreshing_status_outputs = remaining;
+        if updated_any {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn finish_status_minimax_usage_refresh(
+        &mut self,
+        request_id: u64,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
+    ) {
+        if self.refreshing_minimax_usage_status_outputs.is_empty() {
+            return;
+        }
+
+        let mut remaining = Vec::with_capacity(self.refreshing_minimax_usage_status_outputs.len());
+        let mut updated_any = false;
+        for (pending_request_id, handle) in self.refreshing_minimax_usage_status_outputs.drain(..) {
+            if pending_request_id == request_id {
+                updated_any = true;
+                handle.finish_minimax_usage_refresh(result.clone());
+            } else {
+                remaining.push((pending_request_id, handle));
+            }
+        }
+        self.refreshing_minimax_usage_status_outputs = remaining;
         if updated_any {
             self.request_redraw();
         }

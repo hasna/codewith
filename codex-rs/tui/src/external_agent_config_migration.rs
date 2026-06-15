@@ -4,6 +4,7 @@ use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::Insets;
 use crate::render::RectExt as _;
 use crate::selection_list::selection_option_row_with_dim;
+use crate::style::accent_color;
 use crate::style::accent_style;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
@@ -737,15 +738,15 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
             " to move, ".dim(),
             key_hint::plain(KeyCode::Char(' ')).into(),
             " to toggle, ".dim(),
-            "1".cyan(),
+            "1".fg(accent_color()),
             "/".dim(),
-            "2".cyan(),
+            "2".fg(accent_color()),
             "/".dim(),
-            "3".cyan(),
+            "3".fg(accent_color()),
             " to choose, ".dim(),
-            "a".cyan(),
+            "a".fg(accent_color()),
             "/".dim(),
-            "n".cyan(),
+            "n".fg(accent_color()),
             " for all/none".dim(),
         ])
         .render(footer_area, buf);

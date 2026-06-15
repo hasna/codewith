@@ -686,6 +686,20 @@ fn cyber_policy_error_event_narrow_snapshot() {
 }
 
 #[test]
+fn session_recap_event_renders_recap_text_as_gray() {
+    let cell = new_session_recap_event("Keep the next steps scoped.".to_string());
+    let lines = cell.display_lines(/*width*/ 80);
+
+    assert_eq!(
+        render_lines(&lines),
+        vec!["• Recap: Keep the next steps scoped.".to_string()]
+    );
+    assert_eq!(lines[0].spans.len(), 2);
+    assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::DIM));
+    assert_eq!(lines[0].spans[1].style.fg, Some(Color::DarkGray));
+}
+
+#[test]
 fn ps_output_long_command_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         command_display: String::from(

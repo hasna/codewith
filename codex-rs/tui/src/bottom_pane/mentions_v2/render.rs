@@ -1,6 +1,5 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Styled;
 use ratatui::style::Stylize;
@@ -19,6 +18,7 @@ use super::footer::render_footer;
 use super::search_mode::SearchMode;
 use crate::bottom_pane::popup_consts::MAX_POPUP_ROWS;
 use crate::bottom_pane::scroll_state::ScrollState;
+use crate::style::accent_color;
 
 pub(super) fn render_popup(
     area: Rect,
@@ -182,7 +182,7 @@ fn content_line(
 fn primary_spans(row: &SearchResult, base_style: Style) -> Vec<Span<'static>> {
     if let Some(file_name) = file_name(row) {
         let style = if row.mention_type == MentionType::File {
-            base_style.fg(Color::Cyan)
+            base_style.fg(accent_color())
         } else {
             base_style
         };

@@ -118,6 +118,7 @@ mod clipboard_copy;
 mod clipboard_paste;
 mod collaboration_modes;
 mod color;
+mod common_config_options;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
@@ -131,6 +132,7 @@ mod exec_cell;
 mod exec_command;
 mod external_agent_config_migration;
 mod external_agent_config_migration_startup;
+mod external_agents;
 mod external_editor;
 mod file_search;
 mod frames;
@@ -153,6 +155,7 @@ mod markdown;
 mod markdown_render;
 mod markdown_stream;
 mod mention_codec;
+mod minimax_usage;
 mod model_catalog;
 mod model_migration;
 mod motion;
@@ -189,12 +192,16 @@ mod terminal_probe;
 mod terminal_title;
 mod text_formatting;
 mod theme_picker;
+mod tmux_handoff;
 mod token_usage;
 mod tooltips;
 mod transcript_reflow;
 mod tui;
 mod ui_consts;
+mod ui_dynamic_tools;
 pub(crate) mod update_action;
+pub use tmux_handoff::TmuxHandoffAttachMode;
+pub use tmux_handoff::TmuxHandoffExit;
 pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
@@ -1349,6 +1356,7 @@ async fn run_ratatui_app(
                         thread_id: None,
                         thread_name: None,
                         update_action: Some(action),
+                        tmux_handoff: None,
                         exit_reason: ExitReason::UserRequested,
                     });
                 }
@@ -1442,6 +1450,7 @@ async fn run_ratatui_app(
                 thread_id: None,
                 thread_name: None,
                 update_action: None,
+                tmux_handoff: None,
                 exit_reason: ExitReason::UserRequested,
             });
         }
@@ -1492,6 +1501,7 @@ async fn run_ratatui_app(
             thread_id: None,
             thread_name: None,
             update_action: None,
+            tmux_handoff: None,
             exit_reason: ExitReason::Fatal(format!(
                 "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
             )),
@@ -1549,6 +1559,7 @@ async fn run_ratatui_app(
                         thread_id: None,
                         thread_name: None,
                         update_action: None,
+                        tmux_handoff: None,
                         exit_reason: ExitReason::UserRequested,
                     });
                 }
@@ -1610,6 +1621,7 @@ async fn run_ratatui_app(
                     thread_id: None,
                     thread_name: None,
                     update_action: None,
+                    tmux_handoff: None,
                     exit_reason: ExitReason::UserRequested,
                 });
             }
@@ -1655,6 +1667,7 @@ async fn run_ratatui_app(
                             thread_id: None,
                             thread_name: None,
                             update_action: None,
+                            tmux_handoff: None,
                             exit_reason: ExitReason::UserRequested,
                         });
                     }

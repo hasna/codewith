@@ -5,6 +5,19 @@
 //! cache used for multi-agent navigation.
 
 use super::*;
+use crate::style::accent_color;
+
+fn agent_picker_hint_line() -> Line<'static> {
+    Line::from(vec![
+        "Press ".into(),
+        crate::key_hint::plain(KeyCode::Enter).into(),
+        " to watch, ".into(),
+        crate::key_hint::plain(KeyCode::Char('r')).into(),
+        " to rename, or ".into(),
+        crate::key_hint::plain(KeyCode::Esc).into(),
+        " to go back".into(),
+    ])
+}
 
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
@@ -52,12 +65,11 @@ impl App {
                 }
                 let id = *thread_id;
                 let is_primary = self.primary_thread_id == Some(*thread_id);
-                let name = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
+                let name = format_agent_picker_entry_name(entry, is_primary);
+                let current_name = entry.thread_name.clone();
                 let uuid = thread_id.to_string();
+                let rename_thread_id = id;
+                let rename_label = name.clone();
                 SelectionItem {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
@@ -66,6 +78,17 @@ impl App {
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
                     })],
+                    shortcut_actions: vec![SelectionShortcutAction {
+                        binding: crate::key_hint::plain(KeyCode::Char('r')),
+                        action: Box::new(move |tx| {
+                            tx.send(AppEvent::OpenAgentRenamePrompt {
+                                thread_id: rename_thread_id,
+                                current_name: current_name.clone(),
+                                label: rename_label.clone(),
+                            });
+                        }),
+                        dismiss_on_select: true,
+                    }],
                     dismiss_on_select: true,
                     search_value: Some(format!("{name} {uuid}")),
                     ..Default::default()
@@ -74,9 +97,9 @@ impl App {
             .collect();
 
         self.chat_widget.show_selection_view(SelectionViewParams {
-            title: Some("Subagents".to_string()),
+            title: Some("Agents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(agent_picker_hint_line()),
             items,
             initial_selected_idx,
             ..Default::default()
@@ -162,6 +185,9 @@ impl App {
                         codex_app_server_protocol::ThreadStatus::NotLoaded
                     ),
                 );
+                self.agent_navigation
+                    .set_thread_name(thread_id, thread.name);
+                self.sync_active_agent_label();
                 true
             }
             Err(err) => {
@@ -513,7 +539,10 @@ impl App {
                         lines.push(usage_line.into());
                     }
                     if let Some(command) = summary.resume_hint {
-                        let spans = vec!["To continue this session, run ".into(), command.cyan()];
+                        let spans = vec![
+                            "To continue this session, run ".into(),
+                            command.fg(accent_color()),
+                        ];
                         lines.push(spans.into());
                     }
                     self.chat_widget.add_plain_history_lines(lines);
@@ -610,12 +639,17 @@ impl App {
         }
 
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
+            let thread_id = thread.thread_id;
+            let thread_name = thread.thread_name;
             self.upsert_agent_picker_thread(
-                thread.thread_id,
+                thread_id,
                 thread.agent_nickname,
                 thread.agent_role,
                 /*is_closed*/ false,
             );
+            self.agent_navigation
+                .set_thread_name(thread_id, thread_name);
+            self.sync_active_agent_label();
         }
 
         !had_read_error
@@ -740,8 +774,10 @@ impl App {
                                 lines.push(usage_line.into());
                             }
                             if let Some(command) = summary.resume_hint {
-                                let spans =
-                                    vec!["To continue this session, run ".into(), command.cyan()];
+                                let spans = vec![
+                                    "To continue this session, run ".into(),
+                                    command.fg(accent_color()),
+                                ];
                                 lines.push(spans.into());
                             }
                             self.chat_widget.add_plain_history_lines(lines);

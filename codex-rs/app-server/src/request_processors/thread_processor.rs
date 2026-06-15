@@ -339,6 +339,12 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) state_db: Option<StateDbHandle>,
     pub(super) background_tasks: TaskTracker,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) background_agent_supervisor_id: String,
+    pub(super) background_agent_workers: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    pub(super) background_agent_worker_processes:
+        Arc<Mutex<HashMap<String, codex_background_agent::process_lifecycle::WorkerProcessHandle>>>,
+    pub(super) background_agent_supervisor_token: CancellationToken,
+    pub(super) background_agent_worker_process: bool,
 }
 
 impl ThreadRequestProcessor {
@@ -358,6 +364,7 @@ impl ThreadRequestProcessor {
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
         skills_watcher: Arc<SkillsWatcher>,
+        background_agent_worker_process: bool,
     ) -> Self {
         Self {
             auth_manager,
@@ -375,6 +382,12 @@ impl ThreadRequestProcessor {
             state_db,
             background_tasks: TaskTracker::new(),
             skills_watcher,
+            background_agent_supervisor_id:
+                super::background_agent_live::new_background_agent_supervisor_id(),
+            background_agent_workers: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_supervisor_token: CancellationToken::new(),
+            background_agent_worker_process,
         }
     }
 
@@ -678,7 +691,7 @@ impl ThreadRequestProcessor {
             .await
     }
 
-    async fn load_thread(
+    pub(super) async fn load_thread(
         &self,
         thread_id: &str,
     ) -> Result<(ThreadId, Arc<CodexThread>), JSONRPCErrorError> {
@@ -928,6 +941,7 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        self.cancel_background_agent_workers().await;
         self.background_tasks.close();
         if tokio::time::timeout(Duration::from_secs(10), self.background_tasks.wait())
             .await

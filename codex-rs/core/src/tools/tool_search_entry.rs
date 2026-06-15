@@ -42,6 +42,12 @@ impl ToolSearchInfo {
             ToolSpec::ToolSearch { .. }
             | ToolSpec::ImageGeneration { .. }
             | ToolSpec::WebSearch { .. }
+            | ToolSpec::AnthropicWebSearch { .. }
+            | ToolSpec::OpenRouterWebSearch { .. }
+            | ToolSpec::XaiWebSearch { .. }
+            | ToolSpec::XiaomiWebSearch { .. }
+            | ToolSpec::QwenWebSearch { .. }
+            | ToolSpec::ZaiWebSearch { .. }
             | ToolSpec::Freeform(_) => return None,
         };
 

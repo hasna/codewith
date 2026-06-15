@@ -4541,6 +4541,7 @@ mod tests {
     use crate::bottom_pane::InputResult;
     use crate::bottom_pane::chat_composer::LARGE_PASTE_CHAR_THRESHOLD;
     use crate::bottom_pane::textarea::TextArea;
+    use crate::style::accent_link_style;
     use codex_protocol::models::local_image_label_text;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -5079,7 +5080,7 @@ mod tests {
         composer.set_status_line_enabled(/*enabled*/ true);
         composer.set_status_line(Some(Line::from(Span::styled(
             "PR #20252",
-            Style::default().cyan().underlined(),
+            accent_link_style(),
         ))));
         composer.set_status_line_hyperlink(Some(url.to_string()));
 

@@ -5,6 +5,7 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::style::accent_color;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -202,6 +203,18 @@ impl App {
             AppEvent::ArchiveCurrentThread => {
                 return Ok(self.archive_current_thread(app_server).await);
             }
+            AppEvent::OpenInTmux {
+                name,
+                replace_existing,
+            } => match self.prepare_tmux_handoff_from_slash(name, replace_existing) {
+                Ok(_) => {
+                    self.show_shutdown_feedback(tui)?;
+                    return Ok(self
+                        .handle_exit_mode(app_server, ExitMode::ShutdownFirst)
+                        .await);
+                }
+                Err(message) => self.chat_widget.add_error_message(message),
+            },
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
                     "codex.thread.fork",
@@ -237,7 +250,7 @@ impl App {
                                         if let Some(command) = summary.resume_hint {
                                             let spans = vec![
                                                 "To continue this session, run ".into(),
-                                                command.cyan(),
+                                                command.fg(accent_color()),
                                             ];
                                             lines.push(spans.into());
                                         }
@@ -499,8 +512,60 @@ impl App {
             AppEvent::OpenMcpServerDetails { status } => {
                 self.chat_widget.open_mcp_server_details(status);
             }
+            AppEvent::OpenMcpAddServer => {
+                self.chat_widget.open_mcp_add_server();
+            }
+            AppEvent::AddMcpServer { spec } => {
+                self.add_mcp_server_from_spec(app_server, spec).await;
+            }
+            AppEvent::SetMcpServerEnabled { name, enabled } => {
+                self.set_mcp_server_enabled(app_server, name, enabled).await;
+            }
+            AppEvent::SetMcpToolEnabled {
+                server,
+                tool,
+                enabled,
+            } => {
+                self.set_mcp_tool_enabled(app_server, server, tool, enabled)
+                    .await;
+            }
             AppEvent::StartMcpServerOauthLogin { name } => {
                 self.start_mcp_server_oauth_login(app_server, name);
+            }
+            AppEvent::ReloadMcpServers => {
+                self.reload_mcp_servers(app_server);
+            }
+            AppEvent::McpServersReloaded { result } => match result {
+                Ok(()) => {
+                    self.chat_widget.add_info_message(
+                        "MCP reload queued.".to_string(),
+                        Some(
+                            "Loaded threads pick up new or updated tools before the next turn. Reopening /mcp inventory now.".to_string(),
+                        ),
+                    );
+                    self.chat_widget
+                        .open_mcp_manager(McpServerStatusDetail::Full);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to reload MCP servers: {err}"));
+                }
+            },
+            AppEvent::ShowMcpSetupHelp => {
+                self.chat_widget.add_info_message(
+                    "Use /mcp add <name> <url-or-command...> to add MCP servers.".to_string(),
+                    Some(
+                        "Use --env-var KEY for secrets already in your shell, --bearer-env KEY for HTTP bearer tokens, or edit config.toml directly under [mcp_servers.<name>]. Codewith auto-refreshes MCP tools after managed config changes.".to_string(),
+                    ),
+                );
+            }
+            AppEvent::ShowMcpDiagnosticsHelp { name } => {
+                self.chat_widget.add_info_message(
+                    format!("Diagnose MCP server `{name}`."),
+                    Some(
+                        "Check command/cwd/env for stdio servers and URL/auth/headers for HTTP servers. Managed config changes auto-refresh; /mcp reload remains a diagnostic fallback.".to_string(),
+                    ),
+                );
             }
             AppEvent::McpServerOauthLoginStarted { name, result } => match result {
                 Ok(url) => {
@@ -801,6 +866,9 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::RefreshMiniMaxUsage { origin } => {
+                self.refresh_minimax_usage(origin);
+            }
             AppEvent::OpenThreadGoalMenu { thread_id } => {
                 self.open_thread_goal_menu(app_server, thread_id).await;
             }
@@ -1014,6 +1082,37 @@ impl App {
                 self.delete_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::OpenBackgroundAgentManager => {
+                self.open_background_agent_manager(app_server).await;
+            }
+            AppEvent::OpenBackgroundAgentActions { agent_id } => {
+                self.open_background_agent_actions(app_server, agent_id)
+                    .await;
+            }
+            AppEvent::StartBackgroundAgent { prompt } => {
+                self.start_background_agent(app_server, prompt).await;
+            }
+            AppEvent::ReadBackgroundAgent { agent_id } => {
+                self.read_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::AttachBackgroundAgent { agent_id } => {
+                self.attach_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::ShowBackgroundAgentLogs { agent_id } => {
+                self.show_background_agent_logs(app_server, agent_id).await;
+            }
+            AppEvent::DetachBackgroundAgent { agent_id } => {
+                self.detach_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::StopBackgroundAgent { agent_id } => {
+                self.stop_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::DeleteBackgroundAgent { agent_id } => {
+                self.delete_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::ShowBackgroundAgentDiagnostics => {
+                self.show_background_agent_diagnostics(app_server).await;
+            }
             AppEvent::PrefillComposer { text } => {
                 self.chat_widget
                     .restore_user_message_to_composer(crate::chatwidget::UserMessage::from(text));
@@ -1040,6 +1139,13 @@ impl App {
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::MiniMaxUsageLoaded {
+                origin,
+                auth_profile,
+                result,
+            } => {
+                self.apply_minimax_usage_loaded(origin, auth_profile, result);
             }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
@@ -1150,24 +1256,11 @@ impl App {
                 if submitted {
                     let queued_input_will_resume =
                         resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
-                    let label = profile
-                        .as_deref()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| "default".to_string());
-                    let message = match reason {
-                        crate::app_event::AuthProfileSwitchReason::Manual => {
-                            format!("Profile changed to {label} for this session")
-                        }
-                        crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
-                            let mut message = format!(
-                                "Auto-switching auth profile to {label} because the {window} limit is exhausted."
-                            );
-                            if queued_input_will_resume {
-                                message.push_str(" Your prompt will continue with that account.");
-                            }
-                            message
-                        }
-                    };
+                    let message = auth_profile_switch_message(
+                        profile.as_deref(),
+                        &reason,
+                        queued_input_will_resume,
+                    );
                     self.chat_widget.add_info_message(message, /*hint*/ None);
                     self.refresh_status_line();
                     if resume_queued_input {
@@ -1178,8 +1271,17 @@ impl App {
             AppEvent::OpenAuthProfileRenamePrompt { profile } => {
                 self.chat_widget.open_auth_profile_rename_prompt(profile);
             }
+            AppEvent::OpenAuthProfileSettings { profile } => {
+                self.chat_widget.open_auth_profile_settings_popup(profile);
+            }
             AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
                 self.chat_widget.open_auth_profile_delete_confirm(profile);
+            }
+            AppEvent::ReloginAuthProfile { profile } => {
+                self.relogin_auth_profile(profile);
+            }
+            AppEvent::AuthProfileReloginFinished { profile, result } => {
+                self.finish_auth_profile_relogin(profile, result);
             }
             AppEvent::RenameAuthProfile { old_name, new_name } => {
                 self.rename_auth_profile(old_name, new_name);
@@ -2179,6 +2281,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentRenamePrompt {
+                thread_id,
+                current_name,
+                label,
+            } => {
+                self.chat_widget
+                    .show_agent_rename_prompt(thread_id, current_name, label);
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
@@ -2347,7 +2457,7 @@ impl App {
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
-                            rule_line.cyan(),
+                            rule_line.fg(accent_color()),
                         ]));
                     }
                     self.overlay = Some(Overlay::new_static_with_renderables(
@@ -2755,6 +2865,57 @@ impl App {
                 }
                 RateLimitRefreshCompletion::None
             }
+        }
+    }
+
+    pub(super) fn apply_minimax_usage_loaded(
+        &mut self,
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
+    ) {
+        let MiniMaxUsageRefreshOrigin::StatusCommand { request_id } = origin;
+        if auth_profile != self.config.selected_auth_profile {
+            tracing::debug!(
+                request_auth_profile = ?auth_profile,
+                current_auth_profile = ?self.config.selected_auth_profile,
+                "discarding stale MiniMax usage result after auth profile change"
+            );
+            self.chat_widget.finish_status_minimax_usage_refresh(
+                request_id,
+                Err("MiniMax usage refresh was superseded by an auth profile change".to_string()),
+            );
+            return;
+        }
+
+        if let Err(err) = result.as_ref() {
+            tracing::warn!("MiniMax usage refresh failed during TUI refresh: {err}");
+        }
+        self.chat_widget
+            .finish_status_minimax_usage_refresh(request_id, result);
+    }
+}
+
+pub(super) fn auth_profile_switch_message(
+    profile: Option<&str>,
+    reason: &crate::app_event::AuthProfileSwitchReason,
+    queued_input_will_resume: bool,
+) -> String {
+    let label = profile
+        .map(str::to_string)
+        .unwrap_or_else(|| "default".to_string());
+    match reason {
+        crate::app_event::AuthProfileSwitchReason::Manual => {
+            format!("Profile changed to {label} for this session")
+        }
+        crate::app_event::AuthProfileSwitchReason::AutoRateLimit { window } => {
+            let mut message = format!(
+                "Auto-switching auth profile to {label} because the {window} limit is exhausted."
+            );
+            if queued_input_will_resume {
+                message.push_str(" Your prompt will continue with that account.");
+            }
+            message
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Monitor summaries and interactive manager for `/monitor`.
 
 use super::*;
+use crate::style::accent_color;
 use chrono::DateTime;
 use chrono::Local;
 use codex_app_server_protocol::ThreadMonitor;
@@ -367,7 +368,7 @@ fn monitor_status_label(status: ThreadMonitorStatus) -> Span<'static> {
 
 fn monitor_event_stream_label(stream: ThreadMonitorEventStream) -> Span<'static> {
     match stream {
-        ThreadMonitorEventStream::Stdout => "stdout".cyan(),
+        ThreadMonitorEventStream::Stdout => "stdout".fg(accent_color()),
         ThreadMonitorEventStream::Stderr => "stderr".red(),
         ThreadMonitorEventStream::System => "system".dim(),
     }

@@ -7,6 +7,7 @@ use ratatui::widgets::Widget;
 
 use crate::key_hint;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
+use crate::style::accent_color;
 
 use super::search_mode::SearchMode;
 
@@ -68,7 +69,7 @@ fn search_mode_indicator_line(active_search_mode: SearchMode) -> Line<'static> {
         if search_mode == active_search_mode {
             let label = format!("[{}]", search_mode.label());
             let span = match search_mode {
-                SearchMode::Results | SearchMode::FilesystemOnly => label.cyan().bold(),
+                SearchMode::Results | SearchMode::FilesystemOnly => label.fg(accent_color()).bold(),
                 SearchMode::Tools => label.magenta().bold(),
             };
             spans.push(span);

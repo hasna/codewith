@@ -258,11 +258,43 @@ fn chat_tools_from_responses(
                     }
                 }
             }
-            Some("custom" | "tool_search" | "web_search" | "image_generation") | None => {}
+            Some(
+                "web_search"
+                | "web_search_20250305"
+                | "web_search_20260209"
+                | "openrouter:web_search",
+            ) => {
+                if let Some(native_tool) = chat_native_web_search_tool(tool) {
+                    chat_tools.push(native_tool);
+                }
+            }
+            Some("custom" | "tool_search" | "image_generation") | None => {}
             Some(_) => {}
         }
     }
     Ok(chat_tools)
+}
+
+fn chat_native_web_search_tool(tool: &Value) -> Option<Value> {
+    match tool.get("type").and_then(Value::as_str) {
+        Some("web_search_20250305" | "web_search_20260209" | "openrouter:web_search") => {
+            Some(tool.clone())
+        }
+        Some("web_search")
+            if ![
+                "external_web_access",
+                "filters",
+                "user_location",
+                "search_context_size",
+                "search_content_types",
+            ]
+            .iter()
+            .any(|field| tool.get(field).is_some()) =>
+        {
+            Some(tool.clone())
+        }
+        Some(_) | None => None,
+    }
 }
 
 fn chat_function_tool(
@@ -901,6 +933,52 @@ mod tests {
                     "schema": {"type": "object"}
                 }
             })
+        );
+    }
+
+    #[test]
+    fn chat_request_preserves_provider_native_web_search_tools() {
+        let tools = chat_tools_from_responses(
+            &[
+                serde_json::json!({
+                    "type": "web_search_20260209",
+                    "name": "web_search",
+                    "allowed_domains": ["example.com"],
+                }),
+                serde_json::json!({
+                    "type": "web_search",
+                    "web_search": {
+                        "enable": true,
+                        "search_engine": "search-prime",
+                        "search_result": true,
+                    },
+                }),
+                serde_json::json!({
+                    "type": "web_search",
+                    "external_web_access": true,
+                }),
+            ],
+            &mut HashMap::new(),
+        )
+        .expect("tools should map");
+
+        assert_eq!(
+            tools,
+            vec![
+                serde_json::json!({
+                    "type": "web_search_20260209",
+                    "name": "web_search",
+                    "allowed_domains": ["example.com"],
+                }),
+                serde_json::json!({
+                    "type": "web_search",
+                    "web_search": {
+                        "enable": true,
+                        "search_engine": "search-prime",
+                        "search_result": true,
+                    },
+                }),
+            ]
         );
     }
 

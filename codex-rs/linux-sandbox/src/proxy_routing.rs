@@ -300,7 +300,13 @@ fn create_proxy_socket_dir() -> io::Result<PathBuf> {
 }
 
 fn proxy_socket_parent_dir() -> PathBuf {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+    // Prefer the current `CODEWITH_HOME`, falling back to the legacy
+    // `CODEX_HOME`, so a session that only sets `CODEWITH_HOME` still places the
+    // proxy socket under the Codewith home instead of the world-shared temp dir.
+    let codex_home = std::env::var_os("CODEWITH_HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()));
+    if let Some(codex_home) = codex_home {
         let candidate = PathBuf::from(codex_home).join("tmp");
         if ensure_private_proxy_socket_parent_dir(candidate.as_path()).is_ok() {
             return candidate;

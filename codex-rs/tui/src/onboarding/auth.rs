@@ -28,6 +28,7 @@ use ratatui::prelude::Widget;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Block;
@@ -51,9 +52,11 @@ use crate::motion::shimmer_text;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 use crate::tui::FrameRequester;
 
-/// Marks buffer cells that have cyan+underlined style as an OSC 8 hyperlink.
+/// Marks underlined buffer cells as an OSC 8 hyperlink.
 ///
 /// Terminal emulators recognise the OSC 8 escape sequence and treat the entire
 /// marked region as a single clickable link, regardless of row wrapping.  This
@@ -408,8 +411,10 @@ impl AuthModeWidget {
 
             let line1 = if is_selected {
                 Line::from(vec![
-                    format!("{caret} {index}. ", index = idx + 1).cyan().dim(),
-                    text.to_string().cyan(),
+                    format!("{caret} {index}. ", index = idx + 1)
+                        .fg(accent_color())
+                        .dim(),
+                    text.to_string().fg(accent_color()),
                 ])
             } else {
                 format!("  {index}. {text}", index = idx + 1).into()
@@ -417,7 +422,7 @@ impl AuthModeWidget {
 
             let line2 = if is_selected {
                 Line::from(format!("     {description}"))
-                    .fg(Color::Cyan)
+                    .fg(accent_color())
                     .add_modifier(Modifier::DIM)
             } else {
                 Line::from(format!("     {description}"))
@@ -510,14 +515,14 @@ impl AuthModeWidget {
             lines.push("".into());
             lines.push(Line::from(vec![
                 "  ".into(),
-                state.auth_url.as_str().cyan().underlined(),
+                state.auth_url.as_str().set_style(accent_link_style()),
             ]));
             lines.push("".into());
             lines.push(Line::from(vec![
                 "  On a remote or headless machine? Press ".into(),
                 self.cancel_binding().into(),
                 " and choose ".into(),
-                "Sign in with Device Code".cyan(),
+                "Sign in with Device Code".fg(accent_color()),
                 ".".into(),
             ]));
             lines.push("".into());
@@ -535,7 +540,7 @@ impl AuthModeWidget {
             .wrap(Wrap { trim: false })
             .render(area, buf);
 
-        // Wrap cyan+underlined URL cells with OSC 8 so the terminal treats
+        // Wrap underlined URL cells with OSC 8 so the terminal treats
         // the entire region as a single clickable hyperlink.
         if let Some(url) = &auth_url {
             mark_url_hyperlink(buf, area, url);
@@ -578,9 +583,9 @@ impl AuthModeWidget {
             .dim(),
             "".into(),
             Line::from(vec![
-                "  Press ".fg(Color::Cyan),
+                "  Press ".fg(accent_color()),
                 self.confirm_binding().into(),
-                " to continue".fg(Color::Cyan),
+                " to continue".fg(accent_color()),
             ]),
         ];
 
@@ -655,7 +660,7 @@ impl AuthModeWidget {
                     .title("API key")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(accent_color())),
             )
             .render(input_area, buf);
 
@@ -1249,16 +1254,16 @@ mod tests {
     }
 
     #[test]
-    fn mark_url_hyperlink_wraps_cyan_underlined_cells() {
+    fn mark_url_hyperlink_wraps_accent_underlined_cells() {
         let url = "https://example.com";
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
 
-        // Manually write some cyan+underlined characters to simulate a rendered URL.
+        // Manually write some accent+underlined characters to simulate a rendered URL.
         for (i, ch) in "example".chars().enumerate() {
             let cell = &mut buf[(i as u16, 0)];
             cell.set_symbol(&ch.to_string());
-            cell.fg = Color::Cyan;
+            cell.fg = accent_color();
             cell.modifier = Modifier::UNDERLINED;
         }
         // Leave a plain cell that should NOT be marked.
@@ -1266,7 +1271,7 @@ mod tests {
 
         mark_url_hyperlink(&mut buf, area, url);
 
-        // Each cyan+underlined cell should now carry the OSC 8 wrapper.
+        // Each accent+underlined cell should now carry the OSC 8 wrapper.
         let found = collect_osc8_chars(&buf, area, url);
         assert_eq!(found, "example");
 
@@ -1279,10 +1284,10 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(area);
 
-        // One cyan+underlined cell to mark.
+        // One accent+underlined cell to mark.
         let cell = &mut buf[(0, 0)];
         cell.set_symbol("a");
-        cell.fg = Color::Cyan;
+        cell.fg = accent_color();
         cell.modifier = Modifier::UNDERLINED;
 
         // URL contains ESC and BEL that could break the OSC 8 sequence.

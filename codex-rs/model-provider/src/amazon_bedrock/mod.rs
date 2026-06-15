@@ -18,6 +18,7 @@ use codex_protocol::account::ProviderAccount;
 use codex_protocol::error::Result;
 use codex_protocol::openai_models::ModelsResponse;
 
+use crate::provider::HostedWebSearchProvider;
 use crate::provider::ModelProvider;
 use crate::provider::ProviderAccountResult;
 use crate::provider::ProviderAccountState;
@@ -60,7 +61,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
         ProviderCapabilities {
             namespace_tools: true,
             image_generation: false,
-            web_search: false,
+            web_search: HostedWebSearchProvider::Disabled,
         }
     }
 
@@ -142,7 +143,7 @@ mod tests {
             ProviderCapabilities {
                 namespace_tools: true,
                 image_generation: false,
-                web_search: false,
+                web_search: HostedWebSearchProvider::Disabled,
             }
         );
     }

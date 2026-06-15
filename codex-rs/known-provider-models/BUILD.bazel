@@ -1,0 +1,6 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "known-provider-models",
+    crate_name = "codex_known_provider_models",
+)

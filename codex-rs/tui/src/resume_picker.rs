@@ -21,6 +21,7 @@ use crate::markdown::append_markdown;
 use crate::pager_overlay::Overlay;
 use crate::session_resume::resolve_session_thread_id;
 use crate::status::format_directory_display;
+use crate::style::accent_color;
 use crate::terminal_palette::best_color;
 use crate::terminal_palette::default_bg;
 use crate::text_formatting::truncate_text;
@@ -1869,11 +1870,7 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
         };
 
         // Header
-        let header_title = if default_bg().is_some_and(is_light) {
-            state.action.title().bold().fg(best_color((0, 100, 0)))
-        } else {
-            state.action.title().bold().cyan()
-        };
+        let header_title = state.action.title().bold().fg(accent_color());
         let header_line: Line = vec![header_title].into();
         frame.render_widget_ref(header_line, chrome(header));
 

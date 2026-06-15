@@ -21,6 +21,7 @@ use crate::motion::shimmer_text;
 use crate::onboarding::mark_url_hyperlink;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
+use crate::style::accent_link_style;
 use crate::tui::FrameRequester;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
@@ -42,6 +43,7 @@ use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -1651,7 +1653,7 @@ impl ChatWidget {
                     " and ".into(),
                     "privacy policy".bold(),
                     ". ".into(),
-                    "Learn more".cyan().underlined(),
+                    "Learn more".set_style(accent_link_style()),
                     ".".into(),
                 ]),
             });

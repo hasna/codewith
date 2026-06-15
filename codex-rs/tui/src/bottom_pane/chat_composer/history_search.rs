@@ -44,6 +44,7 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::has_ctrl_or_alt;
+use crate::style::accent_color;
 use crate::ui_consts::FOOTER_INDENT_COLS;
 
 /// Active composer-owned state for one Ctrl+R search interaction.
@@ -351,7 +352,7 @@ impl ChatComposer {
         let search = self.history_search.as_ref()?;
         let mut line = Line::from(vec![
             "reverse-i-search: ".dim(),
-            search.query.clone().cyan(),
+            search.query.clone().fg(accent_color()),
         ]);
         match search.status {
             HistorySearchStatus::Idle => {}
@@ -370,7 +371,10 @@ impl ChatComposer {
     }
 
     fn history_search_action_key_span(key: KeyCode) -> Span<'static> {
-        Span::from(key_hint::plain(key)).cyan().bold().not_dim()
+        Span::from(key_hint::plain(key))
+            .fg(accent_color())
+            .bold()
+            .not_dim()
     }
 
     /// Returns byte ranges that should be highlighted in the current composer preview.
@@ -500,6 +504,7 @@ mod tests {
     use crate::app_event::AppEvent;
     use crate::app_event_sender::AppEventSender;
     use crate::render::renderable::Renderable;
+    use crate::style::accent_color;
 
     #[test]
     fn history_search_opens_without_previewing_latest_entry() {
@@ -695,10 +700,10 @@ mod tests {
         );
 
         let query_style = line.spans[1].style;
-        assert_eq!(query_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(query_style.fg, Some(accent_color()));
 
         let enter_style = line.spans[3].style;
-        assert_eq!(enter_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(enter_style.fg, Some(accent_color()));
         assert!(enter_style.add_modifier.contains(Modifier::BOLD));
         assert!(enter_style.sub_modifier.contains(Modifier::DIM));
 
@@ -709,7 +714,7 @@ mod tests {
         assert!(separator_style.add_modifier.contains(Modifier::DIM));
 
         let esc_style = line.spans[6].style;
-        assert_eq!(esc_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(esc_style.fg, Some(accent_color()));
         assert!(esc_style.add_modifier.contains(Modifier::BOLD));
         assert!(esc_style.sub_modifier.contains(Modifier::DIM));
 

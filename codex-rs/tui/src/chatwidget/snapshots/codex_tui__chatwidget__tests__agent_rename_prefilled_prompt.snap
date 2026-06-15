@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+assertion_line: 1798
+expression: popup
+---
+▌ Rename agent
+▌ Agent
+▌
+▌ Existing agent title
+
+Press enter to confirm or esc to go back

@@ -190,6 +190,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "create_goal",
         "update_goal",
         "manage_loop",
+        "manage_monitor",
         "manage_schedule",
         "request_user_input",
         "apply_patch",

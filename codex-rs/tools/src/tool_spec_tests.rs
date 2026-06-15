@@ -2,6 +2,7 @@ use super::ResponsesApiNamespace;
 use super::ResponsesApiWebSearchFilters;
 use super::ResponsesApiWebSearchUserLocation;
 use super::ToolSpec;
+use super::ZaiWebSearchConfig;
 use crate::AdditionalProperties;
 use crate::FreeformTool;
 use crate::FreeformToolFormat;
@@ -228,6 +229,46 @@ fn web_search_tool_spec_serializes_expected_wire_shape() {
             },
             "search_context_size": "high",
             "search_content_types": ["text", "image"],
+        })
+    );
+}
+
+#[test]
+fn provider_native_web_search_tool_specs_serialize_expected_wire_shapes() {
+    assert_eq!(
+        serde_json::to_value(ToolSpec::AnthropicWebSearch {
+            name: "web_search".to_string(),
+            max_uses: None,
+            allowed_domains: Some(vec!["example.com".to_string()]),
+        })
+        .expect("serialize anthropic web_search"),
+        json!({
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "allowed_domains": ["example.com"],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ToolSpec::OpenRouterWebSearch {})
+            .expect("serialize openrouter web_search"),
+        json!({"type": "openrouter:web_search"})
+    );
+    assert_eq!(
+        serde_json::to_value(ToolSpec::ZaiWebSearch {
+            web_search: ZaiWebSearchConfig {
+                enable: true,
+                search_engine: "search-prime".to_string(),
+                search_result: true,
+            },
+        })
+        .expect("serialize zai web_search"),
+        json!({
+            "type": "web_search",
+            "web_search": {
+                "enable": true,
+                "search_engine": "search-prime",
+                "search_result": true,
+            },
         })
     );
 }

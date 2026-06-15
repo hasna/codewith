@@ -293,6 +293,32 @@ async fn get_model_info_tracks_fallback_usage() {
 }
 
 #[tokio::test]
+async fn get_model_info_uses_provider_scoped_fallback_metadata() {
+    let manager = static_manager_for_tests(ModelsResponse { models: Vec::new() });
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openrouter".to_string()),
+        ..Default::default()
+    };
+
+    let stale_nvidia_slug = manager
+        .get_model_info("deepseek-ai/deepseek-v4-flash", &config)
+        .await;
+    assert!(stale_nvidia_slug.used_fallback_model_metadata);
+    assert_eq!(
+        stale_nvidia_slug.experimental_supported_tools,
+        Vec::<String>::new()
+    );
+
+    let openrouter_slug = manager
+        .get_model_info("deepseek/deepseek-v4-flash", &config)
+        .await;
+    assert!(!openrouter_slug.used_fallback_model_metadata);
+    assert_eq!(openrouter_slug.display_name, "DeepSeek V4 Flash");
+    assert_eq!(openrouter_slug.context_window, Some(1_048_576));
+    assert_eq!(openrouter_slug.experimental_supported_tools, vec!["tools"]);
+}
+
+#[tokio::test]
 async fn get_model_info_uses_custom_catalog() {
     let config = ModelsManagerConfig::default();
     let mut overlay = remote_model("gpt-overlay", "Overlay", /*priority*/ 0);

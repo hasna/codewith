@@ -23,6 +23,7 @@ use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::format_agent_picker_item_name;
 use assert_matches::assert_matches;
 
 use crate::app_command::AppCommand as Op;
@@ -1177,6 +1178,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
         Some(&AgentPickerThreadEntry {
             agent_nickname: None,
             agent_role: None,
+            thread_name: None,
             is_closed: false,
         })
     );
@@ -1236,6 +1238,7 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         Some(&AgentPickerThreadEntry {
             agent_nickname: None,
             agent_role: None,
+            thread_name: None,
             is_closed: true,
         })
     );
@@ -1269,6 +1272,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_name: None,
             is_closed: true,
         })
     );
@@ -1323,6 +1327,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_name: None,
             is_closed: true,
         })
     );
@@ -1361,6 +1366,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                thread_name: None,
                 is_closed: false,
             })
         );
@@ -1609,10 +1615,10 @@ fn update_config_value_persists_and_updates_runtime_state() -> Result<()> {
             "auth_profile_auto_switch.enabled",
             &serde_json::json!(false),
         );
-        let mut app_server = start_config_write_test_app_server(&app).await?;
+        let app_server = start_config_write_test_app_server(&app).await?;
 
         app.update_config_value_with_app_server(
-            &mut app_server,
+            &app_server,
             "auth_profile_auto_switch.enabled".to_string(),
             serde_json::json!(true),
             "Auth profile auto-switch".to_string(),
@@ -1631,7 +1637,7 @@ fn update_config_value_persists_and_updates_runtime_state() -> Result<()> {
         app.chat_widget
             .apply_config_popup_value("check_for_update_on_startup", &serde_json::json!(true));
         app.update_config_value_with_app_server(
-            &mut app_server,
+            &app_server,
             "check_for_update_on_startup".to_string(),
             serde_json::json!(true),
             "Update checks".to_string(),
@@ -2925,6 +2931,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_name: None,
             is_closed: false,
         })
     );
@@ -3917,6 +3924,7 @@ async fn make_test_app() -> App {
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
         pending_update_action: None,
+        pending_tmux_handoff: None,
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
@@ -3981,6 +3989,7 @@ async fn make_test_app_with_channels() -> (
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             app_server_target: crate::AppServerTarget::Embedded,
             pending_update_action: None,
+            pending_tmux_handoff: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
@@ -4002,6 +4011,28 @@ async fn make_test_app_with_channels() -> (
         rx,
         op_rx,
     )
+}
+
+#[test]
+fn auth_profile_auto_switch_message_explains_profile_and_queued_prompt_resume() {
+    assert_eq!(
+        super::event_dispatch::auth_profile_switch_message(
+            Some("personal"),
+            &crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                window: "5h".to_string(),
+            },
+            /*queued_input_will_resume*/ true,
+        ),
+        "Auto-switching auth profile to personal because the 5h limit is exhausted. Your prompt will continue with that account."
+    );
+    assert_eq!(
+        super::event_dispatch::auth_profile_switch_message(
+            None,
+            &crate::app_event::AuthProfileSwitchReason::Manual,
+            /*queued_input_will_resume*/ false,
+        ),
+        "Profile changed to default for this session"
+    );
 }
 
 #[tokio::test]
