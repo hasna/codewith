@@ -175,7 +175,7 @@ mod tests {
         );
         assert_eq!(
             ActiveChannelDeliveryOutcome::NotLoaded {
-                recipient_id: telegram_endpoint.id.clone(),
+                recipient_id: telegram_endpoint.id,
             },
             ActiveChannelDeliveryOutcome::NotLoaded {
                 recipient_id: "telegram:chat-1".to_string(),

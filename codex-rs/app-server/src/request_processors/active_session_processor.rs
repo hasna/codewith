@@ -225,7 +225,6 @@ fn active_peer_registration(
     let agent_nickname = config_snapshot.session_source.get_nickname();
     let agent_role = config_snapshot.session_source.get_agent_role();
     let display_name = agent_nickname
-        .clone()
         .or_else(|| agent_role.clone())
         .or_else(|| agent_path.clone());
     ActivePeerRegistration {
