@@ -16,6 +16,11 @@ use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::ActiveSessionListParams;
+use codex_app_server_protocol::ActiveSessionListResponse;
+use codex_app_server_protocol::ActiveSessionMessageDelivery;
+use codex_app_server_protocol::ActiveSessionSendParams;
+use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::AgentAttachParams;
 use codex_app_server_protocol::AgentAttachResponse;
 use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
@@ -622,6 +627,42 @@ impl AppServerSession {
             .request_typed(ClientRequest::ThreadLoadedList { request_id, params })
             .await
             .wrap_err("failed to list loaded threads from app server")
+    }
+
+    /// Lists active message-capable sessions held in the app-server process.
+    pub(crate) async fn active_session_list(
+        &mut self,
+        params: ActiveSessionListParams,
+    ) -> Result<ActiveSessionListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ActiveSessionList { request_id, params })
+            .await
+            .wrap_err("failed to list active sessions from app server")
+    }
+
+    /// Sends an active-only message to a loaded thread.
+    pub(crate) async fn active_session_send(
+        &mut self,
+        target_thread_id: String,
+        message: String,
+        sender_thread_id: Option<ThreadId>,
+        delivery: ActiveSessionMessageDelivery,
+    ) -> Result<ActiveSessionSendResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ActiveSessionSend {
+                request_id,
+                params: ActiveSessionSendParams {
+                    target_thread_id,
+                    message,
+                    sender_thread_id: sender_thread_id.map(|thread_id| thread_id.to_string()),
+                    sender_label: Some("Codewith TUI".to_string()),
+                    delivery: Some(delivery),
+                },
+            })
+            .await
+            .wrap_err("failed to send active session message through app server")
     }
 
     pub(crate) async fn thread_read(

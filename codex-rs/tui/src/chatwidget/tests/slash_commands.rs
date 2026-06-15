@@ -1307,6 +1307,53 @@ async fn monitor_manage_slash_command_rejects_extra_args() {
 }
 
 #[tokio::test]
+async fn agent_slash_command_emits_active_session_events() {
+    let cases = [
+        ("/agent peers", "list", "", "", false),
+        (
+            "/agent send 019eca00-0000-7000-8000-000000000001 hello active peer",
+            "send",
+            "019eca00-0000-7000-8000-000000000001",
+            "hello active peer",
+            false,
+        ),
+        (
+            "/agent send --wake 019eca00-0000-7000-8000-000000000001 \"hello active peer\"",
+            "send",
+            "019eca00-0000-7000-8000-000000000001",
+            "hello active peer",
+            true,
+        ),
+    ];
+
+    for (command, expected_kind, expected_target, expected_message, expected_wake) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected active-session event");
+        match (expected_kind, event) {
+            ("list", AppEvent::ListActiveSessions) => {}
+            (
+                "send",
+                AppEvent::SendActiveSessionMessage {
+                    target_thread_id,
+                    message,
+                    wake,
+                },
+            ) => {
+                assert_eq!(target_thread_id, expected_target);
+                assert_eq!(message, expected_message);
+                assert_eq!(wake, expected_wake);
+            }
+            (kind, event) => panic!("expected {kind} active-session event, got {event:?}"),
+        }
+        assert_no_submit_op(&mut op_rx);
+        assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
+}
+
+#[tokio::test]
 async fn background_agent_slash_command_emits_manage_events() {
     let cases = [
         ("/agent list", "list", None, None),
