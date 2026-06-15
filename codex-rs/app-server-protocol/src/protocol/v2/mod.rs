@@ -1,6 +1,7 @@
 mod shared;
 
 mod account;
+mod active_session;
 mod agent;
 mod apps;
 mod attestation;
@@ -28,6 +29,7 @@ mod turn;
 mod windows_sandbox;
 
 pub use account::*;
+pub use active_session::*;
 pub use agent::*;
 pub use apps::*;
 pub use attestation::*;

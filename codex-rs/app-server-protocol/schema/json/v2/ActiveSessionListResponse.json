@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "type": "string"
+    },
+    "ActiveSessionCapability": {
+      "enum": [
+        "receiveMessage",
+        "queueMessage",
+        "triggerTurn",
+        "claudeChannelBridge"
+      ],
+      "type": "string"
+    },
+    "ActiveSessionPeer": {
+      "properties": {
+        "agentPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/definitions/ActiveSessionCapability"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ActiveSessionPeerKind"
+        },
+        "lastSeenAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "peerId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capabilities",
+        "cwd",
+        "kind",
+        "lastSeenAt",
+        "peerId",
+        "sessionId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ActiveSessionPeerKind": {
+      "enum": [
+        "codewithSession",
+        "spawnedAgent",
+        "bridgeAdapter"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/definitions/ActiveSessionPeer"
+      },
+      "type": "array"
+    },
+    "nextCursor": {
+      "description": "Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "ActiveSessionListResponse",
+  "type": "object"
+}

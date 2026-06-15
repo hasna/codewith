@@ -11,6 +11,8 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 
 use anyhow::Context;
+use codex_app_server_protocol::ActiveSessionListParams;
+use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::AgentAttachParams;
 use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
 use codex_app_server_protocol::AgentDeleteParams;
@@ -576,6 +578,24 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/loaded/list", params).await
+    }
+
+    /// Send an `activeSession/list` JSON-RPC request.
+    pub async fn send_active_session_list_request(
+        &mut self,
+        params: ActiveSessionListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("activeSession/list", params).await
+    }
+
+    /// Send an `activeSession/send` JSON-RPC request.
+    pub async fn send_active_session_send_request(
+        &mut self,
+        params: ActiveSessionSendParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("activeSession/send", params).await
     }
 
     /// Send a `thread/read` JSON-RPC request.

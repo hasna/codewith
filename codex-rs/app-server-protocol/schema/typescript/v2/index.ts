@@ -7,6 +7,15 @@ export type { AccountTokenUsageDailyBucket } from "./AccountTokenUsageDailyBucke
 export type { AccountTokenUsageSummary } from "./AccountTokenUsageSummary";
 export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
 export type { ActivePermissionProfile } from "./ActivePermissionProfile";
+export type { ActiveSessionCapability } from "./ActiveSessionCapability";
+export type { ActiveSessionListParams } from "./ActiveSessionListParams";
+export type { ActiveSessionListResponse } from "./ActiveSessionListResponse";
+export type { ActiveSessionMessageDelivery } from "./ActiveSessionMessageDelivery";
+export type { ActiveSessionPeer } from "./ActiveSessionPeer";
+export type { ActiveSessionPeerKind } from "./ActiveSessionPeerKind";
+export type { ActiveSessionSendParams } from "./ActiveSessionSendParams";
+export type { ActiveSessionSendResponse } from "./ActiveSessionSendResponse";
+export type { ActiveSessionSendStatus } from "./ActiveSessionSendStatus";
 export type { AddCreditsNudgeCreditType } from "./AddCreditsNudgeCreditType";
 export type { AddCreditsNudgeEmailStatus } from "./AddCreditsNudgeEmailStatus";
 export type { AdditionalContextEntry } from "./AdditionalContextEntry";

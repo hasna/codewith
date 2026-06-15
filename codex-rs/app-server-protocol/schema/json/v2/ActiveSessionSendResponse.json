@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActiveSessionSendStatus": {
+      "enum": [
+        "delivered",
+        "notLoaded"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "messageId": {
+      "type": "string"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "senderThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "$ref": "#/definitions/ActiveSessionSendStatus"
+    },
+    "targetThreadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "messageId",
+    "status",
+    "targetThreadId"
+  ],
+  "title": "ActiveSessionSendResponse",
+  "type": "object"
+}

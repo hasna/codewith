@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActiveSessionMessageDelivery": {
+      "enum": [
+        "queueOnly",
+        "triggerTurn"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ActiveSessionMessageDelivery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "senderLabel": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "senderThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetThreadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message",
+    "targetThreadId"
+  ],
+  "title": "ActiveSessionSendParams",
+  "type": "object"
+}

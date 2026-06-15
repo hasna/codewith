@@ -1,4 +1,5 @@
 mod account;
+mod active_session;
 mod analytics;
 mod app_list;
 mod attestation;

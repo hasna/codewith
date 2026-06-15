@@ -17,6 +17,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::request_processors::AccountRequestProcessor;
+use crate::request_processors::ActiveSessionRequestProcessor;
 use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
@@ -168,6 +169,7 @@ pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: AccountRequestProcessor,
+    active_session_processor: ActiveSessionRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
@@ -362,6 +364,8 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
         );
+        let active_session_processor =
+            ActiveSessionRequestProcessor::new(Arc::clone(&thread_manager));
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -551,6 +555,7 @@ impl MessageProcessor {
             outgoing,
             skills_watcher,
             account_processor,
+            active_session_processor,
             apps_processor,
             catalog_processor,
             command_exec_processor,
@@ -1287,6 +1292,16 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadLoadedList { params, .. } => {
                 self.thread_processor.thread_loaded_list(params).await
+            }
+            ClientRequest::ActiveSessionList { params, .. } => {
+                self.active_session_processor
+                    .active_session_list(params)
+                    .await
+            }
+            ClientRequest::ActiveSessionSend { params, .. } => {
+                self.active_session_processor
+                    .active_session_send(params)
+                    .await
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
