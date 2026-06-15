@@ -484,7 +484,7 @@ If the target is inactive or unloaded, app-server returns a typed response and d
     "messageId": "018f...",
     "targetThreadId": "thr_missing",
     "senderThreadId": null,
-    "reason": "target thread is not currently loaded; inactive delivery is deferred"
+    "reason": "target thread is not currently loaded; no offline delivery was attempted"
 } }
 ```
 

@@ -11,7 +11,7 @@ use codex_protocol::ThreadId;
 const ACTIVE_SESSION_SEND_HINT: &str =
     "Use /agent send <thread-id> <message> or /agent send --wake <thread-id> <message>.";
 const ACTIVE_SESSION_ACTIVE_ONLY_HINT: &str =
-    "Only loaded sessions can receive messages; inactive delivery is deferred.";
+    "Only loaded sessions can receive messages; no offline delivery is attempted.";
 
 impl App {
     pub(super) async fn list_active_sessions(&mut self, app_server: &mut AppServerSession) {
@@ -175,6 +175,11 @@ mod tests {
             &peer,
             Some(peer.thread_id.as_str())
         ));
+    }
+
+    #[test]
+    fn active_session_active_only_hint_snapshot() {
+        insta::assert_snapshot!(ACTIVE_SESSION_ACTIVE_ONLY_HINT);
     }
 
     #[test]
