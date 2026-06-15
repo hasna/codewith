@@ -13,7 +13,13 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput;
+use codex_protocol::protocol::InterAgentCommunication;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -151,6 +157,144 @@ async fn active_session_send_delivers_to_loaded_thread() -> Result<()> {
 }
 
 #[tokio::test]
+async fn active_session_send_queue_only_reaches_target_next_turn_mailbox() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let first_body = responses::sse(vec![
+        responses::ev_response_created("resp-1"),
+        responses::ev_assistant_message("msg-1", "Done"),
+        responses::ev_completed("resp-1"),
+    ]);
+    let second_body = responses::sse(vec![
+        responses::ev_response_created("resp-2"),
+        responses::ev_assistant_message("msg-2", "Done"),
+        responses::ev_completed("resp-2"),
+    ]);
+    let response_mock = responses::mount_sse_sequence(&server, vec![first_body, second_body]).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let sender_thread_id = start_thread(&mut mcp).await?;
+    let target_thread_id = start_thread(&mut mcp).await?;
+    let send_response = send_active_session_message(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id: target_thread_id.clone(),
+            message: "queued delivery evidence".to_string(),
+            sender_thread_id: Some(sender_thread_id.clone()),
+            sender_label: Some("queue-only test".to_string()),
+            delivery: Some(ActiveSessionMessageDelivery::QueueOnly),
+        },
+    )
+    .await?;
+    assert_eq!(send_response.status, ActiveSessionSendStatus::Delivered);
+
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: target_thread_id,
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "process queued message".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response::<TurnStartResponse>(resp)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let requests = response_mock.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected queued mail to drive a follow-up request"
+    );
+    assert_eq!(
+        inter_agent_messages_in_request(&requests[0].body_json()),
+        Vec::new()
+    );
+    let messages = inter_agent_messages_in_request(&requests[1].body_json());
+    assert_eq!(
+        messages,
+        vec![InterAgentCommunication {
+            author: codex_protocol::AgentPath::root(),
+            recipient: codex_protocol::AgentPath::root(),
+            other_recipients: Vec::new(),
+            content: format!(
+                "Active session message {} from queue-only test:\n\nqueued delivery evidence",
+                send_response.message_id
+            ),
+            trigger_turn: false,
+        }]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_session_send_trigger_turn_wakes_target_mailbox() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let body = responses::sse(vec![
+        responses::ev_response_created("resp-1"),
+        responses::ev_assistant_message("msg-1", "Done"),
+        responses::ev_completed("resp-1"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let target_thread_id = start_thread(&mut mcp).await?;
+    let send_response = send_active_session_message(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id,
+            message: "wake delivery evidence".to_string(),
+            sender_thread_id: None,
+            sender_label: Some("trigger-turn test".to_string()),
+            delivery: Some(ActiveSessionMessageDelivery::TriggerTurn),
+        },
+    )
+    .await?;
+    assert_eq!(send_response.status, ActiveSessionSendStatus::Delivered);
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let messages = inter_agent_messages_in_request(&response_mock.single_request().body_json());
+    assert_eq!(
+        messages,
+        vec![InterAgentCommunication {
+            author: codex_protocol::AgentPath::root(),
+            recipient: codex_protocol::AgentPath::root(),
+            other_recipients: Vec::new(),
+            content: format!(
+                "Active session message {} from trigger-turn test:\n\nwake delivery evidence",
+                send_response.message_id
+            ),
+            trigger_turn: true,
+        }]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_session_send_rejects_unloaded_target_without_resuming() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -224,4 +368,37 @@ async fn start_thread(mcp: &mut McpProcess) -> Result<String> {
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(resp)?;
     Ok(thread.id)
+}
+
+async fn send_active_session_message(
+    mcp: &mut McpProcess,
+    params: ActiveSessionSendParams,
+) -> Result<ActiveSessionSendResponse> {
+    let send_id = mcp.send_active_session_send_request(params).await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(send_id)),
+    )
+    .await??;
+    to_response::<ActiveSessionSendResponse>(resp)
+}
+
+fn inter_agent_messages_in_request(body: &Value) -> Vec<InterAgentCommunication> {
+    body.get("input")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|span| {
+            matches!(
+                span.get("type").and_then(Value::as_str),
+                Some("input_text" | "output_text")
+            )
+        })
+        .filter_map(|span| span.get("text").and_then(Value::as_str))
+        .filter_map(|text| serde_json::from_str::<InterAgentCommunication>(text).ok())
+        .collect()
 }
