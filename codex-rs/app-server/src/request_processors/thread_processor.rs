@@ -155,14 +155,21 @@ fn merge_persisted_resume_metadata(
     typesafe_overrides: &mut ConfigOverrides,
     persisted_metadata: &ThreadMetadata,
 ) {
-    if has_model_resume_override(request_overrides.as_ref(), typesafe_overrides) {
-        return;
+    if typesafe_overrides.model.is_none()
+        && !request_override_contains(request_overrides.as_ref(), "model")
+    {
+        typesafe_overrides.model = persisted_metadata.model.clone();
     }
 
-    typesafe_overrides.model = persisted_metadata.model.clone();
-    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    if typesafe_overrides.model_provider.is_none()
+        && !request_override_contains(request_overrides.as_ref(), "model_provider")
+    {
+        typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    }
 
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort
+        && !request_override_contains(request_overrides.as_ref(), "model_reasoning_effort")
+    {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
@@ -194,15 +201,11 @@ fn normalize_thread_list_cwd_filters(
     Ok(Some(normalized_cwds))
 }
 
-fn has_model_resume_override(
+fn request_override_contains(
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
-    typesafe_overrides: &ConfigOverrides,
+    key: &str,
 ) -> bool {
-    typesafe_overrides.model.is_some()
-        || typesafe_overrides.model_provider.is_some()
-        || request_overrides.is_some_and(|overrides| overrides.contains_key("model"))
-        || request_overrides
-            .is_some_and(|overrides| overrides.contains_key("model_reasoning_effort"))
+    request_overrides.is_some_and(|overrides| overrides.contains_key(key))
 }
 
 fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
@@ -1276,6 +1279,12 @@ impl ThreadRequestProcessor {
         developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
+        let model_provider = infer_model_provider_from_model(
+            model.as_deref(),
+            model_provider,
+            self.config.model_provider_id.as_str(),
+            self.config.model_providers.keys().map(String::as_str),
+        );
         ConfigOverrides {
             model,
             model_provider,

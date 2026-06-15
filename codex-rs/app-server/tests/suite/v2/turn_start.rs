@@ -76,9 +76,14 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use wiremock::Mock;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_analytics_event;
@@ -100,6 +105,118 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     String::from_utf8(req.body.clone())
         .ok()
         .is_some_and(|body| body.contains(text))
+}
+
+#[tokio::test]
+async fn turn_start_unprefixed_xiaomi_model_routes_to_xiaomi_chat_provider() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("wrong provider")?,
+    ])
+    .await;
+    let chat_sse_body = concat!(
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"mimo-v2.5-pro-ultraspeed\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"mimo-v2.5-pro-ultraspeed\",\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl_1\",\"model\":\"mimo-v2.5-pro-ultraspeed\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(chat_sse_body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::default(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(codex_home.path().join("config.toml"))?
+        .write_all(
+            format!(
+                r#"
+[model_providers.xiaomi]
+base_url = "{}/v1"
+experimental_bearer_token = "mimo-token"
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+                server.uri()
+            )
+            .as_bytes(),
+        )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            client_user_message_id: None,
+            model: Some("mimo-v2.5-pro-ultraspeed".to_string()),
+            input: vec![V2UserInput::Text {
+                text: "hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
+    assert!(!turn.id.is_empty());
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let requests = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?;
+    let chat_requests = requests
+        .iter()
+        .filter(|request| request.url.path() == "/v1/chat/completions")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chat_requests.len(),
+        1,
+        "expected exactly one Xiaomi chat request; paths: {:?}",
+        requests
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>()
+    );
+    let body = chat_requests[0].body_json::<Value>()?;
+    assert_eq!(body["model"].as_str(), Some("mimo-v2.5-pro-ultraspeed"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.url.path().ends_with("/responses")),
+        "MiMo turn should not hit the default Responses provider"
+    );
+
+    Ok(())
 }
 
 async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>> {

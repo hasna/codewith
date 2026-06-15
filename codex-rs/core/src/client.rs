@@ -462,11 +462,19 @@ impl ModelClient {
         self.state.provider.auth_manager()
     }
 
+    pub(crate) fn uses_provider(&self, provider_info: &ModelProviderInfo) -> bool {
+        self.state.provider.info() == provider_info
+    }
+
     pub(crate) fn set_window_generation(&self, window_generation: u64) {
         self.state
             .window_generation
             .store(window_generation, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());
+    }
+
+    pub(crate) fn current_window_generation(&self) -> u64 {
+        self.state.window_generation.load(Ordering::Relaxed)
     }
 
     pub(crate) fn advance_window_generation(&self) {

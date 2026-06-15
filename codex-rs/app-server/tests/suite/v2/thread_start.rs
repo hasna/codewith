@@ -238,6 +238,40 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_start_unprefixed_xiaomi_fallback_model_infers_provider() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let model = "mimo-v2.5-pro-ultraspeed";
+
+    let req_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some(model.to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(req_id)),
+    )
+    .await??;
+    let ThreadStartResponse {
+        model: active_model,
+        model_provider,
+        ..
+    } = to_response::<ThreadStartResponse>(resp)?;
+
+    assert_eq!(active_model, model);
+    assert_eq!(model_provider, "xiaomi");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_start_resolves_runtime_workspace_roots_against_cwd() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;

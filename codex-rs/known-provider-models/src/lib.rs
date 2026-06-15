@@ -260,6 +260,23 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
         .map_or(NO_FALLBACK_MODELS, |source| source.fallback_models)
 }
 
+pub fn provider_for_fallback_model<'a>(
+    model_id: &str,
+    provider_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let mut matches = provider_ids
+        .into_iter()
+        .filter(|provider_id| provider_fallback_models_contain(provider_id, model_id));
+    let provider_id = matches.next()?;
+    matches.next().is_none().then_some(provider_id)
+}
+
+fn provider_fallback_models_contain(provider_id: &str, model_id: &str) -> bool {
+    fallback_models_for_provider(provider_id)
+        .iter()
+        .any(|model| model.id == model_id)
+}
+
 fn metadata_source_for_provider_id(provider_id: &str) -> Option<&'static ProviderMetadataSource> {
     PROVIDER_METADATA_SOURCES
         .iter()
@@ -375,6 +392,33 @@ mod tests {
         assert!(models[0].is_default);
         assert_eq!(models[1].id, "mimo-v2.5-pro");
         assert_eq!(models[2].id, "mimo-v2.5");
+    }
+
+    #[test]
+    fn provider_for_fallback_model_finds_unique_configured_provider() {
+        assert_eq!(
+            provider_for_fallback_model(
+                "mimo-v2.5-pro-ultraspeed",
+                ["openai", "xiaomi", "anthropic"]
+            ),
+            Some("xiaomi")
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_ignores_unconfigured_provider() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["openai", "anthropic"]),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_requires_unique_match() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["xiaomi", "xiaomi"]),
+            None
+        );
     }
 
     #[test]

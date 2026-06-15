@@ -2577,6 +2577,7 @@ dependencies = [
  "codex-git-utils",
  "codex-hooks",
  "codex-install-context",
+ "codex-known-provider-models",
  "codex-login",
  "codex-mcp",
  "codex-memories-read",

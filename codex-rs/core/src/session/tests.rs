@@ -27,6 +27,7 @@ use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::XIAOMI_PROVIDER_ID;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -3930,6 +3931,37 @@ async fn session_settings_provider_prefixed_model_update_changes_turn_provider()
     assert_eq!(snapshot.model, model);
     assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
+}
+
+#[tokio::test]
+async fn session_settings_unprefixed_fallback_model_update_changes_turn_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let xiaomi_provider = session_configuration
+        .original_config_do_not_use
+        .model_providers
+        .get(XIAOMI_PROVIDER_ID)
+        .cloned()
+        .expect("Xiaomi should be configured");
+    let model = "mimo-v2.5-pro-ultraspeed";
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            collaboration_mode: Some(session_configuration.collaboration_mode.with_updates(
+                Some(model.to_string()),
+                /*effort*/ None,
+                /*developer_instructions*/ None,
+            )),
+            ..Default::default()
+        })
+        .expect("model update should apply");
+
+    let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd.clone());
+    let snapshot = updated.thread_config_snapshot();
+    assert_eq!(updated.provider, xiaomi_provider);
+    assert_eq!(snapshot.model_provider_id, XIAOMI_PROVIDER_ID);
+    assert_eq!(snapshot.model, model);
+    assert_eq!(per_turn_config.model_provider_id, XIAOMI_PROVIDER_ID);
+    assert_eq!(per_turn_config.model_provider, xiaomi_provider);
 }
 
 #[tokio::test]

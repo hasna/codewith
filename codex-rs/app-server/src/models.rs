@@ -57,6 +57,13 @@ pub fn provider_has_fallback_models(provider_id: &str) -> bool {
     !known_provider_models::fallback_models_for_provider(provider_id).is_empty()
 }
 
+pub fn provider_for_fallback_model<'a>(
+    model_id: &str,
+    provider_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    known_provider_models::provider_for_fallback_model(model_id, provider_ids)
+}
+
 pub fn fallback_supported_models_for_provider(
     provider_id: &str,
     include_hidden: bool,
@@ -221,5 +228,32 @@ mod tests {
         assert_eq!(models[1].model, "grok-4.3");
         assert_eq!(models[1].display_name, "Grok 4.3");
         assert!(!models[1].is_default);
+    }
+
+    #[test]
+    fn provider_for_fallback_model_finds_unique_configured_provider() {
+        assert_eq!(
+            provider_for_fallback_model(
+                "mimo-v2.5-pro-ultraspeed",
+                ["openai", "xiaomi", "anthropic"]
+            ),
+            Some("xiaomi")
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_ignores_unconfigured_provider() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["openai", "anthropic"]),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_requires_unique_match() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["xiaomi", "xiaomi"]),
+            None
+        );
     }
 }
