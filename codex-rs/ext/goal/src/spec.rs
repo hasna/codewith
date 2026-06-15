@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 pub const GET_GOAL_TOOL_NAME: &str = "get_goal";
 pub const CREATE_GOAL_TOOL_NAME: &str = "create_goal";
 pub const UPDATE_GOAL_TOOL_NAME: &str = "update_goal";
+pub const RESUME_GOAL_TOOL_NAME: &str = "resume_goal";
 
 pub fn create_get_goal_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
@@ -97,6 +98,21 @@ When marking a budgeted goal achieved with status `complete`, report the final t
             /*required*/ Some(vec!["status".to_string()]),
             Some(false.into()),
         ),
+        output_schema: None,
+    })
+}
+
+pub fn create_resume_goal_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: RESUME_GOAL_TOOL_NAME.to_string(),
+        description: r#"Resume an existing stopped goal by setting it back to active.
+Use this tool only when the user explicitly asks to resume a paused, blocked, usage-limited, or budget-limited goal.
+Do not use this tool for completed goals; create a new goal only when explicitly requested.
+After resuming a previously blocked goal, treat the resumed run as a fresh blocked audit before any later blocked update."#
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(BTreeMap::new(), Some(Vec::new()), Some(false.into())),
         output_schema: None,
     })
 }

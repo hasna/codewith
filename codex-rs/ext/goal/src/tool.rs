@@ -21,9 +21,11 @@ use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
+use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_tool;
+use crate::spec::create_resume_goal_tool;
 use crate::spec::create_update_goal_tool;
 
 #[derive(Clone)]
@@ -41,6 +43,7 @@ enum GoalToolKind {
     Get,
     Create,
     Update,
+    Resume,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +126,23 @@ impl GoalToolExecutor {
             metrics,
         }
     }
+
+    pub(crate) fn resume(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::Resume,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+        }
+    }
 }
 
 #[async_trait]
@@ -132,6 +152,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
             GoalToolKind::Create => CREATE_GOAL_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
+            GoalToolKind::Resume => RESUME_GOAL_TOOL_NAME,
         })
     }
 
@@ -140,6 +161,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::Get => create_get_goal_tool(),
             GoalToolKind::Create => create_create_goal_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
+            GoalToolKind::Resume => create_resume_goal_tool(),
         }
     }
 
@@ -148,6 +170,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::Get => self.handle_get(invocation).await,
             GoalToolKind::Create => self.handle_create(invocation).await,
             GoalToolKind::Update => self.handle_update(invocation).await,
+            GoalToolKind::Resume => self.handle_resume(invocation).await,
         }
     }
 }
@@ -296,6 +319,85 @@ impl GoalToolExecutor {
                 CompletionBudgetReport::Omit
             },
         )
+    }
+
+    async fn handle_resume(
+        &self,
+        invocation: ToolCall,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let _ = invocation.function_arguments()?;
+
+        self.account_active_goal_progress(
+            codex_state::GoalAccountingMode::ActiveOnly,
+            invocation.call_id.as_str(),
+            BudgetLimitedGoalDisposition::ClearActive,
+        )
+        .await?;
+        let existing_goal = self
+            .state_db
+            .thread_goals()
+            .get_thread_goal(self.thread_id)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot resume goal because this thread has no goal".to_string(),
+                )
+            })?;
+        match existing_goal.status {
+            codex_state::ThreadGoalStatus::Paused
+            | codex_state::ThreadGoalStatus::Blocked
+            | codex_state::ThreadGoalStatus::UsageLimited
+            | codex_state::ThreadGoalStatus::BudgetLimited => {}
+            codex_state::ThreadGoalStatus::Active => {
+                return Err(FunctionCallError::RespondToModel(
+                    "cannot resume goal because it is already active".to_string(),
+                ));
+            }
+            codex_state::ThreadGoalStatus::Complete => {
+                return Err(FunctionCallError::RespondToModel(
+                    "cannot resume a completed goal; create a new goal only when explicitly requested"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let previous_status = existing_goal.status;
+        let goal = self
+            .state_db
+            .thread_goals()
+            .update_thread_goal(
+                self.thread_id,
+                codex_state::GoalUpdate {
+                    objective: None,
+                    status: Some(codex_state::ThreadGoalStatus::Active),
+                    token_budget: None,
+                    expected_goal_id: Some(existing_goal.goal_id.clone()),
+                },
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to resume goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot resume goal because this thread has no goal".to_string(),
+                )
+            })?;
+        self.metrics
+            .record_resumed_if_status_changed(Some(previous_status), goal.status);
+        let turn_id = self
+            .accounting_state
+            .mark_current_turn_goal_active(goal.goal_id.clone());
+        if turn_id.is_none() {
+            self.accounting_state
+                .mark_idle_goal_active(goal.goal_id.clone());
+        }
+        let goal = protocol_goal_from_state(goal);
+        self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
+        goal_response(Some(goal), CompletionBudgetReport::Omit)
     }
 
     fn emit_goal_updated_from_tool_call(

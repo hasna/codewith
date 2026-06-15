@@ -92,6 +92,25 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    assert_eq!(
+        vec![
+            "get_goal".to_string(),
+            "create_goal".to_string(),
+            "update_goal".to_string(),
+            "resume_goal".to_string(),
+        ],
+        tool_names(&tools)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_tools_hidden_for_ephemeral_threads() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -858,6 +877,152 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
             },
         ],
         harness.sink.goal_events()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Blocked,
+            Some(100),
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+    let invocation = tool_call("resume_goal", "call-resume-goal", json!({}));
+    let output = resume_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result,
+        json!({
+            "goal": {
+                "threadId": thread_id,
+                "objective": "ship goal extension backend",
+                "status": "active",
+                "tokenBudget": 100,
+                "tokensUsed": 0,
+                "timeUsedSeconds": 0,
+                "createdAt": result["goal"]["createdAt"],
+                "updatedAt": result["goal"]["updatedAt"],
+            },
+            "remainingTokens": 100,
+            "completionBudgetReport": serde_json::Value::Null,
+        })
+    );
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "call-resume-goal".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Active,
+            tokens_used: 0,
+        }],
+        harness.sink.goal_events()
+    );
+
+    harness.sink.clear();
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-resume-goal", "resume_goal")
+        .await;
+    assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
+
+    harness
+        .notify_tool_finish("turn-1", "call-shell", "shell")
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    assert_eq!(23, goal.tokens_used);
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "call-shell".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Active,
+            tokens_used: 23,
+        }],
+        harness.sink.goal_events()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_goal_rejects_active_and_complete_goals() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let err = match resume_tool
+        .handle(tool_call("resume_goal", "call-resume-active", json!({})))
+        .await
+    {
+        Ok(_) => panic!("active goal resume should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cannot resume goal because it is already active".to_string()
+        )
+    );
+
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Complete,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let err = match resume_tool
+        .handle(tool_call("resume_goal", "call-resume-complete", json!({})))
+        .await
+    {
+        Ok(_) => panic!("complete goal resume should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cannot resume a completed goal; create a new goal only when explicitly requested"
+                .to_string()
+        )
     );
     Ok(())
 }

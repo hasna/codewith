@@ -39,6 +39,7 @@ use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
+use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
 use crate::tool::GoalToolExecutor;
@@ -343,7 +344,10 @@ where
             let should_count_for_goal_progress = runtime.is_enabled()
                 && tool_attempt_counts_for_goal_progress(input.outcome)
                 && !(input.tool_name.namespace.is_none()
-                    && input.tool_name.name == UPDATE_GOAL_TOOL_NAME);
+                    && matches!(
+                        input.tool_name.name.as_str(),
+                        UPDATE_GOAL_TOOL_NAME | RESUME_GOAL_TOOL_NAME
+                    ));
             if !should_count_for_goal_progress {
                 return;
             }
@@ -414,6 +418,13 @@ where
                 self.metrics.clone(),
             )),
             Arc::new(GoalToolExecutor::update(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+            )),
+            Arc::new(GoalToolExecutor::resume(
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),
