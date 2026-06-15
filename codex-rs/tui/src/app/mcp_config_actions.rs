@@ -8,13 +8,13 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         spec: String,
-    ) {
+    ) -> Result<(), String> {
         let parsed = match parse_mcp_add_spec(&spec) {
             Ok(parsed) => parsed,
             Err(err) => {
-                self.chat_widget.add_error_message(err);
+                self.chat_widget.add_error_message(err.clone());
                 self.chat_widget.open_mcp_add_server();
-                return;
+                return Err(err);
             }
         };
 
@@ -35,13 +35,13 @@ impl App {
                 );
                 self.chat_widget
                     .open_mcp_manager(McpServerStatusDetail::Full);
+                Ok(())
             }
             Err(err) => {
-                self.chat_widget.add_error_message(format!(
-                    "Failed to add MCP server `{}`: {err}",
-                    parsed.name
-                ));
+                let message = format!("Failed to add MCP server `{}`: {err}", parsed.name);
+                self.chat_widget.add_error_message(message.clone());
                 self.chat_widget.open_mcp_add_server();
+                Err(message)
             }
         }
     }
@@ -51,12 +51,11 @@ impl App {
         app_server: &mut AppServerSession,
         name: String,
         enabled: bool,
-    ) {
+    ) -> Result<(), String> {
         if !self.config.mcp_servers.get().contains_key(&name) {
-            self.chat_widget.add_error_message(format!(
-                "MCP server `{name}` is not directly configured in mcp_servers."
-            ));
-            return;
+            let message = format!("MCP server `{name}` is not directly configured in mcp_servers.");
+            self.chat_widget.add_error_message(message.clone());
+            return Err(message);
         }
 
         let edit = crate::config_update::replace_config_value(
@@ -76,10 +75,13 @@ impl App {
                 );
                 self.chat_widget
                     .open_mcp_manager(McpServerStatusDetail::Full);
+                Ok(())
             }
-            Err(err) => self
-                .chat_widget
-                .add_error_message(format!("Failed to update MCP server `{name}`: {err}")),
+            Err(err) => {
+                let message = format!("Failed to update MCP server `{name}`: {err}");
+                self.chat_widget.add_error_message(message.clone());
+                Err(message)
+            }
         }
     }
 
@@ -89,12 +91,12 @@ impl App {
         server: String,
         tool: String,
         enabled: bool,
-    ) {
+    ) -> Result<(), String> {
         let Some(config) = self.config.mcp_servers.get().get(&server) else {
-            self.chat_widget.add_error_message(format!(
-                "MCP server `{server}` is not directly configured in mcp_servers."
-            ));
-            return;
+            let message =
+                format!("MCP server `{server}` is not directly configured in mcp_servers.");
+            self.chat_widget.add_error_message(message.clone());
+            return Err(message);
         };
 
         let edits = build_mcp_tool_enablement_edits(&server, &tool, enabled, config);
@@ -111,10 +113,13 @@ impl App {
                 );
                 self.chat_widget
                     .open_mcp_manager(McpServerStatusDetail::Full);
+                Ok(())
             }
-            Err(err) => self.chat_widget.add_error_message(format!(
-                "Failed to update MCP tool `{server}.{tool}`: {err}"
-            )),
+            Err(err) => {
+                let message = format!("Failed to update MCP tool `{server}.{tool}`: {err}");
+                self.chat_widget.add_error_message(message.clone());
+                Err(message)
+            }
         }
     }
 }

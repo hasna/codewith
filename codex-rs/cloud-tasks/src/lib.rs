@@ -420,7 +420,7 @@ fn format_task_status_lines(
                 .if_supports_color(Stream::Stdout, |t| t.magenta())
                 .to_string(),
             TaskStatus::Applied => status
-                .if_supports_color(Stream::Stdout, |t| t.blue())
+                .if_supports_color(Stream::Stdout, |t| t.green())
                 .to_string(),
             TaskStatus::Error => status
                 .if_supports_color(Stream::Stdout, |t| t.red())
@@ -564,7 +564,7 @@ async fn run_list_command(args: crate::cli::ListCommand) -> anyhow::Result<()> {
         if colorize {
             println!(
                 "\nTo fetch the next page, run {}",
-                command.if_supports_color(Stream::Stdout, |text| text.cyan())
+                command.if_supports_color(Stream::Stdout, |text| text.green())
             );
         } else {
             println!("\nTo fetch the next page, run {command}");

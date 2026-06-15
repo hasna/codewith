@@ -1,0 +1,14 @@
+---
+source: tui/src/bottom_pane/chat_composer.rs
+expression: terminal.backend()
+---
+"                                                                        "
+"› /                                                                     "
+"                                                                        "
+"  /session/   session, thread, and transcript commands                  "
+"  /agents/    background, side, and external agent commands             "
+"  /model/     model and service-tier commands                           "
+"  /settings/  profile, provider, config, and UI commands                "
+"  /tools/     MCP, app, skill, review, diff, and mention commands       "
+"  /system/    status, diagnostics, terminal, and runtime commands       "
+"  /exit/      exit commands                                             "

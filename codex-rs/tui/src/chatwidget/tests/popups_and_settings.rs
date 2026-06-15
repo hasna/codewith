@@ -339,6 +339,81 @@ async fn mcp_control_center_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn background_terminal_manager_popup_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "bun run dev".to_string(),
+        recent_chunks: vec!["ready on :3000".to_string(), "compiled /app".to_string()],
+    });
+
+    chat.open_background_terminal_manager();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("Stop all"));
+    assert!(popup.contains("Print snapshot"));
+    assert!(popup.contains("bun run dev"));
+    assert_chatwidget_snapshot!("background_terminal_manager_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::PrintBackgroundTerminals));
+
+    chat.open_background_terminal_manager();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenBackgroundTerminalStopConfirmation)
+    );
+
+    chat.open_background_terminal_stop_confirmation();
+    let confirmation = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        confirmation.contains("Stop Background Terminals"),
+        "got confirmation:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("Back"),
+        "got confirmation:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("Stop all"),
+        "got confirmation:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("running background terminal"),
+        "got confirmation:\n{confirmation}"
+    );
+    assert_chatwidget_snapshot!("background_terminal_stop_confirmation_popup", confirmation);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenBackgroundTerminalManager));
+
+    chat.open_background_terminal_stop_confirmation();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::StopBackgroundTerminals));
+}
+
+#[tokio::test]
+async fn background_terminal_manager_empty_allows_print_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_background_terminal_manager();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("Print snapshot"), "got popup:\n{popup}");
+    assert!(
+        popup.contains("No background terminals"),
+        "got popup:\n{popup}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::PrintBackgroundTerminals));
+}
+
+#[tokio::test]
 async fn mcp_manager_loading_popup_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();

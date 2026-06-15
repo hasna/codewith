@@ -229,6 +229,7 @@ mod thread_session_state;
 mod thread_settings;
 mod tmux_handoff;
 mod ui_dynamic_tools;
+mod ui_management_tools;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
@@ -1188,7 +1189,7 @@ See the Codewith keymap documentation for supported actions and examples."
                     }
                     app_server_event = app_server.next_event(), if listen_for_app_server_events => {
                         match app_server_event {
-                            Some(event) => app.handle_app_server_event(&app_server, event).await,
+                            Some(event) => app.handle_app_server_event(&mut app_server, event).await,
                             None => {
                                 listen_for_app_server_events = false;
                                 tracing::warn!("app-server event stream closed");

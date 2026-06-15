@@ -22,7 +22,7 @@ use crate::event_processor::handle_last_message;
 
 pub(crate) struct EventProcessorWithHumanOutput {
     bold: Style,
-    cyan: Style,
+    accent: Style,
     dimmed: Style,
     green: Style,
     italic: Style,
@@ -47,7 +47,7 @@ impl EventProcessorWithHumanOutput {
         let style = |styled: Style, plain: Style| if with_ansi { styled } else { plain };
         Self {
             bold: style(Style::new().bold(), Style::new()),
-            cyan: style(Style::new().cyan(), Style::new()),
+            accent: style(Style::new().green(), Style::new()),
             dimmed: style(Style::new().dimmed(), Style::new()),
             green: style(Style::new().green(), Style::new()),
             italic: style(Style::new().italic(), Style::new()),
@@ -78,7 +78,7 @@ impl EventProcessorWithHumanOutput {
                 eprintln!(
                     "{} {} {}",
                     "mcp:".style(self.bold),
-                    format!("{server}/{tool}").style(self.cyan),
+                    format!("{server}/{tool}").style(self.accent),
                     "started".style(self.dimmed)
                 );
             }
@@ -190,7 +190,7 @@ impl EventProcessorWithHumanOutput {
                 eprintln!(
                     "{} {} {}",
                     "mcp:".style(self.bold),
-                    format!("{server}/{tool}").style(self.cyan),
+                    format!("{server}/{tool}").style(self.accent),
                     format!("({status_text})").style(self.dimmed)
                 );
                 if let Some(error) = error {
@@ -221,7 +221,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }
         eprintln!("--------");
-        eprintln!("{}\n{}", "user".style(self.cyan), prompt);
+        eprintln!("{}\n{}", "user".style(self.accent), prompt);
     }
 
     fn process_server_notification(&mut self, notification: ServerNotification) -> CodexStatus {
@@ -347,7 +347,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                             eprintln!("  {} {}", "✓".style(self.green), step.step);
                         }
                         codex_app_server_protocol::TurnPlanStepStatus::InProgress => {
-                            eprintln!("  {} {}", "→".style(self.cyan), step.step);
+                            eprintln!("  {} {}", "→".style(self.accent), step.step);
                         }
                         codex_app_server_protocol::TurnPlanStepStatus::Pending => {
                             eprintln!(

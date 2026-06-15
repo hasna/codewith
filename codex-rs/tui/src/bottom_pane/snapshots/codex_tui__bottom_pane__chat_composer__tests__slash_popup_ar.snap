@@ -5,5 +5,5 @@ expression: terminal.backend()
 "                                                            "
 "› /ar                                                       "
 "                                                            "
-"                                                            "
-"  /archive  archive this session and exit                   "
+"  /archive        archive this session and exit             "
+"  /clear          clear the terminal and start a new chat   "

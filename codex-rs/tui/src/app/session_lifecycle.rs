@@ -367,6 +367,8 @@ impl App {
             return Ok(());
         };
 
+        self.refresh_snapshot_turns_from_thread_read(app_server, thread_id, &mut snapshot)
+            .await;
         self.refresh_snapshot_session_if_needed(
             app_server,
             thread_id,
@@ -585,7 +587,7 @@ impl App {
     /// thread in the navigation cache and chat widget metadata.
     ///
     /// Called after `replace_chat_widget_with_app_server_thread` during resume, fork, and new
-    /// thread creation so that the `/agent` picker and keyboard navigation are pre-populated even
+    /// thread creation so that the `/session` picker and keyboard navigation are pre-populated even
     /// if the TUI did not witness the original spawn events.
     ///
     /// The loaded-thread list is fetched in full (no pagination) and the spawn tree is walked

@@ -1181,6 +1181,72 @@ impl App {
         }
     }
 
+    pub(super) async fn refresh_snapshot_turns_from_thread_read(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        snapshot: &mut ThreadEventSnapshot,
+    ) {
+        if self.side_threads.contains_key(&thread_id) {
+            return;
+        }
+
+        match app_server
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await
+        {
+            Ok(thread) => {
+                let session = self.session_state_for_thread_read(thread_id, &thread).await;
+                let turns = thread.turns.clone();
+                if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                    let mut store = channel.store.lock().await;
+                    store.set_session(session.clone(), turns.clone());
+                    store.rebase_buffer_after_session_refresh();
+                }
+                snapshot.session = Some(session);
+                snapshot.turns = turns;
+                snapshot
+                    .events
+                    .retain(ThreadEventStore::event_survives_session_refresh);
+                self.agent_navigation
+                    .set_thread_name(thread_id, thread.name);
+                self.sync_active_agent_label();
+            }
+            Err(err) if Self::can_fallback_from_include_turns_error(&err) => {
+                match app_server
+                    .thread_read(thread_id, /*include_turns*/ false)
+                    .await
+                {
+                    Ok(thread) => {
+                        let session = self.session_state_for_thread_read(thread_id, &thread).await;
+                        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                            let mut store = channel.store.lock().await;
+                            store.session = Some(session.clone());
+                        }
+                        snapshot.session = Some(session);
+                        self.agent_navigation
+                            .set_thread_name(thread_id, thread.name);
+                        self.sync_active_agent_label();
+                    }
+                    Err(fallback_err) => {
+                        tracing::warn!(
+                            thread_id = %thread_id,
+                            error = %fallback_err,
+                            "failed to refresh thread metadata before replay"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to hydrate thread turns before replay"
+                );
+            }
+        }
+    }
+
     pub(super) fn should_refresh_snapshot_session(
         &self,
         thread_id: ThreadId,
@@ -1213,7 +1279,7 @@ impl App {
             .retain(ThreadEventStore::event_survives_session_refresh);
     }
 
-    /// Opens the `/agent` picker after refreshing cached labels for known threads.
+    /// Opens the `/session` picker after refreshing cached labels for known threads.
     ///
     /// The picker state is derived from long-lived thread channels plus best-effort metadata
     /// refreshes from the backend. Refresh failures are treated as "thread is only inspectable by

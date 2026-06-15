@@ -31,7 +31,7 @@ impl App {
 
     pub(super) async fn handle_app_server_event(
         &mut self,
-        app_server_client: &AppServerSession,
+        app_server_client: &mut AppServerSession,
         event: AppServerEvent,
     ) {
         match event {
@@ -158,7 +158,7 @@ impl App {
 
     async fn handle_server_request_event(
         &mut self,
-        app_server_client: &AppServerSession,
+        app_server_client: &mut AppServerSession,
         request: ServerRequest,
     ) {
         if self

@@ -11,6 +11,7 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 
 const CODEWITH_EMERALD_RGB: (u8, u8, u8) = (5, 150, 105);
+const CODEWITH_LINK_EMERALD_RGB: (u8, u8, u8) = (4, 120, 87);
 // Decorative table rules should remain visible without competing with cell content.
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
@@ -39,7 +40,7 @@ pub(crate) fn accent_color() -> Color {
 
 /// Returns the shared Codewith accent style for link-like text.
 pub(crate) fn accent_link_style() -> Style {
-    Style::default().fg(accent_color()).underlined()
+    Style::default().fg(accent_link_color()).underlined()
 }
 
 /// Returns the style for a user-authored message using the provided terminal background.
@@ -66,6 +67,18 @@ fn accent_color_for_level(color_level: StdoutColorLevel) -> Color {
     match color_level {
         StdoutColorLevel::TrueColor => rgb_color(CODEWITH_EMERALD_RGB),
         StdoutColorLevel::Ansi256 => best_color(CODEWITH_EMERALD_RGB),
+        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Color::Green,
+    }
+}
+
+fn accent_link_color() -> Color {
+    accent_link_color_for_level(stdout_color_level())
+}
+
+fn accent_link_color_for_level(color_level: StdoutColorLevel) -> Color {
+    match color_level {
+        StdoutColorLevel::TrueColor => rgb_color(CODEWITH_LINK_EMERALD_RGB),
+        StdoutColorLevel::Ansi256 => best_color(CODEWITH_LINK_EMERALD_RGB),
         StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Color::Green,
     }
 }
@@ -140,9 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn accent_link_style_uses_codewith_emerald_and_underline() {
-        let expected = Style::default().fg(accent_color()).underlined();
+    fn accent_link_style_uses_darker_codewith_emerald_and_underline() {
+        let expected = Style::default().fg(accent_link_color()).underlined();
 
+        assert_eq!(
+            accent_link_color_for_level(StdoutColorLevel::TrueColor),
+            rgb_color(CODEWITH_LINK_EMERALD_RGB)
+        );
         assert_eq!(accent_link_style(), expected);
     }
 

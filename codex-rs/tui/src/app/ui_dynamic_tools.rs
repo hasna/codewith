@@ -1,4 +1,11 @@
 use super::App;
+use super::ui_management_tools::BackgroundAgentsArgs;
+use super::ui_management_tools::BackgroundTerminalsArgs;
+use super::ui_management_tools::CapabilitiesArgs;
+use super::ui_management_tools::McpArgs;
+use super::ui_management_tools::MonitorsArgs;
+use super::ui_management_tools::SchedulesArgs;
+use super::ui_management_tools::SessionControlArgs;
 use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
@@ -63,7 +70,7 @@ struct ConfigOptionOutput {
 impl App {
     pub(super) async fn try_handle_ui_dynamic_tool_request(
         &mut self,
-        app_server: &AppServerSession,
+        app_server: &mut AppServerSession,
         request: &ServerRequest,
     ) -> bool {
         let ServerRequest::DynamicToolCall { request_id, params } = request else {
@@ -73,7 +80,10 @@ impl App {
             return false;
         }
 
-        let result = self.handle_ui_dynamic_tool_call(app_server, params).await;
+        let result = match self.validate_ui_dynamic_tool_thread(params) {
+            Ok(()) => self.handle_ui_dynamic_tool_call(app_server, params).await,
+            Err(err) => Err(err),
+        };
         let response = match result {
             Ok(output) => dynamic_tool_response(output, /*success*/ true),
             Err(message) => {
@@ -88,7 +98,7 @@ impl App {
 
     async fn handle_ui_dynamic_tool_call(
         &mut self,
-        app_server: &AppServerSession,
+        app_server: &mut AppServerSession,
         params: &DynamicToolCallParams,
     ) -> Result<JsonValue, String> {
         match params.tool.as_str() {
@@ -108,8 +118,47 @@ impl App {
                 let args: TmuxArgs = parse_arguments(&params.arguments)?;
                 self.handle_tmux_tool(args).await
             }
+            crate::ui_dynamic_tools::BACKGROUND_TERMINALS_TOOL => {
+                let args: BackgroundTerminalsArgs = parse_arguments(&params.arguments)?;
+                self.handle_background_terminals_tool(args).await
+            }
+            crate::ui_dynamic_tools::MCP_TOOL => {
+                let args: McpArgs = parse_arguments(&params.arguments)?;
+                self.handle_mcp_tool(app_server, args).await
+            }
+            crate::ui_dynamic_tools::BACKGROUND_AGENTS_TOOL => {
+                let args: BackgroundAgentsArgs = parse_arguments(&params.arguments)?;
+                self.handle_background_agents_tool(app_server, args).await
+            }
+            crate::ui_dynamic_tools::SCHEDULES_TOOL => {
+                let args: SchedulesArgs = parse_arguments(&params.arguments)?;
+                self.handle_schedules_tool(app_server, args).await
+            }
+            crate::ui_dynamic_tools::MONITORS_TOOL => {
+                let args: MonitorsArgs = parse_arguments(&params.arguments)?;
+                self.handle_monitors_tool(app_server, args).await
+            }
+            crate::ui_dynamic_tools::SESSION_CONTROL_TOOL => {
+                let args: SessionControlArgs = parse_arguments(&params.arguments)?;
+                self.handle_session_control_tool(args).await
+            }
+            crate::ui_dynamic_tools::CAPABILITIES_TOOL => {
+                let args: CapabilitiesArgs = parse_arguments(&params.arguments)?;
+                self.handle_capabilities_tool(args).await
+            }
             _ => Err(format!("unsupported Codewith UI tool `{}`", params.tool)),
         }
+    }
+
+    fn validate_ui_dynamic_tool_thread(
+        &self,
+        params: &DynamicToolCallParams,
+    ) -> Result<(), String> {
+        validate_ui_dynamic_tool_thread_id(
+            &params.tool,
+            &params.thread_id,
+            self.chat_widget.thread_id(),
+        )
     }
 
     async fn handle_statusline_tool(
@@ -386,9 +435,33 @@ fn unknown_action(action: &str) -> String {
     format!("unknown action `{action}`; expected `list_options` or `set`")
 }
 
+fn validate_ui_dynamic_tool_thread_id(
+    tool: &str,
+    requested_thread_id: &str,
+    current_thread_id: Option<codex_protocol::ThreadId>,
+) -> Result<(), String> {
+    let requested_thread_id =
+        codex_protocol::ThreadId::from_string(requested_thread_id).map_err(|_| {
+            format!("Codewith UI tool `{tool}` has invalid thread_id `{requested_thread_id}`")
+        })?;
+    let Some(current_thread_id) = current_thread_id else {
+        return Err(format!(
+            "Codewith UI tool `{tool}` requires an active visible thread"
+        ));
+    };
+    if requested_thread_id != current_thread_id {
+        return Err(format!(
+            "Codewith UI tool `{tool}` targets thread `{requested_thread_id}`, but the visible thread is `{current_thread_id}`"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::ThreadId;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn parse_items_rejects_unknown_or_duplicate_ids() {
@@ -399,5 +472,36 @@ mod tests {
         let unknown = parse_terminal_title_items(&["not-real".to_string()])
             .expect_err("unknown ids should fail");
         assert!(unknown.contains("list_options"));
+    }
+
+    #[test]
+    fn validate_ui_dynamic_tool_thread_id_rejects_mismatch() {
+        let current_thread_id = ThreadId::new();
+        let other_thread_id = ThreadId::new();
+
+        assert_eq!(
+            validate_ui_dynamic_tool_thread_id(
+                "manage_schedules",
+                &current_thread_id.to_string(),
+                Some(current_thread_id),
+            ),
+            Ok(())
+        );
+
+        let err = validate_ui_dynamic_tool_thread_id(
+            "manage_schedules",
+            &other_thread_id.to_string(),
+            Some(current_thread_id),
+        )
+        .expect_err("mismatched thread should fail");
+        assert!(err.contains("visible thread"));
+
+        let err = validate_ui_dynamic_tool_thread_id(
+            "manage_schedules",
+            "not-a-thread-id",
+            Some(current_thread_id),
+        )
+        .expect_err("invalid thread should fail");
+        assert!(err.contains("invalid thread_id"));
     }
 }

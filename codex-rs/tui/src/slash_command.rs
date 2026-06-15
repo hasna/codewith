@@ -45,6 +45,13 @@ pub enum SlashCommand {
     Loop,
     Schedule,
     Monitor,
+    #[strum(
+        to_string = "session",
+        serialize = "sessions",
+        serialize = "thread",
+        serialize = "threads"
+    )]
+    Session,
     Agent,
     #[strum(
         to_string = "background-agent",
@@ -142,6 +149,7 @@ impl SlashCommand {
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
+            SlashCommand::Session => "switch the active session or agent thread",
             SlashCommand::Agent => "manage durable background agents",
             SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::BackgroundAgent => "manage durable background agents",
@@ -263,6 +271,7 @@ impl SlashCommand {
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::BackgroundAgent
+            | SlashCommand::Session
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
@@ -289,7 +298,7 @@ impl SlashCommand {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
-            SlashCommand::MultiAgents => false,
+            SlashCommand::BackgroundAgent | SlashCommand::MultiAgents => false,
             _ => true,
         }
     }
@@ -418,6 +427,32 @@ mod tests {
         );
         assert!(SlashCommand::BackgroundAgent.supports_inline_args());
         assert!(SlashCommand::BackgroundAgent.available_during_task());
+        assert!(
+            !super::built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "background-agent")
+        );
+    }
+
+    #[test]
+    fn session_command_is_visible_thread_switcher() {
+        assert_eq!(SlashCommand::Session.command(), "session");
+        assert_eq!(
+            SlashCommand::Session.description(),
+            "switch the active session or agent thread"
+        );
+        assert_eq!(
+            SlashCommand::from_str("sessions"),
+            Ok(SlashCommand::Session)
+        );
+        assert_eq!(SlashCommand::from_str("thread"), Ok(SlashCommand::Session));
+        assert_eq!(SlashCommand::from_str("threads"), Ok(SlashCommand::Session));
+        assert!(SlashCommand::Session.available_during_task());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
+        );
     }
 
     #[test]
@@ -434,7 +469,7 @@ mod tests {
         assert!(
             super::built_in_slash_commands()
                 .iter()
-                .any(|(name, command)| *name == "agent" && *command == SlashCommand::Agent)
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
         );
     }
 

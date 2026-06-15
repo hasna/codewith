@@ -45,9 +45,96 @@ struct CommandMatch {
     order: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CommandCategory {
+    Session,
+    Agents,
+    Model,
+    Settings,
+    Automation,
+    Tools,
+    System,
+    Exit,
+}
+
+impl CommandCategory {
+    const ALL: [Self; 8] = [
+        Self::Session,
+        Self::Agents,
+        Self::Model,
+        Self::Settings,
+        Self::Automation,
+        Self::Tools,
+        Self::System,
+        Self::Exit,
+    ];
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Session => "session/",
+            Self::Agents => "agents/",
+            Self::Model => "model/",
+            Self::Settings => "settings/",
+            Self::Automation => "automation/",
+            Self::Tools => "tools/",
+            Self::System => "system/",
+            Self::Exit => "exit/",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Agents => "agents",
+            Self::Model => "model",
+            Self::Settings => "settings",
+            Self::Automation => "automation",
+            Self::Tools => "tools",
+            Self::System => "system",
+            Self::Exit => "exit",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Session => "session, thread, and transcript commands",
+            Self::Agents => "background, side, and external agent commands",
+            Self::Model => "model and service-tier commands",
+            Self::Settings => "profile, provider, config, and UI commands",
+            Self::Automation => "goal, plan, schedule, loop, and monitor commands",
+            Self::Tools => "MCP, app, skill, review, diff, and mention commands",
+            Self::System => "status, diagnostics, terminal, and runtime commands",
+            Self::Exit => "exit commands",
+        }
+    }
+
+    pub(crate) fn from_path(path: &str) -> Option<Self> {
+        match path {
+            "session" | "sessions" | "thread" | "threads" => Some(Self::Session),
+            "agent" | "agents" | "background" | "background-agents" => Some(Self::Agents),
+            "model" | "models" => Some(Self::Model),
+            "setting" | "settings" | "config" => Some(Self::Settings),
+            "automation" | "automations" | "task" | "tasks" => Some(Self::Automation),
+            "tool" | "tools" => Some(Self::Tools),
+            "system" | "runtime" | "diagnostics" => Some(Self::System),
+            "exit" | "quit" => Some(Self::Exit),
+            _ => None,
+        }
+    }
+
+    fn contains(self, item: &CommandItem) -> bool {
+        match item {
+            CommandItem::Category(_) => false,
+            CommandItem::ServiceTier(_) => self == Self::Model,
+            CommandItem::Builtin(_) => self == item.category(),
+        }
+    }
+}
+
 /// A selectable item in the popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CommandItem {
+    Category(CommandCategory),
     Builtin(SlashCommand),
     ServiceTier(ServiceTierCommand),
 }
@@ -166,15 +253,20 @@ impl CommandPopup {
     fn filtered(&self) -> Vec<(CommandItem, Option<Vec<usize>>)> {
         let filter = self.command_filter.trim();
         if filter.is_empty() {
-            return self
-                .commands
+            return CommandCategory::ALL
                 .iter()
-                .filter(|command| {
-                    !matches!(command, CommandItem::Builtin(cmd) if ALIAS_COMMANDS.contains(cmd))
+                .copied()
+                .filter(|category| {
+                    self.commands
+                        .iter()
+                        .any(|command| category.contains(command))
                 })
-                .cloned()
-                .map(|command| (command, None))
+                .map(|category| (CommandItem::Category(category), None))
                 .collect();
+        }
+
+        if let Some((category, nested_filter)) = category_filter(filter) {
+            return self.filtered_category(category, nested_filter);
         }
 
         let mut matches = self
@@ -182,6 +274,48 @@ impl CommandPopup {
             .iter()
             .enumerate()
             .filter_map(|(order, command)| command_match(command, filter, order))
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|command_match| {
+            (
+                command_match.kind,
+                command_match.score,
+                command_match.start,
+                command_match.order,
+            )
+        });
+
+        matches
+            .into_iter()
+            .map(|command_match| (command_match.item, command_match.indices))
+            .collect()
+    }
+
+    fn filtered_category(
+        &self,
+        category: CommandCategory,
+        nested_filter: &str,
+    ) -> Vec<(CommandItem, Option<Vec<usize>>)> {
+        let commands = self
+            .commands
+            .iter()
+            .filter(|command| {
+                category.contains(command)
+                    && !matches!(command, CommandItem::Builtin(cmd) if ALIAS_COMMANDS.contains(cmd))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let nested_filter = nested_filter.trim();
+        if nested_filter.is_empty() {
+            return commands
+                .into_iter()
+                .map(|command| (command, None))
+                .collect();
+        }
+
+        let mut matches = commands
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, command)| command_match(&command, nested_filter, order))
             .collect::<Vec<_>>();
         matches.sort_by_key(|command_match| {
             (
@@ -211,13 +345,19 @@ impl CommandPopup {
             .map(|(item, indices)| {
                 let name = format!("/{}", item.command());
                 let description = item.description().to_string();
+                let category_tag = self
+                    .command_filter
+                    .trim()
+                    .is_empty()
+                    .then(|| item.category_tag().map(str::to_string))
+                    .flatten();
                 GenericDisplayRow {
                     name,
                     name_prefix_spans: Vec::new(),
                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                     display_shortcut: None,
                     description: Some(description),
-                    category_tag: None,
+                    category_tag,
                     wrap_indent: None,
                     is_disabled: false,
                     disabled_reason: None,
@@ -253,6 +393,7 @@ impl CommandPopup {
 impl CommandItem {
     pub(crate) fn command(&self) -> &str {
         match self {
+            Self::Category(category) => category.command(),
             Self::Builtin(cmd) => cmd.command(),
             Self::ServiceTier(command) => &command.name,
         }
@@ -260,6 +401,7 @@ impl CommandItem {
 
     fn description(&self) -> &str {
         match self {
+            Self::Category(category) => category.description(),
             Self::Builtin(cmd) => cmd.description(),
             Self::ServiceTier(command) => &command.description,
         }
@@ -267,11 +409,97 @@ impl CommandItem {
 
     fn aliases(&self) -> &'static [&'static str] {
         match self {
+            Self::Category(_) => &[],
             Self::Builtin(SlashCommand::Stop) => &["clean"],
             Self::Builtin(SlashCommand::Pets) => &["pet"],
             Self::Builtin(_) | Self::ServiceTier(_) => &[],
         }
     }
+
+    fn category(&self) -> CommandCategory {
+        match self {
+            Self::Category(category) => *category,
+            Self::ServiceTier(_) => CommandCategory::Model,
+            Self::Builtin(command) => match command {
+                SlashCommand::New
+                | SlashCommand::Archive
+                | SlashCommand::Resume
+                | SlashCommand::Tmux
+                | SlashCommand::Fork
+                | SlashCommand::Rename
+                | SlashCommand::Clear
+                | SlashCommand::Recap
+                | SlashCommand::Session
+                | SlashCommand::MultiAgents => CommandCategory::Session,
+                SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
+                | SlashCommand::ExternalAgent
+                | SlashCommand::Side
+                | SlashCommand::Btw => CommandCategory::Agents,
+                SlashCommand::Model => CommandCategory::Model,
+                SlashCommand::Profile
+                | SlashCommand::Provider
+                | SlashCommand::Config
+                | SlashCommand::Personality
+                | SlashCommand::Permissions
+                | SlashCommand::Keymap
+                | SlashCommand::Vim
+                | SlashCommand::ElevateSandbox
+                | SlashCommand::SandboxReadRoot
+                | SlashCommand::Experimental
+                | SlashCommand::AutoReview
+                | SlashCommand::Memories
+                | SlashCommand::Theme
+                | SlashCommand::Pets
+                | SlashCommand::Logout => CommandCategory::Settings,
+                SlashCommand::Goal
+                | SlashCommand::Loop
+                | SlashCommand::Schedule
+                | SlashCommand::Monitor
+                | SlashCommand::Plan => CommandCategory::Automation,
+                SlashCommand::Ide
+                | SlashCommand::Skills
+                | SlashCommand::Hooks
+                | SlashCommand::Review
+                | SlashCommand::Init
+                | SlashCommand::Compact
+                | SlashCommand::Copy
+                | SlashCommand::Raw
+                | SlashCommand::Diff
+                | SlashCommand::Mention
+                | SlashCommand::Mcp
+                | SlashCommand::Apps
+                | SlashCommand::Plugins
+                | SlashCommand::Feedback => CommandCategory::Tools,
+                SlashCommand::Status
+                | SlashCommand::Stats
+                | SlashCommand::DebugConfig
+                | SlashCommand::Title
+                | SlashCommand::Statusline
+                | SlashCommand::Rollout
+                | SlashCommand::Ps
+                | SlashCommand::Stop
+                | SlashCommand::MemoryDrop
+                | SlashCommand::MemoryUpdate
+                | SlashCommand::Realtime
+                | SlashCommand::Settings
+                | SlashCommand::TestApproval => CommandCategory::System,
+                SlashCommand::Quit | SlashCommand::Exit => CommandCategory::Exit,
+            },
+        }
+    }
+
+    fn category_tag(&self) -> Option<&'static str> {
+        match self {
+            Self::Category(_) => None,
+            Self::Builtin(_) | Self::ServiceTier(_) => Some(self.category().label()),
+        }
+    }
+}
+
+fn category_filter(filter: &str) -> Option<(CommandCategory, &str)> {
+    let (category, nested_filter) = filter.split_once('/')?;
+    CommandCategory::from_path(category).map(|category| (category, nested_filter))
 }
 
 fn command_match(item: &CommandItem, filter: &str, order: usize) -> Option<CommandMatch> {
@@ -421,10 +649,7 @@ mod tests {
         popup
             .filtered_items()
             .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
+            .map(|item| item.command().to_string())
             .collect()
     }
 
@@ -440,7 +665,7 @@ mod tests {
         let matches = popup.filtered_items();
         let has_init = matches.iter().any(|item| match item {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
-            CommandItem::ServiceTier(_) => false,
+            CommandItem::Category(_) | CommandItem::ServiceTier(_) => false,
         });
         assert!(
             has_init,
@@ -461,6 +686,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected init command, got service tier {command:?}")
             }
+            Some(CommandItem::Category(category)) => {
+                panic!("expected init command, got category {category:?}")
+            }
             None => panic!("expected a selected command for exact match"),
         }
     }
@@ -474,6 +702,9 @@ mod tests {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected model command, got service tier {command:?}")
+            }
+            Some(CommandItem::Category(category)) => {
+                panic!("expected model command, got category {category:?}")
             }
             None => panic!("expected at least one match for '/mo'"),
         }
@@ -503,6 +734,9 @@ mod tests {
                     description: "Fastest inference with increased plan usage".to_string(),
                 }
             ),
+            Some(CommandItem::Category(category)) => {
+                panic!("expected fast service tier, got category {category:?}")
+            }
             other => panic!("expected fast service tier to be selected, got {other:?}"),
         }
         let rows = popup.rows_from_matches(popup.filtered());
@@ -616,18 +850,46 @@ mod tests {
     }
 
     #[test]
+    fn empty_popup_shows_categories_instead_of_every_command() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/".to_string());
+        let items = popup.filtered_items();
+
+        assert!(items.contains(&CommandItem::Category(CommandCategory::Session)));
+        assert!(items.contains(&CommandItem::Category(CommandCategory::Agents)));
+        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Session)));
+        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::BackgroundAgent)));
+    }
+
+    #[test]
+    fn category_filter_shows_only_commands_in_that_category() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/session/".to_string());
+
+        let commands = filtered_command_names(&popup);
+        assert!(commands.contains(&"session".to_string()));
+        assert!(commands.contains(&"resume".to_string()));
+        assert!(!commands.contains(&"agent".to_string()));
+        assert!(!commands.contains(&"background-agent".to_string()));
+    }
+
+    #[test]
+    fn category_filter_keeps_nested_fuzzy_search() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/agents/ex".to_string());
+
+        assert_eq!(
+            filtered_command_names(&popup).first().map(String::as_str),
+            Some("external-agent")
+        );
+    }
+
+    #[test]
     fn plan_command_hidden_when_collaboration_modes_disabled() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
 
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
+        let cmds = filtered_command_names(&popup);
         assert!(
             !cmds.iter().any(|cmd| cmd == "plan"),
             "expected '/plan' to be hidden when collaboration modes are disabled, got {cmds:?}"
@@ -659,6 +921,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected plan command, got service tier {command:?}")
             }
+            Some(CommandItem::Category(category)) => {
+                panic!("expected plan command, got category {category:?}")
+            }
             other => panic!("expected plan to be selected for exact match, got {other:?}"),
         }
     }
@@ -683,14 +948,7 @@ mod tests {
         );
         popup.on_composer_text_change("/pers".to_string());
 
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
+        let cmds = filtered_command_names(&popup);
         assert!(
             !cmds.iter().any(|cmd| cmd == "personality"),
             "expected '/personality' to be hidden when disabled, got {cmds:?}"
@@ -722,6 +980,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected personality command, got service tier {command:?}")
             }
+            Some(CommandItem::Category(category)) => {
+                panic!("expected personality command, got category {category:?}")
+            }
             other => panic!("expected personality to be selected for exact match, got {other:?}"),
         }
     }
@@ -746,14 +1007,7 @@ mod tests {
         );
         popup.on_composer_text_change("/aud".to_string());
 
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
+        let cmds = filtered_command_names(&popup);
 
         assert!(
             !cmds.iter().any(|cmd| cmd == "settings"),
@@ -764,14 +1018,7 @@ mod tests {
     #[test]
     fn debug_commands_are_hidden_from_popup() {
         let popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
-        let cmds: Vec<String> = popup
-            .filtered_items()
-            .into_iter()
-            .map(|item| match item {
-                CommandItem::Builtin(cmd) => cmd.command().to_string(),
-                CommandItem::ServiceTier(command) => command.name,
-            })
-            .collect();
+        let cmds = filtered_command_names(&popup);
 
         assert!(
             !cmds.iter().any(|name| name.starts_with("debug")),

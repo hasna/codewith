@@ -516,24 +516,45 @@ impl App {
                 self.chat_widget.open_mcp_add_server();
             }
             AppEvent::AddMcpServer { spec } => {
-                self.add_mcp_server_from_spec(app_server, spec).await;
+                if let Err(err) = self.add_mcp_server_from_spec(app_server, spec).await {
+                    tracing::warn!("failed to add MCP server from TUI action: {err}");
+                }
             }
             AppEvent::SetMcpServerEnabled { name, enabled } => {
-                self.set_mcp_server_enabled(app_server, name, enabled).await;
+                if let Err(err) = self.set_mcp_server_enabled(app_server, name, enabled).await {
+                    tracing::warn!("failed to set MCP server enabled from TUI action: {err}");
+                }
             }
             AppEvent::SetMcpToolEnabled {
                 server,
                 tool,
                 enabled,
             } => {
-                self.set_mcp_tool_enabled(app_server, server, tool, enabled)
-                    .await;
+                if let Err(err) = self
+                    .set_mcp_tool_enabled(app_server, server, tool, enabled)
+                    .await
+                {
+                    tracing::warn!("failed to set MCP tool enabled from TUI action: {err}");
+                }
             }
             AppEvent::StartMcpServerOauthLogin { name } => {
                 self.start_mcp_server_oauth_login(app_server, name);
             }
             AppEvent::ReloadMcpServers => {
                 self.reload_mcp_servers(app_server);
+            }
+            AppEvent::OpenBackgroundTerminalManager => {
+                self.chat_widget.open_background_terminal_manager();
+            }
+            AppEvent::OpenBackgroundTerminalStopConfirmation => {
+                self.chat_widget
+                    .open_background_terminal_stop_confirmation();
+            }
+            AppEvent::StopBackgroundTerminals => {
+                self.chat_widget.stop_background_terminals();
+            }
+            AppEvent::PrintBackgroundTerminals => {
+                self.chat_widget.add_ps_output();
             }
             AppEvent::McpServersReloaded { result } => match result {
                 Ok(()) => {
@@ -1096,7 +1117,8 @@ impl App {
                 self.read_background_agent(app_server, agent_id).await;
             }
             AppEvent::AttachBackgroundAgent { agent_id } => {
-                self.attach_background_agent(app_server, agent_id).await;
+                self.attach_background_agent(tui, app_server, agent_id)
+                    .await;
             }
             AppEvent::ShowBackgroundAgentLogs { agent_id } => {
                 self.show_background_agent_logs(app_server, agent_id).await;

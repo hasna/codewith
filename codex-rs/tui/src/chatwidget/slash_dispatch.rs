@@ -109,7 +109,7 @@ const MONITOR_USAGE_HINT: &str =
 const BACKGROUND_AGENT_USAGE: &str =
     "Usage: /agent [list|diagnostics|start <prompt>|read|attach|detach|stop|delete] [id]";
 const BACKGROUND_AGENT_USAGE_HINT: &str =
-    "Examples: /agent start fix the flaky test, /background-agent attach abc123";
+    "Examples: /agent start fix the flaky test, /agent attach abc123";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build] [task]";
 const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
@@ -163,6 +163,7 @@ impl ChatWidget {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Session
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Tmux
@@ -600,16 +601,17 @@ impl ChatWidget {
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
+            SlashCommand::Session | SlashCommand::MultiAgents => {
+                self.app_event_tx.send(AppEvent::OpenAgentPicker);
+                self.append_message_history_entry(format!("/{}", cmd.command()));
+            }
             SlashCommand::Agent => {
                 self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
                 self.append_message_history_entry("/agent".to_string());
             }
-            SlashCommand::MultiAgents => {
-                self.app_event_tx.send(AppEvent::OpenAgentPicker);
-            }
             SlashCommand::BackgroundAgent => {
                 self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
-                self.append_message_history_entry("/background-agent".to_string());
+                self.append_message_history_entry("/agent".to_string());
             }
             SlashCommand::ExternalAgent => {
                 self.open_external_agent_picker();
@@ -760,10 +762,10 @@ impl ChatWidget {
                 self.open_pets_picker();
             }
             SlashCommand::Ps => {
-                self.add_ps_output();
+                self.open_background_terminal_manager();
             }
             SlashCommand::Stop => {
-                self.clean_background_terminals();
+                self.stop_background_terminals();
             }
             SlashCommand::MemoryDrop => {
                 self.add_app_server_stub_message("Memory maintenance");
@@ -1765,6 +1767,7 @@ impl ChatWidget {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::Session
             | SlashCommand::BackgroundAgent
             | SlashCommand::Side
             | SlashCommand::Btw
@@ -1927,25 +1930,19 @@ fn parse_background_agent_slash_args(
             if rest.is_empty() {
                 Ok(BackgroundAgentSlashCommand::List)
             } else {
-                Err(background_agent_usage_error(
-                    "Usage: /background-agent list",
-                ))
+                Err(background_agent_usage_error("Usage: /agent list"))
             }
         }
         "diagnostics" | "diag" | "daemon" => {
             if rest.is_empty() {
                 Ok(BackgroundAgentSlashCommand::Diagnostics)
             } else {
-                Err(background_agent_usage_error(
-                    "Usage: /background-agent diagnostics",
-                ))
+                Err(background_agent_usage_error("Usage: /agent diagnostics"))
             }
         }
         "start" | "run" | "spawn" => {
             if rest.is_empty() {
-                Err(background_agent_usage_error(
-                    "Usage: /background-agent start <prompt>",
-                ))
+                Err(background_agent_usage_error("Usage: /agent start <prompt>"))
             } else {
                 Ok(BackgroundAgentSlashCommand::Start {
                     prompt: rest.to_string(),
@@ -1953,40 +1950,22 @@ fn parse_background_agent_slash_args(
             }
         }
         "read" | "show" => Ok(BackgroundAgentSlashCommand::Read {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent read [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent read [id]")?,
         }),
         "logs" | "log" => Ok(BackgroundAgentSlashCommand::Logs {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent logs [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent logs [id]")?,
         }),
         "attach" => Ok(BackgroundAgentSlashCommand::Attach {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent attach [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent attach [id]")?,
         }),
         "detach" => Ok(BackgroundAgentSlashCommand::Detach {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent detach [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent detach [id]")?,
         }),
         "stop" | "cancel" => Ok(BackgroundAgentSlashCommand::Stop {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent stop [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent stop [id]")?,
         }),
         "delete" | "remove" | "rm" => Ok(BackgroundAgentSlashCommand::Delete {
-            agent_id: parse_optional_background_agent_id(
-                rest,
-                "Usage: /background-agent delete [id]",
-            )?,
+            agent_id: parse_optional_background_agent_id(rest, "Usage: /agent delete [id]")?,
         }),
         _ => Err(background_agent_usage_error(BACKGROUND_AGENT_USAGE)),
     }

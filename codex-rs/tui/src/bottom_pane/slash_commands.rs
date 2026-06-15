@@ -121,7 +121,8 @@ pub(crate) fn commands_for_input(
 pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Option<SlashCommand> {
     let cmd = SlashCommand::from_str(name).ok()?;
     let visible_cmd = match cmd {
-        SlashCommand::MultiAgents => SlashCommand::Agent,
+        SlashCommand::BackgroundAgent => SlashCommand::Agent,
+        SlashCommand::MultiAgents => SlashCommand::Session,
         _ => cmd,
     };
     builtins_for_input(BuiltinCommandFlags {
@@ -217,16 +218,30 @@ mod tests {
     }
 
     #[test]
-    fn subagents_alias_resolves_for_dispatch_but_is_hidden_from_completion() {
+    fn hidden_aliases_resolve_for_dispatch_but_stay_out_of_completion() {
         let flags = all_enabled_flags();
         assert_eq!(
             find_builtin_command("subagents", flags),
             Some(SlashCommand::MultiAgents)
         );
+        assert_eq!(
+            find_builtin_command("background-agent", flags),
+            Some(SlashCommand::BackgroundAgent)
+        );
         assert!(
             !builtins_for_input(flags)
                 .iter()
                 .any(|(name, _)| *name == "subagents")
+        );
+        assert!(
+            !builtins_for_input(flags)
+                .iter()
+                .any(|(name, _)| *name == "background-agent")
+        );
+        assert!(
+            builtins_for_input(flags)
+                .iter()
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
         );
         assert!(
             builtins_for_input(flags)
@@ -343,6 +358,7 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
+                SlashCommand::Stats,
             ]
         );
     }

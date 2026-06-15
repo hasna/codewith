@@ -349,6 +349,7 @@ use self::goal_status::GoalStatusState;
 #[cfg(test)]
 use self::goal_status::goal_status_indicator_from_app_goal;
 mod background_agent_display;
+mod background_terminals;
 mod goal_menu;
 mod goal_validation;
 mod ide_context;
@@ -1439,18 +1440,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn add_ps_output(&mut self) {
-        let processes = self
-            .unified_exec_processes
-            .iter()
-            .map(|process| history_cell::UnifiedExecProcessDetails {
-                command_display: process.command_display.clone(),
-                recent_chunks: process.recent_chunks.clone(),
-            })
-            .collect();
+        let processes = self.background_terminal_processes();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
 
-    fn clean_background_terminals(&mut self) {
+    pub(crate) fn stop_background_terminals(&mut self) {
         self.submit_op(AppCommand::clean_background_terminals());
         self.unified_exec_processes.clear();
         self.sync_unified_exec_footer();
@@ -1458,6 +1452,18 @@ impl ChatWidget {
             "Stopping all background terminals.".to_string(),
             /*hint*/ None,
         );
+    }
+
+    pub(crate) fn background_terminal_processes(
+        &self,
+    ) -> Vec<history_cell::UnifiedExecProcessDetails> {
+        self.unified_exec_processes
+            .iter()
+            .map(|process| history_cell::UnifiedExecProcessDetails {
+                command_display: process.command_display.clone(),
+                recent_chunks: process.recent_chunks.clone(),
+            })
+            .collect()
     }
 
     fn plugins_for_mentions(&self) -> Option<&[PluginCapabilitySummary]> {

@@ -6,6 +6,13 @@ pub(crate) const STATUSLINE_TOOL: &str = "configure_statusline";
 pub(crate) const TERMINAL_TITLE_TOOL: &str = "configure_terminal_title";
 pub(crate) const CONFIG_TOOL: &str = "configure_config";
 pub(crate) const TMUX_TOOL: &str = "tmux";
+pub(crate) const BACKGROUND_TERMINALS_TOOL: &str = "manage_background_terminals";
+pub(crate) const MCP_TOOL: &str = "manage_mcp";
+pub(crate) const BACKGROUND_AGENTS_TOOL: &str = "manage_agents";
+pub(crate) const SCHEDULES_TOOL: &str = "manage_schedules";
+pub(crate) const MONITORS_TOOL: &str = "manage_monitors";
+pub(crate) const SESSION_CONTROL_TOOL: &str = "session_control";
+pub(crate) const CAPABILITIES_TOOL: &str = "capabilities";
 
 pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
     vec![
@@ -84,6 +91,145 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
             }),
             defer_loading: true,
         },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: BACKGROUND_TERMINALS_TOOL.to_string(),
+            description: "Inspect background terminal processes that are still running in this Codewith session. action=stop_all only opens an interactive user confirmation popup; it does not stop processes directly.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: open, list, stop_all. stop_all opens a user confirmation popup."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: MCP_TOOL.to_string(),
+            description: "Inspect configured MCP servers and open the MCP manager. MCP mutations such as add, enable/disable, and reload require the interactive /mcp UI and are not executed by this AI-facing tool.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: open, list."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: BACKGROUND_AGENTS_TOOL.to_string(),
+            description: "Open or inspect durable background agents owned by the current thread. Starting, attaching, detaching, stopping, deleting, or reading global diagnostics requires the interactive /agent UI.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: open, list, read, logs."
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Required for action=read or action=logs. The agent must belong to the current thread."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: SCHEDULES_TOOL.to_string(),
+            description: "Open or inspect one-time schedules and recurring /loop schedules for the current session. Creating, pausing, resuming, deleting, and running schedules require the interactive /schedule or /loop UI.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: open, list."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "For action=open/list: one of once, loop, all. Defaults to all for list and once for open."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: MONITORS_TOOL.to_string(),
+            description: "Open, list, or read monitors for the current session. Stopping, restarting, or deleting a monitor requires the interactive /monitor UI.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: open, list, read."
+                    },
+                    "monitor_id": {
+                        "type": "string",
+                        "description": "Required for action=read."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: SESSION_CONTROL_TOOL.to_string(),
+            description: "Control the current Codewith session: recap, compact, fork, or rename. These actions use the same app-owned controls as slash commands.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: recap, compact, fork, rename."
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional recap prompt for action=recap."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "New session name for action=rename."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: CAPABILITIES_TOOL.to_string(),
+            description: "Read the current Codewith autonomy and permission posture or propose permission/profile upgrades. This tool is read-only and never changes permissions by itself.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: inspect, propose_upgrade."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        },
     ]
 }
 
@@ -91,7 +237,17 @@ pub(crate) fn is_owned_ui_tool(namespace: Option<&str>, tool: &str) -> bool {
     namespace == Some(UI_TOOLS_NAMESPACE)
         && matches!(
             tool,
-            STATUSLINE_TOOL | TERMINAL_TITLE_TOOL | CONFIG_TOOL | TMUX_TOOL
+            STATUSLINE_TOOL
+                | TERMINAL_TITLE_TOOL
+                | CONFIG_TOOL
+                | TMUX_TOOL
+                | BACKGROUND_TERMINALS_TOOL
+                | MCP_TOOL
+                | BACKGROUND_AGENTS_TOOL
+                | SCHEDULES_TOOL
+                | MONITORS_TOOL
+                | SESSION_CONTROL_TOOL
+                | CAPABILITIES_TOOL
         )
 }
 
@@ -125,7 +281,7 @@ mod tests {
     #[test]
     fn ui_dynamic_tools_are_deferred_without_option_enums() {
         let specs = dynamic_tool_specs();
-        assert_eq!(specs.len(), 4);
+        assert_eq!(specs.len(), 11);
         assert!(specs.iter().all(|tool| tool.defer_loading));
         assert!(
             specs
@@ -149,5 +305,17 @@ mod tests {
             tmux.input_schema["required"],
             serde_json::json!(["explicit_user_request"])
         );
+
+        for tool in [
+            BACKGROUND_TERMINALS_TOOL,
+            MCP_TOOL,
+            BACKGROUND_AGENTS_TOOL,
+            SCHEDULES_TOOL,
+            MONITORS_TOOL,
+            SESSION_CONTROL_TOOL,
+            CAPABILITIES_TOOL,
+        ] {
+            assert!(is_owned_ui_tool(Some(UI_TOOLS_NAMESPACE), tool));
+        }
     }
 }

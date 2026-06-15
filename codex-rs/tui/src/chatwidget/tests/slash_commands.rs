@@ -1518,6 +1518,22 @@ async fn bare_agent_slash_command_opens_background_agent_manager_and_drains_atta
 }
 
 #[tokio::test]
+async fn bare_session_slash_command_opens_agent_picker_and_drains_attachments() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let remote_url = "https://example.com/session.png".to_string();
+    let local_image = PathBuf::from("/tmp/session-local.png");
+    chat.set_remote_image_urls(vec![remote_url]);
+    chat.bottom_pane
+        .set_composer_text("/session".to_string(), Vec::new(), vec![local_image]);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAgentPicker));
+    assert!(chat.remote_image_urls().is_empty());
+    assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
+}
+
+#[tokio::test]
 async fn monitor_slash_command_submits_setup_prompt() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::ScheduledTasks, /*enabled*/ true);
@@ -2686,6 +2702,32 @@ async fn slash_mcp_opens_control_center() {
     assert!(popup.contains("View all MCPs"));
     assert!(popup.contains("Add new MCP"));
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_ps_opens_background_terminal_manager() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "sleep 60".to_string(),
+        recent_chunks: Vec::new(),
+    });
+
+    chat.dispatch_command(SlashCommand::Ps);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Background Terminals"),
+        "got popup:\n{popup}"
+    );
+    assert!(popup.contains("Stop all"), "got popup:\n{popup}");
+    assert!(popup.contains("Print snapshot"), "got popup:\n{popup}");
+    assert!(
+        rx.try_recv().is_err(),
+        "expected no app event before selecting an action"
+    );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 

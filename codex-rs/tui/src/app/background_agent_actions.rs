@@ -1,7 +1,8 @@
 use super::App;
 use crate::app_server_session::AppServerSession;
+use codex_protocol::ThreadId;
 
-const BACKGROUND_AGENT_CREATE_HINT: &str = "Start one with /background-agent start <prompt>.";
+const BACKGROUND_AGENT_CREATE_HINT: &str = "Start one with /agent start <prompt>.";
 
 impl App {
     pub(super) async fn open_background_agent_manager(
@@ -59,7 +60,7 @@ impl App {
                 self.chat_widget.add_info_message(
                     "Background agent started".to_string(),
                     Some(format!(
-                        "Use /background-agent attach {} to replay its events.",
+                        "Use /agent attach {} to open its session or replay its events.",
                         short_background_agent_id(&agent_id)
                     )),
                 );
@@ -100,6 +101,7 @@ impl App {
 
     pub(super) async fn attach_background_agent(
         &mut self,
+        tui: &mut crate::tui::Tui,
         app_server: &mut AppServerSession,
         agent_id: Option<String>,
     ) {
@@ -112,11 +114,36 @@ impl App {
         match app_server.agent_attach(agent_id.clone()).await {
             Ok(response) => {
                 if let Some(agent) = response.agent.clone() {
+                    if let Some(thread_id) = agent
+                        .thread_id
+                        .as_deref()
+                        .and_then(|id| ThreadId::from_string(id).ok())
+                    {
+                        if let Err(err) = self
+                            .select_agent_thread_and_discard_side(tui, app_server, thread_id)
+                            .await
+                        {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to open background agent session: {err}"
+                            ));
+                            self.chat_widget.show_background_agent_attach(response);
+                            return;
+                        }
+                        self.chat_widget.add_info_message(
+                            "Background agent attached".to_string(),
+                            Some(format!(
+                                "Opened session for {}. Use /agent detach {} when you are done.",
+                                short_background_agent_id(&agent.agent_id),
+                                short_background_agent_id(&agent.agent_id)
+                            )),
+                        );
+                        return;
+                    }
                     self.chat_widget.show_background_agent_attach(response);
                     self.chat_widget.add_info_message(
                         "Background agent attached".to_string(),
                         Some(format!(
-                            "Use /background-agent detach {} when you are done.",
+                            "Use /agent detach {} when you are done.",
                             short_background_agent_id(&agent.agent_id)
                         )),
                     );
@@ -206,7 +233,7 @@ impl App {
                     self.chat_widget.add_info_message(
                         "Background agent stop requested".to_string(),
                         Some(format!(
-                            "Read it with /background-agent read {}.",
+                            "Read it with /agent read {}.",
                             short_background_agent_id(&agent_id)
                         )),
                     );
@@ -316,7 +343,7 @@ impl App {
                     self.chat_widget.show_background_agent_manager(matches);
                     self.chat_widget.add_info_message(
                         format!("Choose a background agent to {action}"),
-                        Some(format!("Use /background-agent {action} <id>.")),
+                        Some(format!("Use /agent {action} <id>.")),
                     );
                     None
                 }
@@ -347,7 +374,7 @@ impl App {
                 self.chat_widget.show_background_agent_manager(agents);
                 self.chat_widget.add_info_message(
                     format!("Choose a background agent to {action}"),
-                    Some(format!("Use /background-agent {action} <id>.")),
+                    Some(format!("Use /agent {action} <id>.")),
                 );
                 None
             }

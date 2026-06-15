@@ -514,6 +514,18 @@ pub(crate) enum AppEvent {
     /// Reload MCP server connections for loaded threads.
     ReloadMcpServers,
 
+    /// Reopen the background terminal manager.
+    OpenBackgroundTerminalManager,
+
+    /// Open the confirmation prompt for stopping every background terminal.
+    OpenBackgroundTerminalStopConfirmation,
+
+    /// Stop every background terminal tracked by unified exec.
+    StopBackgroundTerminals,
+
+    /// Print the current background terminal snapshot into transcript history.
+    PrintBackgroundTerminals,
+
     /// Result of reloading MCP server connections for loaded threads.
     McpServersReloaded {
         result: Result<(), String>,

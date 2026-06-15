@@ -1,4 +1,4 @@
-//! Durable background-agent summaries and interactive manager for `/background-agent`.
+//! Durable background-agent summaries and interactive manager for `/agent`.
 
 use super::*;
 use crate::text_formatting::truncate_text;
@@ -180,7 +180,7 @@ fn background_agent_manager_params(mut agents: Vec<AgentRun>) -> SelectionViewPa
         false,
         None,
         || AppEvent::PrefillComposer {
-            text: "/background-agent start ".to_string(),
+            text: "/agent start ".to_string(),
         },
     ));
     items.push(background_agent_action_item(
@@ -193,7 +193,7 @@ fn background_agent_manager_params(mut agents: Vec<AgentRun>) -> SelectionViewPa
     if agents.is_empty() {
         items.push(SelectionItem {
             name: "No background agents created".to_string(),
-            description: Some("Start one with /background-agent start <prompt>".to_string()),
+            description: Some("Start one with /agent start <prompt>".to_string()),
             is_disabled: true,
             ..Default::default()
         });
