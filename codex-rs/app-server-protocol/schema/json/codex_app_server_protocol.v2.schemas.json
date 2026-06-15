@@ -12961,6 +12961,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/externalAgent/event"
+              ],
+              "title": "Thread/externalAgent/eventNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadExternalAgentEventNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/externalAgent/eventNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/settings/updated"
               ],
               "title": "Thread/settings/updatedNotificationMethod",

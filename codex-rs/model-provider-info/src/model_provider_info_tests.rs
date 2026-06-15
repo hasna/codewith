@@ -356,12 +356,12 @@ fn test_built_in_model_providers_include_openrouter() {
 }
 
 #[test]
-fn test_built_in_model_providers_include_xiaomi() {
+fn test_built_in_model_providers_include_xai() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 
     assert_eq!(
-        providers.get(XIAOMI_PROVIDER_ID),
-        Some(&ModelProviderInfo::create_xiaomi_provider())
+        providers.get(XAI_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_xai_provider())
     );
 }
 
@@ -415,8 +415,11 @@ fn test_merge_configured_model_providers_allows_cerebras_override() {
     expected.insert(CEREBRAS_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
-        providers.get(XAI_PROVIDER_ID),
-        Some(&ModelProviderInfo::create_xai_provider())
+        merge_configured_model_providers(
+            built_in_model_providers(/*openai_base_url*/ None),
+            configured_model_providers,
+        ),
+        Ok(expected)
     );
 }
 

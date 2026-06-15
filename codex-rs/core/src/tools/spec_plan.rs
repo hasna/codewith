@@ -264,9 +264,10 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
             .any(|executor| executor.tool_name() == ToolName::namespaced("web", "run"));
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
+    let hosted_web_search_provider = turn_context.provider.capabilities().web_search;
     let web_search_mode = (!standalone_web_search_available
-        && turn_context.provider.capabilities().web_search)
-        .then_some(turn_context.config.web_search_mode.value());
+        && hosted_web_search_provider.is_enabled())
+    .then_some(turn_context.config.web_search_mode.value());
     let web_search_config = web_search_mode
         .as_ref()
         .and(turn_context.config.web_search_config.as_ref());

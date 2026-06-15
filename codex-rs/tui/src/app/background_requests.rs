@@ -7,6 +7,8 @@
 use super::plugin_mentions::fetch_plugin_mentions;
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
+use crate::app_event::McpInventoryTarget;
+use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::config_update::format_config_error;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
@@ -111,6 +113,22 @@ impl App {
                 .await
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::RateLimitsLoaded {
+                origin,
+                auth_profile,
+                result,
+            });
+        });
+    }
+
+    /// Spawns a background task to fetch MiniMax Token Plan usage and deliver
+    /// the result as a `MiniMaxUsageLoaded` event.
+    pub(super) fn refresh_minimax_usage(&mut self, origin: MiniMaxUsageRefreshOrigin) {
+        let app_event_tx = self.app_event_tx.clone();
+        let auth_profile = self.config.selected_auth_profile.clone();
+        let provider = self.config.model_provider.clone();
+        tokio::spawn(async move {
+            let result = crate::minimax_usage::fetch_minimax_usage(&provider).await;
+            app_event_tx.send(AppEvent::MiniMaxUsageLoaded {
                 origin,
                 auth_profile,
                 result,

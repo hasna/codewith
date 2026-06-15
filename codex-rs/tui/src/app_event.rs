@@ -473,6 +473,76 @@ pub(crate) enum AppEvent {
         schedule_id: Option<String>,
     },
 
+    /// Open the interactive MCP server manager.
+    OpenMcpManager {
+        detail: McpServerStatusDetail,
+    },
+
+    /// Open the detail view for a single MCP server status snapshot.
+    OpenMcpServerDetails {
+        status: McpServerStatus,
+    },
+
+    /// Start the add-new-MCP flow.
+    OpenMcpAddServer,
+
+    /// Add a new MCP server from a slash-command style spec.
+    AddMcpServer {
+        spec: String,
+    },
+
+    /// Enable or disable a configured MCP server.
+    SetMcpServerEnabled {
+        name: String,
+        enabled: bool,
+    },
+
+    /// Enable or disable a configured MCP tool.
+    SetMcpToolEnabled {
+        server: String,
+        tool: String,
+        enabled: bool,
+    },
+
+    /// Start OAuth login for a configured MCP server.
+    StartMcpServerOauthLogin {
+        name: String,
+    },
+
+    /// Reload MCP server connections for loaded threads.
+    ReloadMcpServers,
+
+    /// Reopen the background terminal manager.
+    OpenBackgroundTerminalManager,
+
+    /// Open the confirmation prompt for stopping every background terminal.
+    OpenBackgroundTerminalStopConfirmation,
+
+    /// Stop every background terminal tracked by unified exec.
+    StopBackgroundTerminals,
+
+    /// Print the current background terminal snapshot into transcript history.
+    PrintBackgroundTerminals,
+
+    /// Result of reloading MCP server connections for loaded threads.
+    McpServersReloaded {
+        result: Result<(), String>,
+    },
+
+    /// Show setup guidance for configuring MCP servers.
+    ShowMcpSetupHelp,
+
+    /// Show diagnostic guidance for one MCP server.
+    ShowMcpDiagnosticsHelp {
+        name: String,
+    },
+
+    /// Result of starting an MCP OAuth login flow.
+    McpServerOauthLoginStarted {
+        name: String,
+        result: Result<String, String>,
+    },
+
     /// Open the current thread monitor manager.
     OpenThreadMonitorManager {
         thread_id: ThreadId,
@@ -506,6 +576,57 @@ pub(crate) enum AppEvent {
     DeleteThreadMonitor {
         thread_id: ThreadId,
         monitor_id: Option<String>,
+    },
+
+    /// Open the durable background-agent manager.
+    OpenBackgroundAgentManager,
+
+    /// Open actions for one durable background agent.
+    OpenBackgroundAgentActions {
+        agent_id: String,
+    },
+
+    /// Start a durable background agent.
+    StartBackgroundAgent {
+        prompt: String,
+    },
+
+    /// Show the latest state for one durable background agent.
+    ReadBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Attach to one durable background agent and replay its event journal.
+    AttachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show one durable background agent event journal without attaching.
+    ShowBackgroundAgentLogs {
+        agent_id: Option<String>,
+    },
+
+    /// Detach from one durable background agent.
+    DetachBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Request that one durable background agent stop.
+    StopBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Delete or mark one durable background agent for deletion.
+    DeleteBackgroundAgent {
+        agent_id: Option<String>,
+    },
+
+    /// Show durable background-agent daemon diagnostics.
+    ShowBackgroundAgentDiagnostics,
+
+    /// Fill the composer with text from an interactive action.
+    PrefillComposer {
+        text: String,
     },
 
     /// Result of refreshing rate limits.

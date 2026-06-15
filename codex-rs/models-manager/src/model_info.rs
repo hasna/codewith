@@ -175,15 +175,6 @@ fn fallback_supports_reasoning_summaries(provider_id: Option<&str>) -> bool {
     }
 }
 
-fn fallback_supports_reasoning_summaries(provider_id: Option<&str>) -> bool {
-    match provider_id {
-        Some(provider_id) => {
-            known_provider_models::provider_supports_reasoning_effort(Some(provider_id))
-        }
-        None => true,
-    }
-}
-
 fn fallback_base_instructions_for_slug(slug: &str) -> String {
     format!("You are currently running on model `{slug}`.\n\n{BASE_INSTRUCTIONS}")
 }

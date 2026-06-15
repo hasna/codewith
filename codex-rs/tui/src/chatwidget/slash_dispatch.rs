@@ -23,6 +23,7 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::external_agents::external_agent_picker_params;
 use crate::goal_display::GOAL_USAGE;
 use chrono::Utc;
 use codex_app_server_protocol::ThreadExternalAgentMode;
@@ -1729,10 +1730,12 @@ impl ChatWidget {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::Session
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
             | SlashCommand::Agent
+            | SlashCommand::BackgroundAgent
             | SlashCommand::ExternalAgent
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions

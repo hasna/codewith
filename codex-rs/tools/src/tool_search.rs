@@ -54,6 +54,12 @@ impl ToolSearchInfo {
             ToolSpec::ToolSearch { .. }
             | ToolSpec::ImageGeneration { .. }
             | ToolSpec::WebSearch { .. }
+            | ToolSpec::AnthropicWebSearch { .. }
+            | ToolSpec::OpenRouterWebSearch { .. }
+            | ToolSpec::XaiWebSearch { .. }
+            | ToolSpec::XiaomiWebSearch { .. }
+            | ToolSpec::QwenWebSearch { .. }
+            | ToolSpec::ZaiWebSearch { .. }
             | ToolSpec::Freeform(_) => return None,
         };
 
@@ -91,7 +97,13 @@ pub fn default_tool_search_text(tool_name: &ToolName, spec: &ToolSpec) -> String
         ToolSpec::ImageGeneration { .. } => {
             push_search_part(&mut parts, "image generation".to_string());
         }
-        ToolSpec::WebSearch { .. } => {
+        ToolSpec::WebSearch { .. }
+        | ToolSpec::AnthropicWebSearch { .. }
+        | ToolSpec::OpenRouterWebSearch { .. }
+        | ToolSpec::XaiWebSearch { .. }
+        | ToolSpec::XiaomiWebSearch { .. }
+        | ToolSpec::QwenWebSearch { .. }
+        | ToolSpec::ZaiWebSearch { .. } => {
             push_search_part(&mut parts, "web search".to_string());
         }
         ToolSpec::Freeform(tool) => {

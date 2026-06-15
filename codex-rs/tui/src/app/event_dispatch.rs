@@ -5,7 +5,9 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::config_update::format_config_error;
+use crate::style::accent_color;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -787,6 +789,98 @@ impl App {
             } => {
                 self.handle_mcp_inventory_result(result, detail, thread_id, target);
             }
+            AppEvent::OpenMcpManager { detail } => {
+                self.chat_widget.open_mcp_manager(detail);
+            }
+            AppEvent::OpenMcpServerDetails { status } => {
+                self.chat_widget.open_mcp_server_details(status);
+            }
+            AppEvent::OpenMcpAddServer => {
+                self.chat_widget.open_mcp_add_server();
+            }
+            AppEvent::AddMcpServer { spec } => {
+                if let Err(err) = self.add_mcp_server_from_spec(app_server, spec).await {
+                    tracing::warn!("failed to add MCP server from TUI action: {err}");
+                }
+            }
+            AppEvent::SetMcpServerEnabled { name, enabled } => {
+                if let Err(err) = self.set_mcp_server_enabled(app_server, name, enabled).await {
+                    tracing::warn!("failed to set MCP server enabled from TUI action: {err}");
+                }
+            }
+            AppEvent::SetMcpToolEnabled {
+                server,
+                tool,
+                enabled,
+            } => {
+                if let Err(err) = self
+                    .set_mcp_tool_enabled(app_server, server, tool, enabled)
+                    .await
+                {
+                    tracing::warn!("failed to set MCP tool enabled from TUI action: {err}");
+                }
+            }
+            AppEvent::StartMcpServerOauthLogin { name } => {
+                self.start_mcp_server_oauth_login(app_server, name);
+            }
+            AppEvent::ReloadMcpServers => {
+                self.reload_mcp_servers(app_server);
+            }
+            AppEvent::OpenBackgroundTerminalManager => {
+                self.chat_widget.open_background_terminal_manager();
+            }
+            AppEvent::OpenBackgroundTerminalStopConfirmation => {
+                self.chat_widget
+                    .open_background_terminal_stop_confirmation();
+            }
+            AppEvent::StopBackgroundTerminals => {
+                self.chat_widget.stop_background_terminals();
+            }
+            AppEvent::PrintBackgroundTerminals => {
+                self.chat_widget.add_ps_output();
+            }
+            AppEvent::McpServersReloaded { result } => match result {
+                Ok(()) => {
+                    self.chat_widget.add_info_message(
+                        "MCP reload queued.".to_string(),
+                        Some(
+                            "Loaded threads pick up new or updated tools before the next turn. Reopening /mcp inventory now.".to_string(),
+                        ),
+                    );
+                    self.chat_widget
+                        .open_mcp_manager(McpServerStatusDetail::Full);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to reload MCP servers: {err}"));
+                }
+            },
+            AppEvent::ShowMcpSetupHelp => {
+                self.chat_widget.add_info_message(
+                    "Use /mcp add <name> <url-or-command...> to add MCP servers.".to_string(),
+                    Some(
+                        "Use --env-var KEY for secrets already in your shell, --bearer-env KEY for HTTP bearer tokens, or edit config.toml directly under [mcp_servers.<name>]. Codewith auto-refreshes MCP tools after managed config changes.".to_string(),
+                    ),
+                );
+            }
+            AppEvent::ShowMcpDiagnosticsHelp { name } => {
+                self.chat_widget.add_info_message(
+                    format!("Diagnose MCP server `{name}`."),
+                    Some(
+                        "Check command/cwd/env for stdio servers and URL/auth/headers for HTTP servers. Managed config changes auto-refresh; /mcp reload remains a diagnostic fallback.".to_string(),
+                    ),
+                );
+            }
+            AppEvent::McpServerOauthLoginStarted { name, result } => match result {
+                Ok(url) => {
+                    self.open_url_in_browser(url);
+                }
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to start MCP OAuth login for {name}: {err}"
+                    ));
+                }
+            },
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
                     result.map_err(|err| color_eyre::eyre::eyre!(err)),
@@ -1018,6 +1112,42 @@ impl App {
                 self.delete_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::OpenBackgroundAgentManager => {
+                self.open_background_agent_manager(app_server).await;
+            }
+            AppEvent::OpenBackgroundAgentActions { agent_id } => {
+                self.open_background_agent_actions(app_server, agent_id)
+                    .await;
+            }
+            AppEvent::StartBackgroundAgent { prompt } => {
+                self.start_background_agent(app_server, prompt).await;
+            }
+            AppEvent::ReadBackgroundAgent { agent_id } => {
+                self.read_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::AttachBackgroundAgent { agent_id } => {
+                self.attach_background_agent(tui, app_server, agent_id)
+                    .await;
+            }
+            AppEvent::ShowBackgroundAgentLogs { agent_id } => {
+                self.show_background_agent_logs(app_server, agent_id).await;
+            }
+            AppEvent::DetachBackgroundAgent { agent_id } => {
+                self.detach_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::StopBackgroundAgent { agent_id } => {
+                self.stop_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::DeleteBackgroundAgent { agent_id } => {
+                self.delete_background_agent(app_server, agent_id).await;
+            }
+            AppEvent::ShowBackgroundAgentDiagnostics => {
+                self.show_background_agent_diagnostics(app_server).await;
+            }
+            AppEvent::PrefillComposer { text } => {
+                self.chat_widget
+                    .restore_user_message_to_composer(crate::chatwidget::UserMessage::from(text));
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget
@@ -1040,6 +1170,13 @@ impl App {
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::MiniMaxUsageLoaded {
+                origin,
+                auth_profile,
+                result,
+            } => {
+                self.apply_minimax_usage_loaded(origin, auth_profile, result);
             }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
@@ -2776,6 +2913,33 @@ impl App {
                 RateLimitRefreshCompletion::None
             }
         }
+    }
+
+    pub(super) fn apply_minimax_usage_loaded(
+        &mut self,
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
+    ) {
+        let MiniMaxUsageRefreshOrigin::StatusCommand { request_id } = origin;
+        if auth_profile != self.config.selected_auth_profile {
+            tracing::debug!(
+                request_auth_profile = ?auth_profile,
+                current_auth_profile = ?self.config.selected_auth_profile,
+                "discarding stale MiniMax usage result after auth profile change"
+            );
+            self.chat_widget.finish_status_minimax_usage_refresh(
+                request_id,
+                Err("MiniMax usage refresh was superseded by an auth profile change".to_string()),
+            );
+            return;
+        }
+
+        if let Err(err) = result.as_ref() {
+            tracing::warn!("MiniMax usage refresh failed during TUI refresh: {err}");
+        }
+        self.chat_widget
+            .finish_status_minimax_usage_refresh(request_id, result);
     }
 }
 

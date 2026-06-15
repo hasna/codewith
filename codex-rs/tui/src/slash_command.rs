@@ -46,6 +46,13 @@ pub enum SlashCommand {
     Loop,
     Schedule,
     Monitor,
+    #[strum(
+        to_string = "session",
+        serialize = "sessions",
+        serialize = "thread",
+        serialize = "threads"
+    )]
+    Session,
     Agent,
     #[strum(
         to_string = "background-agent",
@@ -144,7 +151,11 @@ impl SlashCommand {
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
-            SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::Session => "switch the active session or agent thread",
+            SlashCommand::Agent => "manage durable background agents",
+            SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::BackgroundAgent => "manage durable background agents",
+            SlashCommand::ExternalAgent => "stage an external coding-agent task",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -184,6 +195,8 @@ impl SlashCommand {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -260,6 +273,8 @@ impl SlashCommand {
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::BackgroundAgent
+            | SlashCommand::Session
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

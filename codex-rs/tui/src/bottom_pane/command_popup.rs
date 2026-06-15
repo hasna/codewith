@@ -473,6 +473,7 @@ impl CommandItem {
                 | SlashCommand::Diff
                 | SlashCommand::Mention
                 | SlashCommand::Mcp
+                | SlashCommand::App
                 | SlashCommand::Apps
                 | SlashCommand::Plugins
                 | SlashCommand::Feedback => CommandCategory::Tools,

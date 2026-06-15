@@ -2112,7 +2112,7 @@ async fn load_background_agent_runtime_context(
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         show_raw_agent_reasoning: shared.oss.then_some(true),
         bypass_hook_trust: shared.bypass_hook_trust.then_some(true),
-        auth_profile: shared.auth_profile,
+        auth_profile: shared.auth_profile.map(Some),
         additional_writable_roots: shared.add_dir,
         ..Default::default()
     };

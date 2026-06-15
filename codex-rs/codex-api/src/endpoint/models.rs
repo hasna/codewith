@@ -92,6 +92,16 @@ impl<T: HttpTransport> ModelsClient<T> {
             Some(provider.base_url.as_str()),
         )
         .map_err(|e| {
+            // Keep decode diagnostics bounded; provider model lists can be
+            // noisy and should not be copied wholesale into the error string.
+            const MAX_BODY_PREVIEW_CHARS: usize = 512;
+            let body = String::from_utf8_lossy(&resp.body);
+            let preview: String = body.chars().take(MAX_BODY_PREVIEW_CHARS).collect();
+            let ellipsis = if body.chars().count() > MAX_BODY_PREVIEW_CHARS {
+                "... (truncated)"
+            } else {
+                ""
+            };
             ApiError::Stream(format!(
                 "failed to decode models response: {e}; body: {preview}{ellipsis}"
             ))

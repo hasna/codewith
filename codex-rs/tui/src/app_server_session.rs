@@ -1043,6 +1043,163 @@ impl AppServerSession {
             .wrap_err("thread/monitor/list failed in TUI")
     }
 
+    pub(crate) async fn agent_start(
+        &mut self,
+        prompt: String,
+        cwd: Option<String>,
+        parent_thread_id: Option<ThreadId>,
+        auth_profile_ref: Option<String>,
+    ) -> Result<AgentStartResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentStart {
+                request_id,
+                params: AgentStartParams {
+                    prompt,
+                    cwd,
+                    idempotency_key: None,
+                    request_id: None,
+                    source: Some("tui".to_string()),
+                    prompt_snapshot_ref: None,
+                    input_snapshot_ref: None,
+                    thread_id: None,
+                    thread_store_kind: None,
+                    thread_store_id: None,
+                    rollout_path: None,
+                    parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
+                    parent_agent_run_id: None,
+                    spawn_linkage: None,
+                    auth_profile_ref,
+                    config_fingerprint: None,
+                    version_fingerprint: None,
+                    execution_context: None,
+                },
+            })
+            .await
+            .wrap_err("agent/start failed in TUI")
+    }
+
+    pub(crate) async fn agent_list(&mut self) -> Result<AgentListResponse> {
+        let mut data = Vec::new();
+        let mut cursor = None;
+        loop {
+            let response = self.agent_list_page(cursor, Some(200)).await?;
+            data.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                return Ok(AgentListResponse {
+                    data,
+                    next_cursor: None,
+                });
+            };
+            cursor = Some(next_cursor);
+        }
+    }
+
+    async fn agent_list_page(
+        &mut self,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<AgentListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentList {
+                request_id,
+                params: AgentListParams { cursor, limit },
+            })
+            .await
+            .wrap_err("agent/list failed in TUI")
+    }
+
+    pub(crate) async fn agent_read(&mut self, agent_id: String) -> Result<AgentReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentRead {
+                request_id,
+                params: AgentReadParams { agent_id },
+            })
+            .await
+            .wrap_err("agent/read failed in TUI")
+    }
+
+    pub(crate) async fn agent_attach(&mut self, agent_id: String) -> Result<AgentAttachResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentAttach {
+                request_id,
+                params: AgentAttachParams {
+                    agent_id,
+                    cursor: None,
+                    limit: Some(100),
+                },
+            })
+            .await
+            .wrap_err("agent/attach failed in TUI")
+    }
+
+    pub(crate) async fn agent_events_list(
+        &mut self,
+        agent_id: String,
+    ) -> Result<AgentEventsListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentEventsList {
+                request_id,
+                params: AgentEventsListParams {
+                    agent_id,
+                    cursor: None,
+                    limit: Some(100),
+                },
+            })
+            .await
+            .wrap_err("agent/eventsList failed in TUI")
+    }
+
+    pub(crate) async fn agent_detach(&mut self, agent_id: String) -> Result<AgentDetachResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentDetach {
+                request_id,
+                params: AgentDetachParams { agent_id },
+            })
+            .await
+            .wrap_err("agent/detach failed in TUI")
+    }
+
+    pub(crate) async fn agent_stop(&mut self, agent_id: String) -> Result<AgentStopResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentStop {
+                request_id,
+                params: AgentStopParams { agent_id },
+            })
+            .await
+            .wrap_err("agent/stop failed in TUI")
+    }
+
+    pub(crate) async fn agent_delete(&mut self, agent_id: String) -> Result<AgentDeleteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentDelete {
+                request_id,
+                params: AgentDeleteParams { agent_id },
+            })
+            .await
+            .wrap_err("agent/delete failed in TUI")
+    }
+
+    pub(crate) async fn agent_daemon_diagnostics(
+        &mut self,
+    ) -> Result<AgentDaemonDiagnosticsResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentDaemonDiagnostics {
+                request_id,
+                params: AgentDaemonDiagnosticsParams {},
+            })
+            .await
+            .wrap_err("agent/daemon/diagnostics failed in TUI")
+    }
+
     pub(crate) async fn thread_monitor_read(
         &mut self,
         thread_id: ThreadId,

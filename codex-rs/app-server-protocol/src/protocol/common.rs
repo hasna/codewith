@@ -601,6 +601,66 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMonitorDeleteResponse,
     },
+    #[experimental("agent/start")]
+    AgentStart => "agent/start" {
+        params: v2::AgentStartParams,
+        serialization: global("agent"),
+        response: v2::AgentStartResponse,
+    },
+    #[experimental("agent/list")]
+    AgentList => "agent/list" {
+        params: v2::AgentListParams,
+        serialization: global("agent"),
+        response: v2::AgentListResponse,
+    },
+    #[experimental("agent/read")]
+    AgentRead => "agent/read" {
+        params: v2::AgentReadParams,
+        serialization: global("agent"),
+        response: v2::AgentReadResponse,
+    },
+    #[experimental("agent/attach")]
+    AgentAttach => "agent/attach" {
+        params: v2::AgentAttachParams,
+        serialization: global("agent"),
+        response: v2::AgentAttachResponse,
+    },
+    #[experimental("agent/detach")]
+    AgentDetach => "agent/detach" {
+        params: v2::AgentDetachParams,
+        serialization: global("agent"),
+        response: v2::AgentDetachResponse,
+    },
+    #[experimental("agent/stop")]
+    AgentStop => "agent/stop" {
+        params: v2::AgentStopParams,
+        serialization: global("agent"),
+        response: v2::AgentStopResponse,
+    },
+    #[experimental("agent/delete")]
+    AgentDelete => "agent/delete" {
+        params: v2::AgentDeleteParams,
+        serialization: global("agent"),
+        response: v2::AgentDeleteResponse,
+    },
+    #[experimental("agent/events/list")]
+    AgentEventsList => "agent/events/list" {
+        params: v2::AgentEventsListParams,
+        serialization: global("agent"),
+        response: v2::AgentEventsListResponse,
+    },
+    #[experimental("agent/pendingInteraction/respond")]
+    AgentPendingInteractionRespond => "agent/pendingInteraction/respond" {
+        params: v2::AgentPendingInteractionRespondParams,
+        serialization: global("agent"),
+        response: v2::AgentPendingInteractionRespondResponse,
+    },
+    #[experimental("agent/daemon/diagnostics")]
+    AgentDaemonDiagnostics => "agent/daemon/diagnostics" {
+        params: v2::AgentDaemonDiagnosticsParams,
+        serialization: global("agent"),
+        response: v2::AgentDaemonDiagnosticsResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -1627,6 +1687,8 @@ server_notification_definitions! {
     ThreadMonitorUpdated => "thread/monitor/updated" (v2::ThreadMonitorUpdatedNotification),
     ThreadMonitorDeleted => "thread/monitor/deleted" (v2::ThreadMonitorDeletedNotification),
     ThreadMonitorEvent => "thread/monitor/event" (v2::ThreadMonitorEventNotification),
+    #[experimental("thread/externalAgent/event")]
+    ThreadExternalAgentEvent => "thread/externalAgent/event" (v2::ThreadExternalAgentEventNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),

@@ -69,6 +69,9 @@ impl ChatWidget {
             ServerNotification::ThreadMonitorEvent(notification) => {
                 self.on_thread_monitor_event(notification.monitor, notification.event);
             }
+            ServerNotification::ThreadExternalAgentEvent(notification) => {
+                self.on_thread_external_agent_event(notification.run_id, notification.event);
+            }
             ServerNotification::ThreadSettingsUpdated(notification) => {
                 self.on_thread_settings_updated(notification);
             }

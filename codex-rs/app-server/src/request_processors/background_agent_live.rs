@@ -57,6 +57,7 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::StateDbHandle;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::join_all;
 use serde_json::Value;
 use serde_json::json;
@@ -998,7 +999,6 @@ async fn start_or_resume_background_thread(
             session_source: Some(SessionSource::Custom("background_agent".to_string())),
             thread_source: Some(ThreadSource::Subagent),
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: Some("background-agent".to_string()),
             parent_trace: None,
             environments,
@@ -1029,9 +1029,10 @@ async fn load_background_agent_config(
             roots
                 .iter()
                 .filter_map(Value::as_str)
-                .map(PathBuf::from)
-                .collect::<Vec<_>>()
-        });
+                .map(AbsolutePathBuf::relative_to_current_dir)
+                .collect::<std::io::Result<Vec<_>>>()
+        })
+        .transpose()?;
     let model = payload
         .and_then(|payload| payload.get("model"))
         .and_then(Value::as_str)
@@ -1091,7 +1092,7 @@ async fn load_background_agent_config(
                 sandbox_mode,
                 permission_profile,
                 default_permissions,
-                auth_profile: run.auth_profile_ref.clone(),
+                auth_profile: Some(run.auth_profile_ref.clone()),
                 codex_linux_sandbox_exe: context.arg0_paths.codex_linux_sandbox_exe.clone(),
                 main_execve_wrapper_exe: context.arg0_paths.main_execve_wrapper_exe.clone(),
                 ..Default::default()

@@ -81,6 +81,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadMonitorEvent(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadExternalAgentEvent(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadSettingsUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

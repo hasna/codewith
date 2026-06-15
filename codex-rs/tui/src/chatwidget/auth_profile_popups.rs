@@ -79,9 +79,10 @@ impl ChatWidget {
                 resume_queued_input: false,
             });
         })];
+        let relogin_profile_name = profile.name.clone();
         let rename_profile_name = profile.name.clone();
         let delete_profile_name = profile.name.clone();
-        let relogin_profile_name = profile.name.clone();
+        let settings_profile_name = profile.name.clone();
         let shortcut_actions = vec![
             SelectionShortcutAction {
                 binding: key_hint::plain(KeyCode::Char('l')),
@@ -95,8 +96,17 @@ impl ChatWidget {
             SelectionShortcutAction {
                 binding: key_hint::plain(KeyCode::Char('r')),
                 action: Box::new(move |tx| {
-                    tx.send(AppEvent::ReloginAuthProfile {
-                        profile: relogin_profile_name.clone(),
+                    tx.send(AppEvent::OpenAuthProfileRenamePrompt {
+                        profile: rename_profile_name.clone(),
+                    });
+                }),
+                dismiss_on_select: true,
+            },
+            SelectionShortcutAction {
+                binding: key_hint::plain(KeyCode::Char('d')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAuthProfileDeleteConfirm {
+                        profile: delete_profile_name.clone(),
                     });
                 }),
                 dismiss_on_select: true,

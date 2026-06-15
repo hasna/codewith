@@ -4,11 +4,13 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::config::ConstraintError;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_known_provider_models::provider_for_fallback_model;
 use codex_model_provider::model_cache_key_for_configured_provider;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::XIAOMI_PROVIDER_ID;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -508,6 +510,8 @@ fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str
         || model_provider_id.eq_ignore_ascii_case(OPENROUTER_PROVIDER_ID)
     {
         Some("openai/gpt-oss-120b")
+    } else if model_provider_id.eq_ignore_ascii_case(XIAOMI_PROVIDER_ID) {
+        Some("mimo-v2.5-pro-ultraspeed")
     } else {
         None
     }
@@ -576,48 +580,6 @@ impl Session {
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
-    }
-
-    pub(crate) fn model_client_session_for_turn(
-        &self,
-        turn_context: &TurnContext,
-    ) -> ModelClientSession {
-        if self
-            .services
-            .model_client
-            .uses_provider(turn_context.provider.info())
-        {
-            return self.services.model_client.new_session();
-        }
-
-        let model_client = ModelClient::new(
-            Some(Arc::clone(&self.services.auth_manager)),
-            self.session_id(),
-            self.conversation_id,
-            self.installation_id.clone(),
-            turn_context.provider.info().clone(),
-            turn_context.session_source.clone(),
-            turn_context.parent_thread_id,
-            turn_context.config.model_verbosity,
-            turn_context
-                .config
-                .features
-                .enabled(Feature::EnableRequestCompression),
-            turn_context
-                .config
-                .features
-                .enabled(Feature::RuntimeMetrics),
-            Self::build_model_client_beta_features_header(turn_context.config.as_ref()),
-            self.services.attestation_provider.clone(),
-        )
-        .with_prompt_cache_key_override(
-            crate::guardian::prompt_cache_key_override_for_review_session(
-                &turn_context.session_source,
-                turn_context.parent_thread_id,
-            ),
-        );
-        model_client.set_window_generation(self.services.model_client.current_window_generation());
-        model_client.new_session()
     }
 
     #[instrument(name = "session_init", level = "info", skip_all)]

@@ -239,6 +239,23 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     &[]
 }
 
+pub fn provider_for_fallback_model<'a>(
+    model_id: &str,
+    provider_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let mut matches = provider_ids
+        .into_iter()
+        .filter(|provider_id| provider_fallback_models_contain(provider_id, model_id));
+    let provider_id = matches.next()?;
+    matches.next().is_none().then_some(provider_id)
+}
+
+fn provider_fallback_models_contain(provider_id: &str, model_id: &str) -> bool {
+    fallback_models_for_provider(provider_id)
+        .iter()
+        .any(|model| model.id == model_id)
+}
+
 fn provider_id_matches(provider_id: Option<&str>, expected: &str) -> bool {
     provider_id.is_some_and(|provider_id| provider_id.eq_ignore_ascii_case(expected))
 }
@@ -309,5 +326,32 @@ mod tests {
         assert_eq!(models[1].id, "claude-opus-4-8");
         assert_eq!(models[2].id, "claude-sonnet-4-6");
         assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn provider_for_fallback_model_finds_unique_configured_provider() {
+        assert_eq!(
+            provider_for_fallback_model(
+                "mimo-v2.5-pro-ultraspeed",
+                ["openai", "xiaomi", "anthropic"]
+            ),
+            Some("xiaomi")
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_ignores_unconfigured_provider() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["openai", "anthropic"]),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_for_fallback_model_requires_unique_match() {
+        assert_eq!(
+            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["xiaomi", "xiaomi"]),
+            None
+        );
     }
 }

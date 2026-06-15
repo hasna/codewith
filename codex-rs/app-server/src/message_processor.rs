@@ -1212,6 +1212,38 @@ impl MessageProcessor {
                     .thread_monitor_delete(request_id.clone(), params)
                     .await
             }
+            ClientRequest::AgentStart { params, .. } => {
+                self.thread_processor.agent_start(params).await
+            }
+            ClientRequest::AgentList { params, .. } => {
+                self.thread_processor.agent_list(params).await
+            }
+            ClientRequest::AgentRead { params, .. } => {
+                self.thread_processor.agent_read(params).await
+            }
+            ClientRequest::AgentAttach { params, .. } => {
+                self.thread_processor.agent_attach(params).await
+            }
+            ClientRequest::AgentDetach { params, .. } => {
+                self.thread_processor.agent_detach(params).await
+            }
+            ClientRequest::AgentStop { params, .. } => {
+                self.thread_processor.agent_stop(params).await
+            }
+            ClientRequest::AgentDelete { params, .. } => {
+                self.thread_processor.agent_delete(params).await
+            }
+            ClientRequest::AgentEventsList { params, .. } => {
+                self.thread_processor.agent_events_list(params).await
+            }
+            ClientRequest::AgentPendingInteractionRespond { params, .. } => {
+                self.thread_processor
+                    .agent_pending_interaction_respond(params)
+                    .await
+            }
+            ClientRequest::AgentDaemonDiagnostics { params, .. } => {
+                self.thread_processor.agent_daemon_diagnostics(params).await
+            }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
                 self.thread_processor.thread_metadata_update(params).await
             }

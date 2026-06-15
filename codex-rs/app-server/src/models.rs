@@ -14,6 +14,8 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 
+pub use codex_known_provider_models::provider_for_fallback_model;
+
 pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
     include_hidden: bool,

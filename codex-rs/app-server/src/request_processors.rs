@@ -569,6 +569,7 @@ mod plugins;
 mod process_exec_processor;
 mod remote_control_processor;
 mod search;
+mod thread_external_agent_processor;
 mod thread_monitor_api;
 mod thread_monitor_processor;
 mod thread_monitor_runtime;

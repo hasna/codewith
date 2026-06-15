@@ -5,7 +5,8 @@
 //!   2. User-defined entries inside `~/.codewith/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 //!
-//! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA, OpenRouter, and Xiaomi MiMo.
+//! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA,
+//! OpenRouter, xAI, Xiaomi, DeepSeek, Alibaba Qwen, Google Gemini, Z.ai, and MiniMax.
 
 mod provider_credentials;
 
@@ -51,9 +52,28 @@ pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const XAI_PROVIDER_NAME: &str = "xAI";
+pub const XAI_PROVIDER_ID: &str = "xai";
+pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_PROVIDER_NAME: &str = "Xiaomi MiMo";
 pub const XIAOMI_PROVIDER_ID: &str = "xiaomi";
 pub const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
+const DEEPSEEK_PROVIDER_NAME: &str = "DeepSeek";
+pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
+pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+const QWEN_PROVIDER_NAME: &str = "Alibaba Qwen";
+pub const QWEN_PROVIDER_ID: &str = "qwen";
+pub const QWEN_BASE_URL: &str =
+    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+const GOOGLE_PROVIDER_NAME: &str = "Google Gemini";
+pub const GOOGLE_PROVIDER_ID: &str = "google";
+pub const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const ZAI_PROVIDER_NAME: &str = "Z.ai";
+pub const ZAI_PROVIDER_ID: &str = "zai";
+pub const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+const MINIMAX_PROVIDER_NAME: &str = "MiniMax";
+pub const MINIMAX_PROVIDER_ID: &str = "minimax";
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -413,6 +433,28 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_xai_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: XAI_PROVIDER_NAME.into(),
+            base_url: Some(XAI_BASE_URL.into()),
+            env_key: Some("XAI_API_KEY".into()),
+            env_key_instructions: Some("Set XAI_API_KEY to an xAI API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_anthropic_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: ANTHROPIC_PROVIDER_NAME.into(),
@@ -485,6 +527,125 @@ impl ModelProviderInfo {
             base_url: Some(XIAOMI_BASE_URL.into()),
             env_key: Some("MIMO_API_KEY".into()),
             env_key_instructions: Some("Set MIMO_API_KEY to a Xiaomi MiMo API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: Some(HashMap::from([(
+                "api-key".to_string(),
+                "MIMO_API_KEY".to_string(),
+            )])),
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_deepseek_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: DEEPSEEK_PROVIDER_NAME.into(),
+            base_url: Some(DEEPSEEK_BASE_URL.into()),
+            env_key: Some("DEEPSEEK_API_KEY".into()),
+            env_key_instructions: Some("Set DEEPSEEK_API_KEY to a DeepSeek API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_qwen_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: QWEN_PROVIDER_NAME.into(),
+            base_url: Some(QWEN_BASE_URL.into()),
+            env_key: Some("DASHSCOPE_API_KEY".into()),
+            env_key_instructions: Some(
+                "Set DASHSCOPE_API_KEY to an Alibaba Model Studio API key.".into(),
+            ),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_google_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: GOOGLE_PROVIDER_NAME.into(),
+            base_url: Some(GOOGLE_BASE_URL.into()),
+            env_key: Some("GEMINI_API_KEY".into()),
+            env_key_instructions: Some(
+                "Set GEMINI_API_KEY to a Google AI Studio Gemini API key.".into(),
+            ),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_zai_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: ZAI_PROVIDER_NAME.into(),
+            base_url: Some(ZAI_BASE_URL.into()),
+            env_key: Some("ZAI_API_KEY".into()),
+            env_key_instructions: Some("Set ZAI_API_KEY to a Z.ai API key.".into()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_minimax_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: MINIMAX_PROVIDER_NAME.into(),
+            base_url: Some(MINIMAX_BASE_URL.into()),
+            env_key: Some("MINIMAX_API_KEY".into()),
+            env_key_instructions: Some(
+                "Set MINIMAX_API_KEY to a MiniMax Subscription Key or API key.".into(),
+            ),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
@@ -677,33 +838,23 @@ pub fn default_wire_api_for_builtin_provider_override(provider_id: &str) -> Wire
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,
 ) -> HashMap<String, ModelProviderInfo> {
-    use ModelProviderInfo as P;
-    let openai_provider = P::create_openai_provider(openai_base_url);
-    let anthropic_provider = P::create_anthropic_provider();
-    let cerebras_provider = P::create_cerebras_provider();
-    let nvidia_provider = P::create_nvidia_provider();
-    let openrouter_provider = P::create_openrouter_provider();
-    let xiaomi_provider = P::create_xiaomi_provider();
-
-    [
-        (OPENAI_PROVIDER_ID, openai_provider),
-        (ANTHROPIC_PROVIDER_ID, anthropic_provider),
-        (CEREBRAS_PROVIDER_ID, cerebras_provider),
-        (NVIDIA_PROVIDER_ID, nvidia_provider),
-        (OPENROUTER_PROVIDER_ID, openrouter_provider),
-        (XIAOMI_PROVIDER_ID, xiaomi_provider),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
+    BUILT_IN_MODEL_PROVIDER_SPECS
+        .iter()
+        .map(|spec| {
+            (
+                spec.id.to_string(),
+                spec.create_provider(openai_base_url.clone()),
+            )
+        })
+        .collect()
 }
 
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable. Anthropic, OpenRouter, Cerebras, NVIDIA, and Xiaomi
-/// remain overridable so users can point them at compatible mirrors. Amazon
-/// Bedrock is no longer built in, but an explicit
+/// generally overridable. The built-in provider spec table marks which
+/// provider defaults remain partially overridable so users can point them at
+/// compatible mirrors. Amazon Bedrock is no longer built in, but an explicit
 /// `[model_providers.amazon-bedrock.aws]` block still enables the provider with
 /// the default Bedrock endpoint and optional AWS profile.
 pub fn merge_configured_model_providers(
@@ -733,12 +884,7 @@ pub fn merge_configured_model_providers(
                     built_in_aws.region = Some(region);
                 }
             }
-        } else if key == ANTHROPIC_PROVIDER_ID
-            || key == OPENROUTER_PROVIDER_ID
-            || key == CEREBRAS_PROVIDER_ID
-            || key == NVIDIA_PROVIDER_ID
-            || key == XIAOMI_PROVIDER_ID
-        {
+        } else if allows_partial_builtin_provider_override(&key) {
             if let Some(built_in_provider) = model_providers.get_mut(&key) {
                 apply_provider_override(built_in_provider, provider);
             } else {
