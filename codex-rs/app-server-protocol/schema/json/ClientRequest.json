@@ -5,6 +5,71 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "ActiveSessionListParams": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional page size; defaults to no limit.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ActiveSessionMessageDelivery": {
+      "enum": [
+        "queueOnly",
+        "triggerTurn"
+      ],
+      "type": "string"
+    },
+    "ActiveSessionSendParams": {
+      "properties": {
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ActiveSessionMessageDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "senderLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "senderThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
     "AddCreditsNudgeCreditType": {
       "enum": [
         "credits",
@@ -5683,6 +5748,54 @@
         "params"
       ],
       "title": "Thread/loaded/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "activeSession/list"
+          ],
+          "title": "ActiveSession/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ActiveSessionListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ActiveSession/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "activeSession/send"
+          ],
+          "title": "ActiveSession/sendRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ActiveSessionSendParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ActiveSession/sendRequest",
       "type": "object"
     },
     {

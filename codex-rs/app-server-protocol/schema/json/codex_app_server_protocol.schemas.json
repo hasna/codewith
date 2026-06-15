@@ -1003,6 +1003,54 @@
             },
             "method": {
               "enum": [
+                "activeSession/list"
+              ],
+              "title": "ActiveSession/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ActiveSessionListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ActiveSession/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "activeSession/send"
+              ],
+              "title": "ActiveSession/sendRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ActiveSessionSendParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ActiveSession/sendRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/read"
               ],
               "title": "Thread/readRequestMethod",
@@ -6301,6 +6349,206 @@
           "id"
         ],
         "type": "object"
+      },
+      "ActiveSessionCapability": {
+        "enum": [
+          "receiveMessage",
+          "queueMessage",
+          "triggerTurn",
+          "claudeChannelBridge"
+        ],
+        "type": "string"
+      },
+      "ActiveSessionListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "description": "Opaque pagination cursor returned by a previous call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Optional page size; defaults to no limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ActiveSessionListParams",
+        "type": "object"
+      },
+      "ActiveSessionListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/ActiveSessionPeer"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ActiveSessionListResponse",
+        "type": "object"
+      },
+      "ActiveSessionMessageDelivery": {
+        "enum": [
+          "queueOnly",
+          "triggerTurn"
+        ],
+        "type": "string"
+      },
+      "ActiveSessionPeer": {
+        "properties": {
+          "agentPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/definitions/v2/ActiveSessionCapability"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/definitions/v2/ActiveSessionPeerKind"
+          },
+          "lastSeenAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "peerId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "capabilities",
+          "cwd",
+          "kind",
+          "lastSeenAt",
+          "peerId",
+          "sessionId",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "ActiveSessionPeerKind": {
+        "enum": [
+          "codewithSession",
+          "spawnedAgent",
+          "bridgeAdapter"
+        ],
+        "type": "string"
+      },
+      "ActiveSessionSendParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ActiveSessionMessageDelivery"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "senderLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "senderThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetThreadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "targetThreadId"
+        ],
+        "title": "ActiveSessionSendParams",
+        "type": "object"
+      },
+      "ActiveSessionSendResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "senderThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/v2/ActiveSessionSendStatus"
+          },
+          "targetThreadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "status",
+          "targetThreadId"
+        ],
+        "title": "ActiveSessionSendResponse",
+        "type": "object"
+      },
+      "ActiveSessionSendStatus": {
+        "enum": [
+          "delivered",
+          "notLoaded"
+        ],
+        "type": "string"
       },
       "AddCreditsNudgeCreditType": {
         "enum": [

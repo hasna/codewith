@@ -136,6 +136,7 @@ Example with notification opt-out:
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. Experimental clients can read `runtimeWorkspaceRoots` for the thread-scoped runtime roots and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known.
 - `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Subagent threads also include `parentThreadId` when the immediate control/spawn parent is known.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
+- `activeSession/list` and `activeSession/send` — list currently loaded message-capable sessions and send a message to a loaded target. Delivery is active-only: an unloaded target returns `status: "notLoaded"` and app-server does not resume the thread or store an offline message.
 - `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/turns/items/list` — experimental; reserved for paging full items for one turn. The API shape is present, but app-server currently returns an unsupported-method JSON-RPC error.
@@ -431,6 +432,59 @@ When `nextCursor` is `null`, you’ve reached the final page.
 { "method": "thread/loaded/list", "id": 21 }
 { "id": 21, "result": {
     "data": ["thr_123", "thr_456"]
+} }
+```
+
+### Example: List and message active sessions
+
+`activeSession/list` returns message-capable sessions that are currently loaded in memory. This is an active-session surface, not an inbox: inactive or unloaded threads are omitted.
+
+```json
+{ "method": "activeSession/list", "id": 22, "params": { "limit": 20 } }
+{ "id": 22, "result": {
+    "data": [{
+        "peerId": "thr_123",
+        "kind": "codewithSession",
+        "threadId": "thr_123",
+        "sessionId": "sess_abc",
+        "cwd": "/Users/me/project",
+        "displayName": null,
+        "agentPath": null,
+        "capabilities": ["receiveMessage", "queueMessage", "triggerTurn"],
+        "lastSeenAt": 1781510000
+    }],
+    "nextCursor": null
+} }
+```
+
+`activeSession/send` delivers only to a currently loaded target. Use `delivery: "queueOnly"` to enqueue the message without waking the target, or `delivery: "triggerTurn"` to ask the target to process it immediately.
+
+```json
+{ "method": "activeSession/send", "id": 23, "params": {
+    "targetThreadId": "thr_123",
+    "senderThreadId": "thr_456",
+    "senderLabel": "review session",
+    "delivery": "queueOnly",
+    "message": "Please inspect the retry path."
+} }
+{ "id": 23, "result": {
+    "status": "delivered",
+    "messageId": "018f...",
+    "targetThreadId": "thr_123",
+    "senderThreadId": "thr_456",
+    "reason": null
+} }
+```
+
+If the target is inactive or unloaded, app-server returns a typed response and does not resume or persist a message for that thread:
+
+```json
+{ "id": 24, "result": {
+    "status": "notLoaded",
+    "messageId": "018f...",
+    "targetThreadId": "thr_missing",
+    "senderThreadId": null,
+    "reason": "target thread is not currently loaded; inactive delivery is deferred"
 } }
 ```
 

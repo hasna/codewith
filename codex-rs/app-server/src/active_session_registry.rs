@@ -88,7 +88,6 @@ impl ActivePeer {
 pub(crate) enum ActivePeerKind {
     CodewithSession,
     SpawnedAgent,
-    BridgeAdapter { adapter: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
