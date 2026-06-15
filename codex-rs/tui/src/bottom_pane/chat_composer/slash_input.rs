@@ -6,7 +6,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 
-use crate::bottom_pane::command_popup::CommandCategory;
 use crate::bottom_pane::command_popup::CommandItem;
 use crate::bottom_pane::command_popup::CommandPopup;
 use crate::bottom_pane::command_popup::CommandPopupFlags;
@@ -167,14 +166,6 @@ impl<'a> SlashInput<'a> {
         if name.is_empty() {
             return rest.is_empty();
         }
-        if name
-            .split_once('/')
-            .and_then(|(category, _)| CommandCategory::from_path(category))
-            .is_some()
-        {
-            return true;
-        }
-
         has_slash_command_prefix(name, self.command_flags, self.service_tier_commands)
     }
 
@@ -362,20 +353,6 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
-                    if matches!(sel, CommandItem::Category(_)) {
-                        if let Some(completed_text) = selected_command_completion(
-                            self.draft.textarea.text().lines().next().unwrap_or(""),
-                            &sel,
-                        ) {
-                            self.draft
-                                .textarea
-                                .set_text_clearing_elements(&completed_text);
-                            self.draft.is_bash_mode = false;
-                            self.draft.textarea.set_cursor(completed_text.len());
-                        }
-                        return (InputResult::None, true);
-                    }
-
                     if self
                         .complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
                             &sel,
@@ -394,7 +371,6 @@ impl ChatComposer {
                             CommandItem::ServiceTier(command) => {
                                 InputResult::ServiceTierCommand(command)
                             }
-                            CommandItem::Category(_) => InputResult::None,
                         },
                         true,
                     );
@@ -521,22 +497,8 @@ pub(super) fn selected_command_completion(
     command: &CommandItem,
 ) -> Option<String> {
     let selected_command_text = format!("/{}", command.command());
-    if matches!(command, CommandItem::Category(_)) {
-        return (!first_line.trim_start().starts_with(&selected_command_text))
-            .then_some(selected_command_text);
-    }
-
-    (first_line_has_slash_category_filter(first_line)
-        || !first_line.trim_start().starts_with(&selected_command_text))
-    .then(|| format!("{selected_command_text} "))
-}
-
-fn first_line_has_slash_category_filter(first_line: &str) -> bool {
-    first_line
-        .trim_start()
-        .strip_prefix('/')
-        .and_then(|text| text.split_whitespace().next())
-        .is_some_and(|token| token.contains('/'))
+    (!first_line.trim_start().starts_with(&selected_command_text))
+        .then(|| format!("{selected_command_text} "))
 }
 
 pub(super) fn prepared_args(prepared_text: &str) -> Option<(&str, usize)> {
@@ -690,17 +652,19 @@ mod tests {
     }
 
     #[test]
-    fn slash_category_selection_narrows_command_popup() {
+    fn slash_root_enter_dispatches_first_flat_command() {
         let mut composer = composer_with_text_at_cursor("/", 1);
 
-        assert_eq!(press(&mut composer, KeyCode::Enter), InputResult::None);
-        assert_eq!(composer.draft.textarea.text(), "/session/");
-        assert_eq!(composer.draft.textarea.cursor(), "/session/".len());
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Model)
+        );
+        assert!(composer.draft.textarea.is_empty());
     }
 
     #[test]
-    fn slash_category_filter_completes_nested_command() {
-        let mut composer = composer_with_text_at_cursor("/session/se", "/session/se".len());
+    fn slash_prefix_completes_flat_session_command() {
+        let mut composer = composer_with_text_at_cursor("/se", "/se".len());
 
         assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
         assert_eq!(composer.draft.textarea.text(), "/session ");

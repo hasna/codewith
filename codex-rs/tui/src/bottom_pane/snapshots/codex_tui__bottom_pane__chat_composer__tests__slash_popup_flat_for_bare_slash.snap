@@ -1,0 +1,14 @@
+---
+source: tui/src/bottom_pane/chat_composer.rs
+expression: terminal.backend()
+---
+"                                                                        "
+"› /                                                                     "
+"                                                                        "
+"  /model           choose what model and reasoning effort to use        "
+"  /profile         choose the auth profile for this session             "
+"  /provider        choose the default model provider                    "
+"  /config          configure config.toml interactively                  "
+"  /ide             include current selection, open files, and other     "
+"                   context from your IDE                                "
+"  /permissions     choose what Codewith is allowed to do                "
