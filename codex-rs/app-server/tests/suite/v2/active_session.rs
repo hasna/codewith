@@ -237,6 +237,7 @@ async fn active_session_send_queue_only_reaches_target_next_turn_mailbox() -> Re
                 "Active session message {} from queue-only test:\n\nqueued delivery evidence",
                 send_response.message_id
             ),
+            encrypted_content: None,
             trigger_turn: false,
         }]
     );
@@ -289,6 +290,7 @@ async fn active_session_send_trigger_turn_wakes_target_mailbox() -> Result<()> {
                 "Active session message {} from trigger-turn test:\n\nwake delivery evidence",
                 send_response.message_id
             ),
+            encrypted_content: None,
             trigger_turn: true,
         }]
     );

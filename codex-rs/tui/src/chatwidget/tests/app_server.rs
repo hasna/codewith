@@ -32,7 +32,6 @@ fn thread_settings_for_test(
                 },
             },
             personality: Some(Personality::Pragmatic),
-            auth_profile: None,
         },
     }
 }

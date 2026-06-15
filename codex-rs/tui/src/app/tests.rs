@@ -3484,7 +3484,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
             sentry_config,
         )]))
         .expect("test MCP servers should accept any configuration");
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
@@ -3556,7 +3556,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
 async fn app_scoped_mcp_startup_notifications_do_not_render_in_active_thread() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     while app_event_rx.try_recv().is_ok() {}
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let thread_id = ThreadId::new();
@@ -3564,7 +3564,7 @@ async fn app_scoped_mcp_startup_notifications_do_not_render_in_active_thread() {
     app.active_thread_id = Some(thread_id);
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(
             ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                 thread_id: None,
@@ -3598,7 +3598,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
             sentry_config,
         )]))
         .expect("test MCP servers should accept any configuration");
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
@@ -3627,7 +3627,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
         McpServerStartupState::Failed,
     ] {
         app.handle_app_server_event(
-            &app_server,
+            &mut app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(
                 ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                     thread_id: Some(side_thread_id.to_string()),
@@ -6119,7 +6119,6 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
-            auth_profile: None,
         },
     };
     app.enqueue_thread_notification(

@@ -2772,6 +2772,7 @@ fn profile_usage_snapshot(
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }
@@ -2881,6 +2882,7 @@ async fn profile_login_prompt_snapshot_and_submit() {
     for ch in " work-dev ".chars() {
         chat.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
     }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_matches!(

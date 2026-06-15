@@ -357,7 +357,7 @@ mod tests {
             .harness_overrides(ConfigOverrides {
                 cwd: Some(cwd.to_path_buf()),
                 codex_self_exe: Some(PathBuf::from("/usr/local/bin/codewith")),
-                auth_profile: Some("work".to_string()),
+                auth_profile: Some(Some("work".to_string())),
                 ..Default::default()
             })
             .build()

@@ -2040,6 +2040,7 @@ mod tests {
             thread_id,
             thread_label: None,
             call_id: "permissions".to_string(),
+            environment_id: None,
             reason: None,
             permissions: RequestPermissionProfile {
                 network: Some(NetworkPermissions {

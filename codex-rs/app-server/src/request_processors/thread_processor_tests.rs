@@ -808,6 +808,7 @@ mod thread_processor_behavior_tests {
                     developer_instructions: None,
                 },
             },
+            selected_auth_profile: None,
             session_source: SessionSource::Cli,
             forked_from_thread_id: None,
             parent_thread_id: None,
