@@ -82,6 +82,16 @@ enum BackgroundAgentSlashCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum ActiveSessionSlashCommand {
+    List,
+    Send {
+        target_thread_id: String,
+        message: String,
+        wake: bool,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct MonitorSlashParseError {
     message: String,
     hint: Option<String>,
@@ -102,8 +112,14 @@ const LOOP_USAGE_HINT: &str =
     "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list";
 const SCHEDULE_USAGE: &str = "Usage: /schedule <time> <prompt>";
 const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list";
-const MONITOR_USAGE: &str = "Usage: /monitor <request>";
-const MONITOR_USAGE_HINT: &str = "Example: /monitor <request>";
+const MONITOR_USAGE: &str =
+    "Usage: /monitor <request> | /monitor [list|read|stop|restart|delete] [id]";
+const MONITOR_USAGE_HINT: &str =
+    "Examples: /monitor watch CI, /monitor list, /monitor read mon-123";
+const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <thread-id> <message>|list|diagnostics|start <prompt>|read|attach|detach|stop|delete] [id]";
+const BACKGROUND_AGENT_USAGE_HINT: &str =
+    "Examples: /agent peers, /agent send <thread-id> hello, /agent start fix the flaky test";
+const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <thread-id> <message>";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build] [task]";
 const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
@@ -1166,22 +1182,82 @@ impl ChatWidget {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
                     return;
                 }
-                let user_message = self.prepared_inline_user_message(
-                    monitor_setup_prompt(trimmed),
-                    text_elements,
-                    local_images,
-                    remote_image_urls,
-                    mention_bindings,
+                let command = match parse_monitor_slash_args(trimmed) {
+                    Ok(MonitorSlashCommand::Create) => {
+                        let user_message = self.prepared_inline_user_message(
+                            monitor_setup_prompt(trimmed),
+                            text_elements,
+                            local_images,
+                            remote_image_urls,
+                            mention_bindings,
+                            source,
+                        );
+                        if self.is_session_configured() {
+                            self.reasoning_buffer.clear();
+                            self.full_reasoning_buffer.clear();
+                            self.set_status_header(String::from("Working"));
+                            self.submit_user_message(user_message);
+                        } else {
+                            self.queue_user_message(user_message);
+                        }
+                        return;
+                    }
+                    Ok(MonitorSlashCommand::Manage(command)) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(MONITOR_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.dispatch_monitor_slash_command(command, trimmed, source);
+            }
+            SlashCommand::Agent | SlashCommand::BackgroundAgent if !trimmed.is_empty() => {
+                if cmd == SlashCommand::Agent {
+                    match parse_active_session_slash_args(trimmed) {
+                        Ok(Some(command)) => {
+                            self.dispatch_active_session_slash_command(command, trimmed, source);
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            self.add_error_message(err.message);
+                            if let Some(hint) = err.hint {
+                                self.add_info_message(
+                                    BACKGROUND_AGENT_USAGE.to_string(),
+                                    Some(hint),
+                                );
+                            }
+                            if source == SlashCommandDispatchSource::Live {
+                                self.bottom_pane.drain_pending_submission_state();
+                            }
+                            return;
+                        }
+                    }
+                }
+                let command = match parse_background_agent_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(BACKGROUND_AGENT_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.dispatch_background_agent_slash_command(
+                    cmd.command(),
+                    command,
+                    trimmed,
                     source,
                 );
-                if self.is_session_configured() {
-                    self.reasoning_buffer.clear();
-                    self.full_reasoning_buffer.clear();
-                    self.set_status_header(String::from("Working"));
-                    self.submit_user_message(user_message);
-                } else {
-                    self.queue_user_message(user_message);
-                }
             }
             SlashCommand::Recap if !trimmed.is_empty() => {
                 self.dispatch_recap_slash_command(Some(trimmed.to_string()));
@@ -1550,6 +1626,34 @@ impl ChatWidget {
         }
     }
 
+    fn dispatch_active_session_slash_command(
+        &mut self,
+        command: ActiveSessionSlashCommand,
+        trimmed: &str,
+        source: SlashCommandDispatchSource,
+    ) {
+        match command {
+            ActiveSessionSlashCommand::List => {
+                self.app_event_tx.send(AppEvent::ListActiveSessions);
+            }
+            ActiveSessionSlashCommand::Send {
+                target_thread_id,
+                message,
+                wake,
+            } => {
+                self.app_event_tx.send(AppEvent::SendActiveSessionMessage {
+                    target_thread_id,
+                    message,
+                    wake,
+                });
+            }
+        }
+        self.append_message_history_entry(format!("/agent {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
     pub(super) fn submit_queued_slash_prompt(&mut self, user_message: UserMessage) -> QueueDrain {
         let UserMessage {
             text,
@@ -1822,6 +1926,231 @@ User monitor request:
     )
 }
 
+fn parse_monitor_slash_args(input: &str) -> Result<MonitorSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(MonitorSlashCommand::Create);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(MonitorSlashCommand::Manage(MonitorManageCommand::List))
+            } else {
+                Err(monitor_usage_error("Usage: /monitor list"))
+            }
+        }
+        "read" | "show" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Read {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor read [id]")?,
+        })),
+        "stop" | "pause" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Stop {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor stop [id]")?,
+        })),
+        "restart" | "start" => Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Restart {
+            monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor restart [id]")?,
+        })),
+        "delete" | "remove" | "rm" | "clear" => {
+            Ok(MonitorSlashCommand::Manage(MonitorManageCommand::Delete {
+                monitor_id: parse_optional_monitor_id(rest, "Usage: /monitor delete [id]")?,
+            }))
+        }
+        _ => Ok(MonitorSlashCommand::Create),
+    }
+}
+
+fn parse_optional_monitor_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, MonitorSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let Some(monitor_id) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        return Err(monitor_usage_error(usage));
+    }
+    Ok(Some(monitor_id.to_string()))
+}
+
+fn monitor_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(MONITOR_USAGE_HINT.to_string()),
+    }
+}
+
+fn parse_background_agent_slash_args(
+    input: &str,
+) -> Result<BackgroundAgentSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(BackgroundAgentSlashCommand::List);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::List)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent list",
+                ))
+            }
+        }
+        "diagnostics" | "diag" | "daemon" => {
+            if rest.is_empty() {
+                Ok(BackgroundAgentSlashCommand::Diagnostics)
+            } else {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent diagnostics",
+                ))
+            }
+        }
+        "start" | "run" | "spawn" => {
+            if rest.is_empty() {
+                Err(background_agent_usage_error(
+                    "Usage: /background-agent start <prompt>",
+                ))
+            } else {
+                Ok(BackgroundAgentSlashCommand::Start {
+                    prompt: rest.to_string(),
+                })
+            }
+        }
+        "read" | "show" => Ok(BackgroundAgentSlashCommand::Read {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent read [id]",
+            )?,
+        }),
+        "logs" | "log" => Ok(BackgroundAgentSlashCommand::Logs {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent logs [id]",
+            )?,
+        }),
+        "attach" => Ok(BackgroundAgentSlashCommand::Attach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent attach [id]",
+            )?,
+        }),
+        "detach" => Ok(BackgroundAgentSlashCommand::Detach {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent detach [id]",
+            )?,
+        }),
+        "stop" | "cancel" => Ok(BackgroundAgentSlashCommand::Stop {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent stop [id]",
+            )?,
+        }),
+        "delete" | "remove" | "rm" => Ok(BackgroundAgentSlashCommand::Delete {
+            agent_id: parse_optional_background_agent_id(
+                rest,
+                "Usage: /background-agent delete [id]",
+            )?,
+        }),
+        _ => Err(background_agent_usage_error(BACKGROUND_AGENT_USAGE)),
+    }
+}
+
+fn parse_active_session_slash_args(
+    input: &str,
+) -> Result<Option<ActiveSessionSlashCommand>, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(None);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "peers" | "sessions" | "active" => {
+            if rest.is_empty() {
+                Ok(Some(ActiveSessionSlashCommand::List))
+            } else {
+                Err(active_session_usage_error("Usage: /agent peers"))
+            }
+        }
+        "send" | "message" | "msg" => parse_active_session_send_args(rest).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn parse_active_session_send_args(
+    input: &str,
+) -> Result<ActiveSessionSlashCommand, MonitorSlashParseError> {
+    let Some(parts) = shlex::split(input) else {
+        return Err(active_session_usage_error(
+            "Check quotes in the active-session message.",
+        ));
+    };
+    let mut wake = false;
+    let mut index = 0;
+    while index < parts.len() {
+        match parts[index].as_str() {
+            "--wake" | "-w" => {
+                wake = true;
+                index += 1;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(active_session_usage_error(ACTIVE_SESSION_SEND_USAGE));
+            }
+            _ => break,
+        }
+    }
+    if parts.len().saturating_sub(index) < 2 {
+        return Err(active_session_usage_error(ACTIVE_SESSION_SEND_USAGE));
+    }
+    let target_thread_id = parts[index].clone();
+    let message = parts[index + 1..].join(" ");
+    if message.trim().is_empty() {
+        return Err(active_session_usage_error(ACTIVE_SESSION_SEND_USAGE));
+    }
+    Ok(ActiveSessionSlashCommand::Send {
+        target_thread_id,
+        message,
+        wake,
+    })
+}
+
+fn parse_optional_background_agent_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, MonitorSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = rest.split_whitespace();
+    let Some(agent_id) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        return Err(background_agent_usage_error(usage));
+    }
+    Ok(Some(agent_id.to_string()))
+}
+
+fn active_session_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(BACKGROUND_AGENT_USAGE_HINT.to_string()),
+    }
+}
+
+fn background_agent_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(BACKGROUND_AGENT_USAGE_HINT.to_string()),
+    }
+}
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
 ) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {

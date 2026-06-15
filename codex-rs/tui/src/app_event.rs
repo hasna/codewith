@@ -625,6 +625,16 @@ pub(crate) enum AppEvent {
     /// Show durable background-agent daemon diagnostics.
     ShowBackgroundAgentDiagnostics,
 
+    /// List loaded sessions that can receive active messages.
+    ListActiveSessions,
+
+    /// Send a message to a loaded active session.
+    SendActiveSessionMessage {
+        target_thread_id: String,
+        message: String,
+        wake: bool,
+    },
+
     /// Fill the composer with text from an interactive action.
     PrefillComposer {
         text: String,

@@ -1144,6 +1144,17 @@ impl App {
             AppEvent::ShowBackgroundAgentDiagnostics => {
                 self.show_background_agent_diagnostics(app_server).await;
             }
+            AppEvent::ListActiveSessions => {
+                self.list_active_sessions(app_server).await;
+            }
+            AppEvent::SendActiveSessionMessage {
+                target_thread_id,
+                message,
+                wake,
+            } => {
+                self.send_active_session_message(app_server, target_thread_id, message, wake)
+                    .await;
+            }
             AppEvent::PrefillComposer { text } => {
                 self.chat_widget
                     .restore_user_message_to_composer(crate::chatwidget::UserMessage::from(text));
