@@ -325,6 +325,164 @@ pub async fn process_exec_tool_call(
     crate::sandboxing::execute_env(exec_req, stdout_stream).await
 }
 
+/// Decide whether a streaming command may be spawned given the session's
+/// filesystem sandbox kind and the sandbox type that was actually resolved for
+/// this platform.
+///
+/// This is the security gate behind [`spawn_streaming_command_under_sandbox`]
+/// and it fails closed. A `Restricted` policy demands a real, enforcing sandbox
+/// (`MacosSeatbelt`/`LinuxSeccomp`); if none could be applied — `None`, or the
+/// Windows restricted-token backend which cannot be argv-wrapped around a
+/// streaming child — the command must not run. Full-access / external-sandbox
+/// policies are the user's explicit opt-out and may run unwrapped.
+fn streaming_sandbox_spawn_permitted(
+    file_system_sandbox_kind: FileSystemSandboxKind,
+    resolved_sandbox: SandboxType,
+) -> bool {
+    match file_system_sandbox_kind {
+        // The user explicitly disabled Codewith's filesystem sandbox (full
+        // access) or is running inside their own external sandbox; running the
+        // command unwrapped is the intended behavior.
+        FileSystemSandboxKind::Unrestricted | FileSystemSandboxKind::ExternalSandbox => true,
+        // A restricted policy requires an enforcing sandbox we can wrap around a
+        // streaming child. Anything else fails closed.
+        FileSystemSandboxKind::Restricted => matches!(
+            resolved_sandbox,
+            SandboxType::MacosSeatbelt | SandboxType::LinuxSeccomp
+        ),
+    }
+}
+
+/// Spawn a long-running command as a streaming [`tokio::process::Child`] under
+/// the same sandbox the session uses for the `shell` tool.
+///
+/// Unlike [`process_exec_tool_call`], which streams/buffers output and returns
+/// once the command exits, this hands back the live child (stdout/stderr piped,
+/// stdin null) so callers that consume output incrementally — e.g. thread
+/// monitors — stay confined by the session's sandbox policy instead of running
+/// model-designed commands with no sandbox at all.
+///
+/// Fails closed: if the policy requires a sandbox but no enforcing sandbox can
+/// be applied to a streaming child on this platform, this returns an error
+/// rather than running the command unsandboxed.
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_streaming_command_under_sandbox(
+    command: Vec<String>,
+    cwd: AbsolutePathBuf,
+    env: HashMap<String, String>,
+    permission_profile: &PermissionProfile,
+    sandbox_cwd: &AbsolutePathBuf,
+    codex_linux_sandbox_exe: &Option<PathBuf>,
+    use_legacy_landlock: bool,
+) -> Result<tokio::process::Child> {
+    let (file_system_sandbox_policy, _network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
+    let file_system_sandbox_kind = file_system_sandbox_policy.kind;
+
+    let params = ExecParams {
+        command,
+        cwd,
+        // Expiration/capture only matter when consuming output; this helper
+        // returns the live child to the caller, so they are inert here.
+        expiration: ExecExpiration::DefaultTimeout,
+        capture_policy: ExecCapturePolicy::ShellTool,
+        env,
+        network: None,
+        sandbox_permissions: SandboxPermissions::UseDefault,
+        windows_sandbox_level: WindowsSandboxLevel::default(),
+        windows_sandbox_private_desktop: false,
+        justification: None,
+        arg0: None,
+    };
+
+    let exec_req = build_exec_request(
+        params,
+        permission_profile,
+        sandbox_cwd,
+        /* windows_sandbox_workspace_roots */ &[],
+        codex_linux_sandbox_exe,
+        use_legacy_landlock,
+    )?;
+
+    if !streaming_sandbox_spawn_permitted(file_system_sandbox_kind, exec_req.sandbox) {
+        return Err(CodexErr::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "refusing to run command without an enforcing sandbox: the session \
+             requires a filesystem sandbox that cannot be applied to a streaming \
+             process on this platform",
+        )));
+    }
+
+    let ExecRequest {
+        command,
+        cwd,
+        env,
+        network_sandbox_policy,
+        arg0,
+        ..
+    } = exec_req;
+
+    let (program, args) = command.split_first().ok_or_else(|| {
+        CodexErr::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "command args are empty",
+        ))
+    })?;
+
+    let child = spawn_child_async(SpawnChildRequest {
+        program: PathBuf::from(program),
+        args: args.to_vec(),
+        arg0: arg0.as_deref(),
+        cwd,
+        network_sandbox_policy,
+        network: None,
+        stdio_policy: StdioPolicy::RedirectForShellTool,
+        env,
+    })
+    .await?;
+    Ok(child)
+}
+
+#[cfg(test)]
+mod streaming_sandbox_tests {
+    use super::streaming_sandbox_spawn_permitted;
+    use codex_protocol::permissions::FileSystemSandboxKind;
+    use codex_sandboxing::SandboxType;
+
+    #[test]
+    fn restricted_policy_requires_enforcing_sandbox() {
+        // Fail closed: a restricted session policy must not run a streaming
+        // command when no enforcing sandbox could be applied.
+        assert!(!streaming_sandbox_spawn_permitted(
+            FileSystemSandboxKind::Restricted,
+            SandboxType::None
+        ));
+        assert!(!streaming_sandbox_spawn_permitted(
+            FileSystemSandboxKind::Restricted,
+            SandboxType::WindowsRestrictedToken
+        ));
+        // ...but may run once wrapped by a real sandbox.
+        assert!(streaming_sandbox_spawn_permitted(
+            FileSystemSandboxKind::Restricted,
+            SandboxType::MacosSeatbelt
+        ));
+        assert!(streaming_sandbox_spawn_permitted(
+            FileSystemSandboxKind::Restricted,
+            SandboxType::LinuxSeccomp
+        ));
+    }
+
+    #[test]
+    fn full_access_policies_may_run_unwrapped() {
+        for kind in [
+            FileSystemSandboxKind::Unrestricted,
+            FileSystemSandboxKind::ExternalSandbox,
+        ] {
+            assert!(streaming_sandbox_spawn_permitted(kind, SandboxType::None));
+        }
+    }
+}
+
 /// Transform a portable exec request into the concrete argv/env that should be
 /// spawned under the requested sandbox policy.
 pub fn build_exec_request(

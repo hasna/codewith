@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 329
+expression: popup
+---
+  MCP
+  View configured MCPs or add a new MCP server.
+
+› 1. View all MCPs           Open the full MCP inventory and per-server controls.
+  2. Add new MCP             Paste a package command, HTTP URL, env keys, or headers.
+
+  Press enter to confirm or esc to go back

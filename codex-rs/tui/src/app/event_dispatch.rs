@@ -203,6 +203,18 @@ impl App {
             AppEvent::ArchiveCurrentThread => {
                 return Ok(self.archive_current_thread(app_server).await);
             }
+            AppEvent::OpenInTmux {
+                name,
+                replace_existing,
+            } => match self.prepare_tmux_handoff_from_slash(name, replace_existing) {
+                Ok(_) => {
+                    self.show_shutdown_feedback(tui)?;
+                    return Ok(self
+                        .handle_exit_mode(app_server, ExitMode::ShutdownFirst)
+                        .await);
+                }
+                Err(message) => self.chat_widget.add_error_message(message),
+            },
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
                     "codex.thread.fork",
@@ -238,7 +250,7 @@ impl App {
                                         if let Some(command) = summary.resume_hint {
                                             let spans = vec![
                                                 "To continue this session, run ".into(),
-                                                command.cyan(),
+                                                command.fg(accent_color()),
                                             ];
                                             lines.push(spans.into());
                                         }
@@ -760,15 +772,20 @@ impl App {
                         .on_plugin_enabled_set(cwd, plugin_id, enabled, result);
                 }
             }
-            AppEvent::FetchMcpInventory { detail, thread_id } => {
-                self.fetch_mcp_inventory(app_server, detail, thread_id);
+            AppEvent::FetchMcpInventory {
+                detail,
+                thread_id,
+                target,
+            } => {
+                self.fetch_mcp_inventory(app_server, detail, thread_id, target);
             }
             AppEvent::McpInventoryLoaded {
                 result,
                 detail,
                 thread_id,
+                target,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                self.handle_mcp_inventory_result(result, detail, thread_id, target);
             }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
@@ -784,6 +801,9 @@ impl App {
             }
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
+            }
+            AppEvent::RefreshMiniMaxUsage { origin } => {
+                self.refresh_minimax_usage(origin);
             }
             AppEvent::OpenThreadGoalMenu { thread_id } => {
                 self.open_thread_goal_menu(app_server, thread_id).await;
@@ -1124,6 +1144,9 @@ impl App {
             }
             AppEvent::OpenAuthProfileRenamePrompt { profile } => {
                 self.chat_widget.open_auth_profile_rename_prompt(profile);
+            }
+            AppEvent::OpenAuthProfileSettings { profile } => {
+                self.chat_widget.open_auth_profile_settings_popup(profile);
             }
             AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
                 self.chat_widget.open_auth_profile_delete_confirm(profile);
@@ -2135,6 +2158,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentRenamePrompt {
+                thread_id,
+                current_name,
+                label,
+            } => {
+                self.chat_widget
+                    .show_agent_rename_prompt(thread_id, current_name, label);
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
@@ -2311,7 +2342,7 @@ impl App {
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
-                            rule_line.cyan(),
+                            rule_line.fg(accent_color()),
                         ]));
                     }
                     self.overlay = Some(Overlay::new_static_with_renderables(

@@ -13,6 +13,7 @@ use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
+use crate::style::accent_link_style;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::token_usage::TokenUsage;
@@ -729,12 +730,31 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
+    const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
     let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
 
     assert!(
-        rendered.contains("https://chatgpt.com/codex/settings/usage"),
+        rendered.contains(CHATGPT_USAGE_URL),
         "expected /status to show ChatGPT usage link for OpenAI-auth proxy, got: {rendered}"
     );
+
+    let hyperlink_lines = composite.display_hyperlink_lines(/*width*/ 120);
+    let usage_line = hyperlink_lines
+        .iter()
+        .find(|line| {
+            line.line
+                .spans
+                .iter()
+                .any(|span| span.content.contains(CHATGPT_USAGE_URL))
+        })
+        .expect("usage link line");
+    let usage_span = usage_line
+        .line
+        .spans
+        .iter()
+        .find(|span| span.content.contains(CHATGPT_USAGE_URL))
+        .expect("usage link span");
+    assert_eq!(usage_span.style, accent_link_style());
 
     let wide_destinations: Vec<String> = composite
         .display_hyperlink_lines(/*width*/ 120)
@@ -742,10 +762,7 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         .flat_map(|line| line.hyperlinks.into_iter())
         .map(|link| link.destination)
         .collect();
-    assert_eq!(
-        wide_destinations,
-        vec!["https://chatgpt.com/codex/settings/usage"]
-    );
+    assert_eq!(wide_destinations, vec![CHATGPT_USAGE_URL]);
 
     let narrow_destinations: Vec<String> = composite
         .display_hyperlink_lines(/*width*/ 24)

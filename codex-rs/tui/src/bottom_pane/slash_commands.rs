@@ -120,12 +120,17 @@ pub(crate) fn commands_for_input(
 /// typed command can produce a side-specific unavailable message while the popup still hides it.
 pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Option<SlashCommand> {
     let cmd = SlashCommand::from_str(name).ok()?;
+    let visible_cmd = match cmd {
+        SlashCommand::BackgroundAgent => SlashCommand::Agent,
+        SlashCommand::MultiAgents => SlashCommand::Session,
+        _ => cmd,
+    };
     builtins_for_input(BuiltinCommandFlags {
         side_conversation_active: false,
         ..flags
     })
     .into_iter()
-    .any(|(_, visible_cmd)| visible_cmd == cmd)
+    .any(|(_, candidate)| candidate == visible_cmd)
     .then_some(cmd)
 }
 
@@ -209,6 +214,39 @@ mod tests {
         assert_eq!(
             find_builtin_command("clean", all_enabled_flags()),
             Some(SlashCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn hidden_aliases_resolve_for_dispatch_but_stay_out_of_completion() {
+        let flags = all_enabled_flags();
+        assert_eq!(
+            find_builtin_command("subagents", flags),
+            Some(SlashCommand::MultiAgents)
+        );
+        assert_eq!(
+            find_builtin_command("background-agent", flags),
+            Some(SlashCommand::BackgroundAgent)
+        );
+        assert!(
+            !builtins_for_input(flags)
+                .iter()
+                .any(|(name, _)| *name == "subagents")
+        );
+        assert!(
+            !builtins_for_input(flags)
+                .iter()
+                .any(|(name, _)| *name == "background-agent")
+        );
+        assert!(
+            builtins_for_input(flags)
+                .iter()
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
+        );
+        assert!(
+            builtins_for_input(flags)
+                .iter()
+                .any(|(name, command)| *name == "agent" && *command == SlashCommand::Agent)
         );
     }
 
@@ -320,6 +358,7 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
+                SlashCommand::Stats,
             ]
         );
     }

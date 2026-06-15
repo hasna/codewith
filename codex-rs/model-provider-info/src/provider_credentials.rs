@@ -472,6 +472,10 @@ printf 'slow-token\n'
     #[test]
     fn default_secret_names_cover_built_in_provider_env_keys() {
         assert_eq!(
+            default_secret_name_for_provider_env_key("ANTHROPIC_API_KEY"),
+            Some("anthropic/api_key".to_string())
+        );
+        assert_eq!(
             default_secret_name_for_provider_env_key("CEREBRAS_API_KEY"),
             Some("cerebras/api_key".to_string())
         );

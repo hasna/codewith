@@ -5,6 +5,8 @@ use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
+use crate::style::accent_color;
+
 const TAG_WIDTH: usize = "Plugin".len();
 
 #[derive(Clone, Debug)]
@@ -33,7 +35,7 @@ impl MentionType {
         let style = match self {
             Self::Plugin => base_style.magenta(),
             Self::Skill => base_style.dim(),
-            Self::File => base_style.cyan(),
+            Self::File => base_style.fg(accent_color()),
             Self::Directory => base_style,
         };
         format!("{:<width$}", self.label(), width = TAG_WIDTH).set_style(style)

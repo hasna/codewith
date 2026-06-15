@@ -479,6 +479,10 @@ impl ModelClient {
         self.store_cached_websocket_session(WebsocketSession::default());
     }
 
+    pub(crate) fn current_window_generation(&self) -> u64 {
+        self.state.window_generation.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn advance_window_generation(&self) {
         self.state.window_generation.fetch_add(1, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());

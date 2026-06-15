@@ -247,22 +247,32 @@ impl SessionConfiguration {
         }
         let inferred_model_provider_id =
             updates.model_provider_id.as_ref().cloned().or_else(|| {
-                let (candidate, _) = next_configuration
-                    .collaboration_mode
-                    .model()
-                    .split_once('/')?;
-                let current_provider = next_configuration
-                    .original_config_do_not_use
-                    .model_provider_id
-                    .as_str();
-                if current_provider != OPENAI_PROVIDER_ID && candidate != current_provider {
-                    return None;
+                let model = next_configuration.collaboration_mode.model();
+                if let Some((candidate, _)) = model.split_once('/') {
+                    let current_provider = next_configuration
+                        .original_config_do_not_use
+                        .model_provider_id
+                        .as_str();
+                    if current_provider != OPENAI_PROVIDER_ID && candidate != current_provider {
+                        return None;
+                    }
+                    if next_configuration
+                        .original_config_do_not_use
+                        .model_providers
+                        .contains_key(candidate)
+                    {
+                        return Some(candidate.to_string());
+                    }
                 }
-                next_configuration
-                    .original_config_do_not_use
-                    .model_providers
-                    .contains_key(candidate)
-                    .then(|| candidate.to_string())
+                provider_for_fallback_model(
+                    model,
+                    next_configuration
+                        .original_config_do_not_use
+                        .model_providers
+                        .keys()
+                        .map(String::as_str),
+                )
+                .map(str::to_string)
             });
         if let Some(model_provider_id) = &inferred_model_provider_id {
             apply_model_provider_id(&mut next_configuration, model_provider_id)?;
@@ -566,6 +576,48 @@ impl Session {
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
+    }
+
+    pub(crate) fn model_client_session_for_turn(
+        &self,
+        turn_context: &TurnContext,
+    ) -> ModelClientSession {
+        if self
+            .services
+            .model_client
+            .uses_provider(turn_context.provider.info())
+        {
+            return self.services.model_client.new_session();
+        }
+
+        let model_client = ModelClient::new(
+            Some(Arc::clone(&self.services.auth_manager)),
+            self.session_id(),
+            self.conversation_id,
+            self.installation_id.clone(),
+            turn_context.provider.info().clone(),
+            turn_context.session_source.clone(),
+            turn_context.parent_thread_id,
+            turn_context.config.model_verbosity,
+            turn_context
+                .config
+                .features
+                .enabled(Feature::EnableRequestCompression),
+            turn_context
+                .config
+                .features
+                .enabled(Feature::RuntimeMetrics),
+            Self::build_model_client_beta_features_header(turn_context.config.as_ref()),
+            self.services.attestation_provider.clone(),
+        )
+        .with_prompt_cache_key_override(
+            crate::guardian::prompt_cache_key_override_for_review_session(
+                &turn_context.session_source,
+                turn_context.parent_thread_id,
+            ),
+        );
+        model_client.set_window_generation(self.services.model_client.current_window_generation());
+        model_client.new_session()
     }
 
     #[instrument(name = "session_init", level = "info", skip_all)]

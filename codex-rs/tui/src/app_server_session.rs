@@ -17,6 +17,24 @@ use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AgentAttachParams;
+use codex_app_server_protocol::AgentAttachResponse;
+use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
+use codex_app_server_protocol::AgentDaemonDiagnosticsResponse;
+use codex_app_server_protocol::AgentDeleteParams;
+use codex_app_server_protocol::AgentDeleteResponse;
+use codex_app_server_protocol::AgentDetachParams;
+use codex_app_server_protocol::AgentDetachResponse;
+use codex_app_server_protocol::AgentEventsListParams;
+use codex_app_server_protocol::AgentEventsListResponse;
+use codex_app_server_protocol::AgentListParams;
+use codex_app_server_protocol::AgentListResponse;
+use codex_app_server_protocol::AgentReadParams;
+use codex_app_server_protocol::AgentReadResponse;
+use codex_app_server_protocol::AgentStartParams;
+use codex_app_server_protocol::AgentStartResponse;
+use codex_app_server_protocol::AgentStopParams;
+use codex_app_server_protocol::AgentStopResponse;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -53,6 +71,9 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadExternalAgentStartParams;
+use codex_app_server_protocol::ThreadExternalAgentStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadGoalClearParams;
@@ -1276,6 +1297,30 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn thread_external_agent_start(
+        &mut self,
+        thread_id: ThreadId,
+        runtime_id: String,
+        task: String,
+        mode: ThreadExternalAgentMode,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadExternalAgentStartResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadExternalAgentStart {
+                request_id,
+                params: ThreadExternalAgentStartParams {
+                    thread_id: thread_id.to_string(),
+                    runtime_id,
+                    task,
+                    mode,
+                },
+            })
+            .await
+            .wrap_err("thread/externalAgent/start failed in TUI")?;
+        Ok(())
+    }
+
     pub(crate) async fn thread_approve_guardian_denied_action(
         &mut self,
         thread_id: ThreadId,
@@ -1750,6 +1795,7 @@ fn thread_start_params_from_config(
         sandbox,
         permissions,
         config: config_request_overrides_from_config(config),
+        dynamic_tools: Some(crate::ui_dynamic_tools::dynamic_tool_specs()),
         ephemeral: Some(config.ephemeral),
         session_start_source,
         thread_source: Some(ThreadSource::User),
@@ -2254,6 +2300,14 @@ mod tests {
         );
         assert_eq!(params.model_provider, Some(config.model_provider_id));
         assert_eq!(params.thread_source, Some(ThreadSource::User));
+        let dynamic_tools = params.dynamic_tools.expect("TUI dynamic tools");
+        assert_eq!(dynamic_tools.len(), 4);
+        assert!(dynamic_tools.iter().all(|tool| tool.defer_loading));
+        assert!(
+            dynamic_tools
+                .iter()
+                .any(|tool| tool.name == crate::ui_dynamic_tools::TMUX_TOOL)
+        );
     }
 
     #[tokio::test]

@@ -138,7 +138,13 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
             .collect(),
         ToolSpec::ImageGeneration { .. }
         | ToolSpec::ToolSearch { .. }
-        | ToolSpec::WebSearch { .. } => Vec::new(),
+        | ToolSpec::WebSearch { .. }
+        | ToolSpec::AnthropicWebSearch { .. }
+        | ToolSpec::OpenRouterWebSearch { .. }
+        | ToolSpec::XaiWebSearch { .. }
+        | ToolSpec::XiaomiWebSearch { .. }
+        | ToolSpec::QwenWebSearch { .. }
+        | ToolSpec::ZaiWebSearch { .. } => Vec::new(),
     }
 }
 

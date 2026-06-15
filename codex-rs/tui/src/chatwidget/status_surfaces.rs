@@ -389,7 +389,7 @@ impl ChatWidget {
         parse_items_with_invalids(self.configured_status_line_items())
     }
 
-    pub(super) fn configured_status_line_items(&self) -> Vec<String> {
+    pub(crate) fn configured_status_line_items(&self) -> Vec<String> {
         self.config.tui_status_line.clone().unwrap_or_else(|| {
             DEFAULT_STATUS_LINE_ITEMS
                 .iter()
@@ -406,7 +406,7 @@ impl ChatWidget {
     }
 
     /// Returns the configured terminal-title ids, or the default ordering when unset.
-    pub(super) fn configured_terminal_title_items(&self) -> Vec<String> {
+    pub(crate) fn configured_terminal_title_items(&self) -> Vec<String> {
         self.config.tui_terminal_title.clone().unwrap_or_else(|| {
             DEFAULT_TERMINAL_TITLE_ITEMS
                 .iter()

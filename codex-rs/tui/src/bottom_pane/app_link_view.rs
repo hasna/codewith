@@ -10,6 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Block;
@@ -33,6 +34,7 @@ use crate::key_hint::KeyBindingListExt;
 use crate::keymap::ListKeymap;
 use crate::render::Insets;
 use crate::render::RectExt as _;
+use crate::style::accent_link_style;
 use crate::style::user_message_style;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
@@ -516,9 +518,12 @@ impl AppLinkView {
 
         if is_browser_action_suggestion {
             lines.push(Line::from("URL".dim()));
-            for line in wrap(&self.url, usable_width) {
-                lines.push(Line::from(line.into_owned()));
-            }
+            lines.extend(adaptive_wrap_lines(
+                [Line::from(vec![
+                    self.url.clone().set_style(accent_link_style()),
+                ])],
+                RtOptions::new(usable_width),
+            ));
             lines.push(Line::from(""));
         }
 
@@ -629,7 +634,7 @@ impl AppLinkView {
             }
             .dim(),
         ]));
-        let url_line = Line::from(vec![self.url.clone().cyan().underlined()]);
+        let url_line = Line::from(vec![self.url.clone().set_style(accent_link_style())]);
         lines.extend(adaptive_wrap_lines(
             vec![url_line],
             RtOptions::new(usable_width),
@@ -1668,6 +1673,25 @@ mod tests {
                 &view,
                 Rect::new(0, 0, 72, view.desired_height(/*width*/ 72))
             )
+        );
+
+        let area = Rect::new(0, 0, 72, view.desired_height(/*width*/ 72));
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let link_cell = area
+            .positions()
+            .map(|position| &buf[position])
+            .find(|cell| {
+                cell.symbol()
+                    .contains("https://payments.example/checkout/123")
+            })
+            .expect("OSC 8 URL cell");
+        assert_eq!(link_cell.style().fg, accent_link_style().fg);
+        assert!(
+            link_cell
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
         );
     }
 

@@ -7,7 +7,6 @@ use std::ops::Range;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -20,6 +19,7 @@ use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 use crate::render::line_utils::line_to_static;
+use crate::style::accent_link_style;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 
@@ -390,15 +390,21 @@ pub(crate) fn decorate_spans(line: &HyperlinkLine) -> Vec<Span<'static>> {
                 active_destination = selected_link_index
                     .and_then(|index| web_destination(&line.hyperlinks[index].destination));
                 if let Some(destination) = active_destination.as_ref() {
+                    let link_style = span.style.patch(accent_link_style());
                     push_styled_content(
                         &mut out,
                         &format!("\x1b]8;;{destination}\x07"),
-                        span.style,
+                        link_style,
                     );
                 }
                 active_link_index = selected_link_index;
             }
-            push_styled_content(&mut out, &ch.to_string(), span.style);
+            let visible_style = if selected_link_index.is_some() {
+                span.style.patch(accent_link_style())
+            } else {
+                span.style
+            };
+            push_styled_content(&mut out, &ch.to_string(), visible_style);
             column += width;
         }
     }
@@ -476,6 +482,8 @@ pub(crate) fn mark_buffer_hyperlinks(
                     }
                     let symbol = osc8_hyperlink(&link.destination, cell.symbol());
                     cell.set_symbol(&symbol);
+                    let style = cell.style().patch(accent_link_style());
+                    cell.set_style(style);
                 }
             }
         }
@@ -484,9 +492,7 @@ pub(crate) fn mark_buffer_hyperlinks(
 }
 
 pub(crate) fn mark_url_hyperlink(buf: &mut Buffer, area: Rect, destination: &str) {
-    mark_matching_cells(buf, area, destination, |cell| {
-        cell.fg == Color::Cyan && cell.modifier.contains(Modifier::UNDERLINED)
-    });
+    mark_underlined_hyperlink(buf, area, destination);
 }
 
 pub(crate) fn mark_underlined_hyperlink(buf: &mut Buffer, area: Rect, destination: &str) {
@@ -509,6 +515,8 @@ fn mark_matching_cells(
         if !cell.skip && !cell.symbol().trim().is_empty() && matches(cell) {
             let symbol = osc8_hyperlink(destination, cell.symbol());
             cell.set_symbol(&symbol);
+            let style = cell.style().patch(accent_link_style());
+            cell.set_style(style);
         }
     }
 }
@@ -517,6 +525,10 @@ fn mark_matching_cells(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use ratatui::style::Color;
+    use ratatui::style::Style;
+    use ratatui::style::Styled;
+    use ratatui::style::Stylize;
 
     #[test]
     fn only_web_destinations_receive_osc8() {
@@ -568,11 +580,85 @@ mod tests {
 
         assert_eq!(
             decorate_spans(&line),
-            vec![Span::from(osc8_hyperlink(destination, destination))]
+            vec![Span::styled(
+                osc8_hyperlink(destination, destination),
+                accent_link_style()
+            )]
         );
         assert_eq!(
             decorate_spans(&HyperlinkLine::new(Line::from("not linked"))),
             vec![Span::from("not linked")]
+        );
+    }
+
+    #[test]
+    fn decorates_web_links_with_accent_link_style_over_source_color() {
+        let destination = "https://example.com/a";
+        let source_style = Style::default().fg(Color::Blue);
+        let line = HyperlinkLine {
+            line: Line::from(vec![Span::styled(destination, source_style)]),
+            hyperlinks: vec![TerminalHyperlink {
+                columns: 0..destination.width(),
+                destination: destination.to_string(),
+            }],
+        };
+
+        assert_eq!(
+            decorate_spans(&line),
+            vec![Span::styled(
+                osc8_hyperlink(destination, destination),
+                source_style.patch(accent_link_style())
+            )]
+        );
+    }
+
+    #[test]
+    fn mark_buffer_hyperlinks_applies_accent_link_style_to_live_cells() {
+        let destination = "https://example.com/a";
+        let line = HyperlinkLine {
+            line: Line::from(destination),
+            hyperlinks: vec![TerminalHyperlink {
+                columns: 0..destination.width(),
+                destination: destination.to_string(),
+            }],
+        };
+        let area = Rect::new(0, 0, destination.width() as u16, 1);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(Text::from(line.line.clone())).render(area, &mut buf);
+
+        mark_buffer_hyperlinks(&mut buf, area, &[line], /*scroll_rows*/ 0);
+
+        let first_cell = &buf[(0, 0)];
+        assert!(first_cell.symbol().contains(destination));
+        assert_eq!(first_cell.style().fg, accent_link_style().fg);
+        assert!(
+            first_cell
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+    }
+
+    #[test]
+    fn mark_url_hyperlink_applies_accent_link_style_to_underlined_cells() {
+        let destination = "https://example.com/a";
+        let area = Rect::new(0, 0, destination.width() as u16, 1);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(Line::from(
+            destination.set_style(Style::default().underlined()),
+        ))
+        .render(area, &mut buf);
+
+        mark_url_hyperlink(&mut buf, area, destination);
+
+        let first_cell = &buf[(0, 0)];
+        assert!(first_cell.symbol().contains(destination));
+        assert_eq!(first_cell.style().fg, accent_link_style().fg);
+        assert!(
+            first_cell
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
         );
     }
 

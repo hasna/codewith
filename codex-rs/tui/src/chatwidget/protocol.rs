@@ -263,6 +263,62 @@ impl ChatWidget {
         }
     }
 
+    fn on_thread_external_agent_event(&mut self, run_id: String, event: ThreadExternalAgentEvent) {
+        match event {
+            ThreadExternalAgentEvent::RunStarted {
+                runtime_id,
+                mode,
+                task,
+            } => self.add_info_message(
+                format!("External agent `{runtime_id}` started."),
+                Some(format!("Run: {run_id}. Mode: {mode:?}. Task: {task}")),
+            ),
+            ThreadExternalAgentEvent::SessionResolved {
+                external_session_id,
+            } => self.add_info_message(
+                "External agent session ready.".to_string(),
+                external_session_id
+                    .map(|session_id| format!("Run: {run_id}. Session: {session_id}")),
+            ),
+            ThreadExternalAgentEvent::OutputTextDelta { text } => {
+                if !text.trim().is_empty() {
+                    self.add_info_message("External agent output.".to_string(), Some(text));
+                }
+            }
+            ThreadExternalAgentEvent::ReasoningDelta { text } => {
+                if !text.trim().is_empty() {
+                    self.add_info_message("External agent reasoning.".to_string(), Some(text));
+                }
+            }
+            ThreadExternalAgentEvent::PlanUpdated { plan } => {
+                self.add_info_message("External agent plan updated.".to_string(), Some(plan));
+            }
+            ThreadExternalAgentEvent::PermissionRequested { request } => self.add_info_message(
+                "External agent requested permission.".to_string(),
+                Some(format!("Run: {run_id}. Request: {}", request.id)),
+            ),
+            ThreadExternalAgentEvent::ProposedAction { proposal } => self.add_info_message(
+                "External agent proposed an action.".to_string(),
+                Some(format!("Run: {run_id}. Proposal: {proposal}")),
+            ),
+            ThreadExternalAgentEvent::Status { message } => {
+                self.add_info_message("External agent status.".to_string(), Some(message));
+            }
+            ThreadExternalAgentEvent::Completed { summary } => self.add_info_message(
+                "External agent completed.".to_string(),
+                summary.or_else(|| Some(format!("Run: {run_id}"))),
+            ),
+            ThreadExternalAgentEvent::Failed { message } => {
+                self.add_error_message(format!("External agent failed: {message}"));
+            }
+            ThreadExternalAgentEvent::Cancelled { reason } => self.add_error_message(
+                reason
+                    .map(|reason| format!("External agent cancelled: {reason}"))
+                    .unwrap_or_else(|| "External agent cancelled.".to_string()),
+            ),
+        }
+    }
+
     pub(super) fn handle_turn_completed_notification(
         &mut self,
         notification: TurnCompletedNotification,

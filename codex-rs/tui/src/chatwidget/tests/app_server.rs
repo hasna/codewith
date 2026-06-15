@@ -461,6 +461,59 @@ async fn live_app_server_guardian_warning_notification_renders_message() {
 }
 
 #[tokio::test]
+async fn live_app_server_external_agent_event_notifications_render_messages() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadExternalAgentEvent(
+            codex_app_server_protocol::ThreadExternalAgentEventNotification {
+                thread_id: "thread-1".to_string(),
+                run_id: "ext-run-1".to_string(),
+                event: codex_app_server_protocol::ThreadExternalAgentEvent::RunStarted {
+                    runtime_id: "cursor".to_string(),
+                    mode: codex_app_server_protocol::ThreadExternalAgentMode::Plan,
+                    task: "inspect auth wiring".to_string(),
+                },
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one external-agent history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("External agent `cursor` started."),
+        "expected external-agent start message, got {rendered}"
+    );
+    assert!(
+        rendered.contains("Run: ext-run-1. Mode: Plan. Task: inspect auth wiring"),
+        "expected external-agent run hint, got {rendered}"
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadExternalAgentEvent(
+            codex_app_server_protocol::ThreadExternalAgentEventNotification {
+                thread_id: "thread-1".to_string(),
+                run_id: "ext-run-1".to_string(),
+                event: codex_app_server_protocol::ThreadExternalAgentEvent::Failed {
+                    message: "sandbox rejected launch".to_string(),
+                },
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one external-agent error cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("External agent failed: sandbox rejected launch"),
+        "expected external-agent failure message, got {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_config_warning_prefixes_summary() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

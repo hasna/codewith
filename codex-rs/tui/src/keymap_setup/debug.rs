@@ -16,6 +16,7 @@ use crate::bottom_pane::CancellationEvent;
 use crate::key_hint::KeyBinding;
 use crate::keymap::RuntimeKeymap;
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
 
 use super::actions;
 use super::actions::matching_actions_for_key_event;
@@ -77,20 +78,20 @@ impl KeymapDebugView {
 
         let Some(report) = &self.last_report else {
             lines.push(Line::from(""));
-            lines.push(Line::from("Waiting for a keypress...".cyan()));
+            lines.push(Line::from("Waiting for a keypress...".fg(accent_color())));
             return lines;
         };
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             "Detected: ".dim(),
-            report.detected.display_label().cyan(),
+            report.detected.display_label().fg(accent_color()),
         ]));
         match &report.config_key {
             Ok(config_key) => {
                 lines.push(Line::from(vec![
                     "Config key: ".dim(),
-                    config_key.clone().cyan(),
+                    config_key.clone().fg(accent_color()),
                 ]));
             }
             Err(error) => {

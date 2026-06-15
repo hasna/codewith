@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Background Terminals
+  Inspect running background terminals or stop all of them.
+
+  Search background terminals
+› Print snapshot             Add the current background terminal list to the transcript.
+  Stop all...                Review before stopping 1 running background terminal process(es).
+  1. bun run dev (disabled)  ready on :3000 | compiled /app (disabled: Individual background
+                             terminal stop is not available yet.)
+
+  Press enter to confirm or esc to go back

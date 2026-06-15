@@ -11,6 +11,7 @@ pub use bearer_auth_provider::BearerAuthProvider;
 pub use bearer_auth_provider::BearerAuthProvider as CoreAuthProvider;
 pub use codex_model_provider_info::ModelProviderInfo;
 pub use codex_protocol::account::ProviderAccount;
+pub use provider::HostedWebSearchProvider;
 pub use provider::ModelProvider;
 pub use provider::ProviderAccountError;
 pub use provider::ProviderAccountResult;

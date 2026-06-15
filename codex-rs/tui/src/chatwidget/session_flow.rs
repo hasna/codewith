@@ -1,6 +1,7 @@
 //! Session configuration and thread-header orchestration for `ChatWidget`.
 
 use super::*;
+use crate::style::accent_color;
 
 impl ChatWidget {
     fn on_session_configured_with_display_and_fork_parent_title(
@@ -198,9 +199,9 @@ impl ChatWidget {
             vec![
                 "• ".dim(),
                 "Thread forked from ".into(),
-                name.cyan(),
+                name.fg(accent_color()),
                 " (".into(),
-                forked_from_id_text.cyan(),
+                forked_from_id_text.fg(accent_color()),
                 ")".into(),
             ]
             .into()
@@ -208,7 +209,7 @@ impl ChatWidget {
             vec![
                 "• ".dim(),
                 "Thread forked from ".into(),
-                forked_from_id_text.cyan(),
+                forked_from_id_text.fg(accent_color()),
             ]
             .into()
         };

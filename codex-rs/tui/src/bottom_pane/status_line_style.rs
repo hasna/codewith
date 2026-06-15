@@ -8,6 +8,7 @@ use ratatui::text::Span;
 
 use super::status_line_setup::StatusLineItem;
 use crate::render::highlight::foreground_style_for_scopes;
+use crate::style::accent_color;
 
 const STATUS_LINE_SEPARATOR: &str = " · ";
 const STATUS_LINE_COLOR_SATURATION_PERCENT: u16 = 85;
@@ -73,7 +74,9 @@ impl StatusLineAccent {
 
     fn fallback_style(self) -> Style {
         match self {
-            Self::Model | Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
+            Self::Model | Self::State | Self::Metadata | Self::Mode => {
+                Style::default().fg(accent_color())
+            }
             Self::Path | Self::Usage | Self::Progress => Style::default().green(),
             Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
         }
@@ -135,33 +138,89 @@ fn soften_status_line_style(mut style: Style) -> Style {
 #[allow(clippy::disallowed_methods)]
 fn soften_status_line_color(color: Color) -> Color {
     match color {
-        Color::Rgb(r, g, b) => {
-            let luma = weighted_luma(r, g, b);
-            Color::Rgb(
-                soften_rgb_channel(r, luma),
-                soften_rgb_channel(g, luma),
-                soften_rgb_channel(b, luma),
-            )
-        }
+        Color::Rgb(r, g, b) if is_blue_or_cyan_rgb(r, g, b) => softened_status_line_accent_color(),
+        Color::Rgb(r, g, b) => soften_status_line_rgb_color(r, g, b),
         Color::LightRed => Color::Red,
         Color::LightGreen => Color::Green,
         Color::LightYellow => Color::Yellow,
-        Color::LightBlue => Color::Blue,
+        Color::LightBlue => softened_status_line_accent_color(),
         Color::LightMagenta => Color::Magenta,
-        Color::LightCyan => Color::Cyan,
+        Color::LightCyan => softened_status_line_accent_color(),
         Color::White => Color::Gray,
+        Color::Blue | Color::Cyan => softened_status_line_accent_color(),
+        Color::Indexed(index) if indexed_color_is_blue_or_cyan(index) => {
+            softened_status_line_accent_color()
+        }
         Color::Reset
         | Color::Black
         | Color::Red
         | Color::Green
         | Color::Yellow
-        | Color::Blue
         | Color::Magenta
-        | Color::Cyan
         | Color::Gray
         | Color::DarkGray
         | Color::Indexed(_) => color,
     }
+}
+
+fn softened_status_line_accent_color() -> Color {
+    match accent_color() {
+        Color::Rgb(r, g, b) => soften_status_line_rgb_color(r, g, b),
+        color => color,
+    }
+}
+
+#[allow(clippy::disallowed_methods)]
+fn soften_status_line_rgb_color(r: u8, g: u8, b: u8) -> Color {
+    let luma = weighted_luma(r, g, b);
+    Color::Rgb(
+        soften_rgb_channel(r, luma),
+        soften_rgb_channel(g, luma),
+        soften_rgb_channel(b, luma),
+    )
+}
+
+fn indexed_color_is_blue_or_cyan(index: u8) -> bool {
+    if matches!(index, 4 | 6 | 12 | 14) {
+        return true;
+    }
+
+    let Some((r, g, b)) = xterm_256_rgb(index) else {
+        return false;
+    };
+    is_blue_or_cyan_rgb(r, g, b)
+}
+
+fn xterm_256_rgb(index: u8) -> Option<(u8, u8, u8)> {
+    let index = index.checked_sub(16)?;
+    if index >= 216 {
+        return None;
+    }
+
+    let r = index / 36;
+    let g = (index % 36) / 6;
+    let b = index % 6;
+    Some((
+        xterm_256_channel(r),
+        xterm_256_channel(g),
+        xterm_256_channel(b),
+    ))
+}
+
+fn xterm_256_channel(value: u8) -> u8 {
+    if value == 0 { 0 } else { 55 + value * 40 }
+}
+
+fn is_blue_or_cyan_rgb(r: u8, g: u8, b: u8) -> bool {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max.saturating_sub(min) < 40 {
+        return false;
+    }
+
+    let blue = b >= r.saturating_add(30) && b >= g.saturating_add(20);
+    let cyan = g >= r.saturating_add(30) && b >= r.saturating_add(30) && g.abs_diff(b) <= 40;
+    blue || cyan
 }
 
 fn weighted_luma(r: u8, g: u8, b: u8) -> u16 {
@@ -205,7 +264,10 @@ mod tests {
         .expect("status line");
 
         assert_eq!(line_text(&line), "gpt-5 · /repo · main");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(soften_status_line_color(accent_color()))
+        );
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
         assert!(!line.spans[2].style.add_modifier.contains(Modifier::DIM));
@@ -247,6 +309,54 @@ mod tests {
 
         assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(228, 11, 11)));
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn status_line_theme_blue_and_cyan_colors_use_accent() {
+        let expected = softened_status_line_accent_color();
+
+        for color in [
+            Color::Blue,
+            Color::LightBlue,
+            Color::Cyan,
+            Color::LightCyan,
+            Color::Rgb(0, 0, 95),
+            Color::Rgb(0, 95, 95),
+            Color::Rgb(3, 102, 214),
+            Color::Rgb(42, 161, 152),
+        ] {
+            assert_eq!(soften_status_line_color(color), expected);
+        }
+    }
+
+    #[test]
+    fn status_line_indexed_blue_and_cyan_colors_use_accent() {
+        let expected = softened_status_line_accent_color();
+
+        for color in [
+            Color::Indexed(4),
+            Color::Indexed(6),
+            Color::Indexed(12),
+            Color::Indexed(14),
+            Color::Indexed(17),
+            Color::Indexed(23),
+            Color::Indexed(33),
+            Color::Indexed(45),
+        ] {
+            assert_eq!(soften_status_line_color(color), expected);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn status_line_saturated_green_does_not_count_as_cyan() {
+        let color = Color::Rgb(0, 255, 128);
+
+        assert_eq!(
+            soften_status_line_color(color),
+            soften_status_line_rgb_color(0, 255, 128)
+        );
     }
 
     #[test]

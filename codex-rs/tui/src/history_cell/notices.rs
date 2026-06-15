@@ -1,6 +1,8 @@
 //! Informational, warning, update, and policy notice history cells.
 
 use super::*;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
@@ -39,28 +41,30 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         use ratatui_macros::line;
         use ratatui_macros::text;
         let update_instruction = if let Some(update_action) = self.update_action {
-            line!["Run ", update_action.command_str().cyan(), " to update."]
+            line![
+                "Run ",
+                update_action.command_str().fg(accent_color()),
+                " to update."
+            ]
         } else {
             line![
                 "See ",
-                "https://github.com/hasna/codewith".cyan().underlined(),
+                "https://github.com/hasna/codewith".set_style(accent_link_style()),
                 " for installation options."
             ]
         };
 
         let content = text![
             line![
-                padded_emoji("✨").bold().cyan(),
-                "Update available!".bold().cyan(),
+                padded_emoji("✨").bold().fg(accent_color()),
+                "Update available!".bold().fg(accent_color()),
                 " ",
                 format!("{} -> {}", self.current_version, self.latest_version).bold(),
             ],
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/hasna/codewith/releases/latest"
-                .cyan()
-                .underlined(),
+            "https://github.com/hasna/codewith/releases/latest".set_style(accent_link_style()),
         ];
 
         let inner_width = content
@@ -117,7 +121,7 @@ impl HistoryCell for CyberPolicyNoticeCell {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(
             vec![
-                "ⓘ ".cyan(),
+                "ⓘ ".fg(accent_color()),
                 "This chat was flagged for possible cybersecurity risk".bold(),
             ]
             .into(),
@@ -127,7 +131,7 @@ impl HistoryCell for CyberPolicyNoticeCell {
         let body = Line::from(vec![
             "  If this seems wrong, try rephrasing your request. To get authorized for security work, join the "
                 .dim(),
-            "Trusted Access for Cyber".cyan().underlined(),
+            "Trusted Access for Cyber".set_style(accent_link_style()),
             " program.".dim(),
         ]);
         let wrapped = adaptive_wrap_line(
@@ -138,7 +142,7 @@ impl HistoryCell for CyberPolicyNoticeCell {
         lines.push(
             vec![
                 "  ".into(),
-                TRUSTED_ACCESS_FOR_CYBER_URL.cyan().underlined(),
+                TRUSTED_ACCESS_FOR_CYBER_URL.set_style(accent_link_style()),
             ]
             .into(),
         );

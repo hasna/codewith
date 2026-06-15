@@ -554,6 +554,125 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
+#[derive(Clone, Copy)]
+enum BuiltInProviderFactory {
+    OpenAi,
+    Static(fn() -> ModelProviderInfo),
+}
+
+#[derive(Clone, Copy)]
+struct BuiltInModelProviderSpec {
+    id: &'static str,
+    factory: BuiltInProviderFactory,
+    allows_partial_override: bool,
+    default_override_wire_api: WireApi,
+}
+
+impl BuiltInModelProviderSpec {
+    fn create_provider(self, openai_base_url: Option<String>) -> ModelProviderInfo {
+        match self.factory {
+            BuiltInProviderFactory::OpenAi => {
+                ModelProviderInfo::create_openai_provider(openai_base_url)
+            }
+            BuiltInProviderFactory::Static(factory) => factory(),
+        }
+    }
+}
+
+const BUILT_IN_MODEL_PROVIDER_SPECS: &[BuiltInModelProviderSpec] = &[
+    BuiltInModelProviderSpec {
+        id: OPENAI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::OpenAi,
+        allows_partial_override: false,
+        default_override_wire_api: WireApi::Responses,
+    },
+    BuiltInModelProviderSpec {
+        id: ANTHROPIC_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_anthropic_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: CEREBRAS_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_cerebras_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: NVIDIA_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_nvidia_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: OPENROUTER_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_openrouter_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Responses,
+    },
+    BuiltInModelProviderSpec {
+        id: XAI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_xai_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Responses,
+    },
+    BuiltInModelProviderSpec {
+        id: XIAOMI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_xiaomi_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: DEEPSEEK_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_deepseek_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: QWEN_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_qwen_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Responses,
+    },
+    BuiltInModelProviderSpec {
+        id: GOOGLE_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_google_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: ZAI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_zai_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: MINIMAX_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_minimax_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+];
+
+fn built_in_provider_spec(provider_id: &str) -> Option<&'static BuiltInModelProviderSpec> {
+    BUILT_IN_MODEL_PROVIDER_SPECS
+        .iter()
+        .find(|spec| spec.id == provider_id)
+}
+
+pub fn built_in_model_provider_ids() -> impl Iterator<Item = &'static str> {
+    BUILT_IN_MODEL_PROVIDER_SPECS.iter().map(|spec| spec.id)
+}
+
+pub fn allows_partial_builtin_provider_override(provider_id: &str) -> bool {
+    built_in_provider_spec(provider_id).is_some_and(|spec| spec.allows_partial_override)
+}
+
+pub fn default_wire_api_for_builtin_provider_override(provider_id: &str) -> WireApi {
+    built_in_provider_spec(provider_id)
+        .map_or(WireApi::Responses, |spec| spec.default_override_wire_api)
+}
+
 /// Built-in default provider list.
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,

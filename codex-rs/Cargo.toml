@@ -4,6 +4,7 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "background-agent",
     "backend-client",
     "bwrap",
     "ansi-escape",
@@ -52,6 +53,7 @@ members = [
     "ext/skills",
     "ext/web-search",
     "external-agent-migration",
+    "external-agent",
     "external-agent-sessions",
     "known-provider-models",
     "keyring-store",
@@ -135,6 +137,7 @@ app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
+codex-background-agent = { path = "background-agent" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
 codex-aws-auth = { path = "aws-auth" }
@@ -172,6 +175,7 @@ codex-goal-extension = { path = "ext/goal" }
 codex-guardian = { path = "ext/guardian" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
+codex-external-agent = { path = "external-agent" }
 codex-external-agent-sessions = { path = "external-agent-sessions" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-features = { path = "features" }

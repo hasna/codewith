@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use crate::key_hint::has_ctrl_or_alt;
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
 
 use super::popup_consts::standard_popup_hint_line;
 
@@ -189,7 +190,8 @@ impl Renderable for CustomPromptView {
                 width: area.width,
                 height: 1,
             };
-            let spans: Vec<Span<'static>> = vec![gutter(), context_label.clone().cyan()];
+            let spans: Vec<Span<'static>> =
+                vec![gutter(), context_label.clone().fg(accent_color())];
             Paragraph::new(Line::from(spans)).render(context_area, buf);
             input_y = input_y.saturating_add(1);
         }
@@ -295,5 +297,5 @@ impl CustomPromptView {
 }
 
 fn gutter() -> Span<'static> {
-    "▌ ".cyan()
+    "▌ ".fg(accent_color())
 }

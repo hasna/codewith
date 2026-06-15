@@ -93,8 +93,7 @@ impl<T: HttpTransport> ModelsClient<T> {
         )
         .map_err(|e| {
             ApiError::Stream(format!(
-                "failed to decode models response: {e}; body: {}",
-                String::from_utf8_lossy(&resp.body)
+                "failed to decode models response: {e}; body: {preview}{ellipsis}"
             ))
         })?;
 

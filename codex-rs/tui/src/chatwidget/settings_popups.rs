@@ -485,27 +485,47 @@ impl ChatWidget {
     }
 }
 
-type ConfigToggleValue = Box<dyn Fn(bool) -> serde_json::Value + Send + Sync>;
-
-fn config_toggle_item(
-    label: &'static str,
-    description: &'static str,
-    key_path: &'static str,
-    is_on: bool,
-    value_for_state: Option<ConfigToggleValue>,
+fn config_selection_item(
+    option: crate::common_config_options::CommonConfigOption,
 ) -> SelectionItem {
-    let value_for_state =
-        value_for_state.unwrap_or_else(|| Box::new(|enabled| serde_json::json!(enabled)));
+    if option.is_disabled() {
+        return SelectionItem {
+            name: option.label.to_string(),
+            description: Some(option.description.to_string()),
+            selected_description: Some(
+                "Managed by Codewith and cannot be enabled here.".to_string(),
+            ),
+            is_current: true,
+            is_disabled: true,
+            disabled_reason: option.disabled_reason.map(str::to_string),
+            toggle_placeholder: Some("[ ] "),
+            ..Default::default()
+        };
+    }
+
+    let Some(key_path) = option.key_path else {
+        return SelectionItem {
+            name: option.label.to_string(),
+            description: Some(option.description.to_string()),
+            selected_description: Some("This option is not available.".to_string()),
+            is_current: option.enabled,
+            is_disabled: true,
+            disabled_reason: Some("Unavailable.".to_string()),
+            toggle_placeholder: Some("[ ] "),
+            ..Default::default()
+        };
+    };
+
     SelectionItem {
-        name: label.to_string(),
-        description: Some(description.to_string()),
+        name: option.label.to_string(),
+        description: Some(option.description.to_string()),
         toggle: Some(SelectionToggle {
-            is_on,
+            is_on: option.enabled,
             action: Box::new(move |enabled, tx| {
                 tx.send(AppEvent::UpdateConfigValue {
                     key_path: key_path.to_string(),
-                    value: value_for_state(enabled),
-                    label: label.to_string(),
+                    value: option.value_for_enabled(enabled),
+                    label: option.label.to_string(),
                 });
             }),
         }),

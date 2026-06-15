@@ -149,12 +149,17 @@ fn merge_persisted_resume_metadata(
     typesafe_overrides: &mut ConfigOverrides,
     persisted_metadata: &ThreadMetadata,
 ) {
-    if has_model_resume_override(request_overrides.as_ref(), typesafe_overrides) {
-        return;
+    if typesafe_overrides.model.is_none()
+        && !request_override_contains(request_overrides.as_ref(), "model")
+    {
+        typesafe_overrides.model = persisted_metadata.model.clone();
     }
 
-    typesafe_overrides.model = persisted_metadata.model.clone();
-    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    if typesafe_overrides.model_provider.is_none()
+        && !request_override_contains(request_overrides.as_ref(), "model_provider")
+    {
+        typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    }
 
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
@@ -197,15 +202,11 @@ fn normalize_thread_list_cwd_filters(
     Ok(Some(normalized_cwds))
 }
 
-fn has_model_resume_override(
+fn request_override_contains(
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
-    typesafe_overrides: &ConfigOverrides,
+    key: &str,
 ) -> bool {
-    typesafe_overrides.model.is_some()
-        || typesafe_overrides.model_provider.is_some()
-        || request_overrides.is_some_and(|overrides| overrides.contains_key("model"))
-        || request_overrides
-            .is_some_and(|overrides| overrides.contains_key("model_reasoning_effort"))
+    request_overrides.is_some_and(|overrides| overrides.contains_key(key))
 }
 
 fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
@@ -342,6 +343,12 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) state_db: Option<StateDbHandle>,
     pub(super) background_tasks: TaskTracker,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) background_agent_supervisor_id: String,
+    pub(super) background_agent_workers: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    pub(super) background_agent_worker_processes:
+        Arc<Mutex<HashMap<String, codex_background_agent::process_lifecycle::WorkerProcessHandle>>>,
+    pub(super) background_agent_supervisor_token: CancellationToken,
+    pub(super) background_agent_worker_process: bool,
 }
 
 impl ThreadRequestProcessor {
@@ -361,6 +368,7 @@ impl ThreadRequestProcessor {
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
         skills_watcher: Arc<SkillsWatcher>,
+        background_agent_worker_process: bool,
     ) -> Self {
         Self {
             auth_manager,
@@ -378,6 +386,12 @@ impl ThreadRequestProcessor {
             state_db,
             background_tasks: TaskTracker::new(),
             skills_watcher,
+            background_agent_supervisor_id:
+                super::background_agent_live::new_background_agent_supervisor_id(),
+            background_agent_workers: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_supervisor_token: CancellationToken::new(),
+            background_agent_worker_process,
         }
     }
 
@@ -923,6 +937,7 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        self.cancel_background_agent_workers().await;
         self.background_tasks.close();
         if tokio::time::timeout(Duration::from_secs(10), self.background_tasks.wait())
             .await
@@ -1245,6 +1260,12 @@ impl ThreadRequestProcessor {
         developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
+        let model_provider = infer_model_provider_from_model(
+            model.as_deref(),
+            model_provider,
+            self.config.model_provider_id.as_str(),
+            self.config.model_providers.keys().map(String::as_str),
+        );
         ConfigOverrides {
             model,
             model_provider,

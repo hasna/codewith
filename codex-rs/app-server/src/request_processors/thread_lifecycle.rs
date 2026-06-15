@@ -313,12 +313,18 @@ pub(super) async fn ensure_listener_task_running(
                     let (raw_events_enabled, terminal_scheduled_run) = {
                         let mut thread_state = thread_state.lock().await;
                         thread_state.track_current_turn_event(&event.id, &event.msg);
-                        let terminal_scheduled_run = matches!(
+                        let terminal_scheduled_run = if matches!(
                             event.msg,
                             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-                        )
-                        .then(|| thread_state.take_scheduled_run(&event.id))
-                        .flatten();
+                        ) {
+                            thread_state
+                                .take_scheduled_run(&event.id)
+                                .map(|scheduled_run| {
+                                    (scheduled_run, thread_state.turn_summary.last_error.clone())
+                                })
+                        } else {
+                            None
+                        };
                         (thread_state.experimental_raw_events, terminal_scheduled_run)
                     };
                     let subscribed_connection_ids = thread_state_manager
@@ -355,11 +361,12 @@ pub(super) async fn ensure_listener_task_running(
                         fallback_model_provider.clone(),
                     )
                     .await;
-                    if let Some(scheduled_run) = terminal_scheduled_run {
+                    if let Some((scheduled_run, turn_error)) = terminal_scheduled_run {
                         thread_schedule_runtime::finish_scheduled_run_after_turn(
                             conversation_id,
                             scheduled_run,
                             &event.msg,
+                            turn_error,
                             &outgoing_for_task,
                         )
                         .await;

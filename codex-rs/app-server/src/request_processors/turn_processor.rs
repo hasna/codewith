@@ -2,8 +2,6 @@ use super::*;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
 
-const OPENAI_PROVIDER_ID: &str = "openai";
-
 #[derive(Clone)]
 pub(crate) struct TurnRequestProcessor {
     auth_manager: Arc<AuthManager>,
@@ -531,20 +529,16 @@ impl TurnRequestProcessor {
         } else {
             None
         };
-        let model_provider = model_provider.or_else(|| {
-            let provider_id = provider_prefixed_model?;
-            let current_provider = snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.model_provider_id.as_str())
-                .unwrap_or(self.config.model_provider_id.as_str());
-            if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
-                return None;
-            }
-            self.config
-                .model_providers
-                .contains_key(provider_id)
-                .then(|| provider_id.to_string())
-        });
+        let current_provider = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.model_provider_id.as_str())
+            .unwrap_or(self.config.model_provider_id.as_str());
+        let model_provider = infer_model_provider_from_model(
+            model.as_deref(),
+            model_provider,
+            current_provider,
+            self.config.model_providers.keys().map(String::as_str),
+        );
 
         let has_any_overrides = cwd.is_some()
             || runtime_workspace_roots_request.is_some()

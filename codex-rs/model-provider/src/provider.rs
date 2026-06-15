@@ -6,8 +6,23 @@ use codex_api::Provider;
 use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_model_provider_info::ANTHROPIC_BASE_URL;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
+use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_BASE_URL;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::QWEN_BASE_URL;
+use codex_model_provider_info::QWEN_PROVIDER_ID;
+use codex_model_provider_info::XAI_BASE_URL;
+use codex_model_provider_info::XAI_PROVIDER_ID;
+use codex_model_provider_info::XIAOMI_BASE_URL;
+use codex_model_provider_info::XIAOMI_PROVIDER_ID;
+use codex_model_provider_info::ZAI_BASE_URL;
+use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
@@ -31,7 +46,7 @@ use crate::models_endpoint::OpenAiModelsEndpoint;
 pub struct ProviderCapabilities {
     pub namespace_tools: bool,
     pub image_generation: bool,
-    pub web_search: bool,
+    pub web_search: HostedWebSearchProvider,
 }
 
 impl Default for ProviderCapabilities {
@@ -39,8 +54,28 @@ impl Default for ProviderCapabilities {
         Self {
             namespace_tools: true,
             image_generation: true,
-            web_search: true,
+            web_search: HostedWebSearchProvider::Disabled,
         }
+    }
+}
+
+/// Provider-native hosted web-search tool shape supported by the active model
+/// backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedWebSearchProvider {
+    Disabled,
+    OpenAiResponses,
+    Anthropic,
+    OpenRouter,
+    Xai,
+    Xiaomi,
+    Qwen,
+    Zai,
+}
+
+impl HostedWebSearchProvider {
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
     }
 }
 
@@ -465,6 +500,40 @@ impl ModelProvider for ConfiguredModelProvider {
         &self.info
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        let web_search = if self.provider_id == OPENAI_PROVIDER_ID
+            || (self.info.requires_openai_auth && self.info.is_openai())
+        {
+            HostedWebSearchProvider::OpenAiResponses
+        } else if self.matches_provider(ANTHROPIC_PROVIDER_ID, ANTHROPIC_BASE_URL) {
+            HostedWebSearchProvider::Anthropic
+        } else if self.matches_provider(OPENROUTER_PROVIDER_ID, OPENROUTER_BASE_URL) {
+            HostedWebSearchProvider::OpenRouter
+        } else if self.matches_provider(XAI_PROVIDER_ID, XAI_BASE_URL) {
+            HostedWebSearchProvider::Xai
+        } else if self.matches_provider(XIAOMI_PROVIDER_ID, XIAOMI_BASE_URL) {
+            HostedWebSearchProvider::Xiaomi
+        } else if self.matches_provider(QWEN_PROVIDER_ID, QWEN_BASE_URL) {
+            HostedWebSearchProvider::Qwen
+        } else if self.matches_provider(ZAI_PROVIDER_ID, ZAI_BASE_URL) {
+            HostedWebSearchProvider::Zai
+        } else {
+            HostedWebSearchProvider::Disabled
+        };
+
+        let image_generation = matches!(web_search, HostedWebSearchProvider::OpenAiResponses);
+        let namespace_tools = !matches!(
+            self.provider_id.as_str(),
+            CEREBRAS_PROVIDER_ID | DEEPSEEK_PROVIDER_ID | NVIDIA_PROVIDER_ID
+        );
+
+        ProviderCapabilities {
+            namespace_tools,
+            image_generation,
+            web_search,
+        }
+    }
+
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -569,10 +638,26 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 }
 
+impl ConfiguredModelProvider {
+    fn matches_provider(&self, provider_id: &str, base_url: &str) -> bool {
+        self.provider_id == provider_id
+            || self
+                .info
+                .base_url
+                .as_deref()
+                .is_some_and(|configured_base_url| {
+                    configured_base_url
+                        .to_ascii_lowercase()
+                        .contains(&base_url.to_ascii_lowercase())
+                })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
 
+    use codex_model_provider_info::GOOGLE_PROVIDER_ID;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
     use codex_model_provider_info::WireApi;
@@ -662,13 +747,109 @@ mod tests {
     }
 
     #[test]
-    fn configured_provider_uses_default_capabilities() {
+    fn openai_provider_enables_openai_hosted_capabilities() {
         let provider = create_model_provider(
             ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             /*auth_manager*/ None,
         );
 
-        assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: true,
+                web_search: HostedWebSearchProvider::OpenAiResponses,
+            }
+        );
+    }
+
+    #[test]
+    fn custom_provider_disables_hosted_web_search_by_default() {
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                name: "Custom".to_string(),
+                base_url: Some("https://example.test/v1".to_string()),
+                wire_api: WireApi::Responses,
+                requires_openai_auth: false,
+                ..Default::default()
+            },
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: HostedWebSearchProvider::Disabled,
+            }
+        );
+    }
+
+    #[test]
+    fn built_in_providers_map_hosted_web_search_capabilities() {
+        let cases = [
+            (
+                ANTHROPIC_PROVIDER_ID,
+                ModelProviderInfo::create_anthropic_provider(),
+                HostedWebSearchProvider::Anthropic,
+            ),
+            (
+                OPENROUTER_PROVIDER_ID,
+                ModelProviderInfo::create_openrouter_provider(),
+                HostedWebSearchProvider::OpenRouter,
+            ),
+            (
+                XAI_PROVIDER_ID,
+                ModelProviderInfo::create_xai_provider(),
+                HostedWebSearchProvider::Xai,
+            ),
+            (
+                XIAOMI_PROVIDER_ID,
+                ModelProviderInfo::create_xiaomi_provider(),
+                HostedWebSearchProvider::Xiaomi,
+            ),
+            (
+                QWEN_PROVIDER_ID,
+                ModelProviderInfo::create_qwen_provider(),
+                HostedWebSearchProvider::Qwen,
+            ),
+            (
+                GOOGLE_PROVIDER_ID,
+                ModelProviderInfo::create_google_provider(),
+                HostedWebSearchProvider::Disabled,
+            ),
+            (
+                ZAI_PROVIDER_ID,
+                ModelProviderInfo::create_zai_provider(),
+                HostedWebSearchProvider::Zai,
+            ),
+            (
+                DEEPSEEK_PROVIDER_ID,
+                ModelProviderInfo::create_deepseek_provider(),
+                HostedWebSearchProvider::Disabled,
+            ),
+            (
+                CEREBRAS_PROVIDER_ID,
+                ModelProviderInfo::create_cerebras_provider(),
+                HostedWebSearchProvider::Disabled,
+            ),
+            (
+                NVIDIA_PROVIDER_ID,
+                ModelProviderInfo::create_nvidia_provider(),
+                HostedWebSearchProvider::Disabled,
+            ),
+        ];
+
+        for (provider_id, provider_info, expected_web_search) in cases {
+            let provider = create_model_provider_with_id(
+                provider_id,
+                provider_info,
+                /*auth_manager*/ None,
+            );
+
+            assert_eq!(provider.capabilities().web_search, expected_web_search);
+        }
     }
 
     #[test]

@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Profile settings
+  Manage auth profile `personal`.
+
+› 1. Rename profile  Rename `personal`.
+  2. Delete profile  Remove `personal` from saved auth profiles.
+  3. Cancel
+
+  Press enter to confirm or esc to go back

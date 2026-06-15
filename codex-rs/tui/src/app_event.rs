@@ -75,6 +75,12 @@ pub(crate) enum AuthProfileSwitchReason {
     AutoRateLimit { window: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpInventoryTarget {
+    History,
+    Manager,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryLookupResponse {
     pub(crate) offset: usize,
@@ -134,6 +140,14 @@ pub(crate) enum RateLimitRefreshOrigin {
     StatusCommand { request_id: u64 },
 }
 
+/// Distinguishes why a MiniMax usage refresh was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MiniMaxUsageRefreshOrigin {
+    /// User-initiated via `/status` or `/stats`; the `request_id` correlates with
+    /// the status card that should be updated when the fetch completes.
+    StatusCommand { request_id: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeymapEditIntent {
     ReplaceAll,
@@ -148,6 +162,12 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Prompt for a persisted name for a selected agent thread.
+    OpenAgentRenamePrompt {
+        thread_id: ThreadId,
+        current_name: Option<String>,
+        label: String,
+    },
 
     /// Fork the current thread into a transient side conversation.
     StartSide {
@@ -240,6 +260,12 @@ pub(crate) enum AppEvent {
     /// Archive the current active main thread and exit after it succeeds.
     ArchiveCurrentThread,
 
+    /// Create a tmux session for the current thread and exit into it.
+    OpenInTmux {
+        name: Option<String>,
+        replace_existing: bool,
+    },
+
     /// Fork the current session into a new thread.
     ForkCurrentSession,
 
@@ -287,6 +313,11 @@ pub(crate) enum AppEvent {
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,
+    },
+
+    /// Refresh MiniMax Token Plan usage in the background.
+    RefreshMiniMaxUsage {
+        origin: MiniMaxUsageRefreshOrigin,
     },
 
     /// Open the current thread goal summary/action menu.
@@ -482,6 +513,13 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
+    },
+
+    /// Result of refreshing MiniMax Token Plan usage.
+    MiniMaxUsageLoaded {
+        origin: MiniMaxUsageRefreshOrigin,
+        auth_profile: Option<String>,
+        result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
     },
 
     /// Send a user-confirmed request to notify the workspace owner.
@@ -746,6 +784,7 @@ pub(crate) enum AppEvent {
     FetchMcpInventory {
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
@@ -753,6 +792,7 @@ pub(crate) enum AppEvent {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        target: McpInventoryTarget,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
@@ -842,6 +882,11 @@ pub(crate) enum AppEvent {
 
     /// Prompt for renaming a saved auth profile.
     OpenAuthProfileRenamePrompt {
+        profile: String,
+    },
+
+    /// Open settings for a saved auth profile.
+    OpenAuthProfileSettings {
         profile: String,
     },
 

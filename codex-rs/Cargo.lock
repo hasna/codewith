@@ -1819,6 +1819,7 @@ dependencies = [
  "codex-app-server-transport",
  "codex-arg0",
  "codex-backend-client",
+ "codex-background-agent",
  "codex-chatgpt",
  "codex-cloud-config",
  "codex-config",
@@ -1826,6 +1827,7 @@ dependencies = [
  "codex-core-plugins",
  "codex-exec-server",
  "codex-extension-api",
+ "codex-external-agent",
  "codex-external-agent-migration",
  "codex-external-agent-sessions",
  "codex-features",
@@ -2120,6 +2122,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-background-agent"
+version = "0.1.31"
+dependencies = [
+ "anyhow",
+ "codex-state",
+ "codex-utils-pty",
+ "libc",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-bwrap"
 version = "0.1.26"
 dependencies = [
@@ -2166,6 +2183,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-app-server-test-client",
  "codex-arg0",
+ "codex-background-agent",
  "codex-chatgpt",
  "codex-cloud-tasks",
  "codex-config",
@@ -2462,6 +2480,7 @@ dependencies = [
  "codex-hooks",
  "codex-image-generation-extension",
  "codex-install-context",
+ "codex-known-provider-models",
  "codex-login",
  "codex-mcp",
  "codex-memories-read",
@@ -2784,6 +2803,23 @@ dependencies = [
  "codex-context-fragments",
  "codex-protocol",
  "codex-tools",
+]
+
+[[package]]
+name = "codex-external-agent"
+version = "0.1.31"
+dependencies = [
+ "codex-protocol",
+ "codex-sandboxing",
+ "codex-utils-absolute-path",
+ "codex-utils-pty",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "which 8.0.0",
 ]
 
 [[package]]
@@ -3800,6 +3836,7 @@ dependencies = [
  "codex-core-plugins",
  "codex-core-skills",
  "codex-exec-server",
+ "codex-external-agent",
  "codex-features",
  "codex-feedback",
  "codex-file-search",

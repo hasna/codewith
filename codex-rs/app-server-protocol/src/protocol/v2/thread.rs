@@ -1433,6 +1433,108 @@ pub struct ThreadShellCommandParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadShellCommandResponse {}
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case", export_to = "v2/")]
+pub enum ThreadExternalAgentMode {
+    Plan,
+    Propose,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentStartParams {
+    pub thread_id: String,
+    pub runtime_id: String,
+    pub task: String,
+    pub mode: ThreadExternalAgentMode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentStartResponse {
+    pub status: ThreadExternalAgentStartStatus,
+    pub run_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case", export_to = "v2/")]
+pub enum ThreadExternalAgentStartStatus {
+    Started,
+    Gated,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentEventNotification {
+    pub thread_id: String,
+    pub run_id: String,
+    pub event: ThreadExternalAgentEvent,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadExternalAgentEvent {
+    RunStarted {
+        runtime_id: String,
+        mode: ThreadExternalAgentMode,
+        task: String,
+    },
+    SessionResolved {
+        external_session_id: Option<String>,
+    },
+    OutputTextDelta {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    PlanUpdated {
+        plan: String,
+    },
+    PermissionRequested {
+        request: ThreadExternalAgentPermissionRequest,
+    },
+    ProposedAction {
+        proposal: JsonValue,
+    },
+    Status {
+        message: String,
+    },
+    Completed {
+        summary: Option<String>,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentPermissionRequest {
+    pub id: String,
+    pub action: JsonValue,
+    pub options: Vec<ThreadExternalAgentPermissionOption>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadExternalAgentPermissionOption {
+    AllowOnce,
+    RejectOnce,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

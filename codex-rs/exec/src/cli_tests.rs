@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -72,6 +73,24 @@ fn parses_config_isolation_flags() {
 
     assert!(cli.ignore_user_config);
     assert!(cli.ignore_rules);
+}
+
+#[test]
+fn parses_hidden_skill_input() {
+    let cli = Cli::parse_from([
+        "codex-exec",
+        "--skill",
+        "codewith-self-heal=/tmp/codewith-self-heal/SKILL.md",
+        "diagnose",
+    ]);
+
+    assert_eq!(
+        cli.skill_inputs,
+        vec![UserInput::Skill {
+            name: "codewith-self-heal".to_string(),
+            path: PathBuf::from("/tmp/codewith-self-heal/SKILL.md"),
+        }]
+    );
 }
 
 #[test]

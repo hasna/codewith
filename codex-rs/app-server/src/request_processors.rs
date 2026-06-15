@@ -6,6 +6,7 @@ use crate::config_manager::ConfigManager;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::invalid_params;
 use crate::models::fallback_supported_models_for_provider;
+use crate::models::provider_for_fallback_model;
 use crate::models::provider_has_fallback_models;
 use crate::models::supported_models;
 use crate::models::supported_models_from_manager;
@@ -189,6 +190,10 @@ use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadDecrementElicitationParams;
 use codex_app_server_protocol::ThreadDecrementElicitationResponse;
+use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadExternalAgentStartParams;
+use codex_app_server_protocol::ThreadExternalAgentStartResponse;
+use codex_app_server_protocol::ThreadExternalAgentStartStatus;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadGoal;
@@ -518,8 +523,36 @@ use uuid::Uuid;
 #[cfg(test)]
 use codex_app_server_protocol::ServerRequest;
 
+const OPENAI_PROVIDER_ID: &str = "openai";
+
+fn infer_model_provider_from_model<'a>(
+    model: Option<&str>,
+    model_provider: Option<String>,
+    current_provider: &str,
+    provider_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    if model_provider.is_some() {
+        return model_provider;
+    }
+
+    let model = model?;
+    let provider_ids = provider_ids.into_iter().collect::<Vec<_>>();
+    if let Some((provider_id, _)) = model.split_once('/') {
+        if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
+            return None;
+        }
+        if provider_ids.contains(&provider_id) {
+            return Some(provider_id.to_string());
+        }
+    }
+
+    provider_for_fallback_model(model, provider_ids).map(str::to_string)
+}
+
 mod account_processor;
 mod apps_processor;
+mod background_agent_live;
+mod background_agent_processor;
 mod catalog_processor;
 mod command_exec_processor;
 mod config_processor;

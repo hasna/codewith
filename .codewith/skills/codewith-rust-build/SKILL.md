@@ -12,7 +12,7 @@ Use this skill for Rust work in `codex-rs`. Always read the root `CODEWITH.md` f
 ## Core Rules
 
 - The product is Codewith, even though crate names remain `codex-*`.
-- Do not run `cargo test` directly. Use `just test`.
+- Do not run `cargo test` directly. Use `just test-fast` for inner-loop runs and `just test` for official package/workspace gates.
 - Run `just fmt` from `codex-rs` after Rust code changes.
 - Run scoped `just fix -p <project>` before finalizing substantial Rust changes.
 - Be patient with Rust commands and do not kill them by PID.
@@ -35,17 +35,19 @@ cd codex-rs
 just fmt
 ```
 
-3. Run focused tests for changed crates:
+3. Run focused tests for changed crates. Use the fast recipe while iterating:
 
 ```bash
 cd codex-rs
-just test -p codex-tui
-just test -p codex-core
+just test-fast -p codex-tui
+just test-fast -p codex-core
 ```
 
 Use the actual changed crates instead of the examples above.
 
-4. Run scoped fixes:
+4. For the final package gate when benchmark smoke matters, use `just test -p <crate>`.
+
+5. Run scoped fixes:
 
 ```bash
 cd codex-rs
@@ -53,6 +55,15 @@ just fix -p <changed-crate>
 ```
 
 Do not rerun tests after `fmt` or `fix` unless the user asks or the command changed behavior unexpectedly.
+
+## Fast Inner Loop
+
+- Use `just test-fast-target /tmp/codewith-<scope>-target -p <crate>` for repeated focused runs when cold builds or target-lock contention dominate.
+- For integration tests, prefer package and test-binary selection: `just test-fast -p <crate> --test <binary>`.
+- If a name-filtered integration run still compiles a huge binary, split the area into a top-level `tests/<area>.rs` target and remove it from the aggregate module so it can build and link independently. For new hot API areas, create that standalone binary from the start.
+- Use `just check-fast -p <crate>` for compile-only API boundary checks, then run the slow integration target only at behavior checkpoints.
+- Use `just build-timings -p <crate>` or `just test-binaries -p <crate>` when diagnosing where build time is going.
+- Keep machine-level acceleration such as `RUSTC_WRAPPER=sccache` or custom linker config in local setup unless this repo installs and validates it consistently.
 
 ## Snapshot Tests
 

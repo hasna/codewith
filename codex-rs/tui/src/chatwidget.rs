@@ -41,9 +41,12 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::style::Styled;
+
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
 use crate::app_event::HistoryLookupResponse;
+use crate::app_event::McpInventoryTarget;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_approval_conversions::file_update_changes_to_display;
 use crate::approval_events::ApplyPatchApprovalRequestEvent;
@@ -78,6 +81,8 @@ use crate::status::StatusHistoryHandle;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
 use crate::status::rate_limit_snapshot_display_for_limit;
+use crate::style::accent_color;
+use crate::style::accent_link_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
@@ -114,6 +119,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -342,6 +348,8 @@ mod goal_status;
 use self::goal_status::GoalStatusState;
 #[cfg(test)]
 use self::goal_status::goal_status_indicator_from_app_goal;
+mod background_agent_display;
+mod background_terminals;
 mod goal_menu;
 mod goal_validation;
 mod ide_context;
@@ -357,6 +365,7 @@ mod input_submission;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_manager;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
@@ -555,6 +564,7 @@ pub(crate) struct ChatWidget {
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
+    refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
@@ -1101,7 +1111,7 @@ impl ChatWidget {
             subtitle: Some("Memories are currently disabled in your config.".to_string()),
             footer_note: Some(Line::from(vec![
                 "Learn more: ".dim(),
-                MEMORIES_DOC_URL.cyan().underlined(),
+                MEMORIES_DOC_URL.set_style(accent_link_style()),
             ])),
             footer_hint: Some(standard_popup_hint_line()),
             items,
@@ -1442,18 +1452,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn add_ps_output(&mut self) {
-        let processes = self
-            .unified_exec_processes
-            .iter()
-            .map(|process| history_cell::UnifiedExecProcessDetails {
-                command_display: process.command_display.clone(),
-                recent_chunks: process.recent_chunks.clone(),
-            })
-            .collect();
+        let processes = self.background_terminal_processes();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
 
-    fn clean_background_terminals(&mut self) {
+    pub(crate) fn stop_background_terminals(&mut self) {
         self.submit_op(AppCommand::clean_background_terminals());
         self.unified_exec_processes.clear();
         self.sync_unified_exec_footer();
@@ -1461,6 +1464,18 @@ impl ChatWidget {
             "Stopping all background terminals.".to_string(),
             /*hint*/ None,
         );
+    }
+
+    pub(crate) fn background_terminal_processes(
+        &self,
+    ) -> Vec<history_cell::UnifiedExecProcessDetails> {
+        self.unified_exec_processes
+            .iter()
+            .map(|process| history_cell::UnifiedExecProcessDetails {
+                command_display: process.command_display.clone(),
+                recent_chunks: process.recent_chunks.clone(),
+            })
+            .collect()
     }
 
     fn plugins_for_mentions(&self) -> Option<&[PluginCapabilitySummary]> {
@@ -1551,10 +1566,13 @@ impl ChatWidget {
         let mut line = vec![
             "• ".into(),
             "Session renamed to ".into(),
-            name.to_string().cyan(),
+            name.to_string().fg(accent_color()),
         ];
         if let Some(hint) = resume_hint(Some(name), thread_id) {
-            line.extend([". To resume this session run ".into(), hint.cyan()]);
+            line.extend([
+                ". To resume this session run ".into(),
+                hint.fg(accent_color()),
+            ]);
         }
         PlainHistoryCell::new(vec![line.into()])
     }
@@ -1575,6 +1593,7 @@ impl ChatWidget {
         self.app_event_tx.send(AppEvent::FetchMcpInventory {
             detail,
             thread_id: self.thread_id(),
+            target: McpInventoryTarget::History,
         });
     }
 
@@ -1704,6 +1723,10 @@ impl ChatWidget {
 
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
+    }
+
+    pub(crate) fn user_turn_pending_or_running(&self) -> bool {
+        self.is_user_turn_pending_or_running()
     }
 
     #[cfg(test)]

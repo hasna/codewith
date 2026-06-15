@@ -89,6 +89,26 @@ test *args:
 test-github-scripts:
     {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
 
+# Run nextest without the workspace benchmark smoke check.
+test-fast *args:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+
+# Run fast tests using an explicit persistent target directory.
+test-fast-target target_dir *args:
+    CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+
+# Run a scoped compile-only check.
+check-fast *args:
+    cargo check "$@"
+
+# List nextest test binaries so large integration targets are visible.
+test-binaries *args:
+    cargo nextest list --list-type binaries-only --message-format json "$@"
+
+# Generate a Cargo build timing report.
+build-timings *args:
+    cargo build --timings "$@"
+
 # Run explicit workspace benchmark targets.
 bench *args:
     cargo bench --workspace --bench '*' {args}

@@ -5,6 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use crate::render::renderable::Renderable;
+use crate::style::accent_color;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 
@@ -60,7 +61,7 @@ impl PendingThreadApprovals {
         lines.push(
             Line::from(vec![
                 "    ".into(),
-                "/agent".cyan().bold(),
+                "/session".fg(accent_color()).bold(),
                 " to switch threads".dim(),
             ])
             .dim(),
@@ -120,7 +121,7 @@ mod tests {
             snapshot_rows(&widget, /*width*/ 40).replace(' ', "."),
             @r"
         ..!.Approval.needed.in.Robie.[explorer].
-        ..../agent.to.switch.threads............
+        ..../session.to.switch.threads..........
         "
         );
     }
@@ -142,7 +143,7 @@ mod tests {
         ..!.Approval.needed.in.Robie.[explorer].....
         ..!.Approval.needed.in.Inspector............
         ............................................
-        ..../agent.to.switch.threads................
+        ..../session.to.switch.threads..............
         "
         );
     }

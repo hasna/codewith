@@ -1,7 +1,7 @@
 //! Multi-agent picker navigation and labeling state for the TUI app.
 //!
 //! This module exists to keep the pure parts of multi-agent navigation out of [`crate::app::App`].
-//! It owns the stable spawn-order cache used by the `/agent` picker, keyboard next/previous
+//! It owns the stable spawn-order cache used by the `/session` picker, keyboard next/previous
 //! navigation, and the contextual footer label for the thread currently being watched.
 //!
 //! Responsibilities here are intentionally narrow:
@@ -19,6 +19,7 @@
 //! updated or marked closed.
 
 use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::format_agent_picker_entry_name;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
@@ -83,6 +84,10 @@ impl AgentNavigationState {
         agent_role: Option<String>,
         is_closed: bool,
     ) {
+        let thread_name = self
+            .threads
+            .get(&thread_id)
+            .and_then(|entry| entry.thread_name.clone());
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
@@ -91,9 +96,16 @@ impl AgentNavigationState {
             AgentPickerThreadEntry {
                 agent_nickname,
                 agent_role,
+                thread_name,
                 is_closed,
             },
         );
+    }
+
+    pub(crate) fn set_thread_name(&mut self, thread_id: ThreadId, thread_name: Option<String>) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.thread_name = thread_name;
+        }
     }
 
     /// Marks a thread as closed without removing it from the traversal cache.
@@ -216,13 +228,7 @@ impl AgentNavigationState {
         Some(
             self.threads
                 .get(&thread_id)
-                .map(|entry| {
-                    format_agent_picker_item_name(
-                        entry.agent_nickname.as_deref(),
-                        entry.agent_role.as_deref(),
-                        is_primary,
-                    )
-                })
+                .map(|entry| format_agent_picker_entry_name(entry, is_primary))
                 .unwrap_or_else(|| {
                     format_agent_picker_item_name(
                         /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
@@ -231,7 +237,7 @@ impl AgentNavigationState {
         )
     }
 
-    /// Builds the `/agent` picker subtitle from the same canonical bindings used by key handling.
+    /// Builds the `/session` picker subtitle from the same canonical bindings used by key handling.
     ///
     /// Keeping this text derived from the actual shortcut helpers prevents the picker copy from
     /// drifting if the bindings ever change on one platform.
@@ -345,6 +351,21 @@ mod tests {
         assert_eq!(
             state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
             Some("Robie [explorer]".to_string())
+        );
+        assert_eq!(
+            state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
+            Some("Main [default]".to_string())
+        );
+    }
+
+    #[test]
+    fn active_agent_label_prefers_thread_name_for_non_primary_agent() {
+        let (mut state, main_thread_id, first_agent_id, _) = populated_state();
+        state.set_thread_name(first_agent_id, Some("Backend audit".to_string()));
+
+        assert_eq!(
+            state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
+            Some("Backend audit".to_string())
         );
         assert_eq!(
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),

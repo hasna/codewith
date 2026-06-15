@@ -35,6 +35,7 @@ pub enum SlashCommand {
     New,
     Archive,
     Resume,
+    Tmux,
     Fork,
     App,
     Init,
@@ -46,6 +47,13 @@ pub enum SlashCommand {
     Schedule,
     Monitor,
     Agent,
+    #[strum(
+        to_string = "background-agent",
+        serialize = "background-agents",
+        serialize = "bg-agent"
+    )]
+    BackgroundAgent,
+    ExternalAgent,
     Side,
     Btw,
     Copy,
@@ -53,12 +61,14 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Stats,
     DebugConfig,
     Title,
     Statusline,
     Theme,
     #[strum(to_string = "pets", serialize = "pet")]
     Pets,
+    #[strum(to_string = "mcp", serialize = "mcps")]
     Mcp,
     Apps,
     Plugins,
@@ -96,6 +106,7 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Tmux => "move this session into tmux",
             SlashCommand::Archive => "archive this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
@@ -108,6 +119,7 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codewith performs specific tasks",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Stats => "show session stats and provider usage",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
@@ -146,7 +158,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
             SlashCommand::Memories => "configure memory use and generation",
-            SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
+            SlashCommand::Mcp => "open the MCP control center",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codewith",
@@ -176,11 +188,13 @@ impl SlashCommand {
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
+                | SlashCommand::ExternalAgent
                 | SlashCommand::Raw
                 | SlashCommand::Pets
                 | SlashCommand::Side
                 | SlashCommand::Btw
                 | SlashCommand::Resume
+                | SlashCommand::Tmux
                 | SlashCommand::SandboxReadRoot
         )
     }
@@ -194,6 +208,7 @@ impl SlashCommand {
                 | SlashCommand::Diff
                 | SlashCommand::Mention
                 | SlashCommand::Status
+                | SlashCommand::Stats
                 | SlashCommand::Ide
         )
     }
@@ -204,6 +219,7 @@ impl SlashCommand {
             SlashCommand::New
             | SlashCommand::Archive
             | SlashCommand::Resume
+            | SlashCommand::Tmux
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
@@ -211,6 +227,7 @@ impl SlashCommand {
             | SlashCommand::Profile
             | SlashCommand::Provider
             | SlashCommand::Config
+            | SlashCommand::ExternalAgent
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -234,6 +251,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Stats
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -269,6 +287,7 @@ impl SlashCommand {
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
+            SlashCommand::BackgroundAgent | SlashCommand::MultiAgents => false,
             _ => true,
         }
     }
@@ -306,6 +325,16 @@ mod tests {
     }
 
     #[test]
+    fn mcps_alias_parses_to_mcp_command() {
+        assert_eq!(SlashCommand::Mcp.command(), "mcp");
+        assert_eq!(SlashCommand::from_str("mcps"), Ok(SlashCommand::Mcp));
+        assert_eq!(
+            SlashCommand::Mcp.description(),
+            "open the MCP control center"
+        );
+    }
+
+    #[test]
     fn model_command_is_singular() {
         assert_eq!(SlashCommand::Model.command(), "model");
         assert!(SlashCommand::from_str("models").is_err());
@@ -328,6 +357,14 @@ mod tests {
     }
 
     #[test]
+    fn tmux_command_supports_inline_args_and_waits_for_idle_session() {
+        assert_eq!(SlashCommand::Tmux.command(), "tmux");
+        assert_eq!(SlashCommand::from_str("tmux"), Ok(SlashCommand::Tmux));
+        assert!(SlashCommand::Tmux.supports_inline_args());
+        assert!(!SlashCommand::Tmux.available_during_task());
+    }
+
+    #[test]
     fn config_command_is_available_as_config() {
         assert_eq!(SlashCommand::Config.command(), "config");
         assert_eq!(
@@ -341,6 +378,8 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
+        assert!(SlashCommand::Stats.available_during_task());
+        assert!(SlashCommand::Stats.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
@@ -348,6 +387,80 @@ mod tests {
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn external_agent_command_uses_kebab_case_and_args() {
+        assert_eq!(SlashCommand::ExternalAgent.command(), "external-agent");
+        assert_eq!(
+            SlashCommand::ExternalAgent.description(),
+            "stage an external coding-agent task"
+        );
+        assert!(SlashCommand::ExternalAgent.supports_inline_args());
+        assert!(!SlashCommand::ExternalAgent.available_during_task());
+    }
+
+    #[test]
+    fn background_agent_command_uses_kebab_case_aliases_and_args() {
+        assert_eq!(SlashCommand::BackgroundAgent.command(), "background-agent");
+        assert_eq!(
+            SlashCommand::from_str("background-agents"),
+            Ok(SlashCommand::BackgroundAgent)
+        );
+        assert_eq!(
+            SlashCommand::from_str("bg-agent"),
+            Ok(SlashCommand::BackgroundAgent)
+        );
+        assert_eq!(
+            SlashCommand::BackgroundAgent.description(),
+            "manage durable background agents"
+        );
+        assert!(SlashCommand::BackgroundAgent.supports_inline_args());
+        assert!(SlashCommand::BackgroundAgent.available_during_task());
+        assert!(
+            !super::built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "background-agent")
+        );
+    }
+
+    #[test]
+    fn session_command_is_visible_thread_switcher() {
+        assert_eq!(SlashCommand::Session.command(), "session");
+        assert_eq!(
+            SlashCommand::Session.description(),
+            "switch the active session or agent thread"
+        );
+        assert_eq!(
+            SlashCommand::from_str("sessions"),
+            Ok(SlashCommand::Session)
+        );
+        assert_eq!(SlashCommand::from_str("thread"), Ok(SlashCommand::Session));
+        assert_eq!(SlashCommand::from_str("threads"), Ok(SlashCommand::Session));
+        assert!(SlashCommand::Session.available_during_task());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
+        );
+    }
+
+    #[test]
+    fn subagents_alias_parses_but_is_hidden_from_visible_commands() {
+        assert_eq!(
+            SlashCommand::from_str("subagents"),
+            Ok(SlashCommand::MultiAgents)
+        );
+        assert!(
+            !super::built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "subagents")
+        );
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "session" && *command == SlashCommand::Session)
+        );
     }
 
     #[test]

@@ -43,6 +43,7 @@ import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
 import type { TerminalInteractionNotification } from "./v2/TerminalInteractionNotification";
 import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
 import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";
+import type { ThreadExternalAgentEventNotification } from "./v2/ThreadExternalAgentEventNotification";
 import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
 import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
 import type { ThreadMonitorDeletedNotification } from "./v2/ThreadMonitorDeletedNotification";

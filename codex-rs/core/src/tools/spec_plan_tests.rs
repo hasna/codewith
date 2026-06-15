@@ -6,8 +6,10 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
+use codex_model_provider::create_model_provider_with_id;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -77,6 +79,12 @@ impl ToolPlanProbe {
                 | ToolSpec::ToolSearch { .. }
                 | ToolSpec::ImageGeneration { .. }
                 | ToolSpec::WebSearch { .. }
+                | ToolSpec::AnthropicWebSearch { .. }
+                | ToolSpec::OpenRouterWebSearch { .. }
+                | ToolSpec::XaiWebSearch { .. }
+                | ToolSpec::XiaomiWebSearch { .. }
+                | ToolSpec::QwenWebSearch { .. }
+                | ToolSpec::ZaiWebSearch { .. }
                 | ToolSpec::Freeform(_) => None,
             })
             .collect::<BTreeMap<_, _>>();
@@ -281,6 +289,19 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_openrouter_provider(turn: &mut TurnContext) {
+    let provider_info = ModelProviderInfo::create_openrouter_provider();
+    update_config(turn, |config| {
+        config.model_provider_id = OPENROUTER_PROVIDER_ID.to_string();
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider_with_id(
+        OPENROUTER_PROVIDER_ID,
+        provider_info,
+        turn.auth_manager.clone(),
+    );
 }
 
 struct WebRunExtensionTool;
@@ -1316,6 +1337,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = true;
         turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
     })
     .await;
@@ -1359,6 +1381,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     let standalone_web_search_without_web_run = probe(|turn| {
         set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
         set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = true;
     })
     .await;
     standalone_web_search_without_web_run.assert_visible_contains(&["web_search"]);
@@ -1367,6 +1390,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         |turn| {
             set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
             set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
         },
         ToolPlanInputs {
             extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
@@ -1378,6 +1402,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
 
     let unsupported_provider = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = true;
         use_bedrock_provider(turn);
     })
     .await;

@@ -477,10 +477,18 @@ impl NetworkApprovalService {
         {
             match permission_request_decision {
                 PermissionRequestDecision::Allow => {
+                    // A permission-request hook's `Allow` is a per-request
+                    // decision: it grants this request only. Do NOT promote it
+                    // to `AllowForSession` or cache the host in
+                    // `session_approved_hosts` — doing so would short-circuit
+                    // (see the `session_approved_hosts` check above) every
+                    // future request to this host and never re-consult the
+                    // hook, silently widening a one-time programmatic allow
+                    // into session-wide access. Only an explicit user
+                    // "allow for session" choice (handled below) caches a host.
                     pending
-                        .set_decision(PendingApprovalDecision::AllowForSession)
+                        .set_decision(PendingApprovalDecision::AllowOnce)
                         .await;
-                    self.session_approved_hosts.lock().await.insert(key.clone());
                     let mut pending_approvals = self.pending_host_approvals.lock().await;
                     pending_approvals.remove(&key);
                     return NetworkDecision::Allow;

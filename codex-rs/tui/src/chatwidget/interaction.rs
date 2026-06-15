@@ -301,6 +301,38 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
+    pub(crate) fn show_agent_rename_prompt(
+        &mut self,
+        thread_id: ThreadId,
+        current_name: Option<String>,
+        label: String,
+    ) {
+        let tx = self.app_event_tx.clone();
+        let existing_name = current_name.as_deref().filter(|name| !name.is_empty());
+        let title = if existing_name.is_some() {
+            "Rename agent"
+        } else {
+            "Name agent"
+        };
+        let view = CustomPromptView::new(
+            title.to_string(),
+            "Type a name and press Enter".to_string(),
+            /*initial_text*/ existing_name.unwrap_or_default().to_string(),
+            Some(label),
+            Box::new(move |name: String| {
+                let Some(name) = crate::legacy_core::util::normalize_thread_name(&name) else {
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event("Agent name cannot be empty.".to_string()),
+                    )));
+                    return;
+                };
+                tx.set_thread_name_for_thread(thread_id, name);
+            }),
+        );
+
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
     pub(super) fn ensure_thread_rename_allowed(&mut self) -> bool {
         match self.thread_rename_block_message.clone() {
             Some(message) => {

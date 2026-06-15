@@ -415,41 +415,104 @@ fn test_merge_configured_model_providers_allows_cerebras_override() {
     expected.insert(CEREBRAS_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(
-        merge_configured_model_providers(
-            built_in_model_providers(/*openai_base_url*/ None),
-            configured_model_providers,
-        ),
-        Ok(expected)
+        providers.get(XAI_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_xai_provider())
     );
 }
 
 #[test]
-fn test_merge_configured_model_providers_allows_nvidia_override() {
-    let nvidia_provider = ModelProviderInfo {
-        name: "NVIDIA Dedicated".to_string(),
-        base_url: Some("https://dedicated.nvidia.example.com/v1".to_string()),
-        env_key: Some("NVIDIA_DEDICATED_API_KEY".to_string()),
-        wire_api: WireApi::Chat,
-        ..ModelProviderInfo::default()
-    };
-    let configured_model_providers =
-        std::collections::HashMap::from([(NVIDIA_PROVIDER_ID.to_string(), nvidia_provider)]);
-
-    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    let mut expected_provider = ModelProviderInfo::create_nvidia_provider();
-    expected_provider.name = "NVIDIA Dedicated".to_string();
-    expected_provider.base_url = Some("https://dedicated.nvidia.example.com/v1".to_string());
-    expected_provider.env_key = Some("NVIDIA_DEDICATED_API_KEY".to_string());
-    expected_provider.env_key_instructions = None;
-    expected.insert(NVIDIA_PROVIDER_ID.to_string(), expected_provider);
+fn test_built_in_model_providers_include_xiaomi() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
 
     assert_eq!(
-        merge_configured_model_providers(
+        providers.get(XIAOMI_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_xiaomi_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_deepseek() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(DEEPSEEK_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_deepseek_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_qwen() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(QWEN_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_qwen_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_google() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(GOOGLE_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_google_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_zai() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(ZAI_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_zai_provider())
+    );
+}
+
+#[test]
+fn test_built_in_model_providers_include_minimax() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(
+        providers.get(MINIMAX_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_minimax_provider())
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_allows_table_declared_builtin_overrides() {
+    for provider_id in built_in_model_provider_ids()
+        .filter(|provider_id| allows_partial_builtin_provider_override(provider_id))
+    {
+        let provider = ModelProviderInfo {
+            name: format!("{provider_id} Dedicated"),
+            base_url: Some(format!("https://dedicated.{provider_id}.example.com/v1")),
+            env_key: Some(format!("{}_DEDICATED_API_KEY", provider_id.to_uppercase())),
+            wire_api: default_wire_api_for_builtin_provider_override(provider_id),
+            ..ModelProviderInfo::default()
+        };
+        let configured_model_providers =
+            std::collections::HashMap::from([(provider_id.to_string(), provider.clone())]);
+
+        let merged = merge_configured_model_providers(
             built_in_model_providers(/*openai_base_url*/ None),
             configured_model_providers,
-        ),
-        Ok(expected)
-    );
+        )
+        .expect("table-declared built-in provider override should merge");
+        let merged_provider = merged
+            .get(provider_id)
+            .expect("merged providers should include overridden built-in provider");
+
+        assert_eq!(merged_provider.name, provider.name);
+        assert_eq!(merged_provider.base_url, provider.base_url);
+        assert_eq!(merged_provider.env_key, provider.env_key);
+        assert_eq!(merged_provider.env_key_instructions, None);
+        assert_eq!(
+            merged_provider.wire_api,
+            default_wire_api_for_builtin_provider_override(provider_id)
+        );
+    }
 }
 
 #[test]

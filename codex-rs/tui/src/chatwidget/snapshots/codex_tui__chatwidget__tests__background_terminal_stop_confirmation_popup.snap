@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: confirmation
+---
+  Stop Background Terminals
+  This will stop 1 running background terminal process(es).
+
+› 1. Back                    Return to the background terminal list.
+  2. Stop all                Stop 1 running background terminal process(es).
+
+  Press enter to confirm or esc to go back

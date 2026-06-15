@@ -46,6 +46,7 @@ use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
+use crate::style::accent_color;
 use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
@@ -161,7 +162,7 @@ impl CollaborationModeIndicator {
         let label = self.label(show_cycle_hint);
         match self {
             CollaborationModeIndicator::Plan => Span::from(label).magenta(),
-            CollaborationModeIndicator::PairProgramming => Span::from(label).cyan(),
+            CollaborationModeIndicator::PairProgramming => Span::from(label).fg(accent_color()),
             CollaborationModeIndicator::Execute => Span::from(label).dim(),
         }
     }
@@ -586,7 +587,8 @@ pub(crate) fn status_line_right_indicator_line(
 ) -> Option<Line<'static>> {
     let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint)
         .or_else(|| goal_status_indicator_line(goal_status_indicator));
-    let ide_context_indicator = ide_context_active.then(|| Line::from(vec!["IDE context".cyan()]));
+    let ide_context_indicator =
+        ide_context_active.then(|| Line::from(vec!["IDE context".fg(accent_color())]));
     let mut line: Option<Line<'static>> = None;
 
     for indicator in [primary_indicator, ide_context_indicator]
@@ -1071,7 +1073,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         "customize shortcuts with ".into(),
-        "/keymap".cyan(),
+        "/keymap".fg(accent_color()),
     ]));
     lines
 }
@@ -2147,13 +2149,13 @@ mod tests {
             is_wsl: false,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             status_line_value: Some(Line::from(vec![
-                "gpt-5.2-codex".cyan(),
+                "gpt-5.2-codex".fg(crate::style::accent_color()),
                 STATUS_LINE_SEPARATOR.dim(),
                 "open-codewith".green(),
                 STATUS_LINE_SEPARATOR.dim(),
                 "feature/statusline-wrap".magenta(),
                 STATUS_LINE_SEPARATOR.dim(),
-                "work".cyan(),
+                "work".fg(crate::style::accent_color()),
             ])),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
@@ -2206,13 +2208,13 @@ mod tests {
     #[test]
     fn status_line_wraps_by_whole_items_and_caps_at_two_rows() {
         let line = Line::from(vec![
-            "model".cyan(),
+            "model".fg(crate::style::accent_color()),
             STATUS_LINE_SEPARATOR.dim(),
             "/repo".green(),
             STATUS_LINE_SEPARATOR.dim(),
             "branch".magenta(),
             STATUS_LINE_SEPARATOR.dim(),
-            "profile".cyan(),
+            "profile".fg(crate::style::accent_color()),
         ]);
 
         let rows = pack_status_line_items(line, [13, 20]);
@@ -2225,7 +2227,7 @@ mod tests {
     #[test]
     fn status_line_drops_items_that_do_not_fit_in_two_rows() {
         let line = Line::from(vec![
-            "one".cyan(),
+            "one".fg(crate::style::accent_color()),
             STATUS_LINE_SEPARATOR.dim(),
             "two".green(),
             STATUS_LINE_SEPARATOR.dim(),

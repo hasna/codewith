@@ -4547,6 +4547,7 @@ mod tests {
     use crate::bottom_pane::InputResult;
     use crate::bottom_pane::chat_composer::LARGE_PASTE_CHAR_THRESHOLD;
     use crate::bottom_pane::textarea::TextArea;
+    use crate::style::accent_link_style;
     use codex_protocol::models::local_image_label_text;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -5095,7 +5096,7 @@ mod tests {
         composer.set_status_line_enabled(/*enabled*/ true);
         composer.set_status_line(Some(Line::from(Span::styled(
             "PR #20252",
-            Style::default().cyan().underlined(),
+            accent_link_style(),
         ))));
         composer.set_status_line_hyperlink(Some(url.to_string()));
 
@@ -7880,6 +7881,32 @@ mod tests {
     }
 
     #[test]
+    fn slash_popup_categories_for_bare_slash_ui() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        type_chars_humanlike(&mut composer, &['/']);
+
+        let mut terminal = Terminal::new(TestBackend::new(72, 10)).expect("terminal");
+        terminal
+            .draw(|f| composer.render(f.area(), f.buffer_mut()))
+            .expect("draw composer");
+
+        insta::assert_snapshot!("slash_popup_categories", terminal.backend());
+    }
+
+    #[test]
     fn slash_popup_model_first_for_mo_ui() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -7931,6 +7958,9 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected model command, got service tier {command:?}")
+                }
+                Some(CommandItem::Category(category)) => {
+                    panic!("expected model command, got category {category:?}")
                 }
                 None => panic!("no selected command for '/mo'"),
             },
@@ -8014,6 +8044,9 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected resume command, got service tier {command:?}")
                 }
+                Some(CommandItem::Category(category)) => {
+                    panic!("expected resume command, got category {category:?}")
+                }
                 None => panic!("no selected command for '/res'"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
@@ -8067,6 +8100,9 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected pets command, got service tier {command:?}")
+                }
+                Some(CommandItem::Category(category)) => {
+                    panic!("expected pets command, got category {category:?}")
                 }
                 None => panic!("no selected command for '/pet'"),
             },
@@ -8122,6 +8158,9 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected btw command, got service tier {command:?}")
                 }
+                Some(CommandItem::Category(category)) => {
+                    panic!("expected btw command, got category {category:?}")
+                }
                 None => panic!("no selected command for '/bt'"),
             },
             _ => panic!("slash popup not active after typing '/bt'"),
@@ -8175,6 +8214,9 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected side command, got service tier {command:?}")
+                }
+                Some(CommandItem::Category(category)) => {
+                    panic!("expected side command, got category {category:?}")
                 }
                 None => panic!("no selected command for '/si'"),
             },

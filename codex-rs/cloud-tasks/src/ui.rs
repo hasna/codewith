@@ -25,6 +25,8 @@ use codex_cloud_tasks_client::AttemptStatus;
 use codex_cloud_tasks_client::TaskStatus;
 use codex_tui::render_markdown_text;
 
+const CODEWITH_EMERALD: Color = Color::Rgb(5, 150, 105);
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let chunks = Layout::default()
@@ -131,7 +133,7 @@ pub fn draw_new_task_page(frame: &mut Frame, area: Rect, app: &mut App) {
                 attempts,
                 if attempts == 1 { "" } else { "s" }
             );
-            spans.push(label.cyan());
+            spans.push(label.fg(CODEWITH_EMERALD));
         }
         spans
     };
@@ -660,7 +662,7 @@ fn conversation_header_line(
     let mut spans: Vec<Span> = vec!["╭ ".dim()];
     match speaker {
         ConversationSpeaker::User => {
-            spans.push("User".cyan().bold());
+            spans.push("User".fg(CODEWITH_EMERALD).bold());
             spans.push(" prompt".dim());
         }
         ConversationSpeaker::Assistant => {
@@ -679,7 +681,7 @@ fn conversation_header_line(
 
 fn conversation_gutter_span(speaker: ConversationSpeaker) -> ratatui::text::Span<'static> {
     match speaker {
-        ConversationSpeaker::User => "│ ".cyan().dim(),
+        ConversationSpeaker::User => "│ ".fg(CODEWITH_EMERALD).dim(),
         ConversationSpeaker::Assistant => "│ ".magenta().dim(),
     }
 }
@@ -695,7 +697,7 @@ fn conversation_text_spans(
     if in_code {
         return vec![Span::styled(
             display.to_string(),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(CODEWITH_EMERALD),
         )];
     }
 
@@ -744,7 +746,7 @@ fn attempt_status_span(status: AttemptStatus) -> Option<ratatui::text::Span<'sta
         AttemptStatus::Completed => Some("Completed".green()),
         AttemptStatus::Failed => Some("Failed".red().bold()),
         AttemptStatus::InProgress => Some("In progress".magenta()),
-        AttemptStatus::Pending => Some("Pending".cyan()),
+        AttemptStatus::Pending => Some("Pending".fg(CODEWITH_EMERALD)),
         AttemptStatus::Cancelled => Some("Cancelled".dim()),
         AttemptStatus::Unknown => None,
     }
@@ -789,7 +791,7 @@ fn render_task_item(_app: &App, t: &codex_cloud_tasks_client::TaskSummary) -> Li
     let status = match t.status {
         TaskStatus::Ready => "READY".green(),
         TaskStatus::Pending => "PENDING".magenta(),
-        TaskStatus::Applied => "APPLIED".blue(),
+        TaskStatus::Applied => "APPLIED".fg(CODEWITH_EMERALD),
         TaskStatus::Error => "ERROR".red(),
     };
 
@@ -857,7 +859,7 @@ fn draw_inline_spinner(
     } else {
         "◦ ".dim()
     };
-    let label = label.cyan();
+    let label = label.fg(CODEWITH_EMERALD);
     let line = Line::from(vec![dot, label]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -926,7 +928,9 @@ pub fn draw_env_modal(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Subheader with usage hints (dim cyan)
     let subheader = Paragraph::new(Line::from(
-        "Type to search, Enter select, Esc cancel".cyan().dim(),
+        "Type to search, Enter select, Esc cancel"
+            .fg(CODEWITH_EMERALD)
+            .dim(),
     ))
     .wrap(Wrap { trim: true });
     frame.render_widget(subheader, rows[0]);
@@ -1018,8 +1022,10 @@ pub fn draw_best_of_modal(frame: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Length(2), Constraint::Min(1)])
         .split(content);
 
-    let hint = Paragraph::new(Line::from("Use ↑/↓ to choose, 1-4 jump".cyan().dim()))
-        .wrap(Wrap { trim: true });
+    let hint = Paragraph::new(Line::from(
+        "Use ↑/↓ to choose, 1-4 jump".fg(CODEWITH_EMERALD).dim(),
+    ))
+    .wrap(Wrap { trim: true });
     frame.render_widget(hint, rows[0]);
 
     let selected = app.best_of_modal.as_ref().map(|m| m.selected).unwrap_or(0);

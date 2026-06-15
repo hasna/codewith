@@ -93,6 +93,7 @@ macro_rules! experimental_type_entry {
 pub enum ClientRequestSerializationScope {
     Global(&'static str),
     GlobalSharedRead(&'static str),
+    Agent { agent_id: String },
     Thread { thread_id: String },
     ThreadPath { path: PathBuf },
     CommandExecProcess { process_id: String },
@@ -111,6 +112,11 @@ macro_rules! serialization_scope_expr {
     };
     ($actual_params:ident, global_shared_read($key:literal)) => {
         Some(ClientRequestSerializationScope::GlobalSharedRead($key))
+    };
+    ($actual_params:ident, agent_id($params:ident . $field:ident)) => {
+        Some(ClientRequestSerializationScope::Agent {
+            agent_id: $actual_params.$field.clone(),
+        })
     };
     ($actual_params:ident, thread_id($params:ident . $field:ident)) => {
         Some(ClientRequestSerializationScope::Thread {
@@ -638,6 +644,12 @@ client_request_definitions! {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
+    },
+    #[experimental("thread/externalAgent/start")]
+    ThreadExternalAgentStart => "thread/externalAgent/start" {
+        params: v2::ThreadExternalAgentStartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadExternalAgentStartResponse,
     },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
@@ -3228,6 +3240,27 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("mock/experimentalMethod"));
+    }
+
+    #[test]
+    fn agent_methods_are_marked_experimental() {
+        for method in [
+            "agent/start",
+            "agent/list",
+            "agent/read",
+            "agent/attach",
+            "agent/detach",
+            "agent/stop",
+            "agent/delete",
+            "agent/events/list",
+            "agent/pendingInteraction/respond",
+            "agent/daemon/diagnostics",
+        ] {
+            assert!(
+                EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should be experimental"
+            );
+        }
     }
 
     #[test]

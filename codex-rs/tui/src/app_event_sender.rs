@@ -61,6 +61,13 @@ impl AppEventSender {
         self.send(AppEvent::CodexOp(AppCommand::set_thread_name(name)));
     }
 
+    pub(crate) fn set_thread_name_for_thread(&self, thread_id: ThreadId, name: String) {
+        self.send(AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::set_thread_name(name),
+        });
+    }
+
     pub(crate) fn review(&self, target: ReviewTarget) {
         self.send(AppEvent::CodexOp(AppCommand::review(target)));
     }

@@ -1,0 +1,22 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 453
+expression: popup
+---
+  MCP: docs
+  docs MCP · 1.2.3 · Login needed · 1 tool · 1 resource · 1 template
+  docs server description
+
+  Search actions, tools, and resources
+› Refresh                        Refresh MCP server status and inventory.
+  Managed outside mcp_servers    This MCP may come from a plugin or runtime source; disable that source
+                                 instead.
+  OAuth login                    Open the browser login flow for this server.
+  Diagnose                       Show checks for this server's command, env, auth, and inventory.
+  Scale guidance                 Many stdio MCPs spawn many local processes; HTTP/plugin MCPs reduce local
+                                 load.
+  T Search docs                  Enabled · Search indexed documentation.
+  R handbook resource            file:///workspace/handbook.md
+  P ticket template              ticket://{id}
+
+  Press enter to confirm or esc to go back

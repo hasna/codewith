@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 434
+expression: popup
+---
+  MCP Servers
+  2 servers, 2 tools, 1 need login
+
+  Search MCP servers
+› Refresh                        Refresh MCP server status and inventory.
+  ! docs                         Runtime · Login needed · 1 tool · 1 resource · 1 template
+  K linear                       Runtime · API key · 1 tool · 0 resources · 0 templates
+  Add new MCP                    Paste a package command, HTTP URL, env keys, or headers.
+
+  Press enter to confirm or esc to go back

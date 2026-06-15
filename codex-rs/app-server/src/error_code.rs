@@ -23,6 +23,10 @@ pub(crate) fn internal_error(message: impl Into<String>) -> JSONRPCErrorError {
     error(INTERNAL_ERROR_CODE, message)
 }
 
+pub(crate) fn overloaded(message: impl Into<String>) -> JSONRPCErrorError {
+    error(OVERLOADED_ERROR_CODE, message)
+}
+
 fn error(code: i64, message: impl Into<String>) -> JSONRPCErrorError {
     JSONRPCErrorError {
         code,

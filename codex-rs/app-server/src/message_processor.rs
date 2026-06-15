@@ -281,6 +281,8 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
+    pub(crate) background_agent_host: bool,
+    pub(crate) background_agent_worker_run_id: Option<String>,
 }
 
 impl MessageProcessor {
@@ -304,6 +306,8 @@ impl MessageProcessor {
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
+            background_agent_host,
+            background_agent_worker_run_id,
         } = args;
         auth_manager.set_external_auth(Arc::new(ExternalAuthRefreshBridge {
             outgoing: outgoing.clone(),
@@ -482,7 +486,15 @@ impl MessageProcessor {
             thread_goal_processor.clone(),
             state_db,
             Arc::clone(&skills_watcher),
+            background_agent_worker_run_id.is_some(),
         );
+        if background_agent_worker_run_id.is_none() {
+            if background_agent_host {
+                thread_processor.start_background_agent_process_supervisor();
+            } else {
+                thread_processor.start_background_agent_supervisor();
+            }
+        }
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -565,6 +577,15 @@ impl MessageProcessor {
             windows_sandbox_processor,
             request_serialization_queues: RequestSerializationQueues::default(),
         }
+    }
+
+    pub(crate) async fn run_background_agent_worker_once(
+        &self,
+        run_id: String,
+    ) -> anyhow::Result<()> {
+        self.thread_processor
+            .run_background_agent_worker_once(run_id)
+            .await
     }
 
     pub(crate) fn clear_runtime_references(&self) {
@@ -1247,6 +1268,11 @@ impl MessageProcessor {
             ClientRequest::ThreadShellCommand { params, .. } => {
                 self.thread_processor
                     .thread_shell_command(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadExternalAgentStart { params, .. } => {
+                self.thread_processor
+                    .thread_external_agent_start(request_id.clone(), params)
                     .await
             }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {

@@ -274,6 +274,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
         web_search_mode,
         web_search_config,
         web_search_tool_type: turn_context.model_info.web_search_tool_type,
+        hosted_web_search_provider,
     }) {
         specs.push(hosted_web_search_tool);
     }

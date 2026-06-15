@@ -5,6 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Block;
@@ -20,6 +21,7 @@ use crate::render::Insets;
 use crate::render::RectExt as _;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
+use crate::style::accent_link_style;
 use crate::style::user_message_style;
 
 use super::CancellationEvent;
@@ -100,7 +102,7 @@ impl MemoriesSettingsView {
             app_event_tx,
             docs_link: Line::from(vec![
                 "Learn more: ".dim(),
-                MEMORIES_DOC_URL.cyan().underlined(),
+                MEMORIES_DOC_URL.set_style(accent_link_style()),
             ]),
             keymap,
         };

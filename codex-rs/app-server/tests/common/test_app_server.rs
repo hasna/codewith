@@ -11,6 +11,16 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 
 use anyhow::Context;
+use codex_app_server_protocol::AgentAttachParams;
+use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
+use codex_app_server_protocol::AgentDeleteParams;
+use codex_app_server_protocol::AgentDetachParams;
+use codex_app_server_protocol::AgentEventsListParams;
+use codex_app_server_protocol::AgentListParams;
+use codex_app_server_protocol::AgentPendingInteractionRespondParams;
+use codex_app_server_protocol::AgentReadParams;
+use codex_app_server_protocol::AgentStartParams;
+use codex_app_server_protocol::AgentStopParams;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientInfo;
@@ -80,6 +90,7 @@ use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadListParams;
@@ -521,6 +532,16 @@ impl TestAppServer {
         self.send_request("thread/shellCommand", params).await
     }
 
+    /// Send a `thread/externalAgent/start` JSON-RPC request.
+    pub async fn send_thread_external_agent_start_request(
+        &mut self,
+        params: ThreadExternalAgentStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/externalAgent/start", params)
+            .await
+    }
+
     /// Send a `thread/rollback` JSON-RPC request.
     pub async fn send_thread_rollback_request(
         &mut self,
@@ -564,6 +585,97 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/read", params).await
+    }
+
+    /// Send an `agent/start` JSON-RPC request.
+    pub async fn send_agent_start_request(
+        &mut self,
+        params: AgentStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/start", params).await
+    }
+
+    /// Send an `agent/list` JSON-RPC request.
+    pub async fn send_agent_list_request(
+        &mut self,
+        params: AgentListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/list", params).await
+    }
+
+    /// Send an `agent/read` JSON-RPC request.
+    pub async fn send_agent_read_request(
+        &mut self,
+        params: AgentReadParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/read", params).await
+    }
+
+    /// Send an `agent/attach` JSON-RPC request.
+    pub async fn send_agent_attach_request(
+        &mut self,
+        params: AgentAttachParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/attach", params).await
+    }
+
+    /// Send an `agent/detach` JSON-RPC request.
+    pub async fn send_agent_detach_request(
+        &mut self,
+        params: AgentDetachParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/detach", params).await
+    }
+
+    /// Send an `agent/stop` JSON-RPC request.
+    pub async fn send_agent_stop_request(
+        &mut self,
+        params: AgentStopParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/stop", params).await
+    }
+
+    /// Send an `agent/delete` JSON-RPC request.
+    pub async fn send_agent_delete_request(
+        &mut self,
+        params: AgentDeleteParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/delete", params).await
+    }
+
+    /// Send an `agent/events/list` JSON-RPC request.
+    pub async fn send_agent_events_list_request(
+        &mut self,
+        params: AgentEventsListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/events/list", params).await
+    }
+
+    /// Send an `agent/pendingInteraction/respond` JSON-RPC request.
+    pub async fn send_agent_pending_interaction_respond_request(
+        &mut self,
+        params: AgentPendingInteractionRespondParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/pendingInteraction/respond", params)
+            .await
+    }
+
+    /// Send an `agent/daemon/diagnostics` JSON-RPC request.
+    pub async fn send_agent_daemon_diagnostics_request(
+        &mut self,
+        params: AgentDaemonDiagnosticsParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/daemon/diagnostics", params).await
     }
 
     /// Send a `thread/turns/list` JSON-RPC request.

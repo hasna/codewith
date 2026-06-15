@@ -5,6 +5,7 @@ use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableExt as _;
 use crate::selection_list::selection_option_row;
+use crate::style::accent_link_style;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
@@ -14,6 +15,7 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::prelude::Stylize as _;
 use ratatui::prelude::Widget;
+use ratatui::style::Styled as _;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Clear;
@@ -110,7 +112,7 @@ pub(crate) fn migration_copy_for_models(
     if let Some(model_link) = model_link {
         content.push(Line::from(vec![
             format!("{description_line} Learn more about {target_display_name} at ").into(),
-            model_link.cyan().underlined(),
+            model_link.set_style(accent_link_style()),
         ]));
         content.push(Line::from(""));
     } else {

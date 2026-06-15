@@ -1,11 +1,12 @@
 //! Helpers for rendering and navigating multi-agent state in the TUI.
 //!
-//! This module owns the shared presentation contracts for multi-agent history rows, `/agent` picker
+//! This module owns the shared presentation contracts for multi-agent history rows, `/session` picker
 //! entries, and the fast-switch keyboard shortcuts. Higher-level coordination, such as deciding
 //! which thread becomes active or when a thread closes, stays in [`crate::app::App`].
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
@@ -35,6 +36,8 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Optional persisted thread name set by `/rename` or the agent picker rename action.
+    pub(crate) thread_name: Option<String>,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
 }
@@ -88,6 +91,31 @@ pub(crate) fn format_agent_picker_item_name(
         (None, Some(agent_role)) => format!("[{agent_role}]"),
         (None, None) => "Agent".to_string(),
     }
+}
+
+pub(crate) fn format_agent_picker_entry_name(
+    entry: &AgentPickerThreadEntry,
+    is_primary: bool,
+) -> String {
+    if is_primary {
+        return format_agent_picker_item_name(
+            entry.agent_nickname.as_deref(),
+            entry.agent_role.as_deref(),
+            /*is_primary*/ true,
+        );
+    }
+
+    if let Some(thread_name) = entry.thread_name.as_deref().map(str::trim)
+        && !thread_name.is_empty()
+    {
+        return thread_name.to_string();
+    }
+
+    format_agent_picker_item_name(
+        entry.agent_nickname.as_deref(),
+        entry.agent_role.as_deref(),
+        /*is_primary*/ false,
+    )
 }
 
 pub(crate) fn previous_agent_shortcut() -> crate::key_hint::KeyBinding {
@@ -446,11 +474,11 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
     if let Some(nickname) = nickname {
-        spans.push(Span::from(nickname.to_string()).cyan().bold());
+        spans.push(Span::from(nickname.to_string()).fg(accent_color()).bold());
     } else if let Some(thread_id) = agent.thread_id {
-        spans.push(Span::from(thread_id.to_string()).cyan());
+        spans.push(Span::from(thread_id.to_string()).fg(accent_color()));
     } else {
-        spans.push(Span::from("agent").cyan());
+        spans.push(Span::from("agent").fg(accent_color()));
     }
 
     if let Some(role) = role {
@@ -558,8 +586,8 @@ fn status_summary_line(status: Option<&CollabAgentState>, fallback_error: &str) 
 
 fn status_summary_spans(status: &CollabAgentState) -> Vec<Span<'static>> {
     match status.status {
-        CollabAgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
-        CollabAgentStatus::Running => vec![Span::from("Running").cyan().bold()],
+        CollabAgentStatus::PendingInit => vec![Span::from("Pending init").fg(accent_color())],
+        CollabAgentStatus::Running => vec![Span::from("Running").fg(accent_color()).bold()],
         // Allow `.yellow()`
         #[allow(clippy::disallowed_methods)]
         CollabAgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
@@ -811,7 +839,7 @@ mod tests {
         let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
         assert_eq!(title.spans[2].content.as_ref(), "Robie");
-        assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
+        assert_eq!(title.spans[2].style.fg, Some(accent_color()));
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
         assert_eq!(title.spans[4].style.fg, None);
