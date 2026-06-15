@@ -1,4 +1,7 @@
 use super::*;
+use crate::active_session_bridge::ActiveChannelDeliveryMode;
+use crate::active_session_bridge::ActiveChannelEndpoint;
+use crate::active_session_bridge::ActiveChannelEnvelope;
 use crate::active_session_registry::ActivePeer;
 use crate::active_session_registry::ActivePeerCapabilities;
 use crate::active_session_registry::ActivePeerCapability as RegistryCapability;
@@ -156,7 +159,7 @@ impl ActiveSessionRequestProcessor {
             .get_thread(target)
             .await
             .map_err(active_session_get_thread_error)?;
-        let communication = active_session_communication(
+        let envelope = active_channel_envelope(
             message_id.as_str(),
             sender_label,
             sender_peer.as_ref(),
@@ -164,8 +167,9 @@ impl ActiveSessionRequestProcessor {
             message,
             delivery
                 .unwrap_or(ActiveSessionMessageDelivery::QueueOnly)
-                .trigger_turn(),
+                .into(),
         );
+        let communication = active_session_communication(&envelope);
         target_thread
             .submit(Op::InterAgentCommunication { communication })
             .await
@@ -291,34 +295,67 @@ fn api_capabilities(capabilities: ActivePeerCapabilities) -> Vec<ActiveSessionCa
     .collect()
 }
 
-fn active_session_communication(
+fn active_channel_envelope(
     message_id: &str,
     sender_label: Option<String>,
     sender_peer: Option<&ActivePeer>,
     target_peer: &ActivePeer,
     message: String,
-    trigger_turn: bool,
-) -> InterAgentCommunication {
-    let author = sender_peer
-        .and_then(|peer| peer.agent_path.as_deref())
-        .and_then(|path| AgentPath::try_from(path).ok())
-        .unwrap_or_else(AgentPath::root);
-    let recipient = target_peer
-        .agent_path
-        .as_deref()
-        .and_then(|path| AgentPath::try_from(path).ok())
-        .unwrap_or_else(AgentPath::root);
+    delivery: ActiveChannelDeliveryMode,
+) -> ActiveChannelEnvelope {
     let sender = sender_label
         .or_else(|| sender_peer.and_then(|peer| peer.display_name.clone()))
         .or_else(|| sender_peer.map(|peer| peer.peer_id.clone()))
         .unwrap_or_else(|| "external active session".to_string());
+    ActiveChannelEnvelope::new(
+        message_id.to_string(),
+        sender_peer
+            .map(ActiveChannelEndpoint::from_peer)
+            .unwrap_or_else(external_active_channel_endpoint),
+        ActiveChannelEndpoint::from_peer(target_peer),
+        format!("Active session message {message_id} from {sender}:\n\n{message}"),
+        delivery,
+    )
+}
+
+fn external_active_channel_endpoint() -> ActiveChannelEndpoint {
+    ActiveChannelEndpoint {
+        id: "external-active-session".to_string(),
+        kind: crate::active_session_bridge::ActiveChannelEndpointKind::BridgeAdapter,
+        label: Some("external active session".to_string()),
+        agent_path: None,
+    }
+}
+
+fn active_session_communication(envelope: &ActiveChannelEnvelope) -> InterAgentCommunication {
+    let author = envelope
+        .sender
+        .agent_path
+        .as_deref()
+        .and_then(|path| AgentPath::try_from(path).ok())
+        .unwrap_or_else(AgentPath::root);
+    let recipient = envelope
+        .recipient
+        .agent_path
+        .as_deref()
+        .and_then(|path| AgentPath::try_from(path).ok())
+        .unwrap_or_else(AgentPath::root);
     InterAgentCommunication::new(
         author,
         recipient,
         Vec::new(),
-        format!("Active session message {message_id} from {sender}:\n\n{message}"),
-        trigger_turn,
+        envelope.content.clone(),
+        envelope.delivery.trigger_turn(),
     )
+}
+
+impl From<ActiveSessionMessageDelivery> for ActiveChannelDeliveryMode {
+    fn from(value: ActiveSessionMessageDelivery) -> Self {
+        match value {
+            ActiveSessionMessageDelivery::QueueOnly => Self::QueueOnly,
+            ActiveSessionMessageDelivery::TriggerTurn => Self::TriggerTurn,
+        }
+    }
 }
 
 fn active_session_get_thread_error(err: CodexErr) -> JSONRPCErrorError {
