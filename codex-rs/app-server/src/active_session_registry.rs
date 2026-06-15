@@ -255,7 +255,7 @@ mod tests {
 
         let registered = registry.register(registration, LastSeenAt::from_unix_seconds(100));
 
-        assert_eq!(registered, expected.clone());
+        assert_eq!(registered, expected);
         assert_eq!(registry.list_active(freshness(110, 30)), vec![expected]);
     }
 
@@ -274,7 +274,7 @@ mod tests {
 
         let updated = registry.register(updated_registration, LastSeenAt::from_unix_seconds(130));
 
-        assert_eq!(updated, expected.clone());
+        assert_eq!(updated, expected);
         assert_eq!(registry.list_active(freshness(130, 30)), vec![expected]);
     }
 
@@ -289,7 +289,7 @@ mod tests {
             .heartbeat("thread-a", LastSeenAt::from_unix_seconds(150))
             .expect("peer exists");
 
-        assert_eq!(updated, expected.clone());
+        assert_eq!(updated, expected);
         assert_eq!(
             registry.get_active("thread-a", freshness(170, 30)),
             Ok(expected)
