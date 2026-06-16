@@ -6,8 +6,9 @@ expression: popup
   Switch auth for this session.
 
   1. default (current)   Root login
-› 2. personal            Press Enter to confirm or Esc to go back
-  3. work                ChatGPT / ApiKey
+› 2. personal            ChatGPT Pro · el@elyratelier.com
+  3. work                ChatGPT API key
   4. Log in new profile  Create a saved auth profile
 
+  Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down
   Press enter to confirm or esc to go back

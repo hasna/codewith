@@ -25,7 +25,6 @@ const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
 const AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN: Duration =
     Duration::from_secs(RATE_LIMIT_STALE_THRESHOLD_MINUTES as u64 * 60);
-const PROFILE_SELECTED_DESCRIPTION: &str = "Press Enter to confirm or Esc to go back";
 
 impl ChatWidget {
     pub(crate) fn open_profile_popup(&mut self) {
@@ -79,6 +78,7 @@ impl ChatWidget {
 
         SelectionViewParams {
             view_id: Some(AUTH_PROFILE_POPUP_VIEW_ID),
+            footer_note: Some(auth_profile_popup_action_hint()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             header: Box::new(header),
@@ -127,7 +127,7 @@ impl ChatWidget {
                 "Root login",
                 &usage_hint,
             )),
-            selected_description: Some(PROFILE_SELECTED_DESCRIPTION.to_string()),
+            selected_description: None,
             is_current,
             actions,
             dismiss_on_select: true,
@@ -234,7 +234,7 @@ impl ChatWidget {
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: Some(PROFILE_SELECTED_DESCRIPTION.to_string()),
+            selected_description: None,
             is_current: current == Some(profile.name.as_str()),
             actions,
             shortcut_actions,
@@ -612,24 +612,40 @@ fn cleanup_auth_profile_login(
 }
 
 fn auth_profile_description(profile: &AuthProfile) -> String {
-    let mut parts = vec![profile.subscription_provider.to_string()];
-    if let Some(auth_mode) = profile.auth_mode {
-        parts.push(auth_mode.to_string());
-    }
+    let mut account = profile.subscription_provider.to_string();
     if let Some(plan) = &profile.plan {
-        parts.push(plan.clone());
+        account.push(' ');
+        account.push_str(plan);
+    } else if let Some(auth_mode) = profile.auth_mode {
+        account.push(' ');
+        account.push_str(auth_profile_auth_mode_label(auth_mode));
     }
+    let mut parts = vec![account];
     if let Some(email) = &profile.email {
         parts.push(email.clone());
     }
-    parts.join(" / ")
+    parts.join(" · ")
+}
+
+fn auth_profile_auth_mode_label(auth_mode: codex_app_server_protocol::AuthMode) -> &'static str {
+    match auth_mode {
+        codex_app_server_protocol::AuthMode::ApiKey => "API key",
+        codex_app_server_protocol::AuthMode::Chatgpt
+        | codex_app_server_protocol::AuthMode::ChatgptAuthTokens
+        | codex_app_server_protocol::AuthMode::PersonalAccessToken => "account",
+        codex_app_server_protocol::AuthMode::AgentIdentity => "agent identity",
+    }
 }
 
 fn auth_profile_description_with_usage(description: &str, usage_hint: &str) -> String {
     if usage_hint == "usage unknown" {
         return description.to_string();
     }
-    format!("{description} / {usage_hint}")
+    format!("{description} · {usage_hint}")
+}
+
+fn auth_profile_popup_action_hint() -> Line<'static> {
+    Line::from("Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down")
 }
 
 fn auth_profile_usage_snapshots_are_stale(
@@ -669,7 +685,7 @@ fn compact_usage_hint_for_snapshot(snapshot: &RateLimitSnapshotDisplay) -> Strin
         return "usage unknown".to_string();
     }
 
-    let hint = hints.join(" / ");
+    let hint = hints.join(" · ");
     if Local::now().signed_duration_since(snapshot.captured_at)
         > chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
     {

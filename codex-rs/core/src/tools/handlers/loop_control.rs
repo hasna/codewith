@@ -106,6 +106,20 @@ struct LoopScheduleSnapshot {
     lease_expires_at: Option<i64>,
     created_at: i64,
     updated_at: i64,
+    stats: LoopScheduleStatsSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoopScheduleStatsSnapshot {
+    total_runs: i64,
+    leased_runs: i64,
+    running_runs: i64,
+    completed_runs: i64,
+    failed_runs: i64,
+    last_started_at: Option<i64>,
+    last_completed_at: Option<i64>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -254,7 +268,7 @@ async fn manage_loop(
             if schedule.thread_id != thread_id {
                 return Err(missing_loop_error(schedule_id.as_str()));
             }
-            let affected_schedule = LoopScheduleSnapshot::from(schedule);
+            let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             let message = match action {
                 LoopAction::Stop => {
@@ -282,6 +296,7 @@ async fn manage_loop(
                     .await?;
             let schedule =
                 ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
+            let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
             let deleted = state_db
                 .thread_schedules()
                 .delete_thread_schedule(schedule_id.as_str())
@@ -291,7 +306,7 @@ async fn manage_loop(
             Ok(ManageLoopResponse {
                 action: LoopAction::Clear,
                 schedule_id: Some(schedule_id.clone()),
-                affected_schedule: Some(LoopScheduleSnapshot::from(schedule)),
+                affected_schedule: Some(affected_schedule),
                 schedules,
                 deleted: Some(deleted),
                 message: if deleted {
@@ -355,7 +370,7 @@ async fn create_loop(
         })
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
-    let affected_schedule = LoopScheduleSnapshot::from(schedule);
+    let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
     let schedules = list_loop_snapshots(&state_db, thread_id).await?;
     let schedule_id = affected_schedule.schedule_id.clone();
     Ok(ManageLoopResponse {
@@ -377,11 +392,11 @@ async fn list_loop_snapshots(
         .list_thread_schedules(thread_id)
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
-    Ok(schedules
-        .into_iter()
-        .filter(is_loop_schedule)
-        .map(LoopScheduleSnapshot::from)
-        .collect())
+    let mut snapshots = Vec::new();
+    for schedule in schedules.into_iter().filter(is_loop_schedule) {
+        snapshots.push(loop_schedule_snapshot(state_db, schedule).await?);
+    }
+    Ok(snapshots)
 }
 
 async fn ensure_schedule_capacity(
@@ -608,23 +623,45 @@ impl LoopAction {
     }
 }
 
-impl From<codex_state::ThreadSchedule> for LoopScheduleSnapshot {
-    fn from(schedule: codex_state::ThreadSchedule) -> Self {
+async fn loop_schedule_snapshot(
+    state_db: &codex_state::StateRuntime,
+    schedule: codex_state::ThreadSchedule,
+) -> Result<LoopScheduleSnapshot, FunctionCallError> {
+    let stats = state_db
+        .thread_schedules()
+        .get_thread_schedule_stats(&schedule.schedule_id)
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    Ok(LoopScheduleSnapshot {
+        thread_id: schedule.thread_id.to_string(),
+        schedule_id: schedule.schedule_id,
+        prompt: schedule.prompt,
+        prompt_source: schedule.prompt_source.as_str().to_string(),
+        schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
+        timezone: schedule.timezone,
+        status: schedule.status.as_str().to_string(),
+        next_run_at: timestamp_seconds(schedule.next_run_at),
+        last_run_at: timestamp_seconds(schedule.last_run_at),
+        expires_at: timestamp_seconds(schedule.expires_at),
+        failure_count: schedule.failure_count,
+        lease_expires_at: timestamp_seconds(schedule.lease_expires_at),
+        created_at: schedule.created_at.timestamp(),
+        updated_at: schedule.updated_at.timestamp(),
+        stats: LoopScheduleStatsSnapshot::from(stats),
+    })
+}
+
+impl From<codex_state::ThreadScheduleStats> for LoopScheduleStatsSnapshot {
+    fn from(stats: codex_state::ThreadScheduleStats) -> Self {
         Self {
-            thread_id: schedule.thread_id.to_string(),
-            schedule_id: schedule.schedule_id,
-            prompt: schedule.prompt,
-            prompt_source: schedule.prompt_source.as_str().to_string(),
-            schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
-            timezone: schedule.timezone,
-            status: schedule.status.as_str().to_string(),
-            next_run_at: timestamp_seconds(schedule.next_run_at),
-            last_run_at: timestamp_seconds(schedule.last_run_at),
-            expires_at: timestamp_seconds(schedule.expires_at),
-            failure_count: schedule.failure_count,
-            lease_expires_at: timestamp_seconds(schedule.lease_expires_at),
-            created_at: schedule.created_at.timestamp(),
-            updated_at: schedule.updated_at.timestamp(),
+            total_runs: stats.total_runs,
+            leased_runs: stats.leased_runs,
+            running_runs: stats.running_runs,
+            completed_runs: stats.completed_runs,
+            failed_runs: stats.failed_runs,
+            last_started_at: timestamp_seconds(stats.last_started_at),
+            last_completed_at: timestamp_seconds(stats.last_completed_at),
+            last_error: stats.last_error,
         }
     }
 }
@@ -678,6 +715,7 @@ mod tests {
     use codex_protocol::protocol::SessionSource;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     async fn test_runtime() -> (TempDir, Arc<codex_state::StateRuntime>) {
@@ -857,6 +895,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_loop_returns_exact_run_stats() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 11);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Active,
+        )
+        .await;
+
+        let first_run_at = at(/*seconds*/ 1_700_000_300);
+        let first_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(first_run_at, "lease-complete", Duration::from_secs(300))
+            .await
+            .expect("first run should claim")
+            .expect("first run should be due");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(
+                &schedule.schedule_id,
+                &first_claim.run.run_id,
+                "lease-complete",
+                "turn-complete",
+            )
+            .await
+            .expect("first run should start")
+            .expect("first run should exist");
+
+        let second_run_at = at(/*seconds*/ 1_700_000_600);
+        runtime
+            .thread_schedules()
+            .complete_thread_schedule_run(
+                &schedule.schedule_id,
+                &first_claim.run.run_id,
+                "lease-complete",
+                first_run_at + ChronoDuration::seconds(10),
+                Some(second_run_at),
+            )
+            .await
+            .expect("first run should complete");
+
+        let second_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(second_run_at, "lease-fail", Duration::from_secs(300))
+            .await
+            .expect("second run should claim")
+            .expect("second run should be due");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(
+                &schedule.schedule_id,
+                &second_claim.run.run_id,
+                "lease-fail",
+                "turn-fail",
+            )
+            .await
+            .expect("second run should start")
+            .expect("second run should exist");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &second_claim.run.run_id,
+                "lease-fail",
+                second_run_at + ChronoDuration::seconds(20),
+                Some(at(/*seconds*/ 1_700_000_900)),
+                "scheduled turn completed without a final assistant message".to_string(),
+            )
+            .await
+            .expect("second run should fail");
+
+        let response = manage_loop(runtime, thread_id, loop_args(LoopAction::List))
+            .await
+            .expect("loop list should succeed");
+
+        assert_eq!(response.schedules.len(), 1);
+        assert_eq!(
+            &response.schedules[0].stats,
+            &LoopScheduleStatsSnapshot {
+                total_runs: 2,
+                leased_runs: 0,
+                running_runs: 0,
+                completed_runs: 1,
+                failed_runs: 1,
+                last_started_at: Some(second_run_at.timestamp()),
+                last_completed_at: Some((second_run_at + ChronoDuration::seconds(20)).timestamp()),
+                last_error: Some(
+                    "scheduled turn completed without a final assistant message".to_string()
+                ),
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn start_with_loop_fields_creates_active_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 9);
@@ -1027,6 +1162,35 @@ mod tests {
             codex_state::ThreadScheduleStatus::Active,
         )
         .await;
+        let first_run_at = at(/*seconds*/ 1_700_000_300);
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(first_run_at, "lease-complete", Duration::from_secs(300))
+            .await
+            .expect("run should claim")
+            .expect("run should be due");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(
+                &first.schedule_id,
+                &claim.run.run_id,
+                "lease-complete",
+                "turn-complete",
+            )
+            .await
+            .expect("run should start")
+            .expect("run should exist");
+        runtime
+            .thread_schedules()
+            .complete_thread_schedule_run(
+                &first.schedule_id,
+                &claim.run.run_id,
+                "lease-complete",
+                first_run_at + ChronoDuration::seconds(10),
+                Some(at(/*seconds*/ 1_700_000_600)),
+            )
+            .await
+            .expect("run should complete");
         let second = create_interval_schedule(
             &runtime,
             thread_id,
@@ -1049,6 +1213,23 @@ mod tests {
         assert_eq!(response.action, LoopAction::Clear);
         assert_eq!(response.schedule_id, Some(first.schedule_id.clone()));
         assert_eq!(response.deleted, Some(true));
+        assert_eq!(
+            response
+                .affected_schedule
+                .as_ref()
+                .expect("affected schedule should be returned")
+                .stats,
+            LoopScheduleStatsSnapshot {
+                total_runs: 1,
+                leased_runs: 0,
+                running_runs: 0,
+                completed_runs: 1,
+                failed_runs: 0,
+                last_started_at: Some(first_run_at.timestamp()),
+                last_completed_at: Some((first_run_at + ChronoDuration::seconds(10)).timestamp()),
+                last_error: None,
+            }
+        );
         assert!(
             runtime
                 .thread_schedules()

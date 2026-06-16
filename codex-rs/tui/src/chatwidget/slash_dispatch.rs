@@ -109,9 +109,9 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const LOOP_USAGE: &str = "Usage: /loop [interval|cron] <prompt>";
 const LOOP_USAGE_HINT: &str =
-    "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list";
+    "Examples: /loop 5m check CI, /loop every 2 hours review alerts, /loop list, /loop stats <id>";
 const SCHEDULE_USAGE: &str = "Usage: /schedule <time> <prompt>";
-const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list";
+const SCHEDULE_USAGE_HINT: &str = "Examples: /schedule 5m check CI, /schedule 2026-06-05 09:30 check CI, /schedule tomorrow at 9am review alerts, /schedule list, /schedule stats <id>";
 const MONITOR_USAGE: &str =
     "Usage: /monitor <request> | /monitor [list|read|stop|restart|delete] [id]";
 const MONITOR_USAGE_HINT: &str =
@@ -1422,6 +1422,13 @@ impl ChatWidget {
                         schedule_id,
                     });
                 }
+                LoopManageCommand::Stats { schedule_id } => {
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadLoopScheduleStats {
+                            thread_id,
+                            schedule_id,
+                        });
+                }
             },
         }
         self.append_message_history_entry(format!("/loop {trimmed}"));
@@ -1509,6 +1516,12 @@ impl ChatWidget {
                 }
                 LoopManageCommand::Edit { schedule_id } => {
                     self.app_event_tx.send(AppEvent::OpenThreadScheduleEditor {
+                        thread_id,
+                        schedule_id,
+                    });
+                }
+                LoopManageCommand::Stats { schedule_id } => {
+                    self.app_event_tx.send(AppEvent::OpenThreadScheduleStats {
                         thread_id,
                         schedule_id,
                     });

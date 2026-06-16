@@ -2,6 +2,7 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::chatwidget::connectors::ConnectorsCacheState;
 use crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
+use base64::Engine;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::HookErrorInfo;
@@ -16,6 +17,7 @@ use codex_config::types::McpServerTransportConfig;
 use codex_features::Stage;
 use codex_login::AuthDotJson;
 use codex_login::AuthProfileSubscriptionProvider;
+use codex_login::TokenData;
 use codex_login::list_auth_profiles;
 use codex_login::save_auth_profile;
 use codex_model_provider_info::ModelProviderInfo;
@@ -105,6 +107,45 @@ fn save_popup_auth_profile(chat: &ChatWidget, name: &str) {
         },
     )
     .expect("save auth profile");
+}
+
+fn save_popup_chatgpt_auth_profile(chat: &ChatWidget, name: &str, email: &str) {
+    let id_token = fake_chatgpt_jwt(email, &format!("{name}-account"), "pro");
+    save_auth_profile(
+        &chat.config.codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: None,
+            personal_access_token: None,
+            tokens: Some(TokenData {
+                id_token: codex_login::token_data::parse_chatgpt_jwt_claims(&id_token)
+                    .expect("id token should parse"),
+                access_token: format!("{name}-access-token"),
+                refresh_token: format!("{name}-refresh-token"),
+                account_id: Some(format!("{name}-account")),
+            }),
+            last_refresh: None,
+            agent_identity: None,
+        },
+    )
+    .expect("save ChatGPT auth profile");
+}
+
+fn fake_chatgpt_jwt(email: &str, account_id: &str, plan_type: &str) -> String {
+    let payload = serde_json::json!({
+        "email": email,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+            "chatgpt_plan_type": plan_type,
+        },
+    });
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let header_b64 = encode(br#"{"alg":"none","typ":"JWT"}"#);
+    let payload_b64 = encode(&serde_json::to_vec(&payload).expect("serialize payload"));
+    let signature_b64 = encode(b"sig");
+    format!("{header_b64}.{payload_b64}.{signature_b64}")
 }
 
 fn mcp_test_statuses() -> Vec<McpServerStatus> {
@@ -2785,7 +2826,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     save_popup_auth_profile(&chat, "work");
-    save_popup_auth_profile(&chat, "personal");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "el@elyratelier.com");
     while rx.try_recv().is_ok() {}
 
     chat.open_profile_popup();
@@ -2796,10 +2837,19 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("personal"));
     assert!(popup.contains("work"));
     assert!(popup.contains("Log in new profile"));
+    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
+    assert!(!popup.contains("ChatGPT / Pro"));
+    assert!(!popup.contains("ChatGPT / ApiKey"));
+    assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
+    assert!(popup.contains("Press enter to confirm or esc to go back"));
+    assert!(popup.contains("Enter switch / l relogin / r rename"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_selection_popup_profile_actions", popup);
+    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
+    assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
+    assert!(popup.contains("Press enter to confirm or esc to go back"));
 
     chat.open_profile_popup();
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -3021,7 +3071,7 @@ async fn profile_selection_popup_shows_usage_hints() {
     chat.thread_id = Some(ThreadId::new());
     chat.config.selected_auth_profile = Some("work".to_string());
     save_popup_auth_profile(&chat, "work");
-    save_popup_auth_profile(&chat, "personal");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "el@elyratelier.com");
     while rx.try_recv().is_ok() {}
 
     chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
@@ -3042,14 +3092,16 @@ async fn profile_selection_popup_shows_usage_hints() {
 
     chat.open_profile_popup();
 
-    let popup = render_bottom_popup(&chat, /*width*/ 96);
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
     assert_chatwidget_snapshot!("profile_selection_popup_usage_hints", popup);
     assert!(!popup.contains("usage unknown"));
-    assert!(!popup.contains("Enter switch / l relogin"));
-    assert!(popup.contains("Press Enter to confirm or Esc to go back"));
+    assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
+    assert!(popup.contains("Press enter to confirm or esc to go back"));
+    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
     assert!(popup.contains("stale 5h 30% left"));
     assert!(popup.contains("weekly"));
     assert!(popup.contains("60% left"));
+    assert!(popup.contains("Enter switch / l relogin / r rename"));
 }
 
 #[tokio::test]

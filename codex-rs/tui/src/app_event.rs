@@ -374,7 +374,7 @@ pub(crate) enum AppEvent {
     /// Show stats for a thread loop schedule.
     OpenThreadLoopScheduleStats {
         thread_id: ThreadId,
-        schedule_id: String,
+        schedule_id: Option<String>,
     },
 
     /// Create a recurring prompt schedule for the current thread.
@@ -436,7 +436,7 @@ pub(crate) enum AppEvent {
     /// Show stats for a thread schedule.
     OpenThreadScheduleStats {
         thread_id: ThreadId,
-        schedule_id: String,
+        schedule_id: Option<String>,
     },
 
     /// Create a recurring prompt schedule for the current thread.

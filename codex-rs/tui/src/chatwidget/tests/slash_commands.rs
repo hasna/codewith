@@ -1041,6 +1041,7 @@ async fn loop_slash_command_emits_manage_events() {
         ("/loop delete sched-1", "delete", Some("sched-1")),
         ("/loop run-now sched-1", "run-now", Some("sched-1")),
         ("/loop edit sched-1", "edit", Some("sched-1")),
+        ("/loop stats sched-1", "stats", Some("sched-1")),
     ];
 
     for (command, expected_kind, expected_schedule_id) in cases {
@@ -1111,6 +1112,16 @@ async fn loop_slash_command_emits_manage_events() {
                 assert_eq!(actual_thread_id, thread_id);
                 assert_eq!(schedule_id.as_deref(), expected_schedule_id);
             }
+            (
+                "stats",
+                AppEvent::OpenThreadLoopScheduleStats {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
             (kind, event) => panic!("expected {kind} loop event, got {event:?}"),
         }
         assert_no_submit_op(&mut op_rx);
@@ -1126,6 +1137,7 @@ async fn schedule_slash_command_emits_manage_events() {
         ("/schedule delete sched-1", "delete", Some("sched-1")),
         ("/schedule run-now sched-1", "run-now", Some("sched-1")),
         ("/schedule edit sched-1", "edit", Some("sched-1")),
+        ("/schedule stats sched-1", "stats", Some("sched-1")),
     ];
 
     for (command, expected_kind, expected_schedule_id) in cases {
@@ -1189,6 +1201,16 @@ async fn schedule_slash_command_emits_manage_events() {
             (
                 "edit",
                 AppEvent::OpenThreadScheduleEditor {
+                    thread_id: actual_thread_id,
+                    schedule_id,
+                },
+            ) => {
+                assert_eq!(actual_thread_id, thread_id);
+                assert_eq!(schedule_id.as_deref(), expected_schedule_id);
+            }
+            (
+                "stats",
+                AppEvent::OpenThreadScheduleStats {
                     thread_id: actual_thread_id,
                     schedule_id,
                 },

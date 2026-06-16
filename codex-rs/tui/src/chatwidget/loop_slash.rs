@@ -68,6 +68,7 @@ pub(super) enum LoopManageCommand {
     Delete { schedule_id: Option<String> },
     Edit { schedule_id: Option<String> },
     RunNow { schedule_id: Option<String> },
+    Stats { schedule_id: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +209,9 @@ fn parse_manage_command(
             schedule_id: schedule_id(),
         },
         "run" | "run-now" | "now" => LoopManageCommand::RunNow {
+            schedule_id: schedule_id(),
+        },
+        "stats" | "stat" => LoopManageCommand::Stats {
             schedule_id: schedule_id(),
         },
         _ => return Ok(None),
@@ -1023,6 +1027,12 @@ mod tests {
         assert_eq!(
             parse_loop_slash_args("run-now sched-1"),
             Ok(LoopSlashCommand::Manage(LoopManageCommand::RunNow {
+                schedule_id: Some("sched-1".to_string()),
+            }))
+        );
+        assert_eq!(
+            parse_loop_slash_args("stats sched-1"),
+            Ok(LoopSlashCommand::Manage(LoopManageCommand::Stats {
                 schedule_id: Some("sched-1".to_string()),
             }))
         );

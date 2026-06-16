@@ -52,6 +52,10 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleRunUpdated(
+                    _
+                ))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -333,6 +337,15 @@ mod tests {
     use codex_app_server_protocol::HookScope as AppServerHookScope;
     use codex_app_server_protocol::HookStartedNotification;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
+    use codex_app_server_protocol::ThreadSchedule;
+    use codex_app_server_protocol::ThreadScheduleIntervalUnit;
+    use codex_app_server_protocol::ThreadSchedulePromptSource;
+    use codex_app_server_protocol::ThreadScheduleRun;
+    use codex_app_server_protocol::ThreadScheduleRunStatus;
+    use codex_app_server_protocol::ThreadScheduleRunUpdatedNotification;
+    use codex_app_server_protocol::ThreadScheduleSpec;
+    use codex_app_server_protocol::ThreadScheduleStatus;
+    use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnStartedNotification;
     use codex_config::types::ApprovalsReviewer;
@@ -455,6 +468,49 @@ mod tests {
                         text: "prompt blocked".to_string(),
                     },
                 ],
+            },
+        })
+    }
+
+    fn schedule_updated_notification(thread_id: ThreadId) -> ServerNotification {
+        ServerNotification::ThreadScheduleUpdated(ThreadScheduleUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            schedule: ThreadSchedule {
+                thread_id: thread_id.to_string(),
+                schedule_id: "schedule-1".to_string(),
+                prompt: "check CI".to_string(),
+                prompt_source: ThreadSchedulePromptSource::Inline,
+                schedule: ThreadScheduleSpec::Interval {
+                    amount: 3,
+                    unit: ThreadScheduleIntervalUnit::Minutes,
+                },
+                timezone: "UTC".to_string(),
+                status: ThreadScheduleStatus::Active,
+                next_run_at: Some(1),
+                last_run_at: None,
+                expires_at: None,
+                failure_count: 0,
+                lease_expires_at: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+        })
+    }
+
+    fn schedule_run_updated_notification(thread_id: ThreadId) -> ServerNotification {
+        ServerNotification::ThreadScheduleRunUpdated(ThreadScheduleRunUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            run: ThreadScheduleRun {
+                thread_id: thread_id.to_string(),
+                schedule_id: "schedule-1".to_string(),
+                run_id: "run-1".to_string(),
+                status: ThreadScheduleRunStatus::Running,
+                lease_id: "lease-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                error: None,
+                scheduled_for_at: Some(1),
+                started_at: 1,
+                completed_at: None,
             },
         })
     }
@@ -618,6 +674,39 @@ mod tests {
         assert_eq!(
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
+        );
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_schedule_notifications() {
+        let thread_id = ThreadId::new();
+        let schedule_updated = schedule_updated_notification(thread_id);
+        let run_updated = schedule_run_updated_notification(thread_id);
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(schedule_updated.clone());
+        store.push_notification(run_updated.clone());
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let notifications = snapshot
+            .events
+            .into_iter()
+            .map(|event| match event {
+                ThreadBufferedEvent::Notification(notification) => {
+                    serde_json::to_value(notification)
+                        .expect("schedule notification should serialize")
+                }
+                other => panic!("expected buffered schedule notification, saw: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notifications,
+            vec![
+                serde_json::to_value(schedule_updated)
+                    .expect("schedule notification should serialize"),
+                serde_json::to_value(run_updated).expect("schedule notification should serialize"),
+            ]
         );
     }
 }

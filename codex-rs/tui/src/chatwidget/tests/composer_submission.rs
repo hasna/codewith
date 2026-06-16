@@ -1409,15 +1409,25 @@ fn user_message_display_from_inputs_hides_prompt_context() {
 #[test]
 fn user_message_display_from_inputs_hides_scheduled_prompt_guardrail() {
     let raw_message = "\
-You are running one scheduled Codewith prompt.
+You are running one new scheduled Codewith prompt.
 
-Execute only the scheduled prompt below for this run. Produce exactly one response for this scheduled run, then stop. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+Run id: run-123
+Scheduled for: 2026-06-16T10:24:08Z
+
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 ask me a funny question";
+    let run_id_start = raw_message.find("run-123").expect("run id");
     let rendered = ChatWidget::user_message_display_from_inputs(&[UserInput::Text {
         text: raw_message.to_string(),
-        text_elements: Vec::new(),
+        text_elements: vec![
+            TextElement::new(
+                (run_id_start..run_id_start + "run-123".len()).into(),
+                Some("run-123".to_string()),
+            )
+            .into(),
+        ],
     }]);
 
     insta::assert_snapshot!(rendered.message, @"Running scheduled prompt.");

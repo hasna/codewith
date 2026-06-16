@@ -21,7 +21,7 @@ pub fn create_manage_loop_tool() -> ToolSpec {
                     json!("clear"),
                 ],
                 Some(
-                    "Required. Use create to add a new /loop schedule, list to inspect current /loop schedules, stop to pause future runs, resume to reactivate a paused loop, and clear to delete a loop."
+                    "Required. Use create to add a new /loop schedule, list to inspect current /loop schedules and run stats, stop to pause future runs, resume to reactivate a paused loop, and clear to delete a loop."
                         .to_string(),
                 ),
             ),
@@ -66,7 +66,7 @@ pub fn create_manage_loop_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_LOOP_TOOL_NAME.to_string(),
         description: r#"Manage recurring `/loop` schedules for the current thread.
-Use `list` before mutating when the user did not name a specific loop.
+Use `list` before mutating when the user did not name a specific loop, or when exact run counts are needed.
 `create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence.
 `stop` pauses future scheduled runs; it does not abort an already running turn.
 `clear` deletes the selected loop schedule.

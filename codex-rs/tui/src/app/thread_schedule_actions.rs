@@ -74,8 +74,14 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-        schedule_id: String,
+        schedule_id: Option<String>,
     ) {
+        let Some(schedule_id) = self
+            .resolve_thread_schedule_id(app_server, thread_id, schedule_id, "stats")
+            .await
+        else {
+            return;
+        };
         let result = app_server
             .thread_schedule_get(thread_id, schedule_id.clone())
             .await;
@@ -401,10 +407,14 @@ impl App {
             }
             1 => Some(active_or_paused[0].schedule_id.clone()),
             _ => {
+                let action_prompt = match action {
+                    "stats" => "show stats for",
+                    _ => action,
+                };
                 self.chat_widget
                     .show_schedule_manager(thread_id, active_or_paused);
                 self.chat_widget.add_info_message(
-                    format!("Choose a schedule to {action}"),
+                    format!("Choose a schedule to {action_prompt}"),
                     Some(format!("Use /schedule {action} <id>.")),
                 );
                 None

@@ -38,6 +38,30 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.37] - 2026-06-16
+
+Tag: `rust-v0.1.37`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.37>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.36...rust-v0.1.37>
+
+### Added
+
+- Added `/loop stats` and `/schedule stats` slash command handling with
+  automatic schedule selection when only one matching item exists.
+- Included schedule run statistics in loop management tool responses.
+
+### Changed
+
+- Improved auth-profile picker descriptions with plan and email details, compact
+  separators, and a shared action hint.
+- Recognized the newer scheduled-prompt guardrail text while still hiding legacy
+  scheduled-prompt scaffolding from user-visible message history.
+
+### Fixed
+
+- Published matching native Bun packages for the machines updated during this
+  release, including Apple Silicon installs.
+
 ## [0.1.36] - 2026-06-16
 
 Tag: `rust-v0.1.36`
@@ -55,8 +79,6 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.35...rust-v0.1.36>
 
 - Preserved the selected profile row when usage data refreshes while the profile
   picker is open.
-- Published matching native Bun packages for the machines updated during this
-  release, including Apple Silicon installs.
 
 ## [0.1.35] - 2026-06-16
 

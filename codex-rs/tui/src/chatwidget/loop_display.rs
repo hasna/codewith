@@ -342,11 +342,11 @@ impl ThreadScheduleDisplayKind {
         match self {
             Self::Loop => AppEvent::OpenThreadLoopScheduleStats {
                 thread_id,
-                schedule_id,
+                schedule_id: Some(schedule_id),
             },
             Self::Schedule => AppEvent::OpenThreadScheduleStats {
                 thread_id,
-                schedule_id,
+                schedule_id: Some(schedule_id),
             },
         }
     }
@@ -690,7 +690,10 @@ fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
         parts.push(format!("last {}", format_schedule_timestamp(last_run_at)));
     }
     if schedule.failure_count > 0 {
-        parts.push(pluralize_with_amount(schedule.failure_count, "failure"));
+        parts.push(format!(
+            "failure streak {}",
+            pluralize_with_amount(schedule.failure_count, "failure")
+        ));
     }
     parts.join(" | ")
 }
@@ -716,7 +719,12 @@ fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
         parts.push(format!("expires {}", format_schedule_timestamp(expires_at)));
     }
     parts.push(format!("tz {}", schedule.timezone));
-    parts.push(pluralize_with_amount(schedule.failure_count, "failure"));
+    if schedule.failure_count > 0 {
+        parts.push(format!(
+            "failure streak {}",
+            pluralize_with_amount(schedule.failure_count, "failure")
+        ));
+    }
     parts.join(" | ")
 }
 
@@ -797,7 +805,10 @@ fn thread_schedule_summary_lines(
             run_parts.push(format!("Last: {}", format_schedule_timestamp(last_run_at)));
         }
         if schedule.failure_count > 0 {
-            run_parts.push(pluralize_with_amount(schedule.failure_count, "failure"));
+            run_parts.push(format!(
+                "Failure streak: {}",
+                pluralize_with_amount(schedule.failure_count, "failure")
+            ));
         }
         if !run_parts.is_empty() {
             lines.push(Line::from(vec!["  ".dim(), run_parts.join("  ").into()]));
@@ -826,17 +837,20 @@ fn thread_schedule_stats_lines(
         schedule.schedule_id.clone().into(),
         "  Status: ".dim(),
         thread_schedule_status_label(schedule.status).into(),
+        "  Failure streak: ".dim(),
+        schedule.failure_count.to_string().into(),
     ]));
     lines.push(Line::from(vec![
         "Runs: ".dim(),
-        pluralize_with_amount(stats.total_runs, "run").into(),
-        "  Completed: ".dim(),
+        "total ".dim(),
+        stats.total_runs.to_string().into(),
+        "  completed ".dim(),
         stats.completed_runs.to_string().into(),
-        "  Failed: ".dim(),
+        "  failed ".dim(),
         stats.failed_runs.to_string().into(),
-        "  Running: ".dim(),
+        "  running ".dim(),
         stats.running_runs.to_string().into(),
-        "  Leased: ".dim(),
+        "  leased ".dim(),
         stats.leased_runs.to_string().into(),
     ]));
     lines.push(Line::from(vec![
@@ -1019,8 +1033,8 @@ mod tests {
             "summary should show last run time: {rendered}"
         );
         assert!(
-            rendered.contains("2 failures"),
-            "summary should show failure count: {rendered}"
+            rendered.contains("Failure streak: 2 failures"),
+            "summary should show failure streak: {rendered}"
         );
 
         let manager_description = loop_manager_row_description(&schedule);
@@ -1033,8 +1047,47 @@ mod tests {
             "manager row should show last run time: {manager_description}"
         );
         assert!(
-            manager_description.contains("2 failures"),
-            "manager row should show failure count: {manager_description}"
+            manager_description.contains("failure streak 2 failures"),
+            "manager row should show failure streak: {manager_description}"
+        );
+    }
+
+    #[test]
+    fn loop_stats_surfaces_exact_run_counts() {
+        let mut schedule =
+            test_schedule("sch_123", ThreadScheduleStatus::Active, Some(1_700_000_000));
+        schedule.failure_count = 3;
+        let stats = ThreadScheduleStats {
+            total_runs: 40,
+            leased_runs: 0,
+            running_runs: 0,
+            completed_runs: 25,
+            failed_runs: 15,
+            last_started_at: Some(1_700_000_300),
+            last_completed_at: Some(1_700_000_320),
+            last_error: Some(
+                "scheduled turn completed without a final assistant message".to_string(),
+            ),
+        };
+
+        let rendered = lines_to_plain_strings(&thread_schedule_stats_lines(
+            ThreadScheduleDisplayKind::Loop,
+            &schedule,
+            &stats,
+        ))
+        .join("\n");
+
+        assert!(
+            rendered.contains("Failure streak: 3"),
+            "stats should show consecutive failure streak: {rendered}"
+        );
+        assert!(
+            rendered.contains("Runs: total 40  completed 25  failed 15  running 0  leased 0"),
+            "stats should show exact run counts: {rendered}"
+        );
+        assert!(
+            rendered.contains("completed without a final assistant message"),
+            "stats should show the latest error: {rendered}"
         );
     }
 

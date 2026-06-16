@@ -23,7 +23,8 @@ use codex_protocol::user_input::TextElement;
 
 use super::ChatWidget;
 
-const SCHEDULED_PROMPT_PREFIX: &str = "You are running one scheduled Codewith prompt.\n\n";
+const SCHEDULED_PROMPT_PREFIX: &str = "You are running one new scheduled Codewith prompt.\n\n";
+const LEGACY_SCHEDULED_PROMPT_PREFIX: &str = "You are running one scheduled Codewith prompt.\n\n";
 const SCHEDULED_PROMPT_HEADER: &str = "\n\nScheduled prompt:\n";
 const SCHEDULED_PROMPT_DISPLAY: &str = "Running scheduled prompt.";
 const LEGACY_SCHEDULED_LOOP_PREFIX: &str = "You are running one scheduled /loop tick.\n\n";
@@ -631,7 +632,9 @@ impl ChatWidget {
 }
 
 fn is_scheduled_prompt(message: &str) -> bool {
-    (message.starts_with(SCHEDULED_PROMPT_PREFIX) && message.contains(SCHEDULED_PROMPT_HEADER))
+    ((message.starts_with(SCHEDULED_PROMPT_PREFIX)
+        || message.starts_with(LEGACY_SCHEDULED_PROMPT_PREFIX))
+        && message.contains(SCHEDULED_PROMPT_HEADER))
         || (message.starts_with(LEGACY_SCHEDULED_LOOP_PREFIX)
             && message.contains(LEGACY_SCHEDULED_LOOP_HEADER))
 }
