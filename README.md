@@ -111,6 +111,7 @@ Use built-in session tools while working:
 
 ## Docs
 
+- [**Changelog**](./CHANGELOG.md) - Release notes for Codewith product versions
 - [**Authentication**](./docs/authentication.md) - Auth profiles, login methods, and credential management
 - [**Configuration**](./docs/config.md) - Config files, settings, and customization
 - [**Contributing**](./docs/contributing.md) - Development setup and contribution guidelines

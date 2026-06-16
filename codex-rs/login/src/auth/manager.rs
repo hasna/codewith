@@ -830,6 +830,16 @@ async fn load_auth_with_profile(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     chatgpt_base_url: Option<&str>,
 ) -> std::io::Result<Option<CodexAuth>> {
+    if let Some(profile_name) = selected_auth_profile {
+        let metadata = super::profile::load_auth_profile_metadata(codex_home, profile_name)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+        if metadata.subscription_provider
+            != super::profile::AuthProfileSubscriptionProvider::ChatGpt
+        {
+            return Ok(None);
+        }
+    }
+
     // API key via env var takes precedence over any other auth method.
     if enable_codex_api_key_env && let Some(api_key) = read_codex_api_key_from_env() {
         return Ok(Some(CodexAuth::from_api_key(api_key.as_str())));
@@ -1825,11 +1835,16 @@ impl AuthManager {
         selected_auth_profile: Option<String>,
     ) -> Result<PreparedAuthProfileSwitch, super::AuthProfileError> {
         if let Some(name) = selected_auth_profile.as_deref() {
-            super::profile::load_auth_profile(
-                &self.codex_home,
-                self.auth_credentials_store_mode,
-                name,
-            )?;
+            let metadata = super::profile::load_auth_profile_metadata(&self.codex_home, name)?;
+            if metadata.subscription_provider
+                == super::profile::AuthProfileSubscriptionProvider::ChatGpt
+            {
+                super::profile::load_auth_profile(
+                    &self.codex_home,
+                    self.auth_credentials_store_mode,
+                    name,
+                )?;
+            }
         }
 
         let auth_storage_home =

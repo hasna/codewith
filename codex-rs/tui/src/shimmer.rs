@@ -8,8 +8,10 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::color::blend;
+use crate::color::is_light;
+use crate::style::accent_color;
+use crate::style::accent_rgb;
 use crate::terminal_palette::default_bg;
-use crate::terminal_palette::default_fg;
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
@@ -36,8 +38,8 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     let band_half_width = 5.0;
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
-    let base_color = default_fg().unwrap_or((128, 128, 128));
-    let highlight_color = default_bg().unwrap_or((255, 255, 255));
+    let base_color = accent_rgb();
+    let highlight_color = shimmer_highlight_rgb(base_color, default_bg());
     for (i, ch) in chars.iter().enumerate() {
         let i_pos = i as isize + padding as isize;
         let pos = pos as isize;
@@ -61,20 +63,70 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
                     .add_modifier(Modifier::BOLD)
             }
         } else {
-            color_for_level(t)
+            fallback_style_for_level(t)
         };
         spans.push(Span::styled(ch.to_string(), style));
     }
     spans
 }
 
-fn color_for_level(intensity: f32) -> Style {
+fn shimmer_highlight_rgb(
+    base_color: (u8, u8, u8),
+    terminal_bg: Option<(u8, u8, u8)>,
+) -> (u8, u8, u8) {
+    match terminal_bg {
+        Some(bg) if is_light(bg) => blend((0, 0, 0), base_color, 0.20),
+        _ => blend((255, 255, 255), base_color, 0.35),
+    }
+}
+
+fn fallback_style_for_level(intensity: f32) -> Style {
     // Tune fallback styling so the shimmer band reads even without RGB support.
     if intensity < 0.2 {
-        Style::default().add_modifier(Modifier::DIM)
-    } else if intensity < 0.6 {
         Style::default()
+            .fg(accent_color())
+            .add_modifier(Modifier::DIM)
+    } else if intensity < 0.6 {
+        Style::default().fg(accent_color())
     } else {
-        Style::default().add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(accent_color())
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn shimmer_highlight_stays_in_emerald_family() {
+        assert_eq!(accent_rgb(), (5, 150, 105));
+        assert_eq!(
+            shimmer_highlight_rgb(accent_rgb(), Some((0, 0, 0))),
+            (92, 186, 157)
+        );
+        assert_eq!(
+            shimmer_highlight_rgb(accent_rgb(), Some((255, 255, 255))),
+            (4, 120, 84)
+        );
+    }
+
+    #[test]
+    fn fallback_shimmer_uses_app_accent_color() {
+        assert_eq!(fallback_style_for_level(0.0).fg, Some(accent_color()));
+        assert_eq!(fallback_style_for_level(0.4).fg, Some(accent_color()));
+        assert_eq!(fallback_style_for_level(1.0).fg, Some(accent_color()));
+        assert!(
+            fallback_style_for_level(0.0)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert!(
+            fallback_style_for_level(1.0)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 }

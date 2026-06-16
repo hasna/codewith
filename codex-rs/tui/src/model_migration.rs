@@ -422,6 +422,16 @@ mod tests {
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
 
+    fn trimmed_terminal_snapshot(terminal: &Terminal<VT100Backend>) -> String {
+        terminal
+            .backend()
+            .to_string()
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn prompt_snapshot() {
         let width: u16 = 60;
@@ -453,7 +463,10 @@ mod tests {
         }
         terminal.flush().expect("flush");
 
-        assert_snapshot!("model_migration_prompt", terminal.backend());
+        assert_snapshot!(
+            "model_migration_prompt",
+            trimmed_terminal_snapshot(&terminal)
+        );
     }
 
     #[test]
@@ -480,7 +493,10 @@ mod tests {
             frame.render_widget_ref(&screen, frame.area());
         }
         terminal.flush().expect("flush");
-        assert_snapshot!("model_migration_prompt_gpt5_family", terminal.backend());
+        assert_snapshot!(
+            "model_migration_prompt_gpt5_family",
+            trimmed_terminal_snapshot(&terminal)
+        );
     }
 
     #[test]
@@ -507,7 +523,10 @@ mod tests {
             frame.render_widget_ref(&screen, frame.area());
         }
         terminal.flush().expect("flush");
-        assert_snapshot!("model_migration_prompt_gpt5_codex", terminal.backend());
+        assert_snapshot!(
+            "model_migration_prompt_gpt5_codex",
+            trimmed_terminal_snapshot(&terminal)
+        );
     }
 
     #[test]
@@ -534,7 +553,10 @@ mod tests {
             frame.render_widget_ref(&screen, frame.area());
         }
         terminal.flush().expect("flush");
-        assert_snapshot!("model_migration_prompt_gpt5_codex_mini", terminal.backend());
+        assert_snapshot!(
+            "model_migration_prompt_gpt5_codex_mini",
+            trimmed_terminal_snapshot(&terminal)
+        );
     }
 
     #[test]

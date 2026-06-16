@@ -388,6 +388,8 @@ impl OpenAiModelsManager {
                     .is_some_and(AuthMode::has_chatgpt_account)
             });
         if should_use_remote_models_only {
+            let mut models = models;
+            model_info::ensure_required_local_models(&mut models);
             *self.remote_models.write().await = models;
             return;
         }

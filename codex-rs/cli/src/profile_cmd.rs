@@ -87,7 +87,10 @@ fn print_profiles(profiles: &[AuthProfile]) {
         return;
     }
 
-    println!("  {:<24} {:<28} {:<18} PLAN", "NAME", "ACCOUNT", "MODE");
+    println!(
+        "  {:<24} {:<28} {:<14} {:<18} PLAN",
+        "NAME", "ACCOUNT", "PROVIDER", "MODE"
+    );
     for profile in profiles {
         let marker = if profile.active { "*" } else { " " };
         let account = profile
@@ -97,21 +100,25 @@ fn print_profiles(profiles: &[AuthProfile]) {
             .unwrap_or("-");
         let plan = profile.plan.as_deref().unwrap_or("-");
         println!(
-            "{marker} {:<24} {:<28} {:<18} {plan}",
+            "{marker} {:<24} {:<28} {:<14} {:<18} {plan}",
             profile.name,
             account,
+            profile.subscription_provider,
             auth_mode_label(profile.auth_mode)
         );
     }
 }
 
-fn auth_mode_label(auth_mode: AuthMode) -> &'static str {
+fn auth_mode_label(auth_mode: Option<AuthMode>) -> &'static str {
     match auth_mode {
-        AuthMode::ApiKey => "api_key",
-        AuthMode::Chatgpt => "chatgpt",
-        AuthMode::ChatgptAuthTokens => "chatgpt_auth_tokens",
-        AuthMode::AgentIdentity => "agent_identity",
-        AuthMode::PersonalAccessToken => "personal_access_token",
+        None => "-",
+        Some(auth_mode) => match auth_mode {
+            AuthMode::ApiKey => "api_key",
+            AuthMode::Chatgpt => "chatgpt",
+            AuthMode::ChatgptAuthTokens => "chatgpt_auth_tokens",
+            AuthMode::AgentIdentity => "agent_identity",
+            AuthMode::PersonalAccessToken => "personal_access_token",
+        },
     }
 }
 

@@ -4,6 +4,29 @@ const AUTH_PROFILE_RELOGIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10 *
 
 impl App {
     pub(super) fn relogin_auth_profile(&mut self, profile: String) {
+        match codex_login::load_auth_profile_metadata(&self.config.codex_home, profile.as_str()) {
+            Ok(metadata)
+                if metadata.subscription_provider
+                    != codex_login::AuthProfileSubscriptionProvider::ChatGpt =>
+            {
+                self.chat_widget.add_info_message(
+                    format!(
+                        "{} profile `{profile}` uses its external subscription login.",
+                        metadata.subscription_provider.label()
+                    ),
+                    /*hint*/ None,
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to load auth profile `{profile}` metadata: {err}"
+                ));
+                return;
+            }
+        }
+
         if matches!(
             self.config.forced_login_method,
             Some(codex_protocol::config_types::ForcedLoginMethod::Api)
@@ -191,10 +214,20 @@ impl App {
             .submit_op(AppCommand::override_turn_context_auth_profile(Some(
                 profile.clone(),
             )));
-        self.chat_widget.add_info_message(
-            format!("Auth profile `{profile}` logged in and selected."),
-            /*hint*/ None,
-        );
+        let message =
+            match codex_login::load_auth_profile_metadata(&self.config.codex_home, &profile) {
+                Ok(metadata)
+                    if metadata.subscription_provider
+                        != codex_login::AuthProfileSubscriptionProvider::ChatGpt =>
+                {
+                    format!(
+                        "{} profile `{profile}` created and selected.",
+                        metadata.subscription_provider.label()
+                    )
+                }
+                Ok(_) | Err(_) => format!("Auth profile `{profile}` logged in and selected."),
+            };
+        self.chat_widget.add_info_message(message, /*hint*/ None);
         self.refresh_status_line();
     }
 

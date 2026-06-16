@@ -17,10 +17,6 @@ use crate::render::Insets;
 use crate::render::RectExt;
 use crate::slash_command::SlashCommand;
 
-// Hide alias commands in the default popup list so each unique action appears once.
-// `quit` is an alias of `exit`, and `btw` is an alias of `side`, so we skip
-// those aliases here.
-const ALIAS_COMMANDS: &[SlashCommand] = &[SlashCommand::Quit, SlashCommand::Btw];
 const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     ColumnWidthMode::AutoAllRows,
     /*name_column_width*/ None,
@@ -100,9 +96,10 @@ impl CommandPopup {
         let commands = commands_for_input(flags.into(), &service_tier_commands)
             .into_iter()
             .filter_map(|command| match command {
-                SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
-                    && cmd != SlashCommand::Apps)
-                    .then_some(CommandItem::Builtin(cmd)),
+                SlashCommandItem::Builtin(
+                    SlashCommand::MemoryDrop | SlashCommand::MemoryUpdate,
+                ) => None,
+                SlashCommandItem::Builtin(cmd) => Some(CommandItem::Builtin(cmd)),
                 SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
             })
             .collect();
@@ -174,9 +171,6 @@ impl CommandPopup {
             return self
                 .commands
                 .iter()
-                .filter(|command| {
-                    !matches!(command, CommandItem::Builtin(cmd) if ALIAS_COMMANDS.contains(cmd))
-                })
                 .cloned()
                 .map(|command| (command, None))
                 .collect();
@@ -550,6 +544,24 @@ mod tests {
     }
 
     #[test]
+    fn debug_command_popup_snapshot() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/debug".to_string());
+
+        let width = 84;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+
+        insta::assert_snapshot!("command_popup_debug", format!("{buf:?}"));
+    }
+
+    #[test]
     fn substring_filter_includes_non_prefix_matches_after_better_matches() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/ac".to_string());
@@ -645,11 +657,11 @@ mod tests {
     }
 
     #[test]
-    fn quit_hidden_in_empty_filter_but_shown_for_prefix() {
+    fn quit_shown_in_empty_filter_and_for_prefix() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
         let items = popup.filtered_items();
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
 
         popup.on_composer_text_change("/qu".to_string());
         let items = popup.filtered_items();
@@ -657,11 +669,11 @@ mod tests {
     }
 
     #[test]
-    fn btw_hidden_in_empty_filter_but_shown_for_prefix() {
+    fn btw_shown_in_empty_filter_and_for_prefix() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
         let items = popup.filtered_items();
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
 
         popup.on_composer_text_change("/bt".to_string());
         let items = popup.filtered_items();
@@ -682,8 +694,8 @@ mod tests {
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Provider)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Session)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Agent)));
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
     }
 
     #[test]
@@ -831,13 +843,41 @@ mod tests {
     }
 
     #[test]
-    fn debug_commands_are_hidden_from_popup() {
+    fn apps_command_visible_when_connectors_enabled() {
+        let popup = CommandPopup::new(
+            CommandPopupFlags {
+                connectors_enabled: true,
+                ..CommandPopupFlags::default()
+            },
+            Vec::new(),
+        );
+        let cmds = filtered_command_names(&popup);
+
+        assert!(
+            cmds.iter().any(|name| name == "apps"),
+            "expected '/apps' to be visible when connectors are enabled, got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn debug_config_command_is_visible_from_popup() {
         let popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         let cmds = filtered_command_names(&popup);
 
         assert!(
-            !cmds.iter().any(|name| name.starts_with("debug")),
-            "expected no /debug* command in popup menu, got {cmds:?}"
+            cmds.iter().any(|name| name == "debug-config"),
+            "expected '/debug-config' in popup menu, got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn internal_memory_debug_commands_stay_out_of_popup() {
+        let popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        let cmds = filtered_command_names(&popup);
+
+        assert!(
+            !cmds.iter().any(|name| name.starts_with("debug-m-")),
+            "expected internal memory debug commands to stay hidden, got {cmds:?}"
         );
     }
 }

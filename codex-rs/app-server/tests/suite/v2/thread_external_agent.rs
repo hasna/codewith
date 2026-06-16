@@ -39,9 +39,20 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         "mock_provider",
         "compact",
     )?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.as_path(),
+        "cursor-work",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+        },
+    )?;
     write_mock_provider_models_cache(codex_home.as_path())?;
 
-    let mut mcp = McpProcess::new(codex_home.as_path()).await?;
+    let mut mcp = McpProcess::new_with_env(
+        codex_home.as_path(),
+        &[("CODEWITH_AUTH_PROFILE", Some("cursor-work"))],
+    )
+    .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp

@@ -6,8 +6,8 @@ expression: popup
   Switch auth for this session.
 
 › 1. default (current)   Use the default auth store / usage unknown
-  2. personal            ApiKey / usage unknown
-  3. work                ApiKey / usage unknown
+  2. personal            ChatGPT / ApiKey / usage unknown
+  3. work                ChatGPT / ApiKey / usage unknown
   4. Log in new profile  Create a saved auth profile
 
   Press enter to confirm or esc to go back

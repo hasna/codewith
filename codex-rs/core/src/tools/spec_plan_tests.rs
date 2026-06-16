@@ -10,6 +10,7 @@ use codex_model_provider::create_model_provider_with_id;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_models_manager::model_info::codex_spark_model_info;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -1324,6 +1325,14 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     })
     .await;
     image_generation.assert_visible_contains(&["image_generation"]);
+
+    let codex_spark = probe(|turn| {
+        use_chatgpt_auth(turn);
+        set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+        turn.model_info = codex_spark_model_info();
+    })
+    .await;
+    codex_spark.assert_visible_lacks(&["image_generation"]);
 
     let extension_flag_without_imagegen_tool = probe(|turn| {
         use_chatgpt_auth(turn);

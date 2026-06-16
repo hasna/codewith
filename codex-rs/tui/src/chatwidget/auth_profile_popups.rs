@@ -6,13 +6,16 @@ use crate::status::RateLimitSnapshotDisplay;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_status_limit_summary;
 use codex_login::AuthProfile;
+use codex_login::AuthProfileMetadata;
 use codex_login::AuthProfileMoveDirection;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::CLIENT_ID;
 use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::delete_auth_profile;
 use codex_login::ensure_auth_profile_storage_dir;
 use codex_login::list_auth_profiles;
 use codex_login::run_login_server;
+use codex_login::save_auth_profile_metadata;
 use codex_protocol::config_types::ForcedLoginMethod;
 use crossterm::event::KeyCode;
 use std::time::Duration;
@@ -269,15 +272,36 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_auth_profile_login_prompt(&mut self) {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Choose subscription".bold()));
+        header.push(Line::from(
+            "Create a profile tied to one provider subscription.".dim(),
+        ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            header: Box::new(header),
+            items: auth_profile_subscription_provider_items(),
+            initial_selected_idx: Some(0),
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_auth_profile_name_prompt(
+        &mut self,
+        subscription_provider: AuthProfileSubscriptionProvider,
+    ) {
         let tx = self.app_event_tx.clone();
+        let provider_label = subscription_provider.label();
         let view = CustomPromptView::new(
-            "Log in new profile".to_string(),
+            format!("{provider_label} profile"),
             "Profile name".to_string(),
             String::new(),
             Some("Use letters, numbers, dots, dashes, or underscores".to_string()),
             Box::new(move |profile: String| {
                 tx.send(AppEvent::LoginNewAuthProfile {
                     profile: profile.trim().to_string(),
+                    subscription_provider,
                 });
             }),
         );
@@ -321,16 +345,22 @@ impl ChatWidget {
         });
     }
 
-    pub(crate) fn start_auth_profile_login(&mut self, profile: String) {
+    pub(crate) fn start_auth_profile_login(
+        &mut self,
+        profile: String,
+        subscription_provider: AuthProfileSubscriptionProvider,
+    ) {
         if let Err(err) = codex_login::validate_auth_profile_name(&profile) {
             self.add_error_message(format!("Invalid auth profile name: {err}"));
             return;
         }
 
-        if matches!(
-            self.config.forced_login_method,
-            Some(ForcedLoginMethod::Api)
-        ) {
+        if subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
+            && matches!(
+                self.config.forced_login_method,
+                Some(ForcedLoginMethod::Api)
+            )
+        {
             self.add_error_message(
                 "ChatGPT browser login is disabled. Use `codewith login --auth-profile <name> --with-api-key` for this profile.".to_string(),
             );
@@ -351,6 +381,26 @@ impl ChatWidget {
                 self.add_error_message(format!("Failed to load auth profiles: {err}"));
                 return;
             }
+        }
+
+        if let Err(err) = save_auth_profile_metadata(
+            &self.config.codex_home,
+            &profile,
+            AuthProfileMetadata {
+                subscription_provider,
+            },
+        ) {
+            self.add_error_message(format!("Failed to create auth profile: {err}"));
+            return;
+        }
+
+        if subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+            self.app_event_tx.send(AppEvent::AuthProfileLoginCompleted {
+                profile,
+                success: true,
+                error: None,
+            });
+            return;
         }
 
         let auth_profile_home =
@@ -435,6 +485,51 @@ impl ChatWidget {
     }
 }
 
+fn auth_profile_subscription_provider_items() -> Vec<SelectionItem> {
+    [
+        (
+            AuthProfileSubscriptionProvider::ChatGpt,
+            "ChatGPT",
+            "Use Codewith browser login with your ChatGPT plan.",
+        ),
+        (
+            AuthProfileSubscriptionProvider::ClaudeAi,
+            "Claude.ai / Claude Code",
+            "Tie this profile to your local Claude Code subscription login.",
+        ),
+        (
+            AuthProfileSubscriptionProvider::Cursor,
+            "Cursor",
+            "Tie this profile to your Cursor subscription login.",
+        ),
+        (
+            AuthProfileSubscriptionProvider::Grok,
+            "Grok",
+            "Tie this profile to your Grok subscription login.",
+        ),
+    ]
+    .into_iter()
+    .map(|(subscription_provider, name, description)| {
+        let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+            tx.send(AppEvent::OpenAuthProfileNamePrompt {
+                subscription_provider,
+            });
+        })];
+        SelectionItem {
+            name: name.to_string(),
+            description: Some(description.to_string()),
+            selected_description: Some(format!(
+                "Create a profile tied to {}.",
+                subscription_provider.label()
+            )),
+            actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        }
+    })
+    .collect()
+}
+
 fn cleanup_auth_profile_login(
     codex_home: &std::path::Path,
     auth_credentials_store_mode: codex_login::AuthCredentialsStoreMode,
@@ -444,7 +539,10 @@ fn cleanup_auth_profile_login(
 }
 
 fn auth_profile_description(profile: &AuthProfile) -> String {
-    let mut parts = vec![profile.auth_mode.to_string()];
+    let mut parts = vec![profile.subscription_provider.to_string()];
+    if let Some(auth_mode) = profile.auth_mode {
+        parts.push(auth_mode.to_string());
+    }
     if let Some(plan) = &profile.plan {
         parts.push(plan.clone());
     }

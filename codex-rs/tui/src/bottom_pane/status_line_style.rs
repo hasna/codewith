@@ -331,6 +331,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn status_line_indexed_blue_and_cyan_colors_use_accent() {
         let expected = softened_status_line_accent_color();
 

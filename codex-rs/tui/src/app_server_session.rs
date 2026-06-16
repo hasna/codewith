@@ -2499,7 +2499,15 @@ mod tests {
         assert_eq!(params.model_provider, Some(config.model_provider_id));
         assert_eq!(params.thread_source, Some(ThreadSource::User));
         let dynamic_tools = params.dynamic_tools.expect("TUI dynamic tools");
-        assert_eq!(dynamic_tools.len(), 4);
+        let dynamic_tool_names = dynamic_tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        let expected_dynamic_tool_names = crate::ui_dynamic_tools::dynamic_tool_specs()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(dynamic_tool_names, expected_dynamic_tool_names);
         assert!(dynamic_tools.iter().all(|tool| tool.defer_loading));
         assert!(
             dynamic_tools

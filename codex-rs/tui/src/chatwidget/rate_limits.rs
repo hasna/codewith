@@ -5,6 +5,7 @@ use crate::chatwidget::user_messages::QueueInsertionPosition;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_login::AuthProfile;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::list_auth_profiles;
 
 pub(super) const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
@@ -158,6 +159,13 @@ fn next_auth_profile_for_auto_switch(
     configured_profiles: &[String],
     saved_profiles: &[AuthProfile],
 ) -> Option<String> {
+    let saved_profiles = saved_profiles
+        .iter()
+        .filter(|profile| {
+            profile.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
+                && profile.auth_mode.is_some()
+        })
+        .collect::<Vec<_>>();
     let saved_names = saved_profiles
         .iter()
         .map(|profile| profile.name.as_str())

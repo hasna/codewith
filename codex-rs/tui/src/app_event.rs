@@ -44,6 +44,7 @@ use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_login::AuthProfileMoveDirection;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
@@ -1041,9 +1042,15 @@ pub(crate) enum AppEvent {
     /// Prompt for creating and logging in a new saved auth profile.
     OpenAuthProfileLoginPrompt,
 
+    /// Prompt for naming a new saved auth profile after a provider is selected.
+    OpenAuthProfileNamePrompt {
+        subscription_provider: AuthProfileSubscriptionProvider,
+    },
+
     /// Start creating and logging in a new saved auth profile.
     LoginNewAuthProfile {
         profile: String,
+        subscription_provider: AuthProfileSubscriptionProvider,
     },
 
     /// A background new-profile login attempt completed.

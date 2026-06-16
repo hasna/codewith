@@ -152,6 +152,31 @@ async fn external_agent_slash_with_task_submits_thread_scoped_op() {
 }
 
 #[tokio::test]
+async fn external_agent_slash_with_claude_task_submits_thread_scoped_op() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::ExternalAgent,
+        "claude inspect the diff".to_string(),
+        Vec::new(),
+    );
+
+    match op_rx.try_recv() {
+        Ok(Op::StartExternalAgent {
+            runtime_id,
+            task,
+            mode,
+        }) => {
+            assert_eq!(runtime_id, "claude");
+            assert_eq!(task, "inspect the diff");
+            assert_eq!(mode, ThreadExternalAgentMode::Plan);
+        }
+        other => panic!("expected external-agent op, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn external_agent_slash_rejects_grok_alias_without_submitting_op() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

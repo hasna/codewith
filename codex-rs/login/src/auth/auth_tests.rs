@@ -1,5 +1,7 @@
 use super::*;
 use crate::AuthProfileError;
+use crate::AuthProfileMetadata;
+use crate::AuthProfileSubscriptionProvider;
 use crate::active_auth_profile;
 use crate::auth::storage::FileAuthStorage;
 use crate::auth::storage::get_auth_file;
@@ -7,6 +9,7 @@ use crate::delete_auth_profile;
 use crate::list_auth_profiles;
 use crate::load_auth_profile;
 use crate::save_auth_profile;
+use crate::save_auth_profile_metadata;
 use crate::save_current_auth_profile;
 use crate::token_data::IdTokenInfo;
 use async_trait::async_trait;
@@ -697,6 +700,38 @@ async fn scoped_auth_profile_switch_does_not_mutate_parent_or_sibling() -> anyho
     assert!(parent.has_external_auth());
     assert!(root_scope.has_external_auth());
     assert!(work_scope.has_external_auth());
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn external_subscription_profile_does_not_fall_back_to_openai_auth() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::set(CODEX_API_KEY_ENV_VAR, "sk-env");
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("root-key");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile_metadata(
+        dir.path(),
+        "claude",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        },
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("claude".to_string()),
+    )
+    .await;
+
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("claude"));
+    assert_eq!(manager.auth_cached().as_ref().map(CodexAuth::api_key), None);
 
     Ok(())
 }

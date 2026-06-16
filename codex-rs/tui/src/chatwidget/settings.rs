@@ -4,8 +4,10 @@ use super::*;
 use crate::app_event::AppEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_login::AuthDotJson;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::load_auth_dot_json;
 use codex_login::load_auth_profile;
+use codex_login::load_auth_profile_metadata;
 use codex_model_provider_info::ModelProviderInfo;
 
 fn resolved_auth_status_mode(auth: &AuthDotJson) -> AuthMode {
@@ -258,23 +260,39 @@ impl ChatWidget {
 
     fn sync_auth_profile_status_account_state(&mut self) {
         let auth = match self.config.selected_auth_profile.as_deref() {
-            Some(profile) => {
-                match load_auth_profile(
-                    &self.config.codex_home,
-                    self.config.cli_auth_credentials_store_mode,
-                    profile,
-                ) {
-                    Ok(auth) => Some(auth),
-                    Err(err) => {
-                        tracing::warn!(
-                            profile,
-                            error = %err,
-                            "failed to load selected auth profile for status account state"
-                        );
-                        None
+            Some(profile) => match load_auth_profile_metadata(&self.config.codex_home, profile) {
+                Ok(metadata)
+                    if metadata.subscription_provider
+                        != AuthProfileSubscriptionProvider::ChatGpt =>
+                {
+                    None
+                }
+                Ok(_) => {
+                    match load_auth_profile(
+                        &self.config.codex_home,
+                        self.config.cli_auth_credentials_store_mode,
+                        profile,
+                    ) {
+                        Ok(auth) => Some(auth),
+                        Err(err) => {
+                            tracing::warn!(
+                                profile,
+                                error = %err,
+                                "failed to load selected auth profile for status account state"
+                            );
+                            None
+                        }
                     }
                 }
-            }
+                Err(err) => {
+                    tracing::warn!(
+                        profile,
+                        error = %err,
+                        "failed to load selected auth profile metadata for status account state"
+                    );
+                    None
+                }
+            },
             None => {
                 match load_auth_dot_json(
                     &self.config.codex_home,

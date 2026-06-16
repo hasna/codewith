@@ -1,0 +1,785 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::process::Stdio;
+use std::time::Duration;
+
+use crate::EnvironmentCapability;
+use crate::ExternalAgentError;
+use crate::ExternalAgentEvent;
+use crate::ExternalAgentHarness;
+use crate::ExternalAgentHarnessKind;
+use crate::ExternalAgentHost;
+use crate::ExternalAgentLaunchIsolation;
+use crate::ExternalAgentLaunchSpec;
+use crate::ExternalAgentReadiness;
+use crate::ExternalAgentReadinessStatus;
+use crate::ExternalAgentRequest;
+use crate::ExternalAgentResult;
+use crate::ExternalAgentRunStatus;
+use crate::ExternalAgentRuntime;
+use crate::ExternalAgentRuntimeDescriptor;
+use crate::ExternalAgentRuntimeId;
+use crate::ExternalAgentSandboxConfig;
+use crate::ExternalAgentSandboxedLaunchSpec;
+use crate::ExternalAgentSessionState;
+use crate::find_external_agent_runtime;
+use crate::platform_sandbox_external_agent_launch;
+use serde_json::Value as JsonValue;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::task::JoinHandle;
+
+const CLAUDE_SAFE_ENV_VARS: &[&str] = &[
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "TERM",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "CLAUDE_CONFIG_DIR",
+];
+const CLAUDE_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const CLAUDE_STDERR_MAX_BYTES: usize = 64 * 1024;
+
+/// Environment policy for Claude Code subprocess launches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeEnvironmentPolicy {
+    inherited_vars: Vec<String>,
+}
+
+impl ClaudeEnvironmentPolicy {
+    pub fn sanitized() -> Self {
+        Self {
+            inherited_vars: CLAUDE_SAFE_ENV_VARS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        }
+    }
+
+    pub fn sanitize(
+        &self,
+        source: &BTreeMap<String, String>,
+        extra: &BTreeMap<String, String>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        for name in &self.inherited_vars {
+            if let Some(value) = source.get(name) {
+                env.insert(name.clone(), value.clone());
+            }
+        }
+        for (name, value) in extra {
+            env.insert(name.clone(), value.clone());
+        }
+        env
+    }
+}
+
+impl Default for ClaudeEnvironmentPolicy {
+    fn default() -> Self {
+        Self::sanitized()
+    }
+}
+
+/// Claude Code CLI harness using Claude's documented print-mode stream.
+pub struct ClaudeCodeHarness {
+    descriptor: &'static ExternalAgentRuntimeDescriptor,
+    env_policy: ClaudeEnvironmentPolicy,
+}
+
+impl ClaudeCodeHarness {
+    pub fn new(descriptor: &'static ExternalAgentRuntimeDescriptor) -> Self {
+        Self {
+            descriptor,
+            env_policy: ClaudeEnvironmentPolicy::default(),
+        }
+    }
+
+    pub fn descriptor(&self) -> &'static ExternalAgentRuntimeDescriptor {
+        self.descriptor
+    }
+
+    pub async fn readiness_with_env(
+        &self,
+        source_env: &BTreeMap<String, String>,
+    ) -> ExternalAgentReadiness {
+        let program = match self.resolve_program_with_cwd(source_env, Path::new(".")) {
+            Ok(program) => program,
+            Err(err) => return self.runtime_missing_readiness(err.to_string()),
+        };
+
+        match Command::new(&program)
+            .args(["auth", "status"])
+            .env_clear()
+            .envs(self.sanitized_env(source_env))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => self.runtime_ready_readiness(&program),
+            Ok(_) => self.runtime_missing_auth_readiness(&program),
+            Err(err) => self.runtime_missing_readiness(err.to_string()),
+        }
+    }
+
+    pub async fn run_sandboxed(
+        &self,
+        request: ExternalAgentRequest,
+        host: impl ExternalAgentHost + Send + Sync,
+        sandbox_config: &ExternalAgentSandboxConfig,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        let source_env = std::env::vars().collect::<BTreeMap<_, _>>();
+        self.run_sandboxed_with_env(request, host, sandbox_config, source_env)
+            .await
+    }
+
+    pub async fn run_sandboxed_with_env(
+        &self,
+        request: ExternalAgentRequest,
+        host: impl ExternalAgentHost + Send + Sync,
+        sandbox_config: &ExternalAgentSandboxConfig,
+        source_env: BTreeMap<String, String>,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        self.validate_request(&request)?;
+        let program = self.resolve_program(&request, &source_env)?;
+        let launch = self.launch_spec(request.cwd.clone(), program, &source_env);
+        let launch = platform_sandbox_external_agent_launch(launch, sandbox_config)?;
+        self.run_sandboxed_launch(request, host, launch).await
+    }
+
+    fn launch_spec(
+        &self,
+        cwd: impl Into<PathBuf>,
+        resolved_program: impl Into<PathBuf>,
+        source_env: &BTreeMap<String, String>,
+    ) -> ExternalAgentLaunchSpec {
+        ExternalAgentLaunchSpec {
+            runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
+            program: resolved_program.into(),
+            args: Vec::new(),
+            arg0: None,
+            cwd: cwd.into(),
+            env: self.sanitized_env(source_env),
+            isolation: ExternalAgentLaunchIsolation::unenforced(
+                "Claude Code launch has not been wrapped in a Codewith platform sandbox",
+            ),
+        }
+    }
+
+    fn sanitized_env(&self, source_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let extra_env = BTreeMap::from([(
+            "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
+            self.descriptor.id.to_string(),
+        )]);
+        self.env_policy.sanitize(source_env, &extra_env)
+    }
+
+    fn resolve_program(
+        &self,
+        request: &ExternalAgentRequest,
+        source_env: &BTreeMap<String, String>,
+    ) -> Result<PathBuf, ExternalAgentError> {
+        self.resolve_program_with_cwd(source_env, &request.cwd)
+            .map_err(|err| ExternalAgentError::NotReady {
+                runtime: request.runtime.as_str().to_string(),
+                reason: err.to_string(),
+            })
+    }
+
+    fn resolve_program_with_cwd(
+        &self,
+        source_env: &BTreeMap<String, String>,
+        cwd: &Path,
+    ) -> Result<PathBuf, which::Error> {
+        let path = source_env.get("PATH").map(String::as_str);
+        which::which_in(self.descriptor.command.program, path, cwd)
+    }
+
+    fn validate_request(&self, request: &ExternalAgentRequest) -> Result<(), ExternalAgentError> {
+        if request.runtime.as_str() != self.descriptor.id {
+            return Err(invalid_request(
+                &request.runtime,
+                format!(
+                    "request runtime does not match harness runtime `{}`",
+                    self.descriptor.id
+                ),
+            ));
+        }
+        if !self.descriptor.supported_modes.contains(&request.mode) {
+            return Err(invalid_request(
+                &request.runtime,
+                format!("mode `{:?}` is not supported by this runtime", request.mode),
+            ));
+        }
+        if !matches!(
+            request.capabilities.environment,
+            EnvironmentCapability::Sanitized
+        ) {
+            return Err(invalid_request(
+                &request.runtime,
+                "Claude Code runs require sanitized environment capabilities",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn run_sandboxed_launch(
+        &self,
+        request: ExternalAgentRequest,
+        host: impl ExternalAgentHost + Send + Sync,
+        launch: ExternalAgentSandboxedLaunchSpec,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        let mut process = ClaudeCodeProcess::spawn(launch, &request)?;
+        let result = process.run(request, &host).await;
+        if let Err(err) = &result {
+            let event = match err {
+                ExternalAgentError::Cancelled => ExternalAgentEvent::Cancelled {
+                    reason: Some("cancelled by host".to_string()),
+                },
+                _ => ExternalAgentEvent::Failed {
+                    message: err.to_string(),
+                },
+            };
+            let _ = host.emit(event).await;
+        }
+        process.shutdown().await;
+        result
+    }
+
+    fn runtime_missing_readiness(&self, detail: String) -> ExternalAgentReadiness {
+        ExternalAgentReadiness {
+            runtime: self.id(),
+            status: ExternalAgentReadinessStatus::MissingRuntime,
+            display_name: self.descriptor.display_name.to_string(),
+            version: None,
+            supported_modes: self.descriptor.supported_modes.to_vec(),
+            detail: Some(detail),
+        }
+    }
+
+    fn runtime_missing_auth_readiness(&self, program: &Path) -> ExternalAgentReadiness {
+        ExternalAgentReadiness {
+            runtime: self.id(),
+            status: ExternalAgentReadinessStatus::MissingAuth,
+            display_name: self.descriptor.display_name.to_string(),
+            version: None,
+            supported_modes: self.descriptor.supported_modes.to_vec(),
+            detail: Some(format!(
+                "`{} auth status` reported no active Claude login",
+                program.display()
+            )),
+        }
+    }
+
+    fn runtime_ready_readiness(&self, program: &Path) -> ExternalAgentReadiness {
+        ExternalAgentReadiness {
+            runtime: self.id(),
+            status: ExternalAgentReadinessStatus::Ready,
+            display_name: self.descriptor.display_name.to_string(),
+            version: None,
+            supported_modes: self.descriptor.supported_modes.to_vec(),
+            detail: Some(program.display().to_string()),
+        }
+    }
+}
+
+pub fn claude_code_harness() -> Option<ClaudeCodeHarness> {
+    find_external_agent_runtime(ExternalAgentRuntimeId::CLAUDE).map(ClaudeCodeHarness::new)
+}
+
+impl ExternalAgentRuntime for ClaudeCodeHarness {
+    fn id(&self) -> ExternalAgentRuntimeId {
+        ExternalAgentRuntimeId::from(self.descriptor.id)
+    }
+
+    async fn readiness(&self) -> ExternalAgentReadiness {
+        let source_env = std::env::vars().collect::<BTreeMap<_, _>>();
+        self.readiness_with_env(&source_env).await
+    }
+
+    async fn run(
+        &self,
+        request: ExternalAgentRequest,
+        _host: impl ExternalAgentHost + Send + Sync,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        self.validate_request(&request)?;
+        Err(ExternalAgentError::NotReady {
+            runtime: request.runtime.as_str().to_string(),
+            reason: "Claude Code must be executed with ClaudeCodeHarness::run_sandboxed"
+                .to_string(),
+        })
+    }
+}
+
+impl ExternalAgentHarness for ClaudeCodeHarness {
+    fn harness_kind(&self) -> ExternalAgentHarnessKind {
+        ExternalAgentHarnessKind::Sdk
+    }
+}
+
+struct ClaudeCodeProcess {
+    runtime: ExternalAgentRuntimeId,
+    child: Child,
+    stdout: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    stderr: Option<JoinHandle<String>>,
+    output_text: String,
+    summary: Option<String>,
+    external_session_id: Option<String>,
+}
+
+impl ClaudeCodeProcess {
+    fn spawn(
+        launch: ExternalAgentSandboxedLaunchSpec,
+        request: &ExternalAgentRequest,
+    ) -> Result<Self, ExternalAgentError> {
+        let launch = launch.into_launch_spec();
+        let runtime = launch.runtime.clone();
+        if let Some(reason) = launch.isolation.unenforced_reason() {
+            return Err(ExternalAgentError::NotReady {
+                runtime: runtime.as_str().to_string(),
+                reason: reason.to_string(),
+            });
+        }
+        let mut command = Command::new(&launch.program);
+        #[cfg(unix)]
+        if let Some(arg0) = launch.arg0 {
+            command.arg0(arg0);
+        }
+        #[cfg(not(unix))]
+        let _ = launch.arg0;
+        #[cfg(unix)]
+        unsafe {
+            command.pre_exec(codex_utils_pty::process_group::set_process_group);
+        }
+        command
+            .args([
+                "-p",
+                request.task.as_str(),
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ])
+            .current_dir(&launch.cwd)
+            .env_clear()
+            .envs(&launch.env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|err| protocol_error(&runtime, format!("spawn failed: {err}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| protocol_error(&runtime, "missing child stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| protocol_error(&runtime, "missing child stderr"))?;
+        let stderr = tokio::spawn(read_bounded_stderr(stderr, CLAUDE_STDERR_MAX_BYTES));
+
+        Ok(Self {
+            runtime,
+            child,
+            stdout: BufReader::new(stdout).lines(),
+            stderr: Some(stderr),
+            output_text: String::new(),
+            summary: None,
+            external_session_id: None,
+        })
+    }
+
+    async fn run<H>(
+        &mut self,
+        request: ExternalAgentRequest,
+        host: &H,
+    ) -> Result<ExternalAgentResult, ExternalAgentError>
+    where
+        H: ExternalAgentHost + Send + Sync,
+    {
+        let mut session = ExternalAgentSessionState {
+            runtime: request.runtime.clone(),
+            external_session_id: None,
+            mode: request.mode,
+            cwd: request.cwd.clone(),
+        };
+        host.emit(ExternalAgentEvent::RunStarted {
+            session: session.clone(),
+        })
+        .await?;
+
+        loop {
+            if host.is_cancelled().await {
+                self.shutdown().await;
+                return Err(ExternalAgentError::Cancelled);
+            }
+
+            let line =
+                match tokio::time::timeout(CLAUDE_CANCEL_POLL_INTERVAL, self.stdout.next_line())
+                    .await
+                {
+                    Ok(line) => line.map_err(|err| {
+                        protocol_error(&self.runtime, format!("read failed: {err}"))
+                    })?,
+                    Err(_) => {
+                        if self.is_finished()? {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+            let Some(line) = line else {
+                break;
+            };
+            self.handle_stdout_line(&line, &mut session, host).await?;
+        }
+
+        let status = self.wait_for_exit().await?;
+        if !status.success() {
+            return Err(ExternalAgentError::Runtime {
+                runtime: self.runtime.as_str().to_string(),
+                message: self.take_stderr().await,
+            });
+        }
+
+        let result = ExternalAgentResult {
+            status: ExternalAgentRunStatus::Completed,
+            session,
+            summary: self.summary.clone().or_else(|| {
+                (!self.output_text.trim().is_empty()).then(|| self.output_text.trim().to_string())
+            }),
+            artifacts: Vec::new(),
+        };
+        host.emit(ExternalAgentEvent::Completed {
+            result: result.clone(),
+        })
+        .await?;
+        Ok(result)
+    }
+
+    async fn handle_stdout_line<H>(
+        &mut self,
+        line: &str,
+        session: &mut ExternalAgentSessionState,
+        host: &H,
+    ) -> Result<(), ExternalAgentError>
+    where
+        H: ExternalAgentHost + Send + Sync,
+    {
+        for event in claude_stream_events(line) {
+            match event {
+                ClaudeStreamEvent::Output(text) => {
+                    self.output_text.push_str(&text);
+                    host.emit(ExternalAgentEvent::OutputTextDelta { text })
+                        .await?;
+                }
+                ClaudeStreamEvent::Reasoning(text) => {
+                    host.emit(ExternalAgentEvent::ReasoningDelta { text })
+                        .await?;
+                }
+                ClaudeStreamEvent::SessionId(session_id) => {
+                    if self.external_session_id.as_deref() != Some(session_id.as_str()) {
+                        self.external_session_id = Some(session_id.clone());
+                        session.external_session_id = Some(session_id);
+                        host.emit(ExternalAgentEvent::SessionResolved {
+                            session: session.clone(),
+                        })
+                        .await?;
+                    }
+                }
+                ClaudeStreamEvent::Summary(summary) => {
+                    self.summary = Some(summary);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn is_finished(&mut self) -> Result<bool, ExternalAgentError> {
+        self.child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|err| protocol_error(&self.runtime, format!("wait failed: {err}")))
+    }
+
+    async fn wait_for_exit(&mut self) -> Result<ExitStatus, ExternalAgentError> {
+        self.child
+            .wait()
+            .await
+            .map_err(|err| protocol_error(&self.runtime, format!("wait failed: {err}")))
+    }
+
+    async fn take_stderr(&mut self) -> String {
+        let stderr = self
+            .stderr
+            .take()
+            .map(|handle| async move { handle.await.unwrap_or_default() });
+        match stderr {
+            Some(stderr) => {
+                let stderr = stderr.await;
+                if stderr.trim().is_empty() {
+                    "Claude Code exited unsuccessfully".to_string()
+                } else {
+                    stderr
+                }
+            }
+            None => "Claude Code exited unsuccessfully".to_string(),
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        let _ = self.child.start_kill();
+        let _ = self.child.wait().await;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClaudeStreamEvent {
+    Output(String),
+    Reasoning(String),
+    SessionId(String),
+    Summary(String),
+}
+
+fn claude_stream_events(line: &str) -> Vec<ClaudeStreamEvent> {
+    let Ok(value) = serde_json::from_str::<JsonValue>(line) else {
+        return vec![ClaudeStreamEvent::Output(format!("{line}\n"))];
+    };
+
+    let mut events = Vec::new();
+    if let Some(session_id) = value
+        .get("session_id")
+        .or_else(|| value.get("sessionId"))
+        .and_then(JsonValue::as_str)
+    {
+        events.push(ClaudeStreamEvent::SessionId(session_id.to_string()));
+    }
+
+    match value.get("type").and_then(JsonValue::as_str) {
+        Some("assistant") => collect_assistant_content(&value, &mut events),
+        Some("result") => {
+            if let Some(summary) = value.get("result").and_then(JsonValue::as_str)
+                && !summary.trim().is_empty()
+            {
+                events.push(ClaudeStreamEvent::Summary(summary.to_string()));
+            }
+        }
+        Some("system") => {}
+        Some(_) | None => {
+            if let Some(text) = value.get("text").and_then(JsonValue::as_str) {
+                events.push(ClaudeStreamEvent::Output(text.to_string()));
+            }
+        }
+    }
+    events
+}
+
+fn collect_assistant_content(value: &JsonValue, events: &mut Vec<ClaudeStreamEvent>) {
+    let Some(content) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(JsonValue::as_array)
+    else {
+        return;
+    };
+
+    for block in content {
+        let text = block
+            .get("text")
+            .or_else(|| block.get("thinking"))
+            .and_then(JsonValue::as_str);
+        let Some(text) = text else {
+            continue;
+        };
+        match block.get("type").and_then(JsonValue::as_str) {
+            Some("thinking") | Some("redacted_thinking") => {
+                events.push(ClaudeStreamEvent::Reasoning(text.to_string()));
+            }
+            _ => events.push(ClaudeStreamEvent::Output(text.to_string())),
+        }
+    }
+}
+
+async fn read_bounded_stderr<R>(reader: R, max_bytes: usize) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let _ = reader.take(max_bytes as u64).read_to_end(&mut buf).await;
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+fn invalid_request(
+    runtime: &ExternalAgentRuntimeId,
+    message: impl Into<String>,
+) -> ExternalAgentError {
+    ExternalAgentError::Runtime {
+        runtime: runtime.as_str().to_string(),
+        message: message.into(),
+    }
+}
+
+fn protocol_error(
+    runtime: &ExternalAgentRuntimeId,
+    message: impl Into<String>,
+) -> ExternalAgentError {
+    ExternalAgentError::Protocol {
+        runtime: runtime.as_str().to_string(),
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn parses_claude_stream_json_events() {
+        let events = claude_stream_events(
+            r#"{"type":"assistant","session_id":"sess-1","message":{"content":[{"type":"thinking","thinking":"checking"},{"type":"text","text":"done"}]}}"#,
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                ClaudeStreamEvent::SessionId("sess-1".to_string()),
+                ClaudeStreamEvent::Reasoning("checking".to_string()),
+                ClaudeStreamEvent::Output("done".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_claude_result_summary() {
+        let events = claude_stream_events(r#"{"type":"result","result":"finished"}"#);
+
+        assert_eq!(
+            events,
+            vec![ClaudeStreamEvent::Summary("finished".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readiness_reports_ready_when_claude_auth_status_succeeds() {
+        let (_temp_dir, env) = fake_claude_env(
+            r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+exit 2
+"#,
+        );
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readiness_reports_missing_auth_when_claude_auth_status_fails() {
+        let (_temp_dir, env) = fake_claude_env(
+            r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 1
+fi
+exit 2
+"#,
+        );
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::MissingAuth);
+    }
+
+    #[test]
+    fn launch_env_preserves_stable_config_and_scrubs_provider_credentials() {
+        let harness = claude_code_harness().expect("claude harness");
+        let source = BTreeMap::from([
+            ("HOME".to_string(), "/home/alex".to_string()),
+            ("PATH".to_string(), "/bin".to_string()),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                "/home/alex/.config".to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".to_string(),
+                "/home/alex/.local/state".to_string(),
+            ),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                "/home/alex/.claude".to_string(),
+            ),
+            ("ANTHROPIC_API_KEY".to_string(), "secret".to_string()),
+            ("CURSOR_API_KEY".to_string(), "secret".to_string()),
+            ("GROK_API_KEY".to_string(), "secret".to_string()),
+            ("OPENAI_API_KEY".to_string(), "secret".to_string()),
+            ("XAI_API_KEY".to_string(), "secret".to_string()),
+        ]);
+
+        let spec = harness.launch_spec("/repo", "/usr/bin/claude", &source);
+
+        assert_eq!(
+            spec.env,
+            BTreeMap::from([
+                (
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/home/alex/.claude".to_string()
+                ),
+                (
+                    "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
+                    "claude".to_string()
+                ),
+                ("HOME".to_string(), "/home/alex".to_string()),
+                ("PATH".to_string(), "/bin".to_string()),
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    "/home/alex/.config".to_string()
+                ),
+                (
+                    "XDG_STATE_HOME".to_string(),
+                    "/home/alex/.local/state".to_string()
+                ),
+            ])
+        );
+    }
+
+    #[cfg(unix)]
+    fn fake_claude_env(script: &str) -> (tempfile::TempDir, BTreeMap<String, String>) {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let claude_path = bin_dir.join("claude");
+        std::fs::write(&claude_path, script).expect("write fake claude");
+        let mut permissions = std::fs::metadata(&claude_path)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&claude_path, permissions).expect("chmod fake claude");
+        let path = bin_dir.display().to_string();
+        (temp_dir, BTreeMap::from([("PATH".to_string(), path)]))
+    }
+}

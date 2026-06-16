@@ -179,14 +179,14 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
     ExternalAgentRuntimeDescriptor {
         id: ExternalAgentRuntimeId::CLAUDE,
         display_name: "Claude Code",
-        description: "Spike-only adapter until Codewith can prove managed enforcement.",
+        description: "Run Claude Code through Claude's CLI/Agent SDK stream.",
         command: ExternalAgentCommandSpec {
             program: "claude",
             args: &[],
         },
         supported_modes: PLAN_PROPOSE,
         default_mode: ExternalAgentMode::Plan,
-        visible: false,
+        visible: true,
     },
 ];
 
@@ -230,16 +230,16 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn only_cursor_and_grok_build_are_visible_for_mvp() {
+    fn visible_runtimes_include_subscription_external_agents() {
         let visible = visible_external_agent_runtimes()
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(visible, vec!["cursor", "grok-build"]);
+        assert_eq!(visible, vec!["cursor", "grok-build", "claude"]);
     }
 
     #[test]
-    fn visible_mvp_runtimes_do_not_advertise_managed_mode() {
+    fn visible_runtimes_do_not_advertise_managed_mode() {
         for runtime in visible_external_agent_runtimes() {
             assert!(
                 !runtime

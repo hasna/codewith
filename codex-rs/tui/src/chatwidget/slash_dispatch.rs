@@ -121,7 +121,7 @@ const BACKGROUND_AGENT_USAGE_HINT: &str =
     "Examples: /agent peers, /agent send <thread-id> hello, /agent start fix the flaky test";
 const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <thread-id> <message>";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
-const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build] [task]";
+const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build|claude] [task]";
 const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
 
 fn parse_external_agent_args(trimmed: &str) -> Option<(&str, &str)> {
@@ -173,6 +173,11 @@ impl ChatWidget {
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Session
+                | SlashCommand::MultiAgents
+                | SlashCommand::Agent
+                | SlashCommand::BackgroundAgent
+                | SlashCommand::ExternalAgent
         ) {
             self.bottom_pane.drain_pending_submission_state();
         }
@@ -364,17 +369,21 @@ impl ChatWidget {
         };
         let readiness = external_agent_runtime_readiness(runtime);
         let readiness_status = match readiness.status {
-            ExternalAgentReadinessStatus::Ready => "ready",
+            ExternalAgentReadinessStatus::Ready => "command ready",
             ExternalAgentReadinessStatus::MissingRuntime => "missing command",
             ExternalAgentReadinessStatus::MissingAuth => "missing auth",
             ExternalAgentReadinessStatus::Unsupported => "unsupported",
             ExternalAgentReadinessStatus::Disabled => "disabled",
         };
-        let command = format!(
-            "{} {}",
-            runtime.command.program,
-            runtime.command.args.join(" ")
-        );
+        let command = if runtime.command.args.is_empty() {
+            runtime.command.program.to_string()
+        } else {
+            format!(
+                "{} {}",
+                runtime.command.program,
+                runtime.command.args.join(" ")
+            )
+        };
         if prompt.is_empty() {
             self.add_info_message(
                 format!("External agent runtime `{runtime_id}` selected ({readiness_status})."),
@@ -2251,6 +2260,10 @@ mod external_agent_arg_tests {
             Some(("grok-build", "inspect this repo"))
         );
         assert_eq!(parse_external_agent_args("cursor"), Some(("cursor", "")));
+        assert_eq!(
+            parse_external_agent_args("claude inspect this repo"),
+            Some(("claude", "inspect this repo"))
+        );
         assert_eq!(parse_external_agent_args("   "), None);
     }
 

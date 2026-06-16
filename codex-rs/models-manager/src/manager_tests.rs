@@ -9,7 +9,9 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthRefreshContext;
 use codex_login::ExternalAuthTokens;
 use codex_login::TokenData;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -230,6 +232,11 @@ fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManage
     StaticModelsManager::new(/*auth_manager*/ None, model_catalog)
 }
 
+fn with_required_local_models(mut models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    crate::model_info::ensure_required_local_models(&mut models);
+    models
+}
+
 async fn chatgpt_auth_tokens_for_tests(codex_home: &Path) -> CodexAuth {
     let auth_dot_json = codex_login::AuthDotJson {
         auth_mode: Some(AuthMode::ChatgptAuthTokens),
@@ -445,7 +452,10 @@ async fn refresh_available_models_uses_remote_only_catalog_for_chatgpt_auth() {
         .await
         .expect("refresh succeeds");
 
-    assert_eq!(manager.get_remote_models().await, remote_models);
+    assert_eq!(
+        manager.get_remote_models().await,
+        with_required_local_models(remote_models)
+    );
     assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
 }
 
@@ -475,7 +485,10 @@ async fn refresh_available_models_uses_cached_remote_only_catalog_for_chatgpt_au
         .await
         .expect("cached refresh succeeds");
 
-    assert_eq!(cache_manager.get_remote_models().await, remote_models);
+    assert_eq!(
+        cache_manager.get_remote_models().await,
+        with_required_local_models(remote_models)
+    );
     assert_eq!(
         cache_endpoint.fetch_count(),
         0,
@@ -511,6 +524,34 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
 
     assert_eq!(model_info.slug, bundled_slug);
     assert!(model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn refresh_available_models_keeps_codex_spark_when_chatgpt_remote_omits_it() {
+    let remote_models = vec![remote_model(
+        "chatgpt-authoritative-model-info",
+        "ChatGPT Model Info",
+        /*priority*/ 0,
+    )];
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let models = manager.get_remote_models().await;
+    assert_models_contain(&models, &remote_models);
+    let spark = models
+        .iter()
+        .find(|model| model.slug == crate::model_info::GPT_5_3_CODEX_SPARK)
+        .expect("Spark should remain locally available for ChatGPT auth");
+
+    assert_eq!(spark.input_modalities, vec![InputModality::Text]);
+    assert_eq!(spark.default_reasoning_level, Some(ReasoningEffort::High));
+    assert!(!spark.supported_in_api);
 }
 
 #[tokio::test]
@@ -1081,4 +1122,12 @@ fn bundled_models_json_roundtrips() {
         !response.models.is_empty(),
         "bundled models.json should contain at least one model"
     );
+    let spark = response
+        .models
+        .iter()
+        .find(|model| model.slug == crate::model_info::GPT_5_3_CODEX_SPARK)
+        .expect("bundled models should include Spark");
+    assert_eq!(spark.input_modalities, vec![InputModality::Text]);
+    assert_eq!(spark.default_reasoning_level, Some(ReasoningEffort::High));
+    assert!(!spark.supported_in_api);
 }

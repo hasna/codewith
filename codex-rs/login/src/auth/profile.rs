@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
@@ -12,6 +13,8 @@ use std::path::PathBuf;
 use codex_app_server_protocol::AuthMode;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::account::PlanType as AccountPlanType;
+use serde::Deserialize;
+use serde::Serialize;
 use thiserror::Error;
 
 use super::storage::AgentIdentityAuthRecord;
@@ -21,17 +24,52 @@ use super::storage::create_auth_storage;
 const AUTH_PROFILES_DIR: &str = "auth_profiles";
 const ACTIVE_PROFILE_FILE: &str = ".active";
 const PROFILE_ORDER_FILE: &str = ".order";
+const PROFILE_METADATA_FILE: &str = "profile.json";
 pub const CODEWITH_AUTH_PROFILE_ENV_VAR: &str = "CODEWITH_AUTH_PROFILE";
 pub const CODEX_AUTH_PROFILE_ENV_VAR: &str = "CODEX_AUTH_PROFILE";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthProfile {
     pub name: String,
-    pub auth_mode: AuthMode,
+    pub subscription_provider: AuthProfileSubscriptionProvider,
+    pub auth_mode: Option<AuthMode>,
     pub email: Option<String>,
     pub account_id: Option<String>,
     pub plan: Option<String>,
     pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthProfileSubscriptionProvider {
+    #[default]
+    ChatGpt,
+    ClaudeAi,
+    Cursor,
+    Grok,
+}
+
+impl AuthProfileSubscriptionProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ChatGpt => "ChatGPT",
+            Self::ClaudeAi => "Claude.ai",
+            Self::Cursor => "Cursor",
+            Self::Grok => "Grok",
+        }
+    }
+}
+
+impl fmt::Display for AuthProfileSubscriptionProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthProfileMetadata {
+    pub subscription_provider: AuthProfileSubscriptionProvider,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +99,14 @@ pub enum AuthProfileError {
 
     #[error("auth profiles require persistent auth storage; ephemeral auth cannot be profiled")]
     EphemeralAuthStorage,
+
+    #[error(
+        "auth profile `{name}` is tied to {provider}; use ChatGPT login with a ChatGPT auth profile"
+    )]
+    NonChatGptProfile {
+        name: String,
+        provider: AuthProfileSubscriptionProvider,
+    },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -139,13 +185,19 @@ pub fn list_auth_profiles(
         if validate_auth_profile_name(&name).is_err() {
             continue;
         }
-        let storage = create_auth_storage(entry.path(), auth_credentials_store_mode);
-        let Some(auth) = storage.load()? else {
+        let profile_dir = entry.path();
+        let metadata = load_profile_metadata(&profile_dir)?;
+        if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+            let active = active_profile.as_deref() == Some(name.as_str());
+            profiles.push(profile_from_metadata(name, metadata, active));
             continue;
-        };
-        let active = active_profile.as_deref() == Some(name.as_str())
-            && active_auth.as_ref().is_some_and(|active| active == &auth);
-        profiles.push(profile_from_auth(name, &auth, active));
+        }
+        let storage = create_auth_storage(profile_dir, auth_credentials_store_mode);
+        if let Some(auth) = storage.load()? {
+            let active = active_profile.as_deref() == Some(name.as_str())
+                && active_auth.as_ref().is_some_and(|active| active == &auth);
+            profiles.push(profile_from_auth(name, &auth, active, metadata));
+        }
     }
     sort_auth_profiles(codex_home, &mut profiles)?;
     Ok(profiles)
@@ -158,15 +210,21 @@ pub fn save_current_auth_profile(
 ) -> Result<AuthProfile, AuthProfileError> {
     validate_auth_profile_name(name)?;
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+    ensure_chatgpt_profile_target(codex_home, name)?;
 
     let auth = load_active_auth(codex_home, auth_credentials_store_mode)?
         .ok_or(AuthProfileError::NoActiveAuth)?;
     save_profile_auth(codex_home, auth_credentials_store_mode, name, &auth)?;
+    write_profile_metadata(
+        &auth_profile_dir(codex_home, name),
+        AuthProfileMetadata::default(),
+    )?;
     write_active_profile(codex_home, name)?;
     Ok(profile_from_auth(
         name.to_string(),
         &auth,
         /*active*/ true,
+        AuthProfileMetadata::default(),
     ))
 }
 
@@ -178,12 +236,18 @@ pub fn save_auth_profile(
 ) -> Result<AuthProfile, AuthProfileError> {
     validate_auth_profile_name(name)?;
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+    ensure_chatgpt_profile_target(codex_home, name)?;
 
     save_profile_auth(codex_home, auth_credentials_store_mode, name, auth)?;
+    write_profile_metadata(
+        &auth_profile_dir(codex_home, name),
+        AuthProfileMetadata::default(),
+    )?;
     Ok(profile_from_auth(
         name.to_string(),
         auth,
         /*active*/ false,
+        AuthProfileMetadata::default(),
     ))
 }
 
@@ -225,6 +289,14 @@ pub fn switch_auth_profile(
     validate_auth_profile_name(name)?;
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
 
+    let metadata = load_profile_metadata(&auth_profile_dir(codex_home, name))?;
+    if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+        return Err(AuthProfileError::NonChatGptProfile {
+            name: name.to_string(),
+            provider: metadata.subscription_provider,
+        });
+    }
+
     let auth = load_profile_auth(codex_home, auth_credentials_store_mode, name)?;
     let active_storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
     active_storage.save(&auth)?;
@@ -233,6 +305,7 @@ pub fn switch_auth_profile(
         name.to_string(),
         &auth,
         /*active*/ true,
+        metadata,
     ))
 }
 
@@ -271,9 +344,27 @@ pub fn rename_auth_profile(
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
 
     if old_name == new_name {
-        let auth = load_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
         let active = active_auth_profile(codex_home).ok().flatten().as_deref() == Some(old_name);
-        return Ok(profile_from_auth(old_name.to_string(), &auth, active));
+        let metadata = load_profile_metadata(&auth_profile_dir(codex_home, old_name))?;
+        let auth = load_optional_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
+        return match auth {
+            Some(auth) => Ok(profile_from_auth(
+                old_name.to_string(),
+                &auth,
+                active,
+                metadata,
+            )),
+            None if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt => {
+                Ok(profile_from_metadata(
+                    old_name.to_string(),
+                    metadata,
+                    active,
+                ))
+            }
+            None => Err(AuthProfileError::ProfileNotFound {
+                name: old_name.to_string(),
+            }),
+        };
     }
 
     let old_profile_dir = auth_profile_dir(codex_home, old_name);
@@ -290,18 +381,43 @@ pub fn rename_auth_profile(
         });
     }
 
-    let auth = load_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
+    let metadata = load_profile_metadata(&old_profile_dir)?;
+    let auth = load_optional_profile_auth(codex_home, auth_credentials_store_mode, old_name)?;
+    if metadata.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt && auth.is_none()
+    {
+        return Err(AuthProfileError::ProfileNotFound {
+            name: old_name.to_string(),
+        });
+    }
     let active = active_auth_profile(codex_home).ok().flatten().as_deref() == Some(old_name);
     // Keyring-backed stores derive their key from the profile directory, so
-    // migrate through the storage abstraction instead of only renaming the dir.
-    save_profile_auth(codex_home, auth_credentials_store_mode, new_name, &auth)?;
+    // migrate auth through the storage abstraction instead of only renaming the
+    // dir when auth exists.
+    if let Some(auth) = auth.as_ref() {
+        save_profile_auth(codex_home, auth_credentials_store_mode, new_name, auth)?;
+    } else {
+        create_private_dir_all(&new_profile_dir)?;
+    }
+    write_profile_metadata(&auth_profile_dir(codex_home, new_name), metadata)?;
     delete_profile_storage_dir(old_profile_dir, auth_credentials_store_mode)?;
     if active {
         write_active_profile(codex_home, new_name)?;
     }
     rename_profile_in_order(codex_home, old_name, new_name)?;
 
-    Ok(profile_from_auth(new_name.to_string(), &auth, active))
+    match auth {
+        Some(auth) => Ok(profile_from_auth(
+            new_name.to_string(),
+            &auth,
+            active,
+            metadata,
+        )),
+        None => Ok(profile_from_metadata(
+            new_name.to_string(),
+            metadata,
+            active,
+        )),
+    }
 }
 
 pub fn move_auth_profile(
@@ -353,6 +469,30 @@ pub fn ensure_auth_profile_storage_dir(
     Ok(profile_dir)
 }
 
+pub fn load_auth_profile_metadata(
+    codex_home: &Path,
+    name: &str,
+) -> Result<AuthProfileMetadata, AuthProfileError> {
+    validate_auth_profile_name(name)?;
+    let profile_dir = auth_profile_dir(codex_home, name);
+    if !profile_dir.is_dir() {
+        return Err(AuthProfileError::ProfileNotFound {
+            name: name.to_string(),
+        });
+    }
+    load_profile_metadata(&profile_dir)
+}
+
+pub fn save_auth_profile_metadata(
+    codex_home: &Path,
+    name: &str,
+    metadata: AuthProfileMetadata,
+) -> Result<(), AuthProfileError> {
+    let profile_dir = ensure_auth_profile_storage_dir(codex_home, name)?;
+    write_profile_metadata(&profile_dir, metadata)?;
+    Ok(())
+}
+
 pub(crate) fn mirror_active_auth_profile(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -362,12 +502,34 @@ pub(crate) fn mirror_active_auth_profile(
     let Some(active_profile) = active_auth_profile(codex_home)? else {
         return Ok(());
     };
+    let profile_dir = auth_profile_dir(codex_home, &active_profile);
+    if load_profile_metadata(&profile_dir)?.subscription_provider
+        != AuthProfileSubscriptionProvider::ChatGpt
+    {
+        return Ok(());
+    }
     save_profile_auth(
         codex_home,
         auth_credentials_store_mode,
         &active_profile,
         auth,
     )
+}
+
+fn ensure_chatgpt_profile_target(codex_home: &Path, name: &str) -> Result<(), AuthProfileError> {
+    let profile_dir = auth_profile_dir(codex_home, name);
+    if !profile_dir.is_dir() {
+        return Ok(());
+    }
+    let metadata = load_profile_metadata(&profile_dir)?;
+    if metadata.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt {
+        Ok(())
+    } else {
+        Err(AuthProfileError::NonChatGptProfile {
+            name: name.to_string(),
+            provider: metadata.subscription_provider,
+        })
+    }
 }
 
 fn ensure_persistent_auth_storage(
@@ -394,6 +556,32 @@ fn active_profile_file(codex_home: &Path) -> PathBuf {
 
 fn profile_order_file(codex_home: &Path) -> PathBuf {
     auth_profiles_dir(codex_home).join(PROFILE_ORDER_FILE)
+}
+
+fn profile_metadata_file(profile_dir: &Path) -> PathBuf {
+    profile_dir.join(PROFILE_METADATA_FILE)
+}
+
+fn load_profile_metadata(profile_dir: &Path) -> Result<AuthProfileMetadata, AuthProfileError> {
+    let raw = match fs::read_to_string(profile_metadata_file(profile_dir)) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(AuthProfileMetadata::default());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    serde_json::from_str(&raw)
+        .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err).into())
+}
+
+fn write_profile_metadata(
+    profile_dir: &Path,
+    metadata: AuthProfileMetadata,
+) -> Result<(), AuthProfileError> {
+    let json = serde_json::to_string_pretty(&metadata)
+        .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
+    write_private_file(&profile_metadata_file(profile_dir), &json)?;
+    Ok(())
 }
 
 fn sort_auth_profiles(
@@ -527,6 +715,18 @@ fn load_profile_auth(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     name: &str,
 ) -> Result<AuthDotJson, AuthProfileError> {
+    load_optional_profile_auth(codex_home, auth_credentials_store_mode, name)?.ok_or(
+        AuthProfileError::ProfileNotFound {
+            name: name.to_string(),
+        },
+    )
+}
+
+fn load_optional_profile_auth(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    name: &str,
+) -> Result<Option<AuthDotJson>, AuthProfileError> {
     let profile_dir = auth_profile_dir(codex_home, name);
     if !profile_dir.is_dir() {
         return Err(AuthProfileError::ProfileNotFound {
@@ -534,9 +734,7 @@ fn load_profile_auth(
         });
     }
     let storage = create_auth_storage(profile_dir, auth_credentials_store_mode);
-    storage.load()?.ok_or(AuthProfileError::ProfileNotFound {
-        name: name.to_string(),
-    })
+    Ok(storage.load()?)
 }
 
 fn delete_profile_storage_dir(
@@ -553,15 +751,33 @@ fn delete_profile_storage_dir(
     Ok(())
 }
 
-fn profile_from_auth(name: String, auth: &AuthDotJson, active: bool) -> AuthProfile {
+fn profile_from_auth(
+    name: String,
+    auth: &AuthDotJson,
+    active: bool,
+    metadata: AuthProfileMetadata,
+) -> AuthProfile {
     let auth_mode = resolved_auth_mode(auth);
     let (email, account_id, plan) = auth_profile_metadata(auth_mode, auth);
     AuthProfile {
         name,
-        auth_mode,
+        subscription_provider: metadata.subscription_provider,
+        auth_mode: Some(auth_mode),
         email,
         account_id,
         plan,
+        active,
+    }
+}
+
+fn profile_from_metadata(name: String, metadata: AuthProfileMetadata, active: bool) -> AuthProfile {
+    AuthProfile {
+        name,
+        subscription_provider: metadata.subscription_provider,
+        auth_mode: None,
+        email: None,
+        account_id: None,
+        plan: None,
         active,
     }
 }

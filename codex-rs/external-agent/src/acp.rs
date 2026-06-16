@@ -261,9 +261,20 @@ impl AcpStdioHarness {
         host: impl ExternalAgentHost + Send + Sync,
         sandbox_config: &ExternalAgentSandboxConfig,
     ) -> Result<ExternalAgentResult, ExternalAgentError> {
-        self.validate_request(&request)?;
-        let program = self.resolve_program(&request)?;
         let source_env = std::env::vars().collect::<BTreeMap<_, _>>();
+        self.run_sandboxed_with_env(request, host, sandbox_config, source_env)
+            .await
+    }
+
+    pub async fn run_sandboxed_with_env(
+        &self,
+        request: ExternalAgentRequest,
+        host: impl ExternalAgentHost + Send + Sync,
+        sandbox_config: &ExternalAgentSandboxConfig,
+        source_env: BTreeMap<String, String>,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        self.validate_request(&request)?;
+        let program = self.resolve_program(&request, &source_env)?;
         let isolation = AcpProcessIsolation::create(&request.runtime)?;
         let isolation_root = isolation.root.clone();
         let mut extra_env = isolation.env();
@@ -286,10 +297,14 @@ impl AcpStdioHarness {
     fn resolve_program(
         &self,
         request: &ExternalAgentRequest,
+        source_env: &BTreeMap<String, String>,
     ) -> Result<PathBuf, ExternalAgentError> {
-        which::which(self.descriptor.command.program).map_err(|err| ExternalAgentError::NotReady {
-            runtime: request.runtime.as_str().to_string(),
-            reason: err.to_string(),
+        let path = source_env.get("PATH").map(String::as_str);
+        which::which_in(self.descriptor.command.program, path, &request.cwd).map_err(|err| {
+            ExternalAgentError::NotReady {
+                runtime: request.runtime.as_str().to_string(),
+                reason: err.to_string(),
+            }
         })
     }
 
@@ -1545,6 +1560,44 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "external agent runtime `grok-build` is not ready: ACP runtimes must be executed with AcpStdioHarness::run_sandboxed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_program_uses_supplied_source_env_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().unwrap_or_else(|err| panic!("tempdir: {err}"));
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap_or_else(|err| panic!("create bin dir: {err}"));
+        let grok = bin_dir.join("grok");
+        std::fs::write(&grok, "#!/bin/sh\nexit 0\n")
+            .unwrap_or_else(|err| panic!("write fake grok: {err}"));
+        let mut permissions = std::fs::metadata(&grok)
+            .unwrap_or_else(|err| panic!("metadata: {err}"))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&grok, permissions)
+            .unwrap_or_else(|err| panic!("set executable: {err}"));
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let source_env =
+            BTreeMap::from([("PATH".to_string(), bin_dir.to_string_lossy().into_owned())]);
+
+        assert_eq!(
+            harness
+                .resolve_program(&request, &source_env)
+                .expect("fake grok should resolve from source env PATH"),
+            grok
         );
     }
 

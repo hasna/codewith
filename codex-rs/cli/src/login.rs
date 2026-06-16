@@ -156,6 +156,25 @@ fn auth_profile_storage_home_or_exit(config: &Config, auth_profile_name: &str) -
     }
 }
 
+fn validate_chatgpt_login_profile_or_exit(config: &Config, profile_name: Option<&str>) {
+    let Some(profile_name) = profile_name else {
+        return;
+    };
+    match codex_login::load_auth_profile_metadata(&config.codex_home, profile_name) {
+        Ok(metadata)
+            if metadata.subscription_provider
+                != codex_login::AuthProfileSubscriptionProvider::ChatGpt =>
+        {
+            exit_auth_profile_error(AuthProfileError::NonChatGptProfile {
+                name: profile_name.to_string(),
+                provider: metadata.subscription_provider,
+            });
+        }
+        Ok(_) | Err(AuthProfileError::ProfileNotFound { .. }) => {}
+        Err(err) => exit_auth_profile_error(err),
+    }
+}
+
 fn exit_auth_profile_error(err: AuthProfileError) -> ! {
     eprintln!("Error: {err}");
     std::process::exit(1);
@@ -226,6 +245,10 @@ pub async fn run_login_with_chatgpt(
     }
 
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    validate_chatgpt_login_profile_or_exit(
+        &config,
+        profile_name.as_deref().or(auth_profile_name.as_deref()),
+    );
     let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
 
     match login_with_chatgpt(
@@ -265,6 +288,10 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
+    validate_chatgpt_login_profile_or_exit(
+        &config,
+        profile_name.as_deref().or(auth_profile_name.as_deref()),
+    );
     let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     match login_with_api_key(
         &login_home,
@@ -301,6 +328,10 @@ pub async fn run_login_with_access_token(
         std::process::exit(1);
     }
 
+    validate_chatgpt_login_profile_or_exit(
+        &config,
+        profile_name.as_deref().or(auth_profile_name.as_deref()),
+    );
     let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     match login_with_access_token(
         &login_home,
@@ -382,6 +413,10 @@ pub async fn run_login_with_device_code(
         std::process::exit(1);
     }
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    validate_chatgpt_login_profile_or_exit(
+        &config,
+        profile_name.as_deref().or(auth_profile_name.as_deref()),
+    );
     let login_home = login_storage_home_or_exit(&config, auth_profile_name.as_deref());
     let mut opts = ServerOptions::new(
         login_home,

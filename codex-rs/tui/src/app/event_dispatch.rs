@@ -1308,8 +1308,18 @@ impl App {
             AppEvent::OpenAuthProfileLoginPrompt => {
                 self.chat_widget.open_auth_profile_login_prompt();
             }
-            AppEvent::LoginNewAuthProfile { profile } => {
-                self.chat_widget.start_auth_profile_login(profile);
+            AppEvent::OpenAuthProfileNamePrompt {
+                subscription_provider,
+            } => {
+                self.chat_widget
+                    .open_auth_profile_name_prompt(subscription_provider);
+            }
+            AppEvent::LoginNewAuthProfile {
+                profile,
+                subscription_provider,
+            } => {
+                self.chat_widget
+                    .start_auth_profile_login(profile, subscription_provider);
             }
             AppEvent::AuthProfileLoginCompleted {
                 profile,

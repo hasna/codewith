@@ -45,18 +45,29 @@ pub(crate) fn external_agent_picker_params() -> SelectionViewParams {
 fn runtime_picker_description(runtime: &'static ExternalAgentRuntimeDescriptor) -> String {
     let readiness = external_agent_runtime_readiness(runtime);
     let status = match readiness.status {
-        ExternalAgentReadinessStatus::Ready => "ready",
+        ExternalAgentReadinessStatus::Ready => "command ready",
         ExternalAgentReadinessStatus::MissingRuntime => "missing command",
         ExternalAgentReadinessStatus::MissingAuth => "missing auth",
         ExternalAgentReadinessStatus::Unsupported => "unsupported",
         ExternalAgentReadinessStatus::Disabled => "disabled",
     };
     format!(
-        "{} Status: {status}. Command: {} {}",
+        "{} Status: {status}. Command: {}",
         runtime.description,
-        runtime.command.program,
-        runtime.command.args.join(" ")
+        runtime_command_display(runtime)
     )
+}
+
+fn runtime_command_display(runtime: &'static ExternalAgentRuntimeDescriptor) -> String {
+    if runtime.command.args.is_empty() {
+        runtime.command.program.to_string()
+    } else {
+        format!(
+            "{} {}",
+            runtime.command.program,
+            runtime.command.args.join(" ")
+        )
+    }
 }
 
 #[cfg(test)]
@@ -67,7 +78,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
-    fn picker_lists_visible_mvp_runtimes_only() {
+    fn picker_lists_visible_subscription_runtimes() {
         let params = external_agent_picker_params();
         let names = params
             .items
@@ -75,7 +86,7 @@ mod tests {
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec!["Cursor", "Grok Build"]);
+        assert_eq!(names, vec!["Cursor", "Grok Build", "Claude Code"]);
     }
 
     #[test]
@@ -89,6 +100,7 @@ mod tests {
 
         assert!(descriptions[0].contains("Command: cursor-agent acp"));
         assert!(descriptions[1].contains("Command: grok agent stdio"));
+        assert!(descriptions[2].contains("Command: claude"));
     }
 
     #[test]
@@ -123,6 +135,7 @@ mod tests {
         items:
         - Cursor | Run Cursor's agent through an ACP-compatible harness. Status: <readiness>. Command: cursor-agent acp
         - Grok Build | Run Grok Build through xAI's ACP stdio agent. Status: <readiness>. Command: grok agent stdio
+        - Claude Code | Run Claude Code through Claude's CLI/Agent SDK stream. Status: <readiness>. Command: claude
         "###
         );
     }
@@ -138,6 +151,14 @@ mod tests {
         match rx.try_recv().expect("prefill event") {
             AppEvent::PrefillComposer { text } => {
                 assert_eq!(text, "/external-agent grok-build ");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        (params.items[2].actions[0])(&tx);
+        match rx.try_recv().expect("prefill event") {
+            AppEvent::PrefillComposer { text } => {
+                assert_eq!(text, "/external-agent claude ");
             }
             other => panic!("unexpected event: {other:?}"),
         }

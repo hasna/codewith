@@ -15,6 +15,8 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Stage;
 use codex_login::AuthDotJson;
+use codex_login::AuthProfileSubscriptionProvider;
+use codex_login::list_auth_profiles;
 use codex_login::save_auth_profile;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::mcp::McpServerInfo;
@@ -2877,6 +2879,24 @@ async fn profile_login_prompt_snapshot_and_submit() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_prompt", popup);
+    assert!(popup.contains("ChatGPT"));
+    assert!(popup.contains("Claude.ai / Claude Code"));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let subscription_provider = match rx.try_recv() {
+        Ok(AppEvent::OpenAuthProfileNamePrompt {
+            subscription_provider,
+        }) => subscription_provider,
+        event => panic!("expected profile provider name prompt event, got {event:?}"),
+    };
+    assert_eq!(
+        subscription_provider,
+        AuthProfileSubscriptionProvider::ChatGpt
+    );
+    chat.open_auth_profile_name_prompt(subscription_provider);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_login_name_prompt", popup);
     assert!(popup.contains("Profile name"));
 
     for ch in " work-dev ".chars() {
@@ -2887,7 +2907,11 @@ async fn profile_login_prompt_snapshot_and_submit() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::LoginNewAuthProfile { profile }) if profile == "work-dev"
+        Ok(AppEvent::LoginNewAuthProfile {
+            profile,
+            subscription_provider
+        }) if profile == "work-dev"
+            && subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
     );
 }
 
@@ -2897,7 +2921,10 @@ async fn profile_login_validation_errors_do_not_start_browser_login() {
     chat.thread_id = Some(ThreadId::new());
     while rx.try_recv().is_ok() {}
 
-    chat.start_auth_profile_login("nested/work".to_string());
+    chat.start_auth_profile_login(
+        "nested/work".to_string(),
+        AuthProfileSubscriptionProvider::ChatGpt,
+    );
     let rendered = drain_insert_history(&mut rx)
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -2916,7 +2943,10 @@ async fn profile_login_duplicate_errors_do_not_start_browser_login() {
     save_popup_auth_profile(&chat, "personal");
     while rx.try_recv().is_ok() {}
 
-    chat.start_auth_profile_login("personal".to_string());
+    chat.start_auth_profile_login(
+        "personal".to_string(),
+        AuthProfileSubscriptionProvider::ChatGpt,
+    );
     let rendered = drain_insert_history(&mut rx)
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -2935,7 +2965,7 @@ async fn profile_login_api_only_mode_points_to_cli_flow() {
     chat.config.forced_login_method = Some(codex_protocol::config_types::ForcedLoginMethod::Api);
     while rx.try_recv().is_ok() {}
 
-    chat.start_auth_profile_login("work".to_string());
+    chat.start_auth_profile_login("work".to_string(), AuthProfileSubscriptionProvider::ChatGpt);
     let rendered = drain_insert_history(&mut rx)
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -2944,6 +2974,44 @@ async fn profile_login_api_only_mode_points_to_cli_flow() {
     assert!(
         rendered.contains("ChatGPT browser login is disabled"),
         "expected API-only login guidance, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn external_profile_login_creates_metadata_profile() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    while rx.try_recv().is_ok() {}
+
+    chat.start_auth_profile_login(
+        "claude-work".to_string(),
+        AuthProfileSubscriptionProvider::ClaudeAi,
+    );
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::AuthProfileLoginCompleted {
+            profile,
+            success: true,
+            error: None,
+        }) if profile == "claude-work"
+    );
+    let profiles = list_auth_profiles(&chat.config.codex_home, AuthCredentialsStoreMode::File)
+        .expect("list auth profiles");
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| (
+                profile.name.as_str(),
+                profile.subscription_provider,
+                profile.auth_mode
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            "claude-work",
+            AuthProfileSubscriptionProvider::ClaudeAi,
+            None
+        )]
     );
 }
 

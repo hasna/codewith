@@ -11,6 +11,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_app_server_protocol::AuthMode;
 use codex_login::AuthProfile;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -48,6 +49,7 @@ struct ManageAuthProfilesResponse {
 struct AuthProfileSummary {
     name: Option<String>,
     display_name: String,
+    subscription_provider: AuthProfileSubscriptionProvider,
     auth_mode: Option<AuthMode>,
     email: Option<String>,
     account_id: Option<String>,
@@ -146,6 +148,7 @@ fn summarize_profiles(
     let mut summaries = vec![AuthProfileSummary {
         name: None,
         display_name: "Default".to_string(),
+        subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
         auth_mode: None,
         email: None,
         account_id: None,
@@ -157,7 +160,8 @@ fn summarize_profiles(
         current: current_profile == Some(profile.name.as_str()),
         name: Some(profile.name.clone()),
         display_name: profile.name,
-        auth_mode: Some(profile.auth_mode),
+        subscription_provider: profile.subscription_provider,
+        auth_mode: profile.auth_mode,
         email: profile.email,
         account_id: profile.account_id,
         plan: profile.plan,
@@ -183,5 +187,48 @@ mod tests {
     fn normalize_requested_profile_validates_names() {
         assert!(normalize_requested_profile(Some("work.dev_1".to_string())).is_ok());
         assert!(normalize_requested_profile(Some("../work".to_string())).is_err());
+    }
+
+    #[test]
+    fn summarize_profiles_includes_subscription_provider() {
+        let summaries = summarize_profiles(
+            vec![AuthProfile {
+                name: "claude-work".to_string(),
+                subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+                auth_mode: None,
+                email: None,
+                account_id: None,
+                plan: None,
+                active: false,
+            }],
+            Some("claude-work"),
+        );
+
+        let response = serde_json::to_value(&summaries).expect("serialize summaries");
+        assert_eq!(
+            response,
+            serde_json::json!([
+                {
+                    "name": null,
+                    "displayName": "Default",
+                    "subscriptionProvider": "chat-gpt",
+                    "authMode": null,
+                    "email": null,
+                    "accountId": null,
+                    "plan": null,
+                    "current": false
+                },
+                {
+                    "name": "claude-work",
+                    "displayName": "claude-work",
+                    "subscriptionProvider": "claude-ai",
+                    "authMode": null,
+                    "email": null,
+                    "accountId": null,
+                    "plan": null,
+                    "current": true
+                }
+            ])
+        );
     }
 }

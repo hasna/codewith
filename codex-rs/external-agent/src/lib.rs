@@ -7,11 +7,13 @@
 //! while keeping transcript, approval, and audit ownership in Codewith.
 
 mod acp;
+mod claude;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
 
 pub use acp::*;
+pub use claude::*;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;

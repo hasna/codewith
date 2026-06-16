@@ -51,6 +51,25 @@ fn known_provider_model_uses_local_metadata() {
 }
 
 #[test]
+fn codex_spark_uses_text_only_local_metadata() {
+    let model = model_info_from_slug(GPT_5_3_CODEX_SPARK);
+
+    assert_eq!(model.slug, GPT_5_3_CODEX_SPARK);
+    assert_eq!(model.display_name, "GPT-5.3-Codex-Spark");
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+    assert_eq!(
+        model.supported_reasoning_levels,
+        vec![ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for coding iteration".to_string(),
+        }]
+    );
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
+    assert!(!model.supported_in_api);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn known_provider_glm_model_uses_local_metadata() {
     let model = model_info_from_slug("zai-glm-4.7");
 

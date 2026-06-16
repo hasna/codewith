@@ -38,6 +38,11 @@ pub(crate) fn accent_color() -> Color {
     accent_color_for_level(stdout_color_level())
 }
 
+/// Returns the shared Codewith accent color as RGB.
+pub(crate) fn accent_rgb() -> (u8, u8, u8) {
+    CODEWITH_EMERALD_RGB
+}
+
 /// Returns the shared Codewith accent style for link-like text.
 pub(crate) fn accent_link_style() -> Style {
     Style::default().fg(accent_link_color()).underlined()
@@ -126,6 +131,7 @@ mod tests {
             accent_color_for_level(StdoutColorLevel::TrueColor),
             rgb_color(CODEWITH_EMERALD_RGB)
         );
+        assert_eq!(accent_rgb(), CODEWITH_EMERALD_RGB);
         assert_eq!(
             accent_color_for_level(StdoutColorLevel::Ansi16),
             Color::Green

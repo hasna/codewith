@@ -12,11 +12,17 @@ loop tasks`.
 
 Sources used to rebuild this changelog: local git history and tags,
 `origin/main`, release branches for `0.1.27` and `0.1.28`, GitHub Releases for
-`rust-v0.1.26` through `rust-v0.1.28`, and npm metadata for `@hasna/codewith`.
+`rust-v0.1.26` through `rust-v0.1.29` and `rust-v0.1.33`, and npm metadata for
+`@hasna/codewith`.
 
 Known evidence gaps:
 
-- GitHub Releases currently exist only for `0.1.26`, `0.1.27`, and `0.1.28`.
+- GitHub Releases currently exist only for `0.1.26`, `0.1.27`, `0.1.28`,
+  `0.1.29`, and `0.1.33`.
+- GitHub Releases were not found for `0.1.30`, `0.1.31`, `0.1.32`, or
+  `0.1.34`, though matching local tags and npm publications exist.
+- The GitHub Release bodies for `0.1.29` and `0.1.33` were generated from tag
+  commit messages, not this changelog.
 - npm has published `0.1.4`, `0.1.6`, and `0.1.15`, but no matching local tag
   or committed release bump was found in the current refs.
 - npm metadata still has old timestamps for `0.1.0` and `0.1.1`, but
@@ -28,17 +34,159 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Notes
+
+- No unreleased product changes are recorded here yet.
+
+## [0.1.35] - 2026-06-16
+
+Tag: `rust-v0.1.35`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.35>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.34...rust-v0.1.35>
+
 ### Added
 
-- Added local, unreleased support for an xAI built-in provider.
-- Added a config MCP self-heal workflow.
-- Added a slash command path for opening the MCP manager.
-- Added monitor manager creation support.
-- Added fuzzy ranking for slash command matches.
+- Added external subscription auth profiles for Claude.ai, Cursor, and Grok.
+- Added Claude Code as an external-agent runtime alongside Cursor and Grok
+  Build.
+- Added provider metadata to auth profile listings and AI-callable profile
+  management responses.
 
 ### Changed
 
-- Refresh status rate-limit completions by auth profile.
+- Claude Code external-agent runs now require a matching active Claude.ai
+  subscription profile before launching the Claude CLI.
+- Claude Code external-agent launches preserve stable local Claude config paths
+  without copying provider API keys.
+- Slash command results remain flat and top-level while showing useful aliases,
+  `/apps` when available, and `/debug-config`.
+
+### Fixed
+
+- Fixed release workflow notes so stable `rust-v0.1.*` tags read the matching
+  section from `CHANGELOG.md`.
+- Fixed external-agent sandbox selection for permission profiles that require
+  direct runtime enforcement.
+- Preserved legacy Cursor and Grok Build external-agent CLI auth paths when no
+  matching Codewith subscription profile is selected.
+- Hid internal memory debug slash commands from the regular command picker.
+- Refined Codewith TUI accent/shimmer styling for better contrast.
+
+## [0.1.34] - 2026-06-15
+
+Tag: `rust-v0.1.34`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.34>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.33...rust-v0.1.34>
+
+### Fixed
+
+- Restored the flat, one-level slash command picker.
+- Removed nested slash command category rows and trailing category paths such
+  as `/session/`.
+- Kept slash command aliases hidden by default while showing real top-level
+  commands for an empty `/` prompt.
+
+## [0.1.33] - 2026-06-15
+
+Tag: `rust-v0.1.33`
+Release: <https://github.com/hasna/codewith/releases/tag/rust-v0.1.33>
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.33>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.32...rust-v0.1.33>
+
+### Added
+
+- Added an AI-callable goal resume tool so the model can resume paused,
+  blocked, or usage-limited goals when appropriate.
+
+### Fixed
+
+- Rejected attempts to resume budget-limited goals without changing the token
+  budget.
+- Avoided token-accounting and event side effects when a budget-limited goal
+  resume is rejected.
+
+## [0.1.32] - 2026-06-15
+
+Tag: `rust-v0.1.32`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.32>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.31...rust-v0.1.32>
+
+### Added
+
+- Added app-server active-session peer registry and messaging APIs.
+- Added lean TUI active-session and agent commands.
+- Added Codewith authentication profile login, persisted profile ordering,
+  usage hints, and active profile switching.
+
+### Fixed
+
+- Fixed scheduled loop run visibility.
+- Hardened active-session delivery when a target session is no longer loaded.
+- Repaired main merge fallout in app-server and TUI test/config paths.
+
+### Notes
+
+- This was a large main-line repair release after merging the Codewith release
+  line and upstream sync work back together.
+
+## [0.1.31] - 2026-06-15
+
+Tag: `rust-v0.1.31`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.31>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.30...rust-v0.1.31>
+
+### Fixed
+
+- Fixed Xiaomi MiMo provider routing across core turns and app-server thread
+  settings, starts, and turn starts.
+
+## [0.1.30] - 2026-06-15
+
+Tag: `rust-v0.1.30`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.30>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.29...rust-v0.1.30>
+
+### Added
+
+- Added the durable background-agent runtime foundation and app-server/CLI/TUI
+  management surfaces.
+- Added the external-agent app-server runtime bridge.
+- Added a config MCP self-heal workflow.
+- Added xAI as a built-in model provider.
+- Added monitor management APIs and slash-command controls.
+- Added slash command fuzzy ranking.
+
+### Changed
+
+- Restored the canonical Codewith changelog after `0.1.29` reduced it to a
+  release-page pointer.
+- Refreshed rate-limit status completions by auth profile.
+- Added fast Rust test workflow guidance.
+
+## [0.1.29] - 2026-06-14
+
+Tag: `rust-v0.1.29`
+Release: <https://github.com/hasna/codewith/releases/tag/rust-v0.1.29>
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.29>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.28...rust-v0.1.29>
+
+### Added
+
+- Expanded TUI session-management surfaces, including terminal/tmux handoff,
+  UI dynamic tools, status controls, and profile/session actions.
+- Added an external-agent runtime bridge for app-server-managed agent runs.
+- Added provider hosted-search metadata and hosted tool specs.
+- Added monitor manager creation support.
+
+### Fixed
+
+- Hardened monitor and schedule runtimes in app-server.
+- Completed hosted provider tool metadata.
+
+### Notes
+
+- The `CHANGELOG.md` file in this tag only pointed to the GitHub Releases page;
+  this entry was reconstructed from the tagged git history and npm metadata.
 
 ## [0.1.28] - 2026-06-12
 
