@@ -38,6 +38,18 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.39] - 2026-06-16
+
+Tag: `rust-v0.1.39`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.39>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.38...rust-v0.1.39>
+
+### Fixed
+
+- Superseded the partial `0.1.38` npm wrapper so the final launch package can
+  publish a fresh root version with the complete platform optional dependency
+  matrix.
+
 ## [0.1.38] - 2026-06-16
 
 Tag: `rust-v0.1.38`
