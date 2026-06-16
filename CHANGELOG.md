@@ -38,6 +38,18 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.38] - 2026-06-16
+
+Tag: `rust-v0.1.38`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.38>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.37...rust-v0.1.38>
+
+### Fixed
+
+- Superseded `0.1.37` with a smaller Apple Silicon native npm package after the
+  initial Darwin tarball metadata published but the tarball blob was not
+  fetchable from the registry.
+
 ## [0.1.37] - 2026-06-16
 
 Tag: `rust-v0.1.37`
