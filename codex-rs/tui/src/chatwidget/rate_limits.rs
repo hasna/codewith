@@ -2,15 +2,19 @@
 
 use super::*;
 use crate::chatwidget::user_messages::QueueInsertionPosition;
+use crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_login::AuthProfile;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::list_auth_profiles;
+use tokio::time::MissedTickBehavior;
 
 pub(super) const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
 pub(super) const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 
+const RATE_LIMIT_HEARTBEAT_INTERVAL: Duration =
+    Duration::from_secs(RATE_LIMIT_STALE_THRESHOLD_MINUTES as u64 * 60);
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 const PRIMARY_LIMIT_FALLBACK_LABEL: &str = "usage";
 const SECONDARY_LIMIT_FALLBACK_LABEL: &str = "secondary usage";
@@ -590,11 +594,31 @@ impl ChatWidget {
         });
     }
 
-    pub(super) fn stop_rate_limit_poller(&mut self) {}
+    pub(super) fn stop_rate_limit_poller(&mut self) {
+        if let Some(handle) = self.rate_limit_poller.take() {
+            handle.abort();
+        }
+    }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn prefetch_rate_limits(&mut self) {
         self.stop_rate_limit_poller();
+        if !self.should_prefetch_rate_limits() {
+            return;
+        }
+
+        let app_event_tx = self.app_event_tx.clone();
+        self.rate_limit_poller = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(RATE_LIMIT_HEARTBEAT_INTERVAL);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                app_event_tx.send(AppEvent::RefreshRateLimits {
+                    origin: RateLimitRefreshOrigin::Heartbeat,
+                });
+            }
+        }));
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

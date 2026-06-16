@@ -38,6 +38,26 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.36] - 2026-06-16
+
+Tag: `rust-v0.1.36`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.36>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.35...rust-v0.1.36>
+
+### Changed
+
+- Kept auth-profile usage data fresh in the profile picker while the TUI
+  remains open.
+- Simplified selected auth-profile helper text and hid unknown usage placeholders
+  when no usage data has been loaded yet.
+
+### Fixed
+
+- Preserved the selected profile row when usage data refreshes while the profile
+  picker is open.
+- Published matching native Bun packages for the machines updated during this
+  release, including Apple Silicon installs.
+
 ## [0.1.35] - 2026-06-16
 
 Tag: `rust-v0.1.35`

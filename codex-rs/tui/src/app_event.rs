@@ -129,7 +129,9 @@ pub(crate) struct ConnectorsSnapshot {
 /// handler can route the result correctly.
 ///
 /// A `StartupPrefetch` fires once, concurrently with the rest of TUI init, and
-/// only updates the cached snapshots (no status card to finalize). A
+/// only updates the cached snapshots (no status card to finalize). A `Heartbeat`
+/// is the same cache-only refresh path, but repeats at a low frequency so usage
+/// data does not go stale while the TUI remains open. A
 /// `StatusCommand` is tied to a specific `/status` invocation and must call
 /// `finish_status_rate_limit_refresh` when done so the card stops showing a
 /// "refreshing" state.
@@ -137,6 +139,8 @@ pub(crate) struct ConnectorsSnapshot {
 pub(crate) enum RateLimitRefreshOrigin {
     /// Eagerly fetched after bootstrap so the first `/status` already has data.
     StartupPrefetch,
+    /// Low-frequency background refresh for cached account usage.
+    Heartbeat,
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },

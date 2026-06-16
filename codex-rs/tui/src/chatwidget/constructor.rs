@@ -123,6 +123,8 @@ impl ChatWidget {
             token_info: None,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             auth_profile_rate_limit_snapshots_by_profile: BTreeMap::new(),
+            auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap::new(),
+            rate_limit_poller: None,
             auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
             refreshing_minimax_usage_status_outputs: Vec::new(),

@@ -2931,7 +2931,8 @@ impl App {
                     self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                 }
                 match origin {
-                    RateLimitRefreshOrigin::StartupPrefetch => {
+                    RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
+                        self.chat_widget.refresh_profile_popup_if_active();
                         RateLimitRefreshCompletion::ScheduleFrame
                     }
                     RateLimitRefreshOrigin::StatusCommand { request_id } => {

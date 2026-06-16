@@ -333,6 +333,7 @@ impl ChatWidget {
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
         self.pending_auth_profile_auto_switch_trigger = None;
+        self.prefetch_rate_limits();
         self.refresh_status_line();
     }
 

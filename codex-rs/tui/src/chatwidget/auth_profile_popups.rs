@@ -19,8 +19,13 @@ use codex_login::save_auth_profile_metadata;
 use codex_protocol::config_types::ForcedLoginMethod;
 use crossterm::event::KeyCode;
 use std::time::Duration;
+use std::time::Instant;
 
 const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
+const AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN: Duration =
+    Duration::from_secs(RATE_LIMIT_STALE_THRESHOLD_MINUTES as u64 * 60);
+const PROFILE_SELECTED_DESCRIPTION: &str = "Press Enter to confirm or Esc to go back";
 
 impl ChatWidget {
     pub(crate) fn open_profile_popup(&mut self) {
@@ -43,7 +48,21 @@ impl ChatWidget {
             }
         };
 
+        let selected_idx = self
+            .bottom_pane
+            .selected_index_for_active_view(AUTH_PROFILE_POPUP_VIEW_ID);
         let current = self.config.selected_auth_profile.as_deref();
+        let params = self.profile_selection_view_params(profiles, current, selected_idx);
+        self.bottom_pane.show_selection_view(params);
+        self.maybe_request_auth_profile_usage_heartbeat();
+    }
+
+    fn profile_selection_view_params(
+        &self,
+        profiles: Vec<AuthProfile>,
+        current: Option<&str>,
+        selected_idx: Option<usize>,
+    ) -> SelectionViewParams {
         let mut items = Vec::with_capacity(profiles.len() + 2);
         items.push(self.default_auth_profile_item(current.is_none()));
         items.extend(
@@ -53,15 +72,44 @@ impl ChatWidget {
         );
         items.push(self.new_auth_profile_item());
 
+        let initial_selected_idx = selected_idx.map(|idx| idx.min(items.len().saturating_sub(1)));
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Select Profile".bold()));
         header.push(Line::from("Switch auth for this session.".dim()));
-        self.bottom_pane.show_selection_view(SelectionViewParams {
+
+        SelectionViewParams {
+            view_id: Some(AUTH_PROFILE_POPUP_VIEW_ID),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             header: Box::new(header),
+            initial_selected_idx,
             ..Default::default()
-        });
+        }
+    }
+
+    pub(crate) fn refresh_profile_popup_if_active(&mut self) -> bool {
+        let Some(selected_idx) = self
+            .bottom_pane
+            .selected_index_for_active_view(AUTH_PROFILE_POPUP_VIEW_ID)
+        else {
+            return false;
+        };
+
+        let profiles = match list_auth_profiles(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+        ) {
+            Ok(profiles) => profiles,
+            Err(err) => {
+                tracing::warn!("failed to refresh auth profile popup: {err}");
+                return false;
+            }
+        };
+
+        let current = self.config.selected_auth_profile.as_deref();
+        let params = self.profile_selection_view_params(profiles, current, Some(selected_idx));
+        self.bottom_pane
+            .replace_selection_view_if_active(AUTH_PROFILE_POPUP_VIEW_ID, params)
     }
 
     fn default_auth_profile_item(&self, is_current: bool) -> SelectionItem {
@@ -79,10 +127,7 @@ impl ChatWidget {
                 "Root login",
                 &usage_hint,
             )),
-            selected_description: Some(auth_profile_description_with_usage(
-                "Use the default auth store",
-                &usage_hint,
-            )),
+            selected_description: Some(PROFILE_SELECTED_DESCRIPTION.to_string()),
             is_current,
             actions,
             dismiss_on_select: true,
@@ -189,10 +234,7 @@ impl ChatWidget {
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: Some(auth_profile_description_with_usage(
-                "Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down",
-                &usage_hint,
-            )),
+            selected_description: Some(PROFILE_SELECTED_DESCRIPTION.to_string()),
             is_current: current == Some(profile.name.as_str()),
             actions,
             shortcut_actions,
@@ -306,6 +348,37 @@ impl ChatWidget {
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
+    }
+
+    fn maybe_request_auth_profile_usage_heartbeat(&mut self) {
+        if !self.should_prefetch_rate_limits() {
+            return;
+        }
+
+        let profile = self.config.selected_auth_profile.clone();
+        let snapshots_are_stale = self
+            .auth_profile_rate_limit_snapshots_by_profile
+            .get(&profile)
+            .is_none_or(auth_profile_usage_snapshots_are_stale);
+        if !snapshots_are_stale {
+            return;
+        }
+
+        if self
+            .auth_profile_usage_heartbeat_requested_at_by_profile
+            .get(&profile)
+            .is_some_and(|requested_at| {
+                requested_at.elapsed() < AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN
+            })
+        {
+            return;
+        }
+
+        self.auth_profile_usage_heartbeat_requested_at_by_profile
+            .insert(profile, Instant::now());
+        self.app_event_tx.send(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::Heartbeat,
+        });
     }
 
     pub(crate) fn open_auth_profile_delete_confirm(&mut self, profile: String) {
@@ -553,7 +626,20 @@ fn auth_profile_description(profile: &AuthProfile) -> String {
 }
 
 fn auth_profile_description_with_usage(description: &str, usage_hint: &str) -> String {
+    if usage_hint == "usage unknown" {
+        return description.to_string();
+    }
     format!("{description} / {usage_hint}")
+}
+
+fn auth_profile_usage_snapshots_are_stale(
+    snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
+) -> bool {
+    let now = Local::now();
+    snapshots.values().all(|snapshot| {
+        now.signed_duration_since(snapshot.captured_at)
+            > chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+    })
 }
 
 fn compact_usage_hint_for_snapshots(

@@ -564,6 +564,8 @@ pub(crate) struct ChatWidget {
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     auth_profile_rate_limit_snapshots_by_profile:
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
+    auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
+    rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,

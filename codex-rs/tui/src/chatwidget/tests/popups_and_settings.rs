@@ -3044,11 +3044,58 @@ async fn profile_selection_popup_shows_usage_hints() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 96);
     assert_chatwidget_snapshot!("profile_selection_popup_usage_hints", popup);
-    assert!(popup.contains("usage unknown"));
+    assert!(!popup.contains("usage unknown"));
+    assert!(!popup.contains("Enter switch / l relogin"));
+    assert!(popup.contains("Press Enter to confirm or Esc to go back"));
     assert!(popup.contains("stale 5h 30% left"));
-    assert!(popup.contains("5h 42% left"));
     assert!(popup.contains("weekly"));
-    assert!(popup.contains("80% left"));
+    assert!(popup.contains("60% left"));
+}
+
+#[tokio::test]
+async fn profile_popup_requests_usage_heartbeat_when_selected_usage_is_missing() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    set_chatgpt_auth(&mut chat);
+    save_popup_auth_profile(&chat, "work");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::Heartbeat
+        })
+    );
+
+    chat.open_profile_popup();
+    assert_no_rate_limit_refresh_event(&mut rx);
+}
+
+#[tokio::test]
+async fn profile_popup_skips_usage_heartbeat_when_selected_usage_is_fresh() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    set_chatgpt_auth(&mut chat);
+    save_popup_auth_profile(&chat, "work");
+    chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
+        /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+    )));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    assert_no_rate_limit_refresh_event(&mut rx);
+}
+
+fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::RefreshRateLimits { .. }),
+            "unexpected rate-limit refresh event: {event:?}"
+        );
+    }
 }
 
 #[tokio::test]

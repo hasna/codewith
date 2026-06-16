@@ -5,10 +5,9 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
-  1. default             Root login / usage unknown
+  1. default             Root login
   2. personal            ChatGPT / ApiKey / stale 5h 30% left / weekly 60% left
-› 3. work (current)      Enter switch / l relogin / r rename / d delete / s settings /
-                         [ up / ] down / 5h 42% left / weekly 80% left
+› 3. work (current)      Press Enter to confirm or Esc to go back
   4. Log in new profile  Create a saved auth profile
 
   Press enter to confirm or esc to go back
