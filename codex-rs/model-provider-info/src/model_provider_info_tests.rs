@@ -304,14 +304,9 @@ fn test_built_in_model_providers_include_expected_picker_providers() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from([
-            ANTHROPIC_PROVIDER_ID.to_string(),
-            CEREBRAS_PROVIDER_ID.to_string(),
-            NVIDIA_PROVIDER_ID.to_string(),
-            OPENAI_PROVIDER_ID.to_string(),
-            OPENROUTER_PROVIDER_ID.to_string(),
-            XIAOMI_PROVIDER_ID.to_string(),
-        ])
+        built_in_model_provider_ids()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
     );
 }
 
@@ -821,4 +816,32 @@ refresh_interval_ms = 0
     let auth = provider.auth.expect("auth config should deserialize");
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
+}
+
+#[test]
+fn model_gateway_helpers_map_direct_and_aggregator_providers() {
+    assert_eq!(
+        model_gateway_for_provider(OPENAI_PROVIDER_ID),
+        HASNA_GATEWAY_ID
+    );
+    assert_eq!(
+        model_gateway_for_provider(OPENROUTER_PROVIDER_ID),
+        OPENROUTER_GATEWAY_ID
+    );
+    assert_eq!(
+        model_gateway_family(HASNA_GATEWAY_ID),
+        Some(ModelGatewayFamily::Direct)
+    );
+    assert_eq!(
+        model_gateway_family(OPENROUTER_GATEWAY_ID),
+        Some(ModelGatewayFamily::Aggregator)
+    );
+    assert!(provider_belongs_to_model_gateway(
+        OPENAI_PROVIDER_ID,
+        HASNA_GATEWAY_ID
+    ));
+    assert!(!provider_belongs_to_model_gateway(
+        OPENAI_PROVIDER_ID,
+        OPENROUTER_GATEWAY_ID
+    ));
 }

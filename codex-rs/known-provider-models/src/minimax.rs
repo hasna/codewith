@@ -99,6 +99,5 @@ const fn model(display_name: &'static str, context_window: i64) -> KnownProvider
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ true,
         /*supports_reasoning*/ true,
-        /*supports_search_tool*/ false,
     )
 }

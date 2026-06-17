@@ -202,6 +202,7 @@ mod tests {
         let mut query_params = HashMap::new();
         query_params.insert("api version".to_string(), "a&b=c".to_string());
         let provider = Provider {
+            provider_id: None,
             name: "test".to_string(),
             base_url: "https://example.com/v1".to_string(),
             query_params: Some(query_params),

@@ -32,7 +32,7 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
 }
 
 const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
-    KnownProviderModelMetadata::new(
+    KnownProviderModelMetadata::with_search_tool(
         display_name,
         1_000_000,
         /*supports_tools*/ true,

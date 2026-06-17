@@ -3,15 +3,28 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 
 mod anthropic;
 mod cerebras;
+mod deepseek;
+mod google;
+mod minimax;
 mod nvidia;
 mod openrouter;
+mod qwen;
+mod xai;
 mod xiaomi;
+mod zai;
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
+const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const QWEN_BASE_URL: &str =
+    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
+const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KnownProviderModelMetadata {
@@ -20,6 +33,7 @@ pub struct KnownProviderModelMetadata {
     pub supports_tools: bool,
     pub supports_parallel_tool_calls: bool,
     pub supports_reasoning: bool,
+    pub supports_search_tool: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,12 +68,31 @@ impl KnownProviderModelMetadata {
         supports_parallel_tool_calls: bool,
         supports_reasoning: bool,
     ) -> Self {
+        Self::with_search_tool(
+            display_name,
+            context_window,
+            supports_tools,
+            supports_parallel_tool_calls,
+            supports_reasoning,
+            /*supports_search_tool*/ false,
+        )
+    }
+
+    pub(crate) const fn with_search_tool(
+        display_name: &'static str,
+        context_window: i64,
+        supports_tools: bool,
+        supports_parallel_tool_calls: bool,
+        supports_reasoning: bool,
+        supports_search_tool: bool,
+    ) -> Self {
         Self {
             display_name,
             context_window,
             supports_tools,
             supports_parallel_tool_calls,
             supports_reasoning,
+            supports_search_tool,
         }
     }
 }
@@ -92,13 +125,36 @@ pub fn metadata_for_openai_compatible_response(
     if provider_matches(
         provider_id,
         provider_base_url,
+        "deepseek",
+        DEEPSEEK_BASE_URL,
+    ) {
+        return deepseek::metadata(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "google", GOOGLE_BASE_URL) {
+        return google::metadata(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "minimax", MINIMAX_BASE_URL) {
+        return minimax::metadata(slug);
+    }
+    if provider_matches(
+        provider_id,
+        provider_base_url,
         "openrouter",
         OPENROUTER_BASE_URL,
     ) {
         return openrouter::metadata(slug);
     }
+    if provider_matches(provider_id, provider_base_url, "qwen", QWEN_BASE_URL) {
+        return qwen::metadata(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "xai", XAI_BASE_URL) {
+        return xai::metadata(slug);
+    }
     if provider_matches(provider_id, provider_base_url, "xiaomi", XIAOMI_BASE_URL) {
         return xiaomi::metadata(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "zai", ZAI_BASE_URL) {
+        return zai::metadata(slug);
     }
 
     if provider_name.is_none() && provider_base_url.is_none() {
@@ -122,19 +178,35 @@ pub fn metadata_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), "cerebras") => {
             cerebras::metadata(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "deepseek") => {
+            deepseek::metadata(slug)
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "google") => {
+            google::metadata(slug)
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "minimax") => {
+            minimax::metadata(slug)
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
             openrouter::metadata(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "qwen") => qwen::metadata(slug),
+        Some(provider_id) if provider_id_matches(Some(provider_id), "xai") => xai::metadata(slug),
         Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
             xiaomi::metadata(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "zai") => zai::metadata(slug),
         Some(_) => None,
         None => metadata_for_unqualified_slug(slug),
     }
 }
 
 pub fn provider_supports_reasoning_effort(provider_id: Option<&str>) -> bool {
-    provider_id_matches(provider_id, "nvidia") || provider_id_matches(provider_id, "cerebras")
+    provider_id_matches(provider_id, "nvidia")
+        || provider_id_matches(provider_id, "cerebras")
+        || provider_id_matches(provider_id, "google")
+        || provider_id_matches(provider_id, "minimax")
+        || provider_id_matches(provider_id, "zai")
 }
 
 pub fn openai_compatible_provider_supports_reasoning_effort(
@@ -148,6 +220,9 @@ pub fn openai_compatible_provider_supports_reasoning_effort(
             "cerebras",
             CEREBRAS_BASE_URL,
         )
+        || provider_matches(provider_id, provider_base_url, "google", GOOGLE_BASE_URL)
+        || provider_matches(provider_id, provider_base_url, "minimax", MINIMAX_BASE_URL)
+        || provider_matches(provider_id, provider_base_url, "zai", ZAI_BASE_URL)
 }
 
 pub fn reasoning_levels_for_openai_compatible_response(
@@ -175,6 +250,12 @@ pub fn reasoning_levels_for_openai_compatible_response(
     ) {
         return cerebras::reasoning_levels(slug);
     }
+    if provider_matches(provider_id, provider_base_url, "google", GOOGLE_BASE_URL) {
+        return google::reasoning_levels(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "minimax", MINIMAX_BASE_URL) {
+        return minimax::reasoning_levels(slug);
+    }
     if provider_matches(
         provider_id,
         provider_base_url,
@@ -185,6 +266,9 @@ pub fn reasoning_levels_for_openai_compatible_response(
     }
     if provider_matches(provider_id, provider_base_url, "xiaomi", XIAOMI_BASE_URL) {
         return xiaomi::reasoning_levels(slug);
+    }
+    if provider_matches(provider_id, provider_base_url, "zai", ZAI_BASE_URL) {
+        return zai::reasoning_levels(slug);
     }
 
     if provider_name.is_none() && provider_base_url.is_none() {
@@ -208,11 +292,20 @@ pub fn reasoning_levels_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), "cerebras") => {
             cerebras::reasoning_levels(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "google") => {
+            google::reasoning_levels(slug)
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "minimax") => {
+            minimax::reasoning_levels(slug)
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
             no_reasoning_levels()
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
             no_reasoning_levels()
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), "zai") => {
+            zai::reasoning_levels(slug)
         }
         Some(_) => no_reasoning_levels(),
         None => reasoning_levels_for_unqualified_slug(slug),
@@ -226,14 +319,32 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     if provider_id_matches(Some(provider_id), "cerebras") {
         return cerebras::FALLBACK_MODELS;
     }
+    if provider_id_matches(Some(provider_id), "deepseek") {
+        return deepseek::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), "google") {
+        return google::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), "minimax") {
+        return minimax::FALLBACK_MODELS;
+    }
     if provider_id_matches(Some(provider_id), "nvidia") {
         return nvidia::FALLBACK_MODELS;
     }
     if provider_id_matches(Some(provider_id), "openrouter") {
         return openrouter::FALLBACK_MODELS;
     }
+    if provider_id_matches(Some(provider_id), "qwen") {
+        return qwen::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), "xai") {
+        return xai::FALLBACK_MODELS;
+    }
     if provider_id_matches(Some(provider_id), "xiaomi") {
         return xiaomi::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), "zai") {
+        return zai::FALLBACK_MODELS;
     }
 
     &[]
@@ -326,6 +437,48 @@ mod tests {
         assert_eq!(models[1].id, "claude-opus-4-8");
         assert_eq!(models[2].id, "claude-sonnet-4-6");
         assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn every_builtin_external_provider_has_fallback_models() {
+        let cases = [
+            ("anthropic", "claude-fable-5"),
+            ("cerebras", "gpt-oss-120b"),
+            ("deepseek", "deepseek-v4-flash"),
+            ("google", "gemini-3.5-flash"),
+            ("minimax", "MiniMax-M3"),
+            ("nvidia", "openai/gpt-oss-120b"),
+            ("openrouter", "openai/gpt-oss-120b"),
+            ("qwen", "qwen3.5-flash"),
+            ("xai", "grok-4.3"),
+            ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+            ("zai", "glm-5.2"),
+        ];
+
+        for (provider_id, default_model) in cases {
+            let models = fallback_models_for_provider(provider_id);
+
+            assert!(
+                !models.is_empty(),
+                "{provider_id} should have fallback models"
+            );
+            assert_eq!(models[0].id, default_model);
+            assert!(models[0].is_default);
+        }
+    }
+
+    #[test]
+    fn qwen_and_zai_metadata_preserve_native_search_support() {
+        assert!(
+            metadata_for_local_fallback(Some("qwen"), "qwen3.5-flash")
+                .expect("qwen metadata should exist")
+                .supports_search_tool
+        );
+        assert!(
+            metadata_for_local_fallback(Some("zai"), "glm-5.2")
+                .expect("zai metadata should exist")
+                .supports_search_tool
+        );
     }
 
     #[test]

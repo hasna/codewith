@@ -7,10 +7,16 @@ use super::reasoning_preset;
 
 pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
     KnownProviderFallbackModel::new(
+        "glm-5.2",
+        "GLM-5.2",
+        "Z.ai's latest flagship coding model with native web search support. Requires ZAI_API_KEY for turns.",
+        true,
+    ),
+    KnownProviderFallbackModel::new(
         "glm-5.1",
         "GLM-5.1",
         "Z.ai's latest GLM model with native web search support. Requires ZAI_API_KEY for turns.",
-        true,
+        false,
     ),
     KnownProviderFallbackModel::new(
         "glm-5",
@@ -28,6 +34,8 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
+        "glm-5.2" => Some(model("GLM-5.2", 1_000_000)),
+        "glm-5.2[1m]" => Some(model("GLM-5.2 1M", 1_000_000)),
         "glm-5.1" => Some(model("GLM-5.1", 1_000_000)),
         "glm-5" => Some(model("GLM-5", 1_000_000)),
         "glm-5-turbo" => Some(model("GLM-5 Turbo", 128_000)),
@@ -42,7 +50,8 @@ pub(crate) fn reasoning_levels(
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
     match slug {
-        "glm-5.1" | "glm-5" | "glm-5-turbo" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" => (
+        "glm-5.2" | "glm-5.2[1m]" | "glm-5.1" | "glm-5" | "glm-5-turbo" | "glm-4.7"
+        | "glm-4.7-flashx" | "glm-4.7-flash" => (
             Some(ReasoningEffort::Medium),
             vec![
                 reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
@@ -54,7 +63,7 @@ pub(crate) fn reasoning_levels(
 }
 
 const fn model(display_name: &'static str, context_window: i64) -> KnownProviderModelMetadata {
-    KnownProviderModelMetadata::new(
+    KnownProviderModelMetadata::with_search_tool(
         display_name,
         context_window,
         /*supports_tools*/ true,

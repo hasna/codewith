@@ -363,7 +363,8 @@ impl OpenAiCompatibleModel {
                 capabilities.as_ref(),
             ),
             used_fallback_model_metadata: false,
-            supports_search_tool: false,
+            supports_search_tool: known_metadata
+                .is_some_and(|metadata| metadata.supports_search_tool),
             use_responses_lite: false,
             auto_review_model_override: None,
             tool_mode: None,

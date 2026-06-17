@@ -209,6 +209,35 @@ fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_qwen_model_uses_local_metadata_with_search_support() {
+    let model = model_info_from_slug_for_provider("qwen3.5-flash", Some("qwen"));
+
+    assert_eq!(model.display_name, "Qwen3.5 Flash");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(model.supports_search_tool);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_zai_model_uses_local_metadata_with_reasoning_and_search_support() {
+    let model = model_info_from_slug_for_provider("glm-5.2", Some("zai"));
+
+    assert_eq!(model.display_name, "GLM-5.2");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert!(!model.supported_reasoning_levels.is_empty());
+    assert!(model.supports_reasoning_summaries);
+    assert!(model.supports_search_tool);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn personality_template_does_not_claim_gpt_5_base() {
     let model = model_info_from_slug("gpt-5.2-codex");
     let template = model

@@ -40,6 +40,8 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+pub const HASNA_GATEWAY_ID: &str = "hasna";
+pub const HASNA_GATEWAY_NAME: &str = "Hasna";
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -52,6 +54,8 @@ pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const OPENROUTER_GATEWAY_ID: &str = OPENROUTER_PROVIDER_ID;
+pub const OPENROUTER_GATEWAY_NAME: &str = OPENROUTER_PROVIDER_NAME;
 const XAI_PROVIDER_NAME: &str = "xAI";
 pub const XAI_PROVIDER_ID: &str = "xai";
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
@@ -120,6 +124,51 @@ impl<'de> Deserialize<'de> for WireApi {
                 &["responses", "chat"],
             )),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelGatewayFamily {
+    Direct,
+    Aggregator,
+}
+
+pub fn model_gateway_family(gateway_id: &str) -> Option<ModelGatewayFamily> {
+    match gateway_id {
+        HASNA_GATEWAY_ID => Some(ModelGatewayFamily::Direct),
+        OPENROUTER_GATEWAY_ID => Some(ModelGatewayFamily::Aggregator),
+        _ => None,
+    }
+}
+
+pub fn model_gateway_name(gateway_id: &str) -> Option<&'static str> {
+    match gateway_id {
+        HASNA_GATEWAY_ID => Some(HASNA_GATEWAY_NAME),
+        OPENROUTER_GATEWAY_ID => Some(OPENROUTER_GATEWAY_NAME),
+        _ => None,
+    }
+}
+
+pub fn model_gateway_provider_id(gateway_id: &str) -> Option<&'static str> {
+    match gateway_id {
+        OPENROUTER_GATEWAY_ID => Some(OPENROUTER_PROVIDER_ID),
+        _ => None,
+    }
+}
+
+pub fn model_gateway_for_provider(provider_id: &str) -> &'static str {
+    if provider_id == OPENROUTER_PROVIDER_ID {
+        OPENROUTER_GATEWAY_ID
+    } else {
+        HASNA_GATEWAY_ID
+    }
+}
+
+pub fn provider_belongs_to_model_gateway(provider_id: &str, gateway_id: &str) -> bool {
+    match gateway_id {
+        HASNA_GATEWAY_ID => true,
+        OPENROUTER_GATEWAY_ID => provider_id == OPENROUTER_PROVIDER_ID,
+        _ => false,
     }
 }
 

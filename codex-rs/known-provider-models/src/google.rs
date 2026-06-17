@@ -71,6 +71,5 @@ const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
         /*supports_reasoning*/ true,
-        /*supports_search_tool*/ false,
     )
 }
