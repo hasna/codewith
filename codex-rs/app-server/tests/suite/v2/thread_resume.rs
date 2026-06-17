@@ -31,6 +31,10 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadGoalClearResponse;
+use codex_app_server_protocol::ThreadGoalListResponse;
+use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
+use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
+use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -61,10 +65,13 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::PatchApplyEndEvent;
+use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
@@ -717,7 +724,37 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_resume_initial_turns_page_defaults_to_summary_items() -> Result<()> {
+    let resume = resume_redaction_fixture_with_items_view(None, None).await?;
+    let page_turn = resume
+        .initial_turns_page
+        .as_ref()
+        .expect("resume should include the requested initial turns page")
+        .data
+        .first()
+        .expect("initial turns page should include a turn");
+
+    assert_eq!(page_turn.items_view, TurnItemsView::Summary);
+    assert!(
+        page_turn.items.iter().all(|item| matches!(
+            item,
+            ThreadItem::UserMessage { .. } | ThreadItem::AgentMessage { .. }
+        )),
+        "default resume page should not include tool payloads or file diffs"
+    );
+
+    Ok(())
+}
+
 async fn resume_redaction_fixture(client_name: Option<&str>) -> Result<ThreadResumeResponse> {
+    resume_redaction_fixture_with_items_view(client_name, Some(TurnItemsView::Full)).await
+}
+
+async fn resume_redaction_fixture_with_items_view(
+    client_name: Option<&str>,
+    items_view: Option<TurnItemsView>,
+) -> Result<ThreadResumeResponse> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
@@ -760,7 +797,7 @@ async fn resume_redaction_fixture(client_name: Option<&str>) -> Result<ThreadRes
             initial_turns_page: Some(ThreadResumeInitialTurnsPageParams {
                 limit: None,
                 sort_direction: None,
-                items_view: Some(TurnItemsView::Full),
+                items_view,
             }),
             ..Default::default()
         })
@@ -808,6 +845,22 @@ fn append_resume_redaction_history(
             revised_prompt: Some("secret revised prompt".to_string()),
             result: "base64-image-result".to_string(),
             saved_path: Some(test_absolute_path("/tmp/ig-1.png")),
+        }),
+        EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+            call_id: "patch-1".to_string(),
+            turn_id: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            success: true,
+            changes: [(
+                PathBuf::from("src/lib.rs"),
+                FileChange::Add {
+                    content: "pub fn answer() -> i32 { 42 }\n".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            status: CorePatchApplyStatus::Completed,
         }),
     ]
     .into_iter()
@@ -1442,6 +1495,224 @@ async fn thread_goal_clear_deletes_goal_and_notifies() -> Result<()> {
     .await??;
     let clear_again: ThreadGoalClearResponse = to_response(clear_again_resp)?;
     assert!(!clear_again.cleared);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_goal_list_returns_goal_plans() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace("personality = true\n", "personality = true\ngoals = true\n"),
+    )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "materialize this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_id = ThreadId::from_string(&thread.id)?;
+    state_db
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_tokens: None,
+            nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
+                key: "investigate".to_string(),
+                objective: "Investigate app-server goal plans".to_string(),
+                priority: 5,
+                token_budget: None,
+                depends_on: Vec::new(),
+            }],
+        })
+        .await?;
+
+    let list_id = mcp
+        .send_raw_request(
+            "thread/goal/list",
+            Some(json!({
+                "threadId": thread.id,
+            })),
+        )
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list: ThreadGoalListResponse = to_response(list_resp)?;
+
+    assert_eq!(None, list.goal);
+    assert_eq!(None, list.next_cursor);
+    assert_eq!(1, list.goal_plans.len());
+    let node = &list.goal_plans[0].nodes[0];
+    assert_eq!("investigate", node.key);
+    assert_eq!("Investigate app-server goal plans", node.objective);
+    assert_eq!(ThreadGoalPlanNodeStatus::Pending, node.status);
+    assert_eq!(None, node.token_budget);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_goal_list_returns_active_goal_and_plan_projection() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace("personality = true\n", "personality = true\ngoals = true\n"),
+    )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "materialize this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_id = ThreadId::from_string(&thread.id)?;
+    let create_outcome = state_db
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
+            max_tokens: Some(250),
+            nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
+                key: "investigate".to_string(),
+                objective: "Investigate active app-server goal plans".to_string(),
+                priority: 7,
+                token_budget: Some(42),
+                depends_on: Vec::new(),
+            }],
+        })
+        .await?;
+    let activated_goal = create_outcome
+        .activated_goal
+        .expect("single ready node should activate a goal");
+
+    let list_id = mcp
+        .send_raw_request(
+            "thread/goal/list",
+            Some(json!({
+                "threadId": thread.id,
+            })),
+        )
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list: ThreadGoalListResponse = to_response(list_resp)?;
+
+    assert_eq!(None, list.next_cursor);
+    let goal = list.goal.expect("active goal");
+    assert_eq!(goal.thread_id, thread.id);
+    assert_eq!(goal.objective, "Investigate active app-server goal plans");
+    assert_eq!(goal.status, ThreadGoalStatus::Active);
+    assert_eq!(goal.token_budget, Some(42));
+    assert_eq!(goal.tokens_used, 0);
+    assert_eq!(goal.time_used_seconds, 0);
+
+    assert_eq!(1, list.goal_plans.len());
+    let plan = &list.goal_plans[0];
+    assert_eq!(plan.thread_id, thread.id);
+    assert_eq!(plan.status, ThreadGoalPlanStatus::Active);
+    assert_eq!(plan.auto_execute, ThreadGoalPlanAutoExecute::AiDirected);
+    assert_eq!(plan.max_tokens, Some(250));
+    assert_eq!(1, plan.nodes.len());
+
+    let node = &plan.nodes[0];
+    assert_eq!(node.key, "investigate");
+    assert_eq!(node.sequence, 0);
+    assert_eq!(node.priority, 7);
+    assert_eq!(node.objective, "Investigate active app-server goal plans");
+    assert_eq!(node.status, ThreadGoalPlanNodeStatus::Active);
+    assert_eq!(node.token_budget, Some(42));
+    assert_eq!(node.tokens_used, 0);
+    assert_eq!(node.time_used_seconds, 0);
+    assert_eq!(node.depends_on, Vec::<String>::new());
+    assert_eq!(
+        node.projected_goal_id.as_deref(),
+        Some(activated_goal.goal_id.as_str())
+    );
 
     Ok(())
 }

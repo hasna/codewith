@@ -518,11 +518,14 @@ pub(super) async fn finish_scheduled_run_after_turn(
     outgoing: &Arc<OutgoingMessageSender>,
 ) {
     let completed_at = Utc::now();
-    let error = match scheduled_turn_finish(event) {
-        Some(ScheduledTurnFinish::Complete) => turn_error
-            .map(|error| schedule_run_error(format!("scheduled turn failed: {}", error.message))),
-        Some(ScheduledTurnFinish::Failed(error)) => Some(error),
-        None => return,
+    let error = match (scheduled_turn_finish(event), turn_error) {
+        (Some(_), Some(error)) => Some(schedule_run_error(format!(
+            "scheduled turn failed: {}",
+            error.message
+        ))),
+        (Some(ScheduledTurnFinish::Complete), None) => None,
+        (Some(ScheduledTurnFinish::Failed(error)), None) => Some(error),
+        (None, _) => return,
     };
     match finish_scheduled_run_state(
         &scheduled_run.state_db,

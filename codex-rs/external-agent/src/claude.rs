@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitStatus;
@@ -51,6 +52,7 @@ const CLAUDE_SAFE_ENV_VARS: &[&str] = &[
     "XDG_STATE_HOME",
     "CLAUDE_CONFIG_DIR",
 ];
+const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 const CLAUDE_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CLAUDE_STDERR_MAX_BYTES: usize = 64 * 1024;
 
@@ -367,13 +369,7 @@ impl ClaudeCodeProcess {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
         command
-            .args([
-                "-p",
-                request.task.as_str(),
-                "--output-format",
-                "stream-json",
-                "--verbose",
-            ])
+            .args(claude_code_args(request.task.as_str()))
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
@@ -483,6 +479,9 @@ impl ClaudeCodeProcess {
     where
         H: ExternalAgentHost + Send + Sync,
     {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(line) {
+            validate_claude_system_event(&self.runtime, &value)?;
+        }
         for event in claude_stream_events(line) {
             match event {
                 ClaudeStreamEvent::Output(text) => {
@@ -545,9 +544,132 @@ impl ClaudeCodeProcess {
     }
 
     async fn shutdown(&mut self) {
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
+        let _ = codex_utils_pty::process_group::kill_child_process_group(&mut self.child);
+        let _ = self.child.kill().await;
     }
+}
+
+fn claude_code_args(task: &str) -> Vec<String> {
+    [
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+        "--mcp-config",
+        r#"{"mcpServers":{}}"#,
+        "--tools",
+        "Read,Glob,Grep",
+        "-p",
+        task,
+        "--permission-mode",
+        "plan",
+        "--allowedTools",
+        "Read,Glob,Grep",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    .into_iter()
+    .map(std::string::ToString::to_string)
+    .collect()
+}
+
+fn validate_claude_system_event(
+    runtime: &ExternalAgentRuntimeId,
+    value: &JsonValue,
+) -> Result<(), ExternalAgentError> {
+    if value.get("type").and_then(JsonValue::as_str) != Some("system")
+        || value.get("subtype").and_then(JsonValue::as_str) != Some("init")
+    {
+        return Ok(());
+    }
+    validate_claude_init(runtime, value)
+}
+
+fn validate_claude_init(
+    runtime: &ExternalAgentRuntimeId,
+    value: &JsonValue,
+) -> Result<(), ExternalAgentError> {
+    let tools = json_string_set(runtime, value, "tools")?;
+    let allowed_tools = CLAUDE_READ_ONLY_TOOLS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let unsafe_tools = tools
+        .iter()
+        .filter(|tool| !allowed_tools.contains(tool.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsafe_tools.is_empty() {
+        return Err(protocol_error(
+            runtime,
+            format!(
+                "Claude Code exposed unsafe tools for an external-agent run: {}",
+                unsafe_tools.join(", ")
+            ),
+        ));
+    }
+
+    let mcp_servers = value
+        .get("mcp_servers")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| protocol_error(runtime, "Claude Code init did not report MCP servers"))?;
+    if !mcp_servers.is_empty() {
+        return Err(protocol_error(
+            runtime,
+            "Claude Code exposed MCP servers for an external-agent run",
+        ));
+    }
+
+    if let Some(permission_mode) = value.get("permissionMode").and_then(JsonValue::as_str)
+        && permission_mode != "plan"
+        && permission_mode != "bypassPermissions"
+    {
+        return Err(protocol_error(
+            runtime,
+            format!("Claude Code reported unsupported permission mode `{permission_mode}`"),
+        ));
+    }
+
+    for field in ["slash_commands", "skills"] {
+        let values = value
+            .get(field)
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                protocol_error(runtime, format!("Claude Code init did not report {field}"))
+            })?;
+        if !values.is_empty() {
+            return Err(protocol_error(
+                runtime,
+                format!("Claude Code exposed {field} for an external-agent run"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn json_string_set(
+    runtime: &ExternalAgentRuntimeId,
+    value: &JsonValue,
+    field: &str,
+) -> Result<BTreeSet<String>, ExternalAgentError> {
+    let values = value
+        .get(field)
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            protocol_error(runtime, format!("Claude Code init did not report {field}"))
+        })?;
+    let mut strings = BTreeSet::new();
+    for value in values {
+        let Some(value) = value.as_str() else {
+            return Err(protocol_error(
+                runtime,
+                format!("Claude Code init field `{field}` included a non-string value"),
+            ));
+        };
+        strings.insert(value.to_string());
+    }
+    Ok(strings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -676,6 +798,92 @@ mod tests {
         assert_eq!(
             events,
             vec![ClaudeStreamEvent::Summary("finished".to_string())]
+        );
+    }
+
+    #[test]
+    fn claude_code_args_force_safe_plan_streaming_mode() {
+        assert_eq!(
+            claude_code_args("inspect this repo"),
+            vec![
+                "--safe-mode",
+                "--disable-slash-commands",
+                "--strict-mcp-config",
+                "--mcp-config",
+                r#"{"mcpServers":{}}"#,
+                "--tools",
+                "Read,Glob,Grep",
+                "-p",
+                "inspect this repo",
+                "--permission-mode",
+                "plan",
+                "--allowedTools",
+                "Read,Glob,Grep",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ]
+        );
+    }
+
+    #[test]
+    fn validates_claude_init_read_only_surface() {
+        validate_claude_init(
+            &ExternalAgentRuntimeId::from("claude"),
+            &serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "tools": ["Glob", "Grep", "Read"],
+                "mcp_servers": [],
+                "permissionMode": "bypassPermissions",
+                "slash_commands": [],
+                "skills": [],
+            }),
+        )
+        .expect("read-only init surface is acceptable");
+    }
+
+    #[test]
+    fn rejects_claude_init_with_write_or_shell_tools() {
+        let err = validate_claude_init(
+            &ExternalAgentRuntimeId::from("claude"),
+            &serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "tools": ["Read", "Bash", "Edit"],
+                "mcp_servers": [],
+                "permissionMode": "bypassPermissions",
+                "slash_commands": [],
+                "skills": [],
+            }),
+        )
+        .expect_err("unsafe init surface should be rejected");
+
+        assert_eq!(
+            err.to_string(),
+            "external agent runtime `claude` protocol error: Claude Code exposed unsafe tools for an external-agent run: Bash, Edit"
+        );
+    }
+
+    #[test]
+    fn rejects_claude_init_with_mcp_servers() {
+        let err = validate_claude_init(
+            &ExternalAgentRuntimeId::from("claude"),
+            &serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "tools": ["Read"],
+                "mcp_servers": [{"name": "github", "status": "ready"}],
+                "permissionMode": "plan",
+                "slash_commands": [],
+                "skills": [],
+            }),
+        )
+        .expect_err("MCP exposure should be rejected");
+
+        assert_eq!(
+            err.to_string(),
+            "external agent runtime `claude` protocol error: Claude Code exposed MCP servers for an external-agent run"
         );
     }
 

@@ -146,6 +146,7 @@ Example with notification opt-out:
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
@@ -197,8 +198,9 @@ Example with notification opt-out:
 - `fs/watch` — subscribe this connection to filesystem change notifications for an absolute file or directory path and caller-provided `watchId`; returns the canonicalized `path`.
 - `fs/unwatch` — stop sending notifications for a prior `fs/watch`; returns `{}`.
 - `fs/changed` — notification emitted when watched paths change, including the `watchId` and `changedPaths`.
-- `model/list` — list available models (set `includeHidden: true` to include entries with `hidden: true`; set `modelProvider` to a configured provider id to browse that provider without changing the active thread), with reasoning effort options, `additionalSpeedTiers`, `serviceTiers`, optional `defaultServiceTier`, optional legacy `upgrade` model ids, optional `upgradeInfo` metadata (`model`, `upgradeCopy`, `modelLink`, `migrationMarkdown`), and optional `availabilityNux` metadata.
-- `modelProvider/list` — list configured model providers as safe summaries for provider pickers. The response includes provider id, display name, auth kind, whether OpenAI auth is required, and which provider is current; it does not return API keys, bearer tokens, auth commands, URLs, or headers.
+- `model/list` — list available models (set `includeHidden: true` to include entries with `hidden: true`; set `modelProvider` to a configured provider id to browse that provider without changing the active thread; set `modelGateway` to scope through a gateway such as `hasna` or `openrouter`; set `upstreamProvider` to filter aggregator slugs such as OpenRouter models), with route metadata, reasoning effort options, `additionalSpeedTiers`, `serviceTiers`, optional `defaultServiceTier`, optional legacy `upgrade` model ids, optional `upgradeInfo` metadata (`model`, `upgradeCopy`, `modelLink`, `migrationMarkdown`), and optional `availabilityNux` metadata.
+- `modelGateway/list` — list model gateways. `hasna` is the default direct gateway over configured providers; `openrouter` is the built-in aggregator gateway for OpenRouter-backed model routes.
+- `modelProvider/list` — list configured model providers as safe summaries for provider pickers. The response includes provider id, gateway metadata, display name, auth kind, whether OpenAI auth is required, and which provider is current; it does not return API keys, bearer tokens, auth commands, URLs, or headers.
 - `modelProvider/capabilities/read` — read provider-level capabilities for the currently configured model provider.
 - `experimentalFeature/list` — list feature flags with stage metadata (`beta`, `underDevelopment`, `stable`, etc.), enabled/default-enabled state, and cursor pagination. Pass `threadId` when showing feature state for an existing loaded thread so `enabled` is computed from that thread's refreshed config, including project-local config for the thread's cwd; if omitted, the server uses its default config resolution context. For non-beta flags, `displayName`/`description`/`announcement` are `null`.
 - `permissionProfile/list` — beta; list available permission profile ids with optional display `description` text, using cursor pagination. Pass `cwd` when the caller needs project-local `[permissions.<id>]` entries to be included in the current catalog view.
@@ -239,16 +241,24 @@ Example with notification opt-out:
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk, with optional `reloadUserConfig: true` to hot-reload loaded threads, including multiple `desktop.*` edits.
 - `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`, `allowedPermissions`), lifecycle hook lockdown (`allowManagedHooksOnly`), computer use policy (`computerUse`), pinned feature values (`featureRequirements`), managed lifecycle hooks (`hooks`), `enforceResidency`, and `network` constraints such as canonical domain/socket permissions plus `managedAllowedDomainsOnly` and `dangerFullAccessDenylistOnly`.
 
-### Example: List model providers and provider-scoped models
+### Example: List gateways, providers, and provider-scoped models
 
-Use `modelProvider/list` to build a provider picker without exposing secrets or low-level provider configuration. Provider summaries are sorted with the current provider first.
+Use `modelGateway/list` and `modelProvider/list` to build a gateway/provider picker without exposing secrets or low-level provider configuration. Provider summaries are sorted with the current provider first. Omit `modelGateway` for the provider-native view, pass `"hasna"` for the default direct gateway view, or pass `"openrouter"` for the OpenRouter gateway view.
 
 ```json
+{ "method": "modelGateway/list", "id": 29, "params": {} }
+{ "id": 29, "result": {
+    "data": [
+        { "id": "hasna", "name": "Hasna", "kind": "direct", "isCurrent": true },
+        { "id": "openrouter", "name": "OpenRouter", "kind": "aggregator", "isCurrent": false }
+    ]
+} }
+
 { "method": "modelProvider/list", "id": 30, "params": {} }
 { "id": 30, "result": {
     "data": [
-        { "id": "openai", "name": "OpenAI", "authKind": "openAi", "requiresOpenaiAuth": true, "isCurrent": true },
-        { "id": "openrouter", "name": "OpenRouter", "authKind": "environment", "requiresOpenaiAuth": false, "isCurrent": false }
+        { "id": "openai", "name": "OpenAI", "modelGateway": "hasna", "modelGatewayName": "Hasna", "modelGatewayKind": "direct", "authKind": "openAi", "requiresOpenaiAuth": true, "isCurrent": true },
+        { "id": "openrouter", "name": "OpenRouter", "modelGateway": "openrouter", "modelGatewayName": "OpenRouter", "modelGatewayKind": "aggregator", "authKind": "environment", "requiresOpenaiAuth": false, "isCurrent": false }
     ]
 } }
 ```
@@ -258,6 +268,7 @@ Pass a provider id to `model/list` when the client wants to browse or switch def
 ```json
 { "method": "model/list", "id": 31, "params": {
     "modelProvider": "openrouter",
+    "modelGateway": "openrouter",
     "includeHidden": true
 } }
 { "id": 31, "result": {
@@ -265,6 +276,11 @@ Pass a provider id to `model/list` when the client wants to browse or switch def
         {
             "id": "openrouter/auto",
             "model": "openrouter/auto",
+            "modelProvider": "openrouter",
+            "modelGateway": "openrouter",
+            "modelGatewayName": "OpenRouter",
+            "modelGatewayKind": "aggregator",
+            "upstreamProvider": "openrouter",
             "upgrade": null,
             "upgradeInfo": null,
             "availabilityNux": null,
@@ -338,7 +354,7 @@ To continue a stored session, call `thread/resume` with the `thread.id` you prev
 
 By default, `thread/resume` includes the reconstructed turn history in `thread.turns`. Experimental clients can pass `excludeTurns: true` to return only thread metadata and live resume state, then call `thread/turns/list` separately if they want to page the turn history over the network. In that mode the server also skips replaying restored `thread/tokenUsage/updated`, which avoids rebuilding turns just to attribute historical usage.
 
-Experimental clients that want the live resume subscription plus a turns page in one round trip can pass `initialTurnsPage`. It accepts the same `limit`, `sortDirection`, and `itemsView` controls as `thread/turns/list`; omitted controls use its defaults. The response includes `initialTurnsPage` with `nextCursor` and `backwardsCursor` for follow-up pagination.
+Experimental clients that want the live resume subscription plus a turns page in one round trip can pass `initialTurnsPage`. It accepts the same `limit`, `sortDirection`, and `itemsView` controls as `thread/turns/list`; omitted `itemsView` defaults to `summary`. Pass `itemsView: "full"` explicitly when the bootstrap page needs code changes and tool calls. The response includes `initialTurnsPage` with `nextCursor` and `backwardsCursor` for follow-up pagination.
 
 By default, resume uses the latest persisted `model` and `reasoningEffort` values associated with the thread. Supplying any of `model`, `modelProvider`, `config.model`, or `config.model_reasoning_effort` disables that persisted fallback and uses the explicit overrides plus normal config resolution instead.
 
@@ -683,11 +699,47 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. In plan nodes, `tokenBudget: null` means the node is unlimited.
+
+```json
+{ "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
+{ "id": 30, "result": {
+    "goal": null,
+    "goalPlans": [{
+        "planId": "plan_123",
+        "threadId": "thr_123",
+        "status": "active",
+        "autoExecute": "aiDirected",
+        "maxTokens": null,
+        "createdAt": 1776272400,
+        "updatedAt": 1776272400,
+        "nodes": [{
+            "nodeId": "node_123",
+            "planId": "plan_123",
+            "threadId": "thr_123",
+            "key": "implement",
+            "sequence": 0,
+            "priority": 10,
+            "objective": "Implement the planned goal chain",
+            "status": "pending",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "projectedGoalId": null,
+            "dependsOn": [],
+            "createdAt": 1776272400,
+            "updatedAt": 1776272400
+        }]
+    }],
+    "nextCursor": null
+} }
+```
+
 Use `thread/goal/clear` to remove the current goal.
 
 ```json
-{ "method": "thread/goal/clear", "id": 30, "params": { "threadId": "thr_123" } }
-{ "id": 30, "result": { "cleared": true } }
+{ "method": "thread/goal/clear", "id": 31, "params": { "threadId": "thr_123" } }
+{ "id": 31, "result": { "cleared": true } }
 { "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
 ```
 
@@ -1952,7 +2004,7 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `account/login/cancel` — cancel a pending managed ChatGPT login by `loginId`.
 - `account/logout` — sign out; triggers `account/updated`.
 - `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
-- `account/rateLimits/read` — fetch ChatGPT rate limits; updates arrive via `account/rateLimits/updated` (notify).
+- `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, success, error? }`.
@@ -2047,12 +2099,15 @@ Field notes:
 
 ```json
 { "method": "account/rateLimits/read", "id": 7 }
+{ "method": "account/rateLimits/read", "id": 8, "params": { "authProfile": "work" } }
+{ "method": "account/rateLimits/read", "id": 9, "params": { "authProfile": null } }
 { "id": 7, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 
 Field notes:
 
+- `authProfile` may be omitted to use the app-server's selected auth profile, set to a profile name, or set to `null` for root auth.
 - `usedPercent` is current usage within the OpenAI quota window.
 - `windowDurationMins` is the quota window length.
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.

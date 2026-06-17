@@ -15,6 +15,8 @@ use codex_external_agent::ExternalAgentMode;
 use codex_external_agent::ExternalAgentPermissionDecision;
 use codex_external_agent::ExternalAgentPermissionOption;
 use codex_external_agent::ExternalAgentPermissionRequest;
+use codex_external_agent::ExternalAgentReadiness;
+use codex_external_agent::ExternalAgentReadinessStatus;
 use codex_external_agent::ExternalAgentRequest;
 use codex_external_agent::ExternalAgentRuntimeId;
 use codex_external_agent::ExternalAgentSandboxConfig;
@@ -23,12 +25,20 @@ use codex_external_agent::cursor_acp_harness;
 use codex_external_agent::grok_build_acp_harness;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
 
 impl ThreadRequestProcessor {
     pub(crate) async fn thread_external_agent_start(
@@ -36,20 +46,37 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadExternalAgentStartParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let run = self.thread_external_agent_start_inner(params).await?;
-        self.outgoing
-            .send_response(request_id, run.response.clone())
-            .await;
-        self.background_tasks.spawn(async move {
-            run.execute().await;
-        });
+        match self.thread_external_agent_start_inner(params).await? {
+            ExternalAgentStartOutcome::Started(run) => {
+                let run = *run;
+                self.outgoing
+                    .send_response(request_id, run.response.clone())
+                    .await;
+                self.background_tasks.spawn(async move {
+                    run.execute().await;
+                });
+            }
+            ExternalAgentStartOutcome::Gated(response) => {
+                self.outgoing.send_response(request_id, response).await;
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) async fn thread_external_agent_cancel(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadExternalAgentCancelParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let response = self.thread_external_agent_cancel_inner(params).await?;
+        self.outgoing.send_response(request_id, response).await;
         Ok(None)
     }
 
     async fn thread_external_agent_start_inner(
         &self,
         params: ThreadExternalAgentStartParams,
-    ) -> Result<ExternalAgentRun, JSONRPCErrorError> {
+    ) -> Result<ExternalAgentStartOutcome, JSONRPCErrorError> {
         let ThreadExternalAgentStartParams {
             thread_id,
             runtime_id,
@@ -59,27 +86,30 @@ impl ThreadRequestProcessor {
         let runtime_id = runtime_id.trim();
         let task = task.trim();
         if runtime_id.is_empty() {
-            return Err(invalid_request("runtimeId must not be empty"));
+            return Ok(ExternalAgentStartOutcome::gated(
+                "runtimeId must not be empty",
+            ));
         }
         if runtime_id == "grok" {
-            return Err(invalid_request(
+            return Ok(ExternalAgentStartOutcome::gated(
                 "use runtimeId `grok-build` for Grok Build external-agent runs",
             ));
         }
         if !matches!(runtime_id, "cursor" | "grok-build" | "claude") {
-            return Err(invalid_request(format!(
+            return Ok(ExternalAgentStartOutcome::gated(format!(
                 "unsupported external-agent runtime `{runtime_id}`"
             )));
         }
         if task.is_empty() {
-            return Err(invalid_request("task must not be empty"));
+            return Ok(ExternalAgentStartOutcome::gated("task must not be empty"));
         }
-        validate_external_agent_subscription_profile(
+        if let Err(message) = validate_external_agent_subscription_profile(
             &self.config.codex_home,
             self.config.selected_auth_profile.as_deref(),
             runtime_id,
-        )
-        .map_err(invalid_request)?;
+        ) {
+            return Ok(ExternalAgentStartOutcome::gated(message));
+        }
         match mode {
             ThreadExternalAgentMode::Plan | ThreadExternalAgentMode::Propose => {}
         }
@@ -96,7 +126,22 @@ impl ThreadRequestProcessor {
         let runner = runner_for_runtime(runtime_id).ok_or_else(|| {
             invalid_request(format!("unsupported external-agent runtime `{runtime_id}`"))
         })?;
-        let permission_profile = external_agent_permission_profile();
+        let source_env = external_agent_source_env(
+            &self.config.permissions.shell_environment_policy,
+            runtime_id,
+        );
+        let readiness = runner.readiness_with_env(&source_env).await;
+        if readiness.status != ExternalAgentReadinessStatus::Ready {
+            return Ok(ExternalAgentStartOutcome::gated(readiness_gate_message(
+                readiness,
+            )));
+        }
+        let permission_profile = external_agent_permission_profile(
+            &self.config.cwd,
+            &self.config.workspace_roots,
+            runtime_id,
+            &source_env,
+        );
         let sandbox_config = ExternalAgentSandboxConfig {
             use_legacy_landlock: external_agent_use_legacy_landlock(
                 &permission_profile,
@@ -110,37 +155,202 @@ impl ThreadRequestProcessor {
                 .permissions
                 .windows_sandbox_private_desktop,
         };
-        let source_env = external_agent_source_env(
-            &self.config.permissions.shell_environment_policy,
-            runtime_id,
-        );
         let response = ThreadExternalAgentStartResponse {
             status: ThreadExternalAgentStartStatus::Started,
             run_id: Some(run_id),
             message: "external-agent run started".to_string(),
         };
+        let run_id = response.run_id.clone().unwrap_or_default();
+        let thread_id_string = thread_id.to_string();
+        let run_key = external_agent_run_key(&thread_id_string, &run_id);
+        let cancellation_token = CancellationToken::new();
+        self.external_agent_runs
+            .lock()
+            .await
+            .insert(run_key.clone(), cancellation_token.clone());
 
-        Ok(ExternalAgentRun {
-            runtime_id: runtime_id.to_string(),
-            mode,
-            task: runtime_request.task.clone(),
-            request: runtime_request,
-            runner,
-            sandbox_config,
-            source_env,
-            host: AppServerExternalAgentHost::new(
-                self.outgoing.clone(),
-                thread_id.to_string(),
-                response.run_id.clone().unwrap_or_default(),
-            ),
-            response,
+        Ok(ExternalAgentStartOutcome::Started(Box::new(
+            ExternalAgentRun {
+                runtime_id: runtime_id.to_string(),
+                mode,
+                task: runtime_request.task.clone(),
+                request: runtime_request,
+                runner,
+                sandbox_config,
+                source_env,
+                host: AppServerExternalAgentHost::new(
+                    self.outgoing.clone(),
+                    thread_id_string,
+                    run_id,
+                    cancellation_token,
+                ),
+                run_registry: self.external_agent_runs.clone(),
+                run_key,
+                response,
+            },
+        )))
+    }
+
+    async fn thread_external_agent_cancel_inner(
+        &self,
+        params: ThreadExternalAgentCancelParams,
+    ) -> Result<ThreadExternalAgentCancelResponse, JSONRPCErrorError> {
+        let ThreadExternalAgentCancelParams { thread_id, run_id } = params;
+        let run_id = run_id.trim();
+        if run_id.is_empty() {
+            return Ok(ThreadExternalAgentCancelResponse {
+                cancelled: false,
+                message: "runId must not be empty".to_string(),
+            });
+        }
+        let (thread_id, _) = self.load_thread(&thread_id).await?;
+        let run_key = external_agent_run_key(&thread_id.to_string(), run_id);
+        let token = self.external_agent_runs.lock().await.get(&run_key).cloned();
+        match token {
+            Some(token) => {
+                token.cancel();
+                Ok(ThreadExternalAgentCancelResponse {
+                    cancelled: true,
+                    message: "external-agent run cancellation requested".to_string(),
+                })
+            }
+            None => Ok(ThreadExternalAgentCancelResponse {
+                cancelled: false,
+                message: format!("external-agent run `{run_id}` is not active"),
+            }),
+        }
+    }
+}
+
+enum ExternalAgentStartOutcome {
+    Started(Box<ExternalAgentRun>),
+    Gated(ThreadExternalAgentStartResponse),
+}
+
+impl ExternalAgentStartOutcome {
+    fn gated(message: impl Into<String>) -> Self {
+        Self::Gated(ThreadExternalAgentStartResponse {
+            status: ThreadExternalAgentStartStatus::Gated,
+            run_id: None,
+            message: message.into(),
         })
     }
 }
 
-fn external_agent_permission_profile() -> PermissionProfile {
-    let (file_system, _) = PermissionProfile::read_only().to_runtime_permissions();
+fn external_agent_permission_profile(
+    cwd: &AbsolutePathBuf,
+    workspace_roots: &[AbsolutePathBuf],
+    runtime_id: &str,
+    source_env: &BTreeMap<String, String>,
+) -> PermissionProfile {
+    let readable_roots =
+        external_agent_readable_roots(cwd, workspace_roots, runtime_id, source_env);
+    let file_system = FileSystemSandboxPolicy::restricted(
+        readable_roots
+            .into_iter()
+            .map(|path| FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path },
+                access: FileSystemAccessMode::Read,
+            })
+            .collect(),
+    );
     PermissionProfile::from_runtime_permissions(&file_system, NetworkSandboxPolicy::Enabled)
+}
+
+fn external_agent_readable_roots(
+    cwd: &AbsolutePathBuf,
+    workspace_roots: &[AbsolutePathBuf],
+    runtime_id: &str,
+    source_env: &BTreeMap<String, String>,
+) -> Vec<AbsolutePathBuf> {
+    let mut roots = Vec::new();
+    if workspace_roots.is_empty() {
+        push_readable_root(&mut roots, cwd.as_path());
+    } else {
+        for root in workspace_roots {
+            push_readable_root(&mut roots, root.as_path());
+        }
+    }
+    add_runtime_config_read_roots(&mut roots, runtime_id, source_env);
+    roots
+}
+
+fn add_runtime_config_read_roots(
+    roots: &mut Vec<AbsolutePathBuf>,
+    runtime_id: &str,
+    source_env: &BTreeMap<String, String>,
+) {
+    match runtime_id {
+        ExternalAgentRuntimeId::CLAUDE => {
+            if let Some(path) = source_env.get("CLAUDE_CONFIG_DIR") {
+                push_readable_root(roots, Path::new(path));
+            }
+            push_home_child_read_root(roots, source_env, ".claude");
+            push_xdg_child_read_root(roots, source_env, "XDG_CONFIG_HOME", "claude");
+            push_xdg_child_read_root(roots, source_env, "XDG_STATE_HOME", "claude");
+            push_xdg_child_read_root(roots, source_env, "XDG_DATA_HOME", "claude");
+            push_xdg_child_read_root(roots, source_env, "XDG_CACHE_HOME", "claude");
+            push_xdg_child_read_root(roots, source_env, "APPDATA", "Claude");
+            push_xdg_child_read_root(roots, source_env, "LOCALAPPDATA", "Claude");
+        }
+        ExternalAgentRuntimeId::GROK_BUILD => {
+            push_home_child_read_root(roots, source_env, ".grok");
+            push_xdg_child_read_root(roots, source_env, "XDG_CONFIG_HOME", "grok");
+            push_xdg_child_read_root(roots, source_env, "XDG_STATE_HOME", "grok");
+            push_xdg_child_read_root(roots, source_env, "XDG_DATA_HOME", "grok");
+            push_xdg_child_read_root(roots, source_env, "XDG_CACHE_HOME", "grok");
+        }
+        ExternalAgentRuntimeId::CURSOR => {
+            push_home_child_read_root(roots, source_env, ".cursor");
+            push_home_child_read_root(roots, source_env, ".cursor-agent");
+            push_xdg_child_read_root(roots, source_env, "XDG_CONFIG_HOME", "cursor");
+            push_xdg_child_read_root(roots, source_env, "XDG_STATE_HOME", "cursor");
+            push_xdg_child_read_root(roots, source_env, "XDG_DATA_HOME", "cursor");
+            push_xdg_child_read_root(roots, source_env, "XDG_CACHE_HOME", "cursor");
+        }
+        _ => {}
+    }
+}
+
+fn push_home_child_read_root(
+    roots: &mut Vec<AbsolutePathBuf>,
+    source_env: &BTreeMap<String, String>,
+    child: &str,
+) {
+    if let Some(home) = source_env
+        .get("HOME")
+        .or_else(|| source_env.get("USERPROFILE"))
+    {
+        push_readable_root(roots, PathBuf::from(home).join(child));
+    }
+}
+
+fn push_xdg_child_read_root(
+    roots: &mut Vec<AbsolutePathBuf>,
+    source_env: &BTreeMap<String, String>,
+    env_name: &str,
+    child: &str,
+) {
+    if let Some(root) = source_env.get(env_name) {
+        push_readable_root(roots, PathBuf::from(root).join(child));
+    }
+}
+
+fn push_readable_root(roots: &mut Vec<AbsolutePathBuf>, path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return;
+    }
+    let Ok(path) = AbsolutePathBuf::from_absolute_path(path) else {
+        return;
+    };
+    if !roots.iter().any(|existing| existing == &path) {
+        roots.push(path);
+    }
+}
+
+fn external_agent_run_key(thread_id: &str, run_id: &str) -> String {
+    format!("{thread_id}:{run_id}")
 }
 
 fn external_agent_use_legacy_landlock(permission_profile: &PermissionProfile, cwd: &Path) -> bool {
@@ -150,6 +360,17 @@ fn external_agent_use_legacy_landlock(permission_profile: &PermissionProfile, cw
     let (file_system, network) = permission_profile.to_runtime_permissions();
     !file_system.needs_direct_runtime_enforcement(network, cwd)
 }
+
+const COMMON_STABLE_CONFIG_ENV_VARS: &[&str] = &[
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+];
 
 const CLAUDE_STABLE_CONFIG_ENV_VARS: &[&str] = &[
     "HOME",
@@ -181,11 +402,15 @@ fn add_provider_stable_config_env<I>(
 ) where
     I: IntoIterator<Item = (String, String)>,
 {
-    if runtime_id != ExternalAgentRuntimeId::CLAUDE {
-        return;
-    }
+    let names = match runtime_id {
+        ExternalAgentRuntimeId::CLAUDE => CLAUDE_STABLE_CONFIG_ENV_VARS,
+        ExternalAgentRuntimeId::CURSOR | ExternalAgentRuntimeId::GROK_BUILD => {
+            COMMON_STABLE_CONFIG_ENV_VARS
+        }
+        _ => return,
+    };
     let process_env = process_env.into_iter().collect::<BTreeMap<_, _>>();
-    for name in CLAUDE_STABLE_CONFIG_ENV_VARS {
+    for name in names {
         if !source_env.contains_key(*name)
             && let Some(value) = process_env.get(*name)
         {
@@ -251,6 +476,8 @@ struct ExternalAgentRun {
     sandbox_config: ExternalAgentSandboxConfig,
     source_env: BTreeMap<String, String>,
     host: AppServerExternalAgentHost,
+    run_registry: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    run_key: String,
     response: ThreadExternalAgentStartResponse,
 }
 
@@ -283,6 +510,7 @@ impl ExternalAgentRun {
                 })
                 .await;
         }
+        self.run_registry.lock().await.remove(&self.run_key);
     }
 }
 
@@ -292,6 +520,16 @@ enum ExternalAgentRunner {
 }
 
 impl ExternalAgentRunner {
+    async fn readiness_with_env(
+        &self,
+        source_env: &BTreeMap<String, String>,
+    ) -> ExternalAgentReadiness {
+        match self {
+            Self::Acp(harness) => harness.readiness_with_env(source_env).await,
+            Self::Claude(harness) => harness.readiness_with_env(source_env).await,
+        }
+    }
+
     async fn run_sandboxed_with_env(
         &self,
         request: ExternalAgentRequest,
@@ -314,21 +552,50 @@ impl ExternalAgentRunner {
     }
 }
 
+fn readiness_gate_message(readiness: ExternalAgentReadiness) -> String {
+    let status = match readiness.status {
+        ExternalAgentReadinessStatus::Ready => "ready",
+        ExternalAgentReadinessStatus::MissingRuntime => "missing runtime",
+        ExternalAgentReadinessStatus::MissingAuth => "missing auth",
+        ExternalAgentReadinessStatus::Unsupported => "unsupported",
+        ExternalAgentReadinessStatus::Disabled => "disabled",
+    };
+    match readiness.detail {
+        Some(detail) if !detail.trim().is_empty() => {
+            format!(
+                "{} external-agent runtime is gated: {status}. {detail}",
+                readiness.display_name
+            )
+        }
+        _ => format!(
+            "{} external-agent runtime is gated: {status}",
+            readiness.display_name
+        ),
+    }
+}
+
 #[derive(Clone)]
 struct AppServerExternalAgentHost {
     outgoing: Arc<OutgoingMessageSender>,
     thread_id: String,
     run_id: String,
     terminal_sent: Arc<AtomicBool>,
+    cancellation_token: CancellationToken,
 }
 
 impl AppServerExternalAgentHost {
-    fn new(outgoing: Arc<OutgoingMessageSender>, thread_id: String, run_id: String) -> Self {
+    fn new(
+        outgoing: Arc<OutgoingMessageSender>,
+        thread_id: String,
+        run_id: String,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         Self {
             outgoing,
             thread_id,
             run_id,
             terminal_sent: Arc::new(AtomicBool::new(false)),
+            cancellation_token,
         }
     }
 
@@ -384,7 +651,7 @@ impl ExternalAgentHost for AppServerExternalAgentHost {
     }
 
     async fn is_cancelled(&self) -> bool {
-        false
+        self.cancellation_token.is_cancelled()
     }
 }
 
@@ -479,13 +746,52 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn external_agent_permission_profile_is_read_only_with_network() {
-        let profile = external_agent_permission_profile();
-        let (file_system, network) = profile.to_runtime_permissions();
-        let (read_only_file_system, _) = PermissionProfile::read_only().to_runtime_permissions();
+    fn external_agent_permission_profile_scopes_read_roots_with_network() {
+        let cwd = tempfile::TempDir::new().expect("cwd tempdir");
+        let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+        let home = tempfile::TempDir::new().expect("home tempdir");
+        let cwd = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
+        let workspace =
+            AbsolutePathBuf::from_absolute_path(workspace.path()).expect("absolute workspace");
+        let claude_config = home.path().join(".claude");
+        let source_env = BTreeMap::from([
+            ("HOME".to_string(), home.path().display().to_string()),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                claude_config.display().to_string(),
+            ),
+        ]);
 
-        assert_eq!(file_system, read_only_file_system);
+        let profile = external_agent_permission_profile(
+            &cwd,
+            std::slice::from_ref(&workspace),
+            ExternalAgentRuntimeId::CLAUDE,
+            &source_env,
+        );
+        let (file_system, network) = profile.to_runtime_permissions();
+        let read_paths = file_system
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.path {
+                FileSystemPath::Path { path } if entry.access == FileSystemAccessMode::Read => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
         assert_eq!(network, NetworkSandboxPolicy::Enabled);
+        assert!(
+            !file_system
+                .entries
+                .iter()
+                .any(|entry| matches!(entry.path, FileSystemPath::Special { .. })),
+            "external-agent profile must not grant special root reads"
+        );
+        assert!(read_paths.contains(&workspace));
+        assert!(read_paths.contains(
+            &AbsolutePathBuf::from_absolute_path(claude_config).expect("absolute claude config")
+        ));
     }
 
     #[test]
@@ -592,6 +898,7 @@ mod tests {
             "claude-work",
             codex_login::AuthProfileMetadata {
                 subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+                last_permissions: None,
             },
         )
         .expect("save claude profile");
@@ -600,6 +907,7 @@ mod tests {
             "cursor-work",
             codex_login::AuthProfileMetadata {
                 subscription_provider: AuthProfileSubscriptionProvider::Cursor,
+                last_permissions: None,
             },
         )
         .expect("save cursor profile");
@@ -608,6 +916,7 @@ mod tests {
             "grok-work",
             codex_login::AuthProfileMetadata {
                 subscription_provider: AuthProfileSubscriptionProvider::Grok,
+                last_permissions: None,
             },
         )
         .expect("save grok profile");
@@ -616,6 +925,7 @@ mod tests {
             "chatgpt-work",
             codex_login::AuthProfileMetadata {
                 subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+                last_permissions: None,
             },
         )
         .expect("save chatgpt profile");

@@ -1142,6 +1142,9 @@ impl MessageProcessor {
             ClientRequest::ThreadGoalGet { params, .. } => {
                 self.thread_goal_processor.thread_goal_get(params).await
             }
+            ClientRequest::ThreadGoalList { params, .. } => {
+                self.thread_goal_processor.thread_goal_list(params).await
+            }
             ClientRequest::ThreadGoalClear { params, .. } => {
                 self.thread_goal_processor
                     .thread_goal_clear(request_id.clone(), params)
@@ -1322,6 +1325,11 @@ impl MessageProcessor {
                     .thread_external_agent_start(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadExternalAgentCancel { params, .. } => {
+                self.thread_processor
+                    .thread_external_agent_cancel(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {
                 self.thread_processor
                     .thread_approve_guardian_denied_action(&request_id, params)
@@ -1391,6 +1399,9 @@ impl MessageProcessor {
             }
             ClientRequest::ModelList { params, .. } => {
                 self.catalog_processor.model_list(params).await
+            }
+            ClientRequest::ModelGatewayList { params, .. } => {
+                self.catalog_processor.model_gateway_list(params).await
             }
             ClientRequest::ModelProviderList { params, .. } => {
                 self.catalog_processor.model_provider_list(params).await
@@ -1503,8 +1514,8 @@ impl MessageProcessor {
             ClientRequest::GetAuthStatus { params, .. } => {
                 self.account_processor.get_auth_status(params).await
             }
-            ClientRequest::GetAccountRateLimits { .. } => {
-                self.account_processor.get_account_rate_limits().await
+            ClientRequest::GetAccountRateLimits { params, .. } => {
+                self.account_processor.get_account_rate_limits(params).await
             }
             ClientRequest::GetAccountTokenUsage { .. } => {
                 self.account_processor.get_account_token_usage().await

@@ -126,8 +126,9 @@ impl AccountRequestProcessor {
 
     pub(crate) async fn get_account_rate_limits(
         &self,
+        params: GetAccountRateLimitsParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_rate_limits_response()
+        self.get_account_rate_limits_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -848,20 +849,38 @@ impl AccountRequestProcessor {
 
     async fn get_account_rate_limits_response(
         &self,
+        params: GetAccountRateLimitsParams,
     ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
-        self.fetch_account_rate_limits()
-            .await
-            .map(
-                |(rate_limits, rate_limits_by_limit_id)| GetAccountRateLimitsResponse {
-                    rate_limits: rate_limits.into(),
-                    rate_limits_by_limit_id: Some(
-                        rate_limits_by_limit_id
-                            .into_iter()
-                            .map(|(limit_id, snapshot)| (limit_id, snapshot.into()))
-                            .collect(),
-                    ),
-                },
-            )
+        self.fetch_account_rate_limits(params).await.map(
+            |(rate_limits, rate_limits_by_limit_id)| GetAccountRateLimitsResponse {
+                rate_limits: rate_limits.into(),
+                rate_limits_by_limit_id: Some(
+                    rate_limits_by_limit_id
+                        .into_iter()
+                        .map(|(limit_id, snapshot)| (limit_id, snapshot.into()))
+                        .collect(),
+                ),
+            },
+        )
+    }
+
+    async fn auth_manager_for_rate_limits(
+        &self,
+        params: GetAccountRateLimitsParams,
+    ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
+        let Some(auth_profile) = params.auth_profile else {
+            return Ok(self.auth_manager.clone());
+        };
+
+        if let Some(profile_name) = auth_profile.as_deref() {
+            codex_login::validate_auth_profile_name(profile_name)
+                .map_err(|err| invalid_request(format!("invalid auth profile: {err}")))?;
+        }
+
+        Ok(self
+            .auth_manager
+            .shared_scoped_auth_profile(auth_profile)
+            .await)
     }
 
     async fn get_account_token_usage_response(
@@ -964,6 +983,7 @@ impl AccountRequestProcessor {
 
     async fn fetch_account_rate_limits(
         &self,
+        params: GetAccountRateLimitsParams,
     ) -> Result<
         (
             CoreRateLimitSnapshot,
@@ -971,7 +991,22 @@ impl AccountRequestProcessor {
         ),
         JSONRPCErrorError,
     > {
-        let Some(auth) = self.auth_manager.auth().await else {
+        let auth_manager = self.auth_manager_for_rate_limits(params).await?;
+        self.fetch_account_rate_limits_with_auth_manager(&auth_manager)
+            .await
+    }
+
+    async fn fetch_account_rate_limits_with_auth_manager(
+        &self,
+        auth_manager: &AuthManager,
+    ) -> Result<
+        (
+            CoreRateLimitSnapshot,
+            HashMap<String, CoreRateLimitSnapshot>,
+        ),
+        JSONRPCErrorError,
+    > {
+        let Some(auth) = auth_manager.auth().await else {
             return Err(invalid_request(
                 "codex account authentication required to read rate limits",
             ));

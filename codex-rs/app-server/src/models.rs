@@ -1,11 +1,17 @@
 use std::sync::Arc;
 
 use codex_app_server_protocol::Model;
+use codex_app_server_protocol::ModelGatewayKind;
 use codex_app_server_protocol::ModelServiceTier;
 use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_core::ThreadManager;
 use codex_known_provider_models as known_provider_models;
+use codex_model_provider_info::HASNA_GATEWAY_NAME;
+use codex_model_provider_info::ModelGatewayFamily;
+use codex_model_provider_info::model_gateway_family;
+use codex_model_provider_info::model_gateway_for_provider;
+use codex_model_provider_info::model_gateway_name;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::error::Result as CoreResult;
@@ -19,39 +25,42 @@ pub use codex_known_provider_models::provider_for_fallback_model;
 pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
     include_hidden: bool,
+    provider_id: &str,
 ) -> Vec<Model> {
     thread_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await
         .into_iter()
         .filter(|preset| include_hidden || preset.show_in_picker)
-        .map(model_from_preset)
+        .map(|preset| model_from_preset(provider_id, preset))
         .collect()
 }
 
 pub async fn try_supported_models_from_manager(
     models_manager: SharedModelsManager,
     include_hidden: bool,
+    provider_id: &str,
 ) -> CoreResult<Vec<Model>> {
     Ok(models_manager
         .list_models_result(RefreshStrategy::OnlineIfUncached)
         .await?
         .into_iter()
         .filter(|preset| include_hidden || preset.show_in_picker)
-        .map(model_from_preset)
+        .map(|preset| model_from_preset(provider_id, preset))
         .collect())
 }
 
 pub async fn supported_models_from_manager(
     models_manager: SharedModelsManager,
     include_hidden: bool,
+    provider_id: &str,
 ) -> Vec<Model> {
     models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await
         .into_iter()
         .filter(|preset| include_hidden || preset.show_in_picker)
-        .map(model_from_preset)
+        .map(|preset| model_from_preset(provider_id, preset))
         .collect()
 }
 
@@ -81,9 +90,15 @@ fn fallback_model(
 ) -> Model {
     let (default_reasoning_effort, supported_reasoning_efforts) =
         fallback_reasoning_efforts(provider_id, model.id);
+    let route = model_route_fields(provider_id, model.id);
     Model {
         id: model.id.to_string(),
         model: model.id.to_string(),
+        model_provider: provider_id.to_string(),
+        model_gateway: route.gateway_id,
+        model_gateway_name: route.gateway_name,
+        model_gateway_kind: route.gateway_kind,
+        upstream_provider: route.upstream_provider,
         upgrade: None,
         upgrade_info: None,
         availability_nux: None,
@@ -113,10 +128,16 @@ fn fallback_reasoning_efforts(
     )
 }
 
-fn model_from_preset(preset: ModelPreset) -> Model {
+fn model_from_preset(provider_id: &str, preset: ModelPreset) -> Model {
+    let route = model_route_fields(provider_id, &preset.model);
     Model {
         id: preset.id.to_string(),
         model: preset.model.to_string(),
+        model_provider: provider_id.to_string(),
+        model_gateway: route.gateway_id,
+        model_gateway_name: route.gateway_name,
+        model_gateway_kind: route.gateway_kind,
+        upstream_provider: route.upstream_provider,
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
         upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
             model: upgrade.id.clone(),
@@ -159,6 +180,43 @@ fn reasoning_efforts_from_preset(
             description: preset.description,
         })
         .collect()
+}
+
+struct ModelRouteFields {
+    gateway_id: String,
+    gateway_name: String,
+    gateway_kind: ModelGatewayKind,
+    upstream_provider: Option<String>,
+}
+
+fn model_route_fields(provider_id: &str, model_id: &str) -> ModelRouteFields {
+    let gateway_id = model_gateway_for_provider(provider_id);
+    let gateway_name = model_gateway_name(gateway_id).unwrap_or(HASNA_GATEWAY_NAME);
+    let gateway_kind = model_gateway_family(gateway_id)
+        .map(api_gateway_kind)
+        .unwrap_or(ModelGatewayKind::Direct);
+    ModelRouteFields {
+        gateway_id: gateway_id.to_string(),
+        gateway_name: gateway_name.to_string(),
+        gateway_kind,
+        upstream_provider: upstream_provider_from_model_id(model_id),
+    }
+}
+
+fn api_gateway_kind(family: ModelGatewayFamily) -> ModelGatewayKind {
+    match family {
+        ModelGatewayFamily::Direct => ModelGatewayKind::Direct,
+        ModelGatewayFamily::Aggregator => ModelGatewayKind::Aggregator,
+    }
+}
+
+fn upstream_provider_from_model_id(model_id: &str) -> Option<String> {
+    let (provider, _) = model_id.split_once('/')?;
+    if provider.is_empty() {
+        None
+    } else {
+        Some(provider.to_string())
+    }
 }
 
 #[cfg(test)]

@@ -47,6 +47,7 @@ use codex_app_server_protocol::FsUnwatchParams;
 use codex_app_server_protocol::FsWatchParams;
 use codex_app_server_protocol::FsWriteFileParams;
 use codex_app_server_protocol::GetAccountParams;
+use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetConversationSummaryParams;
 use codex_app_server_protocol::HooksListParams;
@@ -66,6 +67,7 @@ use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpServerToolCallParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
+use codex_app_server_protocol::ModelGatewayListParams;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelProviderCapabilitiesReadParams;
 use codex_app_server_protocol::ModelProviderListParams;
@@ -92,6 +94,7 @@ use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadExternalAgentCancelParams;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
@@ -391,6 +394,15 @@ impl TestAppServer {
             .await
     }
 
+    /// Send an `account/rateLimits/read` JSON-RPC request with params.
+    pub async fn send_get_account_rate_limits_request_with_params(
+        &mut self,
+        params: GetAccountRateLimitsParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("account/rateLimits/read", params).await
+    }
+
     /// Send an `account/sendAddCreditsNudgeEmail` JSON-RPC request.
     pub async fn send_add_credits_nudge_email_request(
         &mut self,
@@ -541,6 +553,16 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/externalAgent/start", params)
+            .await
+    }
+
+    /// Send a `thread/externalAgent/cancel` JSON-RPC request.
+    pub async fn send_thread_external_agent_cancel_request(
+        &mut self,
+        params: ThreadExternalAgentCancelParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/externalAgent/cancel", params)
             .await
     }
 
@@ -723,6 +745,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("model/list", params).await
+    }
+
+    /// Send a `modelGateway/list` JSON-RPC request.
+    pub async fn send_model_gateway_list_request(
+        &mut self,
+        params: ModelGatewayListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("modelGateway/list", params).await
     }
 
     /// Send a `modelProvider/list` JSON-RPC request.

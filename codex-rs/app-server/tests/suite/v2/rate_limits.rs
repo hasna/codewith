@@ -5,6 +5,7 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
+use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -17,6 +18,7 @@ use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
 use codex_app_server_protocol::SendAddCreditsNudgeEmailResponse;
 use codex_app_server_protocol::SpendControlLimitSnapshot;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthProfileMetadata;
 use codex_protocol::account::PlanType as AccountPlanType;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -259,6 +261,226 @@ async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
         ),
     };
     assert_eq!(received, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        AuthProfileMetadata::default(),
+    )?;
+    let work_profile_home = codex_login::auth_profile_storage_dir(codex_home.path(), "work")?;
+    write_chatgpt_auth(
+        &work_profile_home,
+        ChatGptAuthFixture::new("work-token")
+            .account_id("work-account")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let server = MockServer::start().await;
+    let server_url = server.uri();
+    write_chatgpt_base_url(codex_home.path(), &server_url)?;
+
+    let primary_reset_timestamp = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:02:00Z")
+        .expect("parse primary reset timestamp")
+        .timestamp();
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .and(header("authorization", "Bearer work-token"))
+        .and(header("chatgpt-account-id", "work-account"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 9,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 120,
+                    "reset_at": primary_reset_timestamp,
+                },
+            },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut mcp =
+        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
+            auth_profile: Some(Some("work".to_string())),
+        })
+        .await?;
+
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: GetAccountRateLimitsResponse = to_response(response)?;
+    let expected_snapshot = RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 9,
+            window_duration_mins: Some(10080),
+            resets_at: Some(primary_reset_timestamp),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: Some(AccountPlanType::Pro),
+        rate_limit_reached_type: None,
+    };
+    let expected = GetAccountRateLimitsResponse {
+        rate_limits: expected_snapshot.clone(),
+        rate_limits_by_limit_id: Some(
+            [("codex".to_string(), expected_snapshot)]
+                .into_iter()
+                .collect(),
+        ),
+    };
+    assert_eq!(received, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_differs()
+-> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("root-token")
+            .account_id("root-account")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        AuthProfileMetadata::default(),
+    )?;
+    let work_profile_home = codex_login::auth_profile_storage_dir(codex_home.path(), "work")?;
+    write_chatgpt_auth(
+        &work_profile_home,
+        ChatGptAuthFixture::new("work-token")
+            .account_id("work-account")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let server = MockServer::start().await;
+    let server_url = server.uri();
+    write_chatgpt_base_url(codex_home.path(), &server_url)?;
+
+    let primary_reset_timestamp = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:02:00Z")
+        .expect("parse primary reset timestamp")
+        .timestamp();
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .and(header("authorization", "Bearer root-token"))
+        .and(header("chatgpt-account-id", "root-account"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 17,
+                    "limit_window_seconds": 3600,
+                    "reset_after_seconds": 120,
+                    "reset_at": primary_reset_timestamp,
+                },
+            },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", Some("work")),
+            ("OPENAI_API_KEY", None),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
+            auth_profile: Some(None),
+        })
+        .await?;
+
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: GetAccountRateLimitsResponse = to_response(response)?;
+    let expected_snapshot = RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 17,
+            window_duration_mins: Some(60),
+            resets_at: Some(primary_reset_timestamp),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: Some(AccountPlanType::Pro),
+        rate_limit_reached_type: None,
+    };
+    let expected = GetAccountRateLimitsResponse {
+        rate_limits: expected_snapshot.clone(),
+        rate_limits_by_limit_id: Some(
+            [("codex".to_string(), expected_snapshot)]
+                .into_iter()
+                .collect(),
+        ),
+    };
+    assert_eq!(received, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_rate_limits_rejects_invalid_auth_profile_name() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let mut mcp =
+        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
+            auth_profile: Some(Some("bad/profile".to_string())),
+        })
+        .await?;
+
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "invalid auth profile: invalid auth profile name `bad/profile`; use letters, numbers, dots, dashes, or underscores, and start with a letter or number"
+    );
 
     Ok(())
 }

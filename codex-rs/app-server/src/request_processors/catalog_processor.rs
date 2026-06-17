@@ -1,6 +1,14 @@
 use super::*;
 use codex_config::config_toml::ConfigToml;
 use codex_model_provider::ModelProviderInfo;
+use codex_model_provider_info::HASNA_GATEWAY_ID;
+use codex_model_provider_info::ModelGatewayFamily;
+use codex_model_provider_info::OPENROUTER_GATEWAY_ID;
+use codex_model_provider_info::model_gateway_family;
+use codex_model_provider_info::model_gateway_for_provider;
+use codex_model_provider_info::model_gateway_name;
+use codex_model_provider_info::model_gateway_provider_id;
+use codex_model_provider_info::provider_belongs_to_model_gateway;
 use codex_protocol::error::CodexErr;
 use futures::StreamExt;
 
@@ -138,6 +146,68 @@ fn provider_auth_kind(provider: &ModelProviderInfo) -> ModelProviderAuthKind {
     }
 }
 
+fn api_gateway_kind(family: ModelGatewayFamily) -> ModelGatewayKind {
+    match family {
+        ModelGatewayFamily::Direct => ModelGatewayKind::Direct,
+        ModelGatewayFamily::Aggregator => ModelGatewayKind::Aggregator,
+    }
+}
+
+fn gateway_kind(gateway_id: &str) -> Option<ModelGatewayKind> {
+    model_gateway_family(gateway_id).map(api_gateway_kind)
+}
+
+fn gateway_metadata(
+    gateway_id: &str,
+) -> Result<(&'static str, ModelGatewayKind), JSONRPCErrorError> {
+    let gateway_name = model_gateway_name(gateway_id)
+        .ok_or_else(|| invalid_request(format!("model gateway not found: {gateway_id}")))?;
+    let gateway_kind = gateway_kind(gateway_id)
+        .ok_or_else(|| invalid_request(format!("model gateway not found: {gateway_id}")))?;
+    Ok((gateway_name, gateway_kind))
+}
+
+fn upstream_provider_from_model_id(model_id: &str) -> Option<String> {
+    let (provider, _) = model_id.split_once('/')?;
+    if provider.is_empty() {
+        None
+    } else {
+        Some(provider.to_string())
+    }
+}
+
+fn annotate_model_routes(
+    models: Vec<Model>,
+    provider_id: &str,
+    gateway_id: &str,
+) -> Result<Vec<Model>, JSONRPCErrorError> {
+    let (gateway_name, gateway_kind) = gateway_metadata(gateway_id)?;
+    Ok(models
+        .into_iter()
+        .map(|mut model| {
+            model.model_provider = provider_id.to_string();
+            model.model_gateway = gateway_id.to_string();
+            model.model_gateway_name = gateway_name.to_string();
+            model.model_gateway_kind = gateway_kind;
+            model.upstream_provider = upstream_provider_from_model_id(&model.model);
+            model
+        })
+        .collect())
+}
+
+fn filter_models_by_upstream_provider(
+    models: Vec<Model>,
+    upstream_provider: Option<String>,
+) -> Vec<Model> {
+    match upstream_provider {
+        Some(upstream_provider) => models
+            .into_iter()
+            .filter(|model| model.upstream_provider.as_deref() == Some(upstream_provider.as_str()))
+            .collect(),
+        None => models,
+    }
+}
+
 impl CatalogRequestProcessor {
     pub(crate) fn new(
         outgoing: Arc<OutgoingMessageSender>,
@@ -209,6 +279,15 @@ impl CatalogRequestProcessor {
         params: ModelProviderListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.model_provider_list_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn model_gateway_list(
+        &self,
+        params: ModelGatewayListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.model_gateway_list_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -305,83 +384,121 @@ impl CatalogRequestProcessor {
             cursor,
             include_hidden,
             model_provider,
+            model_gateway,
+            upstream_provider,
         } = params;
         let include_hidden = include_hidden.unwrap_or(false);
-        let models = match model_provider {
-            Some(model_provider) => {
-                let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-                let provider_info = config
-                    .model_providers
-                    .get(&model_provider)
-                    .ok_or_else(|| {
-                        invalid_request(format!("model provider not found: {model_provider}"))
-                    })?
-                    .clone();
-                let provider = create_model_provider_with_id(
-                    model_provider.clone(),
-                    provider_info.clone(),
-                    Some(Arc::clone(&self.auth_manager)),
-                );
-                let models_manager = provider.models_manager(
-                    config.codex_home.to_path_buf(),
-                    config.model_catalog.clone(),
-                );
-                if !provider_has_fallback_models(&model_provider) {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        if let Some(gateway_id) = model_gateway.as_deref()
+            && gateway_kind(gateway_id).is_none()
+        {
+            return Err(invalid_request(format!(
+                "model gateway not found: {gateway_id}"
+            )));
+        }
+        let model_provider_was_explicit = model_provider.is_some();
+        let provider_id = match (model_provider, model_gateway.as_deref()) {
+            (Some(model_provider), Some(gateway_id)) => {
+                if !provider_belongs_to_model_gateway(&model_provider, gateway_id) {
+                    return Err(invalid_request(format!(
+                        "model provider `{model_provider}` is not available through gateway `{gateway_id}`"
+                    )));
+                }
+                model_provider
+            }
+            (Some(model_provider), None) => model_provider,
+            (None, Some(gateway_id)) => match model_gateway_provider_id(gateway_id) {
+                Some(provider_id) => provider_id.to_string(),
+                None => config.model_provider_id.clone(),
+            },
+            (None, None) => config.model_provider_id.clone(),
+        };
+        let gateway_id = match model_gateway {
+            Some(gateway_id) => gateway_id,
+            None if model_provider_was_explicit => {
+                model_gateway_for_provider(&provider_id).to_string()
+            }
+            None => model_gateway_for_provider(&config.model_provider_id).to_string(),
+        };
+        let models = if provider_id == config.model_provider_id {
+            let models =
+                supported_models(self.thread_manager.clone(), include_hidden, &provider_id).await;
+            if models.is_empty() {
+                if !provider_has_runtime_auth(&config.model_provider) {
                     return Self::paginated_model_list_response(
-                        supported_models_from_manager(models_manager, include_hidden).await,
+                        filter_models_by_upstream_provider(
+                            annotate_model_routes(models, &provider_id, &gateway_id)?,
+                            upstream_provider,
+                        ),
                         cursor,
                         limit,
                     );
                 }
-                match try_supported_models_from_manager(models_manager, include_hidden).await {
+                let fallback_models =
+                    fallback_supported_models_for_provider(&provider_id, include_hidden);
+                if fallback_models.is_empty() {
+                    models
+                } else {
+                    warn!(
+                        "active provider `{}` returned no models; using fallback catalog",
+                        provider_id
+                    );
+                    fallback_models
+                }
+            } else {
+                models
+            }
+        } else {
+            let provider_info = config
+                .model_providers
+                .get(&provider_id)
+                .ok_or_else(|| invalid_request(format!("model provider not found: {provider_id}")))?
+                .clone();
+            let provider = create_model_provider_with_id(
+                provider_id.clone(),
+                provider_info.clone(),
+                Some(Arc::clone(&self.auth_manager)),
+            );
+            let models_manager = provider.models_manager(
+                config.codex_home.to_path_buf(),
+                config.model_catalog.clone(),
+            );
+            if !provider_has_fallback_models(&provider_id) {
+                supported_models_from_manager(models_manager, include_hidden, &provider_id).await
+            } else {
+                match try_supported_models_from_manager(
+                    models_manager,
+                    include_hidden,
+                    &provider_id,
+                )
+                .await
+                {
                     Ok(models) => models,
                     Err(err) => {
                         if !provider_has_runtime_auth(&provider_info)
                             || model_list_error_is_auth_failure(&err)
                         {
                             return Err(internal_error(format!(
-                                "failed to list models for provider `{model_provider}`: {err}"
+                                "failed to list models for provider `{provider_id}`: {err}"
                             )));
                         }
                         let fallback_models =
-                            fallback_supported_models_for_provider(&model_provider, include_hidden);
+                            fallback_supported_models_for_provider(&provider_id, include_hidden);
                         if fallback_models.is_empty() {
                             return Err(internal_error(format!(
-                                "failed to list models for provider `{model_provider}`: {err}"
+                                "failed to list models for provider `{provider_id}`: {err}"
                             )));
                         }
                         warn!(
-                            "failed to list models for provider `{model_provider}`; using fallback catalog: {err}"
+                            "failed to list models for provider `{provider_id}`; using fallback catalog: {err}"
                         );
                         fallback_models
                     }
-                }
-            }
-            None => {
-                let models = supported_models(self.thread_manager.clone(), include_hidden).await;
-                if models.is_empty() {
-                    let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-                    if !provider_has_runtime_auth(&config.model_provider) {
-                        return Self::paginated_model_list_response(models, cursor, limit);
-                    }
-                    let fallback_models = fallback_supported_models_for_provider(
-                        &config.model_provider_id,
-                        include_hidden,
-                    );
-                    if fallback_models.is_empty() {
-                        models
-                    } else {
-                        warn!(
-                            "active provider `{}` returned no models; using fallback catalog",
-                            config.model_provider_id
-                        );
-                        fallback_models
-                    }
-                } else {
-                    models
                 }
             }
         };
+        let models = annotate_model_routes(models, &provider_id, &gateway_id)?;
+        let models = filter_models_by_upstream_provider(models, upstream_provider);
         Self::paginated_model_list_response(models, cursor, limit)
     }
 
@@ -427,23 +544,67 @@ impl CatalogRequestProcessor {
         })
     }
 
+    async fn model_gateway_list_response(
+        &self,
+        params: ModelGatewayListParams,
+    ) -> Result<ModelGatewayListResponse, JSONRPCErrorError> {
+        let ModelGatewayListParams {} = params;
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let current_gateway_id = model_gateway_for_provider(&config.model_provider_id);
+        let data = [HASNA_GATEWAY_ID, OPENROUTER_GATEWAY_ID]
+            .into_iter()
+            .map(|gateway_id| {
+                let (name, kind) = gateway_metadata(gateway_id)?;
+                Ok(ModelGatewaySummary {
+                    id: gateway_id.to_string(),
+                    name: name.to_string(),
+                    kind,
+                    is_current: gateway_id == current_gateway_id,
+                })
+            })
+            .collect::<Result<Vec<_>, JSONRPCErrorError>>()?;
+
+        Ok(ModelGatewayListResponse { data })
+    }
+
     async fn model_provider_list_response(
         &self,
         params: ModelProviderListParams,
     ) -> Result<ModelProviderListResponse, JSONRPCErrorError> {
-        let ModelProviderListParams {} = params;
+        let ModelProviderListParams { model_gateway } = params;
+        if let Some(gateway_id) = model_gateway.as_deref()
+            && gateway_kind(gateway_id).is_none()
+        {
+            return Err(invalid_request(format!(
+                "model gateway not found: {gateway_id}"
+            )));
+        }
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
         let mut data = config
             .model_providers
             .iter()
-            .map(|(id, provider)| ModelProviderSummary {
-                id: id.clone(),
-                name: provider_display_name(id, provider),
-                auth_kind: provider_auth_kind(provider),
-                requires_openai_auth: provider.requires_openai_auth,
-                is_current: id == &config.model_provider_id,
+            .filter(|(id, _)| {
+                model_gateway
+                    .as_deref()
+                    .is_none_or(|gateway_id| provider_belongs_to_model_gateway(id, gateway_id))
             })
-            .collect::<Vec<_>>();
+            .map(|(id, provider)| {
+                let gateway_id = model_gateway
+                    .as_deref()
+                    .unwrap_or_else(|| model_gateway_for_provider(id));
+                let (gateway_name, gateway_kind) = gateway_metadata(gateway_id)?;
+                Ok(ModelProviderSummary {
+                    id: id.clone(),
+                    name: provider_display_name(id, provider),
+                    model_gateway: gateway_id.to_string(),
+                    model_gateway_name: gateway_name.to_string(),
+                    model_gateway_kind: gateway_kind,
+                    auth_kind: provider_auth_kind(provider),
+                    requires_openai_auth: provider.requires_openai_auth,
+                    is_current: id == &config.model_provider_id,
+                })
+            })
+            .collect::<Result<Vec<_>, JSONRPCErrorError>>()?;
         data.sort_by(|left, right| {
             right
                 .is_current

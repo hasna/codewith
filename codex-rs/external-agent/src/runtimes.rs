@@ -157,7 +157,7 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
         display_name: "Cursor",
         description: "Run Cursor's agent through an ACP-compatible harness.",
         command: ExternalAgentCommandSpec {
-            program: "cursor-agent",
+            program: "agent",
             args: &["acp"],
         },
         supported_modes: PLAN_PROPOSE,
@@ -170,7 +170,7 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
         description: "Run Grok Build through xAI's ACP stdio agent.",
         command: ExternalAgentCommandSpec {
             program: "grok",
-            args: &["agent", "stdio"],
+            args: &["--no-auto-update", "agent", "stdio"],
         },
         supported_modes: PLAN_PROPOSE,
         default_mode: ExternalAgentMode::Plan,

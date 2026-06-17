@@ -325,7 +325,7 @@ async fn thread_metadata_update_repairs_loaded_thread_without_resetting_summary(
     .await??;
     let _: ThreadResumeResponse = to_response::<ThreadResumeResponse>(resume_resp)?;
 
-    assert_eq!(state_db.delete_thread(thread_uuid).await?, 1);
+    assert_eq!(delete_thread_with_retry(&state_db, thread_uuid).await?, 1);
 
     let update_id = mcp
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
@@ -491,6 +491,19 @@ async fn init_state_db(codex_home: &Path) -> Result<Arc<StateRuntime>> {
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     Ok(state_db)
+}
+
+async fn delete_thread_with_retry(state_db: &StateRuntime, thread_id: ThreadId) -> Result<u64> {
+    for attempt in 0..8 {
+        match state_db.delete_thread(thread_id).await {
+            Ok(deleted) => return Ok(deleted),
+            Err(err) if err.to_string().contains("database is locked") && attempt < 7 => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("delete_thread retry loop should return");
 }
 
 fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()> {

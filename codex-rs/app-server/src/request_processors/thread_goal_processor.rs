@@ -53,6 +53,15 @@ impl ThreadGoalRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_goal_list(
+        &self,
+        params: ThreadGoalListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_list_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_goal_clear(
         &self,
         request_id: ConnectionRequestId,
@@ -164,6 +173,45 @@ impl ThreadGoalRequestProcessor {
             .map_err(goal_service_error)?
             .map(ThreadGoal::from);
         Ok(ThreadGoalGetResponse { goal })
+    }
+
+    async fn thread_goal_list_inner(
+        &self,
+        params: ThreadGoalListParams,
+    ) -> Result<ThreadGoalListResponse, JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        let goal = self
+            .goal_service
+            .get_thread_goal(&state_db, thread_id)
+            .await
+            .map_err(goal_service_error)?
+            .map(ThreadGoal::from);
+        let goal_plan_page = state_db
+            .thread_goals()
+            .list_thread_goal_plans_page(
+                thread_id,
+                params.cursor.as_deref(),
+                params
+                    .limit
+                    .unwrap_or(codex_state::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT),
+            )
+            .await
+            .map_err(|err| invalid_request(format!("failed to read thread goal plans: {err}")))?;
+        let goal_plans = goal_plan_page
+            .data
+            .into_iter()
+            .map(api_thread_goal_plan_from_state)
+            .collect();
+        Ok(ThreadGoalListResponse {
+            goal,
+            goal_plans,
+            next_cursor: goal_plan_page.next_cursor,
+        })
     }
 
     async fn thread_goal_clear_inner(
@@ -364,6 +412,47 @@ pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> Threa
     }
 }
 
+fn api_thread_goal_plan_from_state(
+    snapshot: codex_state::ThreadGoalPlanSnapshot,
+) -> ThreadGoalPlan {
+    ThreadGoalPlan {
+        plan_id: snapshot.plan.plan_id,
+        thread_id: snapshot.plan.thread_id.to_string(),
+        status: api_thread_goal_plan_status_from_state(snapshot.plan.status),
+        auto_execute: api_thread_goal_plan_auto_execute_from_state(snapshot.plan.auto_execute),
+        max_tokens: snapshot.plan.max_tokens,
+        created_at: snapshot.plan.created_at.timestamp(),
+        updated_at: snapshot.plan.updated_at.timestamp(),
+        nodes: snapshot
+            .nodes
+            .into_iter()
+            .map(api_thread_goal_plan_node_from_state)
+            .collect(),
+    }
+}
+
+fn api_thread_goal_plan_node_from_state(
+    node: codex_state::ThreadGoalPlanNode,
+) -> ThreadGoalPlanNode {
+    ThreadGoalPlanNode {
+        node_id: node.node_id,
+        plan_id: node.plan_id,
+        thread_id: node.thread_id.to_string(),
+        key: node.key,
+        sequence: node.sequence,
+        priority: node.priority,
+        objective: node.objective,
+        status: api_thread_goal_plan_node_status_from_state(node.status),
+        token_budget: node.token_budget,
+        tokens_used: node.tokens_used,
+        time_used_seconds: node.time_used_seconds,
+        projected_goal_id: node.projected_goal_id,
+        depends_on: node.depends_on,
+        created_at: node.created_at.timestamp(),
+        updated_at: node.updated_at.timestamp(),
+    }
+}
+
 fn api_thread_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
     match status {
         codex_state::ThreadGoalStatus::Active => ThreadGoalStatus::Active,
@@ -372,6 +461,46 @@ fn api_thread_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> T
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+    }
+}
+
+fn api_thread_goal_plan_status_from_state(
+    status: codex_state::ThreadGoalPlanStatus,
+) -> ThreadGoalPlanStatus {
+    match status {
+        codex_state::ThreadGoalPlanStatus::Active => ThreadGoalPlanStatus::Active,
+        codex_state::ThreadGoalPlanStatus::Paused => ThreadGoalPlanStatus::Paused,
+        codex_state::ThreadGoalPlanStatus::Blocked => ThreadGoalPlanStatus::Blocked,
+        codex_state::ThreadGoalPlanStatus::BudgetLimited => ThreadGoalPlanStatus::BudgetLimited,
+        codex_state::ThreadGoalPlanStatus::Complete => ThreadGoalPlanStatus::Complete,
+    }
+}
+
+fn api_thread_goal_plan_auto_execute_from_state(
+    auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+) -> ThreadGoalPlanAutoExecute {
+    match auto_execute {
+        codex_state::ThreadGoalPlanAutoExecute::Off => ThreadGoalPlanAutoExecute::Off,
+        codex_state::ThreadGoalPlanAutoExecute::ReadyOnly => ThreadGoalPlanAutoExecute::ReadyOnly,
+        codex_state::ThreadGoalPlanAutoExecute::AiDirected => ThreadGoalPlanAutoExecute::AiDirected,
+    }
+}
+
+fn api_thread_goal_plan_node_status_from_state(
+    status: codex_state::ThreadGoalPlanNodeStatus,
+) -> ThreadGoalPlanNodeStatus {
+    match status {
+        codex_state::ThreadGoalPlanNodeStatus::Pending => ThreadGoalPlanNodeStatus::Pending,
+        codex_state::ThreadGoalPlanNodeStatus::Active => ThreadGoalPlanNodeStatus::Active,
+        codex_state::ThreadGoalPlanNodeStatus::Paused => ThreadGoalPlanNodeStatus::Paused,
+        codex_state::ThreadGoalPlanNodeStatus::Blocked => ThreadGoalPlanNodeStatus::Blocked,
+        codex_state::ThreadGoalPlanNodeStatus::UsageLimited => {
+            ThreadGoalPlanNodeStatus::UsageLimited
+        }
+        codex_state::ThreadGoalPlanNodeStatus::BudgetLimited => {
+            ThreadGoalPlanNodeStatus::BudgetLimited
+        }
+        codex_state::ThreadGoalPlanNodeStatus::Complete => ThreadGoalPlanNodeStatus::Complete,
     }
 }
 

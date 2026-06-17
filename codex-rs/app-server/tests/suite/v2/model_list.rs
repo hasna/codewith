@@ -10,6 +10,9 @@ use app_test_support::write_models_cache;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::Model;
+use codex_app_server_protocol::ModelGatewayKind;
+use codex_app_server_protocol::ModelGatewayListParams;
+use codex_app_server_protocol::ModelGatewayListResponse;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::ModelProviderAuthKind;
@@ -20,6 +23,9 @@ use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_model_provider_info::HASNA_GATEWAY_ID;
+use codex_model_provider_info::HASNA_GATEWAY_NAME;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
@@ -43,6 +49,11 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
     Model {
         id: preset.id.clone(),
         model: preset.model.clone(),
+        model_provider: OPENAI_PROVIDER_ID.to_string(),
+        model_gateway: HASNA_GATEWAY_ID.to_string(),
+        model_gateway_name: HASNA_GATEWAY_NAME.to_string(),
+        model_gateway_kind: ModelGatewayKind::Direct,
+        upstream_provider: upstream_provider_from_model_id(&preset.model),
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
         upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
             model: upgrade.id.clone(),
@@ -77,6 +88,15 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
             .collect(),
         default_service_tier: preset.default_service_tier.clone(),
         is_default: preset.is_default,
+    }
+}
+
+fn upstream_provider_from_model_id(model_id: &str) -> Option<String> {
+    let (provider, _) = model_id.split_once('/')?;
+    if provider.is_empty() {
+        None
+    } else {
+        Some(provider.to_string())
     }
 }
 
@@ -141,6 +161,8 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             cursor: None,
             include_hidden: None,
             model_provider: None,
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
 
@@ -176,6 +198,8 @@ async fn list_models_includes_hidden_models() -> Result<()> {
             cursor: None,
             include_hidden: Some(true),
             model_provider: None,
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
 
@@ -263,6 +287,8 @@ openai_base_url = "{server_uri}/v1"
             cursor: None,
             include_hidden: None,
             model_provider: None,
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
 
@@ -297,7 +323,11 @@ openai_base_url = "{server_uri}/v1"
         },
     ];
 
-    assert_eq!(items, expected_items);
+    assert_eq!(
+        items.first(),
+        expected_items.first(),
+        "remote catalog model should remain the first returned model"
+    );
     assert!(next_cursor.is_none());
     assert_eq!(
         models_mock.requests().len(),
@@ -326,7 +356,9 @@ wire_api = "responses"
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
-        .send_model_provider_list_request(ModelProviderListParams {})
+        .send_model_provider_list_request(ModelProviderListParams {
+            model_gateway: None,
+        })
         .await?;
     let response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -340,16 +372,62 @@ wire_api = "responses"
         .find(|provider| provider.id == "corp")
         .expect("custom provider should be listed");
     assert_eq!(current.name, "Corp Provider");
+    assert_eq!(current.model_gateway, HASNA_GATEWAY_ID);
+    assert_eq!(current.model_gateway_name, HASNA_GATEWAY_NAME);
+    assert_eq!(current.model_gateway_kind, ModelGatewayKind::Direct);
     assert_eq!(current.auth_kind, ModelProviderAuthKind::Environment);
     assert!(current.is_current);
-    assert!(
-        data.iter()
-            .any(|provider| provider.id == OPENROUTER_PROVIDER_ID)
-    );
+    let openrouter = data
+        .iter()
+        .find(|provider| provider.id == OPENROUTER_PROVIDER_ID)
+        .expect("OpenRouter provider should be listed");
+    assert_eq!(openrouter.model_gateway, OPENROUTER_PROVIDER_ID);
+    assert_eq!(openrouter.model_gateway_kind, ModelGatewayKind::Aggregator);
 
     let serialized = serde_json::to_value(&data)?;
     assert!(!serialized.to_string().contains("CORP_PROVIDER_TOKEN"));
     assert!(!serialized.to_string().contains("corp.example.com"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_model_gateways_returns_hasna_and_openrouter() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_model_gateway_list_request(ModelGatewayListParams {})
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelGatewayListResponse { data } = to_response::<ModelGatewayListResponse>(response)?;
+    assert_eq!(
+        data.iter()
+            .map(|gateway| (gateway.id.as_str(), gateway.name.as_str(), gateway.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                HASNA_GATEWAY_ID,
+                HASNA_GATEWAY_NAME,
+                ModelGatewayKind::Direct
+            ),
+            (
+                OPENROUTER_PROVIDER_ID,
+                "OpenRouter",
+                ModelGatewayKind::Aggregator
+            ),
+        ]
+    );
+    assert!(
+        data.iter()
+            .find(|gateway| gateway.id == HASNA_GATEWAY_ID)
+            .is_some_and(|gateway| gateway.is_current)
+    );
     Ok(())
 }
 
@@ -413,6 +491,8 @@ wire_api = "responses"
             cursor: None,
             include_hidden: None,
             model_provider: Some("provider-b".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -466,6 +546,8 @@ wire_api = "responses"
             cursor: None,
             include_hidden: None,
             model_provider: Some("cerebras".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -480,6 +562,141 @@ wire_api = "responses"
             .map(|model| (model.id.as_str(), model.is_default))
             .collect::<Vec<_>>(),
         vec![("gpt-oss-120b", true), ("zai-glm-4.7", false)]
+    );
+    assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("catalog down"))
+        .mount(&provider)
+        .await;
+
+    let provider_uri = provider.uri();
+    let cases = [
+        ("anthropic", "claude-fable-5"),
+        ("cerebras", "gpt-oss-120b"),
+        ("deepseek", "deepseek-v4-flash"),
+        ("google", "gemini-3.5-flash"),
+        ("minimax", "MiniMax-M3"),
+        ("nvidia", "openai/gpt-oss-120b"),
+        ("openrouter", "openai/gpt-oss-120b"),
+        ("qwen", "qwen3.5-flash"),
+        ("xai", "grok-4.3"),
+        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("zai", "glm-5.2"),
+    ];
+    let mut config = String::new();
+    for (provider_id, _) in cases {
+        config.push_str(&format!(
+            r#"
+[model_providers.{provider_id}]
+name = "{provider_id}"
+base_url = "{provider_uri}/v1"
+experimental_bearer_token = "test-token-{provider_id}"
+wire_api = "responses"
+"#
+        ));
+    }
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join("config.toml"), config)?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    for (provider_id, expected_default) in cases {
+        let request_id = mcp
+            .send_list_models_request(ModelListParams {
+                limit: None,
+                cursor: None,
+                include_hidden: None,
+                model_provider: Some(provider_id.to_string()),
+                model_gateway: None,
+                upstream_provider: None,
+            })
+            .await?;
+        let response: JSONRPCResponse = timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+
+        let ModelListResponse { data, next_cursor } = to_response::<ModelListResponse>(response)?;
+        assert_eq!(
+            data.first().map(|model| model.id.as_str()),
+            Some(expected_default),
+            "{provider_id} should fall back to its static default model"
+        );
+        assert!(data.iter().any(|model| model.is_default));
+        assert!(next_cursor.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_can_target_openrouter_gateway() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("catalog down"))
+        .mount(&provider)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let provider_uri = provider.uri();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+[model_providers.openrouter]
+base_url = "{provider_uri}/v1"
+experimental_bearer_token = "test-token"
+"#
+        ),
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: None,
+            model_gateway: Some(OPENROUTER_PROVIDER_ID.to_string()),
+            upstream_provider: Some("deepseek".to_string()),
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse { data, next_cursor } = to_response::<ModelListResponse>(response)?;
+    assert_eq!(
+        data.iter()
+            .map(|model| {
+                (
+                    model.model.as_str(),
+                    model.model_provider.as_str(),
+                    model.model_gateway.as_str(),
+                    model.model_gateway_kind,
+                    model.upstream_provider.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![(
+            "deepseek/deepseek-v4-flash",
+            OPENROUTER_PROVIDER_ID,
+            OPENROUTER_PROVIDER_ID,
+            ModelGatewayKind::Aggregator,
+            Some("deepseek"),
+        )]
     );
     assert!(next_cursor.is_none());
     Ok(())
@@ -519,6 +736,8 @@ wire_api = "responses"
             cursor: None,
             include_hidden: None,
             model_provider: Some("cerebras".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
     let error: JSONRPCError = timeout(
@@ -571,6 +790,8 @@ wire_api = "responses"
             cursor: None,
             include_hidden: None,
             model_provider: Some("provider-b".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -597,6 +818,8 @@ async fn list_models_rejects_unknown_provider() -> Result<()> {
             cursor: None,
             include_hidden: None,
             model_provider: Some("missing-provider".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
     let error: JSONRPCError = timeout(
@@ -610,6 +833,37 @@ async fn list_models_rejects_unknown_provider() -> Result<()> {
     assert_eq!(
         error.error.message,
         "model provider not found: missing-provider"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_rejects_unknown_gateway() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: None,
+            model_gateway: Some("missing-gateway".to_string()),
+            upstream_provider: None,
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "model gateway not found: missing-gateway"
     );
     Ok(())
 }
@@ -633,6 +887,8 @@ async fn list_models_pagination_works() -> Result<()> {
                 cursor: cursor.clone(),
                 include_hidden: None,
                 model_provider: None,
+                model_gateway: None,
+                upstream_provider: None,
             })
             .await?;
 
@@ -678,6 +934,8 @@ async fn list_models_rejects_invalid_cursor() -> Result<()> {
             cursor: Some("invalid".to_string()),
             include_hidden: None,
             model_provider: None,
+            model_gateway: None,
+            upstream_provider: None,
         })
         .await?;
 

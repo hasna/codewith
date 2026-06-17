@@ -9,11 +9,13 @@ use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::config::GoalAutoExecuteMode;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalService;
 use codex_login::AuthManager;
 use codex_protocol::ThreadId;
@@ -45,7 +47,20 @@ where
             codex_otel::global(),
             thread_manager,
             goal_service,
-            |config: &Config| config.features.enabled(codex_features::Feature::Goals),
+            |config: &Config| GoalExtensionConfig {
+                enabled: config.features.enabled(codex_features::Feature::Goals),
+                auto_execute: match config.goals.auto_execute {
+                    GoalAutoExecuteMode::Off => codex_state::ThreadGoalPlanAutoExecute::Off,
+                    GoalAutoExecuteMode::ReadyOnly => {
+                        codex_state::ThreadGoalPlanAutoExecute::ReadyOnly
+                    }
+                    GoalAutoExecuteMode::AiDirected => {
+                        codex_state::ThreadGoalPlanAutoExecute::AiDirected
+                    }
+                },
+                max_auto_goals_per_plan: config.goals.max_auto_goals_per_plan,
+                max_tokens_per_goal_plan: config.goals.max_tokens_per_goal_plan,
+            },
         );
     }
     codex_guardian::install(&mut builder, guardian_agent_spawner);

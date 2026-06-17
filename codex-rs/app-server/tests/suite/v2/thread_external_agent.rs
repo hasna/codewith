@@ -4,9 +4,10 @@ use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::to_response;
 use app_test_support::write_mock_provider_models_cache;
 use app_test_support::write_mock_responses_config_toml;
-use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadExternalAgentCancelParams;
+use codex_app_server_protocol::ThreadExternalAgentCancelResponse;
 use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadExternalAgentEventNotification;
 use codex_app_server_protocol::ThreadExternalAgentMode;
@@ -17,6 +18,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -44,13 +46,22 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         "cursor-work",
         codex_login::AuthProfileMetadata {
             subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+            last_permissions: None,
         },
     )?;
     write_mock_provider_models_cache(codex_home.as_path())?;
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    write_fake_executable(&bin_dir, "agent")?;
+    write_fake_executable(&bin_dir, "cursor-agent")?;
+    let path = path_with_fake_bin(&bin_dir)?;
 
     let mut mcp = McpProcess::new_with_env(
         codex_home.as_path(),
-        &[("CODEWITH_AUTH_PROFILE", Some("cursor-work"))],
+        &[
+            ("CODEWITH_AUTH_PROFILE", Some("cursor-work")),
+            ("PATH", Some(path.as_str())),
+        ],
     )
     .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
@@ -108,6 +119,24 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
             task: "inspect the auth wiring".to_string(),
         }
     );
+    let cancel_id = mcp
+        .send_thread_external_agent_cancel_request(ThreadExternalAgentCancelParams {
+            thread_id: thread.id.clone(),
+            run_id,
+        })
+        .await?;
+    let cancel_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(cancel_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<ThreadExternalAgentCancelResponse>(cancel_resp)?,
+        ThreadExternalAgentCancelResponse {
+            cancelled: true,
+            message: "external-agent run cancellation requested".to_string(),
+        }
+    );
 
     let grok_alias_id = mcp
         .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
@@ -117,15 +146,18 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
             mode: ThreadExternalAgentMode::Plan,
         })
         .await?;
-    let grok_alias_error: JSONRPCError = timeout(
+    let grok_alias_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(grok_alias_id)),
+        mcp.read_stream_until_response_message(RequestId::Integer(grok_alias_id)),
     )
     .await??;
-    assert_eq!(grok_alias_error.error.code, -32600);
     assert_eq!(
-        grok_alias_error.error.message,
-        "use runtimeId `grok-build` for Grok Build external-agent runs"
+        to_response::<ThreadExternalAgentStartResponse>(grok_alias_resp)?,
+        ThreadExternalAgentStartResponse {
+            status: ThreadExternalAgentStartStatus::Gated,
+            run_id: None,
+            message: "use runtimeId `grok-build` for Grok Build external-agent runs".to_string(),
+        }
     );
 
     let empty_task_id = mcp
@@ -136,13 +168,48 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
             mode: ThreadExternalAgentMode::Plan,
         })
         .await?;
-    let empty_task_error: JSONRPCError = timeout(
+    let empty_task_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(empty_task_id)),
+        mcp.read_stream_until_response_message(RequestId::Integer(empty_task_id)),
     )
     .await??;
-    assert_eq!(empty_task_error.error.code, -32600);
-    assert_eq!(empty_task_error.error.message, "task must not be empty");
+    assert_eq!(
+        to_response::<ThreadExternalAgentStartResponse>(empty_task_resp)?,
+        ThreadExternalAgentStartResponse {
+            status: ThreadExternalAgentStartStatus::Gated,
+            run_id: None,
+            message: "task must not be empty".to_string(),
+        }
+    );
 
+    Ok(())
+}
+
+fn path_with_fake_bin(bin_dir: &Path) -> Result<String> {
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(bin_dir.to_path_buf()).chain(std::env::split_paths(&existing_path)),
+    )?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[cfg(unix)]
+fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = bin_dir.join(name);
+    std::fs::write(&path, "#!/bin/sh\nsleep 30\n")?;
+    let mut permissions = std::fs::metadata(&path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
+    std::fs::write(
+        bin_dir.join(format!("{name}.cmd")),
+        "@echo off\r\nping -n 30 127.0.0.1 >NUL\r\n",
+    )?;
     Ok(())
 }

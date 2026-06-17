@@ -161,7 +161,9 @@ fn merge_persisted_resume_metadata(
         typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
     }
 
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref()
+        && !request_override_contains(request_overrides.as_ref(), "model_reasoning_effort")
+    {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
@@ -349,6 +351,7 @@ pub(crate) struct ThreadRequestProcessor {
         Arc<Mutex<HashMap<String, codex_background_agent::process_lifecycle::WorkerProcessHandle>>>,
     pub(super) background_agent_supervisor_token: CancellationToken,
     pub(super) background_agent_worker_process: bool,
+    pub(super) external_agent_runs: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl ThreadRequestProcessor {
@@ -392,6 +395,7 @@ impl ThreadRequestProcessor {
             background_agent_worker_processes: Arc::new(Mutex::new(HashMap::new())),
             background_agent_supervisor_token: CancellationToken::new(),
             background_agent_worker_process,
+            external_agent_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

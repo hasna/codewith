@@ -54,8 +54,11 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 const SAFE_ENV_VARS: &[&str] = &["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TERM"];
+const CURSOR_AUTH_ENV_VARS: &[&str] = &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"];
+const GROK_BUILD_AUTH_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const ACP_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const ACP_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const ACP_STDERR_MAX_BYTES: usize = 64 * 1024;
 static ACP_ISOLATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -253,6 +256,23 @@ impl AcpStdioHarness {
         }
     }
 
+    pub async fn readiness_with_env(
+        &self,
+        source_env: &BTreeMap<String, String>,
+    ) -> ExternalAgentReadiness {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let program = match self.resolve_program_with_cwd(source_env, cwd.as_path()) {
+            Ok(program) => program,
+            Err(err) => return self.runtime_missing_readiness(err),
+        };
+        if self.descriptor.id == ExternalAgentRuntimeId::CURSOR
+            && let Err(message) = self.probe_cursor_runtime(&program, source_env).await
+        {
+            return self.runtime_missing_readiness(message);
+        }
+        self.runtime_ready_readiness(&program)
+    }
+
     /// Run this ACP runtime after wrapping its child process in Codewith's
     /// platform sandbox.
     pub async fn run_sandboxed(
@@ -282,6 +302,11 @@ impl AcpStdioHarness {
             "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
             request.runtime.as_str().to_string(),
         );
+        for name in acp_runtime_auth_env_vars(request.runtime.as_str()) {
+            if let Some(value) = source_env.get(*name) {
+                extra_env.insert((*name).to_string(), value.clone());
+            }
+        }
         let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env);
         let launch = platform_sandbox_external_agent_launch_with_writable_roots(
             launch,
@@ -299,13 +324,68 @@ impl AcpStdioHarness {
         request: &ExternalAgentRequest,
         source_env: &BTreeMap<String, String>,
     ) -> Result<PathBuf, ExternalAgentError> {
-        let path = source_env.get("PATH").map(String::as_str);
-        which::which_in(self.descriptor.command.program, path, &request.cwd).map_err(|err| {
-            ExternalAgentError::NotReady {
+        self.resolve_program_with_cwd(source_env, &request.cwd)
+            .map_err(|err| ExternalAgentError::NotReady {
                 runtime: request.runtime.as_str().to_string(),
-                reason: err.to_string(),
+                reason: err,
+            })
+    }
+
+    fn resolve_program_with_cwd(
+        &self,
+        source_env: &BTreeMap<String, String>,
+        cwd: &Path,
+    ) -> Result<PathBuf, String> {
+        let path = source_env.get("PATH").map(String::as_str);
+        let mut last_error = None;
+        for program in acp_program_candidates(self.descriptor) {
+            match which::which_in(program, path, cwd) {
+                Ok(program) => return Ok(program),
+                Err(err) => last_error = Some(err.to_string()),
             }
-        })
+        }
+        Err(last_error.unwrap_or_else(|| {
+            format!(
+                "could not resolve external-agent command `{}`",
+                self.descriptor.command.program
+            )
+        }))
+    }
+
+    async fn probe_cursor_runtime(
+        &self,
+        program: &Path,
+        source_env: &BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let env = self
+            .env_policy
+            .sanitize(source_env, &BTreeMap::<String, String>::new());
+        let mut command = Command::new(program);
+        command
+            .args(self.descriptor.command.args)
+            .arg("--help")
+            .env_clear()
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = match tokio::time::timeout(ACP_READINESS_PROBE_TIMEOUT, command.output()).await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => return Err(format!("Cursor ACP readiness probe failed: {err}")),
+            Err(_) => return Ok(()),
+        };
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            Err("Cursor ACP readiness probe exited unsuccessfully".to_string())
+        } else {
+            Err(detail.to_string())
+        }
     }
 
     fn validate_request(&self, request: &ExternalAgentRequest) -> Result<(), ExternalAgentError> {
@@ -366,7 +446,7 @@ impl AcpStdioHarness {
     where
         H: ExternalAgentHost + Send + Sync,
     {
-        process
+        let initialize_result = process
             .request(
                 "initialize",
                 initialize_params(request),
@@ -376,6 +456,9 @@ impl AcpStdioHarness {
                     session: None,
                 },
             )
+            .await?;
+        process
+            .authenticate_if_needed(&initialize_result, request, host)
             .await?;
 
         let session_result = process
@@ -464,10 +547,8 @@ impl ExternalAgentRuntime for AcpStdioHarness {
     }
 
     async fn readiness(&self) -> ExternalAgentReadiness {
-        match which::which(self.descriptor.command.program) {
-            Ok(program) => self.runtime_ready_readiness(&program),
-            Err(err) => self.runtime_missing_readiness(err.to_string()),
-        }
+        let source_env = std::env::vars().collect::<BTreeMap<_, _>>();
+        self.readiness_with_env(&source_env).await
     }
 
     async fn run(
@@ -487,6 +568,55 @@ impl ExternalAgentHarness for AcpStdioHarness {
     fn harness_kind(&self) -> ExternalAgentHarnessKind {
         ExternalAgentHarnessKind::AcpStdio
     }
+}
+
+fn acp_runtime_auth_env_vars(runtime_id: &str) -> &'static [&'static str] {
+    match runtime_id {
+        ExternalAgentRuntimeId::CURSOR => CURSOR_AUTH_ENV_VARS,
+        ExternalAgentRuntimeId::GROK_BUILD => GROK_BUILD_AUTH_ENV_VARS,
+        _ => &[],
+    }
+}
+
+fn acp_program_candidates(descriptor: &ExternalAgentRuntimeDescriptor) -> Vec<&'static str> {
+    if descriptor.id == ExternalAgentRuntimeId::CURSOR {
+        vec![descriptor.command.program, "cursor-agent"]
+    } else {
+        vec![descriptor.command.program]
+    }
+}
+
+fn acp_auth_method(
+    runtime: &ExternalAgentRuntimeId,
+    initialize_result: &JsonValue,
+) -> Result<Option<String>, ExternalAgentError> {
+    let Some(auth_methods) = initialize_result
+        .get("authMethods")
+        .and_then(JsonValue::as_array)
+    else {
+        return Ok(None);
+    };
+    if auth_methods.is_empty() {
+        return Ok(None);
+    }
+    let ids = auth_methods
+        .iter()
+        .filter_map(|method| method.get("id").and_then(JsonValue::as_str))
+        .collect::<Vec<_>>();
+    let preferred = match runtime.as_str() {
+        ExternalAgentRuntimeId::CURSOR => &["cursor_login", "cached_token"][..],
+        ExternalAgentRuntimeId::GROK_BUILD => &["cached_token", "xai.api_key"][..],
+        _ => &["cached_token"][..],
+    };
+    for method_id in preferred {
+        if ids.contains(method_id) {
+            return Ok(Some((*method_id).to_string()));
+        }
+    }
+    Err(protocol_error(
+        runtime,
+        format!("unsupported ACP auth methods: {}", ids.join(", ")),
+    ))
 }
 
 struct AcpRequestContext<'a> {
@@ -595,6 +725,36 @@ impl AcpStdioProcess {
         }))
         .await?;
         self.await_response(id, host, context).await
+    }
+
+    async fn authenticate_if_needed<H>(
+        &mut self,
+        initialize_result: &JsonValue,
+        request: &ExternalAgentRequest,
+        host: &H,
+    ) -> Result<(), ExternalAgentError>
+    where
+        H: ExternalAgentHost + Send + Sync,
+    {
+        let Some(method_id) = acp_auth_method(&request.runtime, initialize_result)? else {
+            return Ok(());
+        };
+        self.request(
+            "authenticate",
+            json!({
+                "methodId": method_id,
+                "_meta": {
+                    "headless": true,
+                },
+            }),
+            host,
+            AcpRequestContext {
+                request,
+                session: None,
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn await_response<H>(
@@ -1410,6 +1570,8 @@ mod tests {
     use super::*;
     use crate::find_external_agent_runtime;
     use pretty_assertions::assert_eq;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -1456,7 +1618,11 @@ mod tests {
             ExternalAgentLaunchSpec {
                 runtime: ExternalAgentRuntimeId::from("grok-build"),
                 program: PathBuf::from("/usr/bin/grok"),
-                args: vec!["agent".to_string(), "stdio".to_string()],
+                args: vec![
+                    "--no-auto-update".to_string(),
+                    "agent".to_string(),
+                    "stdio".to_string(),
+                ],
                 arg0: None,
                 cwd: PathBuf::from("/repo"),
                 env: BTreeMap::from([("PATH".to_string(), "/bin".to_string())]),
@@ -1656,6 +1822,49 @@ sys.stderr.flush()
         assert_eq!(
             err.to_string(),
             "external agent runtime `fake` protocol error: ACP process exited; stderr: auth missing"
+        );
+    }
+
+    #[test]
+    fn acp_auth_method_selects_known_runtime_methods() {
+        let cursor_init = json!({
+            "authMethods": [
+                {"id": "cursor_login"},
+                {"id": "unknown"},
+            ],
+        });
+        let grok_init = json!({
+            "authMethods": [
+                {"id": "xai.api_key"},
+            ],
+        });
+
+        assert_eq!(
+            acp_auth_method(&ExternalAgentRuntimeId::from("cursor"), &cursor_init)
+                .expect("cursor auth"),
+            Some("cursor_login".to_string())
+        );
+        assert_eq!(
+            acp_auth_method(&ExternalAgentRuntimeId::from("grok-build"), &grok_init)
+                .expect("grok auth"),
+            Some("xai.api_key".to_string())
+        );
+    }
+
+    #[test]
+    fn acp_auth_method_rejects_unknown_advertised_methods() {
+        let init = json!({
+            "authMethods": [
+                {"id": "browser_popup"},
+            ],
+        });
+
+        let err = acp_auth_method(&ExternalAgentRuntimeId::from("cursor"), &init)
+            .expect_err("unknown auth method should be rejected");
+
+        assert_eq!(
+            err.to_string(),
+            "external agent runtime `cursor` protocol error: unsupported ACP auth methods: browser_popup"
         );
     }
 
@@ -2328,8 +2537,70 @@ for line in sys.stdin:
             grok_build.harness_kind(),
             ExternalAgentHarnessKind::AcpStdio
         );
-        assert_eq!(cursor.descriptor().command.program, "cursor-agent");
-        assert_eq!(grok_build.descriptor().command.args, ["agent", "stdio"]);
+        assert_eq!(cursor.descriptor().command.program, "agent");
+        assert_eq!(cursor.descriptor().command.args, ["acp"]);
+        assert_eq!(
+            grok_build.descriptor().command.args,
+            ["--no-auto-update", "agent", "stdio"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_resolver_falls_back_to_cursor_agent_wrapper() {
+        let temp_dir = tempfile::tempdir().unwrap_or_else(|err| panic!("tempdir: {err}"));
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap_or_else(|err| panic!("create bin: {err}"));
+        let cursor_agent = bin_dir.join("cursor-agent");
+        std::fs::write(&cursor_agent, "#!/bin/sh\nexit 0\n")
+            .unwrap_or_else(|err| panic!("write cursor-agent: {err}"));
+        let mut permissions = std::fs::metadata(&cursor_agent)
+            .unwrap_or_else(|err| panic!("metadata cursor-agent: {err}"))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cursor_agent, permissions)
+            .unwrap_or_else(|err| panic!("chmod cursor-agent: {err}"));
+        let harness = cursor_acp_harness().expect("cursor harness");
+        let source_env = BTreeMap::from([("PATH".to_string(), bin_dir.display().to_string())]);
+
+        let resolved = harness
+            .resolve_program_with_cwd(&source_env, temp_dir.path())
+            .expect("resolve cursor fallback");
+
+        assert_eq!(resolved, cursor_agent);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_readiness_rejects_broken_agent_wrapper() {
+        let temp_dir = tempfile::tempdir().unwrap_or_else(|err| panic!("tempdir: {err}"));
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap_or_else(|err| panic!("create bin: {err}"));
+        let agent = bin_dir.join("agent");
+        std::fs::write(
+            &agent,
+            "#!/bin/sh\necho 'No Cursor IDE installation found' >&2\nexit 42\n",
+        )
+        .unwrap_or_else(|err| panic!("write agent: {err}"));
+        let mut permissions = std::fs::metadata(&agent)
+            .unwrap_or_else(|err| panic!("metadata agent: {err}"))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&agent, permissions)
+            .unwrap_or_else(|err| panic!("chmod agent: {err}"));
+        let harness = cursor_acp_harness().expect("cursor harness");
+        let source_env = BTreeMap::from([("PATH".to_string(), bin_dir.display().to_string())]);
+
+        let readiness = harness.readiness_with_env(&source_env).await;
+
+        assert_eq!(
+            readiness.status,
+            ExternalAgentReadinessStatus::MissingRuntime
+        );
+        assert_eq!(
+            readiness.detail,
+            Some("No Cursor IDE installation found".to_string())
+        );
     }
 
     #[test]

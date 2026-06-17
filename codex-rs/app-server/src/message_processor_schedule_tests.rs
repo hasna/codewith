@@ -1129,9 +1129,9 @@ fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Re
         );
         assert!(
             response_request_bodies.iter().any(|body| body
-                .contains("You are running one scheduled Codewith prompt")
+                .contains("You are running one new scheduled Codewith prompt")
                 && body
-                    .contains("Produce exactly one response for this scheduled run, then stop.")
+                    .contains("Produce exactly one visible final response for this scheduled run")
                 && body.contains("Do not wait, sleep, start a timer")),
             "scheduled prompt should tell the model this is one scheduled run: {response_request_bodies:#?}"
         );
