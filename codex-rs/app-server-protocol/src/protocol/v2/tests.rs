@@ -985,6 +985,50 @@ fn thread_external_agent_start_response_round_trip() {
 }
 
 #[test]
+fn thread_external_agent_cancel_params_round_trip() {
+    let params = ThreadExternalAgentCancelParams {
+        thread_id: "thr_123".to_string(),
+        run_id: "ext_456".to_string(),
+    };
+
+    let value =
+        serde_json::to_value(&params).expect("serialize thread/externalAgent/cancel params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runId": "ext_456",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadExternalAgentCancelParams>(value)
+        .expect("deserialize thread/externalAgent/cancel params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_external_agent_cancel_response_round_trip() {
+    let response = ThreadExternalAgentCancelResponse {
+        cancelled: true,
+        message: "external-agent run cancellation requested".to_string(),
+    };
+
+    let value =
+        serde_json::to_value(&response).expect("serialize thread/externalAgent/cancel response");
+    assert_eq!(
+        value,
+        json!({
+            "cancelled": true,
+            "message": "external-agent run cancellation requested",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadExternalAgentCancelResponse>(value)
+        .expect("deserialize thread/externalAgent/cancel response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
 fn thread_external_agent_event_notification_round_trip() {
     let notification = ThreadExternalAgentEventNotification {
         thread_id: "thr_123".to_string(),

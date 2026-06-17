@@ -24,8 +24,22 @@
         "null"
       ]
     },
+    "modelGateway": {
+      "description": "Gateway id to scope model browsing. Omission preserves active/provider behavior.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "modelProvider": {
       "description": "Provider id whose models should be listed. Omission uses the active provider.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "upstreamProvider": {
+      "description": "Aggregator upstream provider id, such as the prefix in OpenRouter model slugs.",
       "type": [
         "string",
         "null"

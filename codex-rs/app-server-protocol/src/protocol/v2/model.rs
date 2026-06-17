@@ -40,7 +40,41 @@ pub struct ModelProviderCapabilitiesReadResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct ModelProviderListParams {}
+pub struct ModelGatewayListParams {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelGatewayListResponse {
+    pub data: Vec<ModelGatewaySummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelGatewaySummary {
+    pub id: String,
+    pub name: String,
+    pub kind: ModelGatewayKind,
+    pub is_current: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ModelGatewayKind {
+    Direct,
+    Aggregator,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderListParams {
+    /// Gateway id to scope provider browsing. Omission preserves the provider-only catalog.
+    #[ts(optional = nullable)]
+    pub model_gateway: Option<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +89,9 @@ pub struct ModelProviderListResponse {
 pub struct ModelProviderSummary {
     pub id: String,
     pub name: String,
+    pub model_gateway: String,
+    pub model_gateway_name: String,
+    pub model_gateway_kind: ModelGatewayKind,
     pub auth_kind: ModelProviderAuthKind,
     pub requires_openai_auth: bool,
     pub is_current: bool,
@@ -88,6 +125,12 @@ pub struct ModelListParams {
     /// Provider id whose models should be listed. Omission uses the active provider.
     #[ts(optional = nullable)]
     pub model_provider: Option<String>,
+    /// Gateway id to scope model browsing. Omission preserves active/provider behavior.
+    #[ts(optional = nullable)]
+    pub model_gateway: Option<String>,
+    /// Aggregator upstream provider id, such as the prefix in OpenRouter model slugs.
+    #[ts(optional = nullable)]
+    pub upstream_provider: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -120,6 +163,11 @@ pub struct ModelServiceTier {
 pub struct Model {
     pub id: String,
     pub model: String,
+    pub model_provider: String,
+    pub model_gateway: String,
+    pub model_gateway_name: String,
+    pub model_gateway_kind: ModelGatewayKind,
+    pub upstream_provider: Option<String>,
     pub upgrade: Option<String>,
     pub upgrade_info: Option<ModelUpgradeInfo>,
     pub availability_nux: Option<ModelAvailabilityNux>,

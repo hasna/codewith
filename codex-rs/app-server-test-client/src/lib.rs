@@ -37,6 +37,7 @@ use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
@@ -1636,7 +1637,7 @@ impl CodexClient {
         let request_id = self.request_id();
         let request = ClientRequest::GetAccountRateLimits {
             request_id: request_id.clone(),
-            params: None,
+            params: GetAccountRateLimitsParams::default(),
         };
 
         self.send_request(request, request_id, "account/rateLimits/read")

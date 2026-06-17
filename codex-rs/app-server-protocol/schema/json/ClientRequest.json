@@ -1243,6 +1243,19 @@
       },
       "type": "object"
     },
+    "GetAccountRateLimitsParams": {
+      "properties": {
+        "authProfile": {
+          "default": null,
+          "description": "Auth profile used for this read. `null` selects the default root auth; omission leaves the app-server's selected auth profile unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "HookMigration": {
       "properties": {
         "name": {
@@ -1733,6 +1746,9 @@
       ],
       "type": "string"
     },
+    "ModelGatewayListParams": {
+      "type": "object"
+    },
     "ModelListParams": {
       "properties": {
         "cursor": {
@@ -1758,8 +1774,22 @@
             "null"
           ]
         },
+        "modelGateway": {
+          "description": "Gateway id to scope model browsing. Omission preserves active/provider behavior.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "modelProvider": {
           "description": "Provider id whose models should be listed. Omission uses the active provider.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstreamProvider": {
+          "description": "Aggregator upstream provider id, such as the prefix in OpenRouter model slugs.",
           "type": [
             "string",
             "null"
@@ -1772,6 +1802,15 @@
       "type": "object"
     },
     "ModelProviderListParams": {
+      "properties": {
+        "modelGateway": {
+          "description": "Gateway id to scope provider browsing. Omission preserves the provider-only catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "NetworkAccess": {
@@ -3441,6 +3480,31 @@
     },
     "ThreadGoalGetParams": {
       "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }
@@ -5250,6 +5314,30 @@
         },
         "method": {
           "enum": [
+            "thread/goal/list"
+          ],
+          "title": "Thread/goal/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadGoalListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/goal/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "thread/goal/clear"
           ],
           "title": "Thread/goal/clearRequestMethod",
@@ -6715,6 +6803,30 @@
         },
         "method": {
           "enum": [
+            "modelGateway/list"
+          ],
+          "title": "ModelGateway/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ModelGatewayListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ModelGateway/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "modelProvider/list"
           ],
           "title": "ModelProvider/listRequestMethod",
@@ -7078,7 +7190,12 @@
           "type": "string"
         },
         "params": {
-          "type": "null"
+          "allOf": [
+            {
+              "$ref": "#/definitions/GetAccountRateLimitsParams"
+            }
+          ],
+          "default": {}
         }
       },
       "required": [

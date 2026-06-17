@@ -21,6 +21,14 @@ where
     serde_with::rust::double_option::deserialize(deserializer)
 }
 
+pub fn deserialize_null_default<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + Default,
+    D: Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 pub fn serialize_double_option<T, S>(
     value: &Option<Option<T>>,
     serializer: S,

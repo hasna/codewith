@@ -526,6 +526,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalGetResponse,
     },
+    ThreadGoalList => "thread/goal/list" {
+        params: v2::ThreadGoalListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalListResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -710,6 +715,12 @@ client_request_definitions! {
         params: v2::ThreadExternalAgentStartParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadExternalAgentStartResponse,
+    },
+    #[experimental("thread/externalAgent/cancel")]
+    ThreadExternalAgentCancel => "thread/externalAgent/cancel" {
+        params: v2::ThreadExternalAgentCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadExternalAgentCancelResponse,
     },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
@@ -978,6 +989,11 @@ client_request_definitions! {
         serialization: None,
         response: v2::ModelListResponse,
     },
+    ModelGatewayList => "modelGateway/list" {
+        params: v2::ModelGatewayListParams,
+        serialization: global_shared_read("config"),
+        response: v2::ModelGatewayListResponse,
+    },
     ModelProviderList => "modelProvider/list" {
         params: v2::ModelProviderListParams,
         serialization: global_shared_read("config"),
@@ -1128,7 +1144,7 @@ client_request_definitions! {
     },
 
     GetAccountRateLimits => "account/rateLimits/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[serde(default, deserialize_with = "crate::protocol::serde_helpers::deserialize_null_default")] v2::GetAccountRateLimitsParams,
         serialization: None,
         response: v2::GetAccountRateLimitsResponse,
     },
@@ -2569,7 +2585,7 @@ mod tests {
     fn serialize_get_account_rate_limits() -> Result<()> {
         let request = ClientRequest::GetAccountRateLimits {
             request_id: RequestId::Integer(1),
-            params: None,
+            params: v2::GetAccountRateLimitsParams::default(),
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
         assert_eq!(request.method(), "account/rateLimits/read");
@@ -2577,8 +2593,73 @@ mod tests {
             json!({
                 "method": "account/rateLimits/read",
                 "id": 1,
+                "params": {},
             }),
             serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_get_account_rate_limits_with_auth_profile() -> Result<()> {
+        let request = ClientRequest::GetAccountRateLimits {
+            request_id: RequestId::Integer(1),
+            params: v2::GetAccountRateLimitsParams {
+                auth_profile: Some(Some("work".to_string())),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(1));
+        assert_eq!(request.method(), "account/rateLimits/read");
+        assert_eq!(
+            json!({
+                "method": "account/rateLimits/read",
+                "id": 1,
+                "params": {
+                    "authProfile": "work",
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_get_account_rate_limits_with_root_auth_profile() -> Result<()> {
+        let request = ClientRequest::GetAccountRateLimits {
+            request_id: RequestId::Integer(1),
+            params: v2::GetAccountRateLimitsParams {
+                auth_profile: Some(None),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(1));
+        assert_eq!(request.method(), "account/rateLimits/read");
+        assert_eq!(
+            json!({
+                "method": "account/rateLimits/read",
+                "id": 1,
+                "params": {
+                    "authProfile": null,
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deserialize_get_account_rate_limits_with_null_params() -> Result<()> {
+        let request = serde_json::from_value::<ClientRequest>(json!({
+            "method": "account/rateLimits/read",
+            "id": 1,
+            "params": null,
+        }))?;
+
+        assert_eq!(
+            request,
+            ClientRequest::GetAccountRateLimits {
+                request_id: RequestId::Integer(1),
+                params: v2::GetAccountRateLimitsParams::default(),
+            }
         );
         Ok(())
     }
@@ -2913,8 +2994,27 @@ mod tests {
                     "limit": null,
                     "cursor": null,
                     "includeHidden": null,
-                    "modelProvider": null
+                    "modelProvider": null,
+                    "modelGateway": null,
+                    "upstreamProvider": null
                 }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_model_gateway_list() -> Result<()> {
+        let request = ClientRequest::ModelGatewayList {
+            request_id: RequestId::Integer(7),
+            params: v2::ModelGatewayListParams::default(),
+        };
+        assert_eq!(
+            json!({
+                "method": "modelGateway/list",
+                "id": 7,
+                "params": {}
             }),
             serde_json::to_value(&request)?,
         );
@@ -2931,7 +3031,9 @@ mod tests {
             json!({
                 "method": "modelProvider/list",
                 "id": 7,
-                "params": {}
+                "params": {
+                    "modelGateway": null
+                }
             }),
             serde_json::to_value(&request)?,
         );
@@ -3408,8 +3510,16 @@ mod tests {
                 thread_id: "thr_123".to_string(),
             },
         };
-        let clear_request = ClientRequest::ThreadGoalClear {
+        let list_request = ClientRequest::ThreadGoalList {
             request_id: RequestId::Integer(3),
+            params: v2::ThreadGoalListParams {
+                thread_id: "thr_123".to_string(),
+                cursor: None,
+                limit: None,
+            },
+        };
+        let clear_request = ClientRequest::ThreadGoalClear {
+            request_id: RequestId::Integer(4),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
             },
@@ -3421,6 +3531,10 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&get_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
             None
         );
         assert_eq!(

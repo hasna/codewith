@@ -79,6 +79,18 @@
         "model": {
           "type": "string"
         },
+        "modelGateway": {
+          "type": "string"
+        },
+        "modelGatewayKind": {
+          "$ref": "#/definitions/ModelGatewayKind"
+        },
+        "modelGatewayName": {
+          "type": "string"
+        },
+        "modelProvider": {
+          "type": "string"
+        },
         "serviceTiers": {
           "default": [],
           "items": {
@@ -111,6 +123,12 @@
               "type": "null"
             }
           ]
+        },
+        "upstreamProvider": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -121,6 +139,10 @@
         "id",
         "isDefault",
         "model",
+        "modelGateway",
+        "modelGatewayKind",
+        "modelGatewayName",
+        "modelProvider",
         "supportedReasoningEfforts"
       ],
       "type": "object"
@@ -135,6 +157,13 @@
         "message"
       ],
       "type": "object"
+    },
+    "ModelGatewayKind": {
+      "enum": [
+        "direct",
+        "aggregator"
+      ],
+      "type": "string"
     },
     "ModelServiceTier": {
       "properties": {

@@ -10,6 +10,8 @@ use codex_protocol::protocol::SpendControlLimitSnapshot as CoreSpendControlLimit
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
+use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use ts_rs::TS;
 
@@ -246,6 +248,33 @@ pub struct ChatgptAuthTokensRefreshResponse {
     pub access_token: String,
     pub chatgpt_account_id: String,
     pub chatgpt_plan_type: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GetAccountRateLimitsParams {
+    /// Auth profile used for this read. `null` selects the default root auth;
+    /// omission leaves the app-server's selected auth profile unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub auth_profile: Option<Option<String>>,
+}
+
+impl Serialize for GetAccountRateLimitsParams {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(usize::from(self.auth_profile.is_some())))?;
+        if let Some(auth_profile) = &self.auth_profile {
+            map.serialize_entry("authProfile", auth_profile)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

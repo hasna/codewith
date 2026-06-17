@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "authProfile": {
+      "default": null,
+      "description": "Auth profile used for this read. `null` selects the default root auth; omission leaves the app-server's selected auth profile unchanged.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "GetAccountRateLimitsParams",
+  "type": "object"
+}

@@ -1,6 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ModelGatewayKind": {
+      "enum": [
+        "direct",
+        "aggregator"
+      ],
+      "type": "string"
+    },
     "ModelProviderAuthKind": {
       "enum": [
         "none",
@@ -23,6 +30,15 @@
         "isCurrent": {
           "type": "boolean"
         },
+        "modelGateway": {
+          "type": "string"
+        },
+        "modelGatewayKind": {
+          "$ref": "#/definitions/ModelGatewayKind"
+        },
+        "modelGatewayName": {
+          "type": "string"
+        },
         "name": {
           "type": "string"
         },
@@ -34,6 +50,9 @@
         "authKind",
         "id",
         "isCurrent",
+        "modelGateway",
+        "modelGatewayKind",
+        "modelGatewayName",
         "name",
         "requiresOpenaiAuth"
       ],

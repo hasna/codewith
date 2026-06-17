@@ -4,11 +4,12 @@
 import type { InputModality } from "../InputModality";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
+import type { ModelGatewayKind } from "./ModelGatewayKind";
 import type { ModelServiceTier } from "./ModelServiceTier";
 import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
 import type { ReasoningEffortOption } from "./ReasoningEffortOption";
 
-export type Model = { id: string, model: string, upgrade: string | null, upgradeInfo: ModelUpgradeInfo | null, availabilityNux: ModelAvailabilityNux | null, displayName: string, description: string, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean,
+export type Model = { id: string, model: string, modelProvider: string, modelGateway: string, modelGatewayName: string, modelGatewayKind: ModelGatewayKind, upstreamProvider: string | null, upgrade: string | null, upgradeInfo: ModelUpgradeInfo | null, availabilityNux: ModelAvailabilityNux | null, displayName: string, description: string, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean,
 /**
  * Deprecated: use `serviceTiers` instead.
  */

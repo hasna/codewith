@@ -809,6 +809,105 @@ pub struct ThreadGoalGetResponse {
     pub goal: Option<ThreadGoal>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanStatus {
+    Active,
+    Paused,
+    Blocked,
+    BudgetLimited,
+    Complete,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanAutoExecute {
+    Off,
+    ReadyOnly,
+    AiDirected,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanNodeStatus {
+    Pending,
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanNode {
+    pub node_id: String,
+    pub plan_id: String,
+    pub thread_id: String,
+    pub key: String,
+    #[ts(type = "number")]
+    pub sequence: i64,
+    #[ts(type = "number")]
+    pub priority: i64,
+    pub objective: String,
+    pub status: ThreadGoalPlanNodeStatus,
+    #[ts(type = "number | null")]
+    pub token_budget: Option<i64>,
+    #[ts(type = "number")]
+    pub tokens_used: i64,
+    #[ts(type = "number")]
+    pub time_used_seconds: i64,
+    #[ts(type = "string | null")]
+    pub projected_goal_id: Option<String>,
+    pub depends_on: Vec<String>,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlan {
+    pub plan_id: String,
+    pub thread_id: String,
+    pub status: ThreadGoalPlanStatus,
+    pub auto_execute: ThreadGoalPlanAutoExecute,
+    #[ts(type = "number | null")]
+    pub max_tokens: Option<i64>,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+    pub nodes: Vec<ThreadGoalPlanNode>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalListParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalListResponse {
+    pub goal: Option<ThreadGoal>,
+    pub goal_plans: Vec<ThreadGoalPlan>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1449,6 +1548,22 @@ pub struct ThreadExternalAgentStartParams {
     pub runtime_id: String,
     pub task: String,
     pub mode: ThreadExternalAgentMode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentCancelParams {
+    pub thread_id: String,
+    pub run_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentCancelResponse {
+    pub cancelled: bool,
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

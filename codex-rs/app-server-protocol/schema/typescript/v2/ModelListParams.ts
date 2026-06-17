@@ -18,4 +18,12 @@ includeHidden?: boolean | null,
 /**
  * Provider id whose models should be listed. Omission uses the active provider.
  */
-modelProvider?: string | null, };
+modelProvider?: string | null,
+/**
+ * Gateway id to scope model browsing. Omission preserves active/provider behavior.
+ */
+modelGateway?: string | null,
+/**
+ * Aggregator upstream provider id, such as the prefix in OpenRouter model slugs.
+ */
+upstreamProvider?: string | null, };
