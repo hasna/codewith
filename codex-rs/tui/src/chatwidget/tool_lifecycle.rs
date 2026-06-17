@@ -49,6 +49,51 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn on_replayed_file_change(
+        &mut self,
+        changes: Vec<codex_app_server_protocol::FileUpdateChange>,
+        status: codex_app_server_protocol::PatchApplyStatus,
+    ) {
+        self.flush_answer_stream_with_separator();
+        if !changes.is_empty() {
+            self.add_to_history(history_cell::new_patch_event(
+                file_update_changes_to_display(changes),
+                &self.config.cwd,
+            ));
+        }
+        if matches!(status, codex_app_server_protocol::PatchApplyStatus::Failed) {
+            self.add_to_history(history_cell::new_patch_apply_failure(String::new()));
+        }
+        self.transcript.had_work_activity = true;
+    }
+
+    pub(super) fn on_replayed_dynamic_tool_call(
+        &mut self,
+        namespace: Option<String>,
+        tool: String,
+        status: codex_app_server_protocol::DynamicToolCallStatus,
+        success: Option<bool>,
+    ) {
+        self.flush_answer_stream_with_separator();
+        let name = namespace
+            .map(|namespace| format!("{namespace}/{tool}"))
+            .unwrap_or(tool);
+        let mut lines: Vec<Line<'static>> =
+            vec![vec!["• ".dim(), "Tool: ".bold(), name.into()].into()];
+        let status = match (status, success) {
+            (codex_app_server_protocol::DynamicToolCallStatus::Completed, Some(true)) => {
+                "completed"
+            }
+            (codex_app_server_protocol::DynamicToolCallStatus::Completed, Some(false))
+            | (codex_app_server_protocol::DynamicToolCallStatus::Failed, _) => "failed",
+            (codex_app_server_protocol::DynamicToolCallStatus::Completed, None) => "completed",
+            (codex_app_server_protocol::DynamicToolCallStatus::InProgress, _) => "running",
+        };
+        lines.push(vec!["  └ ".dim(), status.dim()].into());
+        self.add_to_history(history_cell::PlainHistoryCell::new(lines));
+        self.transcript.had_work_activity = true;
+    }
+
     pub(super) fn on_mcp_tool_call_started(&mut self, item: ThreadItem) {
         let item2 = item.clone();
         self.defer_or_handle(

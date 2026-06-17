@@ -127,11 +127,20 @@ impl ChatWidget {
                 status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
                 ..
             } => self.on_command_execution_started(item),
-            item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
+            item @ ThreadItem::CommandExecution { .. } => {
+                if from_replay {
+                    self.push_command_execution_completed(item);
+                } else {
+                    self.on_command_execution_completed(item);
+                }
+            }
             ThreadItem::FileChange {
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
                 ..
             } => {}
+            ThreadItem::FileChange {
+                changes, status, ..
+            } if from_replay => self.on_replayed_file_change(changes, status),
             item @ ThreadItem::FileChange { .. } => self.on_file_change_completed(item),
             item @ ThreadItem::McpToolCall {
                 status: codex_app_server_protocol::McpToolCallStatus::InProgress,
@@ -190,6 +199,15 @@ impl ChatWidget {
                 reasoning_effort,
                 agents_states,
             }),
+            ThreadItem::DynamicToolCall {
+                namespace,
+                tool,
+                status,
+                success,
+                ..
+            } if from_replay => {
+                self.on_replayed_dynamic_tool_call(namespace, tool, status, success)
+            }
             ThreadItem::DynamicToolCall { .. } => {}
         }
 

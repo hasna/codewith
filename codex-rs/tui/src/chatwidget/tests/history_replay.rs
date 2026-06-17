@@ -10,6 +10,15 @@ use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
+fn drain_history_text(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
+    drain_insert_history(rx)
+        .into_iter()
+        .flatten()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[tokio::test]
 async fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -997,6 +1006,110 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
     let active = active_blob(&chat);
     assert!(active.contains("Calling"));
     assert!(!active.contains("MCP tool call completed without a result"));
+}
+
+#[tokio::test]
+async fn replayed_completed_file_change_renders_patch_summary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::FileChange {
+            id: "patch-1".to_string(),
+            changes: vec![FileUpdateChange {
+                path: "src/lib.rs".to_string(),
+                kind: PatchChangeKind::Add,
+                diff: "pub fn answer() -> i32 { 42 }\n".to_string(),
+            }],
+            status: AppServerPatchApplyStatus::Completed,
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_history_text(&mut rx);
+    assert!(rendered.contains("Added src/lib.rs"));
+}
+
+#[tokio::test]
+async fn replayed_dynamic_tool_call_renders_tool_summary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::DynamicToolCall {
+            id: "dyn-1".to_string(),
+            namespace: Some("ui".to_string()),
+            tool: "statusline".to_string(),
+            arguments: json!({"action": "set"}),
+            status: codex_app_server_protocol::DynamicToolCallStatus::Completed,
+            content_items: None,
+            success: Some(true),
+            duration_ms: Some(12),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_history_text(&mut rx);
+    assert!(rendered.contains("Tool: ui/statusline"));
+    assert!(rendered.contains("completed"));
+}
+
+#[tokio::test]
+async fn live_dynamic_tool_call_completion_does_not_render_replay_summary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+    let thread_id = chat.thread_id.map(|id| id.to_string()).unwrap_or_default();
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "dyn-1".to_string(),
+                namespace: Some("ui".to_string()),
+                tool: "statusline".to_string(),
+                arguments: json!({"action": "set"}),
+                status: codex_app_server_protocol::DynamicToolCallStatus::Completed,
+                content_items: None,
+                success: Some(true),
+                duration_ms: Some(12),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_history_text(&mut rx);
+    assert!(!rendered.contains("Tool: ui/statusline"));
+}
+
+#[tokio::test]
+async fn replayed_completed_unified_exec_renders_history_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::CommandExecution {
+            id: "exec-1".to_string(),
+            command: "echo replayed".to_string(),
+            cwd: chat.config.cwd.clone(),
+            process_id: Some("proc-1".to_string()),
+            source: ExecCommandSource::UnifiedExecStartup,
+            status: AppServerCommandExecutionStatus::Completed,
+            command_actions: Vec::new(),
+            aggregated_output: Some("done\n".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(4),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_history_text(&mut rx);
+    assert!(rendered.contains("echo replayed"));
+    assert!(rendered.contains("done"));
 }
 
 #[tokio::test]

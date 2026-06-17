@@ -363,7 +363,7 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
     }
 }
 
-fn thread_id(chat: &ChatWidget) -> String {
+pub(super) fn thread_id(chat: &ChatWidget) -> String {
     chat.thread_id.map(|id| id.to_string()).unwrap_or_default()
 }
 

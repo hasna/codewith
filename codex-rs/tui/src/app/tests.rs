@@ -1647,6 +1647,26 @@ fn update_config_value_persists_and_updates_runtime_state() -> Result<()> {
         assert!(!app.config.check_for_update_on_startup);
         assert!(!app.chat_widget.config_ref().check_for_update_on_startup);
 
+        app.update_config_value_with_app_server(
+            &app_server,
+            "tui.animations".to_string(),
+            serde_json::json!(false),
+            "Animations".to_string(),
+        )
+        .await;
+        app.update_config_value_with_app_server(
+            &app_server,
+            "tui.show_tooltips".to_string(),
+            serde_json::json!(false),
+            "Tooltips".to_string(),
+        )
+        .await;
+
+        assert!(!app.config.animations);
+        assert!(!app.chat_widget.config_ref().animations);
+        assert!(!app.config.show_tooltips);
+        assert!(!app.chat_widget.config_ref().show_tooltips);
+
         let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
         let config_value = toml::from_str::<TomlValue>(&config)?;
         let config_table = config_value
@@ -1664,6 +1684,12 @@ fn update_config_value_persists_and_updates_runtime_state() -> Result<()> {
             config_table.get("check_for_update_on_startup"),
             Some(&TomlValue::Boolean(false))
         );
+        let tui = config_table
+            .get("tui")
+            .and_then(TomlValue::as_table)
+            .expect("tui table should exist");
+        assert_eq!(tui.get("animations"), Some(&TomlValue::Boolean(false)));
+        assert_eq!(tui.get("show_tooltips"), Some(&TomlValue::Boolean(false)));
 
         app_server.shutdown().await?;
         Ok(())
@@ -4240,6 +4266,106 @@ async fn completed_auth_profile_login_selects_profile_for_running_session() {
 }
 
 #[tokio::test]
+async fn permission_update_persists_last_permissions_for_selected_auth_profile() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    let codex_home_abs = codex_home.path().to_path_buf().abs();
+    app.config.codex_home = codex_home_abs.clone();
+    app.chat_widget.config_mut_for_tests().codex_home = codex_home_abs;
+    save_test_auth_profile_for_app(&app, "work");
+    app.config.selected_auth_profile = Some("work".to_string());
+    app.chat_widget.set_auth_profile(Some("work".to_string()));
+
+    assert!(
+        app.apply_permission_profile_selection(PermissionProfileSelection {
+            profile_id: codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                .to_string(),
+            approval_policy: Some(AskForApproval::Never),
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            display_label: "Full Access".to_string(),
+        })
+        .await
+    );
+
+    assert_eq!(
+        codex_login::load_auth_profile_metadata(codex_home.path(), "work")?.last_permissions,
+        Some(codex_login::AuthProfilePermissionSettings {
+            default_permissions:
+                codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string(),
+            approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_profile_switch_includes_saved_profile_permissions() -> Result<()> {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    let codex_home_abs = codex_home.path().to_path_buf().abs();
+    app.config.codex_home = codex_home_abs.clone();
+    app.chat_widget.config_mut_for_tests().codex_home = codex_home_abs;
+    save_test_auth_profile_for_app(&app, "personal");
+    save_test_auth_profile_for_app(&app, "work");
+    app.config.selected_auth_profile = Some("personal".to_string());
+    app.chat_widget
+        .set_auth_profile(Some("personal".to_string()));
+    let mut metadata = codex_login::load_auth_profile_metadata(codex_home.path(), "work")?;
+    metadata.last_permissions = Some(codex_login::AuthProfilePermissionSettings {
+        default_permissions: codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+            .to_string(),
+        approval_policy: codex_protocol::protocol::AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+    });
+    codex_login::save_auth_profile_metadata(codex_home.path(), "work", metadata)?;
+    while op_rx.try_recv().is_ok() {}
+
+    app.submit_auth_profile_switch(
+        Some("work".to_string()),
+        &crate::app_event::AuthProfileSwitchReason::Manual,
+        /*resume_queued_input*/ false,
+    )
+    .await;
+
+    assert_eq!(
+        app.config.selected_auth_profile.as_deref(),
+        Some("personal")
+    );
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .selected_auth_profile
+            .as_deref(),
+        Some("personal")
+    );
+    assert_eq!(
+        op_rx.try_recv(),
+        Ok(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: Some(AskForApproval::Never),
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            permission_profile: Some(PermissionProfile::Disabled),
+            active_permission_profile: Some(ActivePermissionProfile::new(
+                codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+            )),
+            auth_profile: Some(Some("work".to_string())),
+            windows_sandbox_level: None,
+            model_provider: None,
+            model: None,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_auth_profile_login_does_not_switch_profile() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     while op_rx.try_recv().is_ok() {}
@@ -4275,6 +4401,7 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
 
     let stale_completion = app.apply_rate_limits_loaded(
         RateLimitRefreshOrigin::StartupPrefetch,
+        RateLimitRefreshTarget::Selected,
         Some("work".to_string()),
         Ok(vec![rate_limit_snapshot_for_window(
             /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -4295,6 +4422,7 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
 
     let current_completion = app.apply_rate_limits_loaded(
         RateLimitRefreshOrigin::StartupPrefetch,
+        RateLimitRefreshTarget::Selected,
         Some("personal".to_string()),
         Ok(vec![rate_limit_snapshot_for_window(
             /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -4324,7 +4452,8 @@ async fn auth_profile_switch_waits_for_settings_update_before_visible_state_chan
         Some("work".to_string()),
         &crate::app_event::AuthProfileSwitchReason::Manual,
         /*resume_queued_input*/ false,
-    );
+    )
+    .await;
 
     assert_eq!(
         app.config.selected_auth_profile.as_deref(),

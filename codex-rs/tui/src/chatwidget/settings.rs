@@ -851,20 +851,6 @@ impl ChatWidget {
         self.update_collaboration_mode_indicator();
     }
 
-    /// Cycle to the next collaboration mode variant (Plan -> Default -> Plan).
-    pub(super) fn cycle_collaboration_mode(&mut self) {
-        if !self.collaboration_modes_enabled() {
-            return;
-        }
-
-        if let Some(next_mask) = collaboration_modes::next_mask(
-            self.model_catalog.as_ref(),
-            self.active_collaboration_mask.as_ref(),
-        ) {
-            self.set_collaboration_mask_from_user_action(next_mask);
-        }
-    }
-
     pub(crate) fn set_collaboration_mask_from_user_action(&mut self, mask: CollaborationModeMask) {
         self.set_collaboration_mask(mask);
         self.submit_collaboration_mode_settings_update();

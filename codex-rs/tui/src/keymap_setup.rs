@@ -1017,6 +1017,7 @@ mod tests {
                 "Chat.interrupt_turn",
                 "Editor.insert_newline",
                 "Composer.queue",
+                "Global.cycle_permissions",
                 "Global.open_external_editor",
                 "Global.copy",
                 "Global.toggle_vim_mode",
@@ -1612,6 +1613,10 @@ mod tests {
         assert_eq!(
             key_event_to_config_key_spec(KeyEvent::new(KeyCode::PageDown, KeyModifiers::SHIFT)),
             Ok("shift-page-down".to_string())
+        );
+        assert_eq!(
+            key_event_to_config_key_spec(KeyEvent::from(KeyCode::BackTab)),
+            Ok("shift-tab".to_string())
         );
     }
 

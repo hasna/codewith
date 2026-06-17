@@ -155,6 +155,10 @@ impl ChatWidget {
                 return;
             }
         }
+        self.push_command_execution_completed(item);
+    }
+
+    pub(super) fn push_command_execution_completed(&mut self, item: ThreadItem) {
         let item2 = item.clone();
         self.defer_or_handle(
             |q| q.push_item_completed(item),

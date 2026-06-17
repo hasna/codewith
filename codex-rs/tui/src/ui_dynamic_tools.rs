@@ -33,13 +33,13 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: CONFIG_TOOL.to_string(),
-            description: "Inspect or update the same curated config toggles shown by /config. Use action=list_options before action=set to get valid option IDs without exposing every config.toml key upfront.".to_string(),
+            description: "Inspect or update the same curated config toggles shown by /config, grouped by settings section. Use action=list_options before action=set to get valid section and option IDs without exposing every config.toml key upfront.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "Use list_options to inspect current safe toggles; use set to apply one or more logical toggle states."
+                        "description": "Use list_options to inspect current safe toggles and sections; use set to apply one or more logical toggle states during this session."
                     },
                     "updates": {
                         "type": "array",

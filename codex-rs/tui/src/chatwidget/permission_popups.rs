@@ -241,6 +241,73 @@ impl ChatWidget {
         );
     }
 
+    pub(crate) fn cycle_permission_level(&mut self) {
+        let presets = self.permission_cycle_presets();
+        if presets.is_empty() {
+            self.add_info_message(
+                "No permission presets are available for this session.".to_string(),
+                Some("Check config requirements or use /permissions for details.".to_string()),
+            );
+            return;
+        }
+
+        let current_approval =
+            AskForApproval::from(self.config.permissions.approval_policy.value());
+        let current_permission_profile = self.config.permissions.permission_profile().clone();
+        let current_index = presets.iter().position(|preset| {
+            Self::preset_matches_current(
+                current_approval,
+                &current_permission_profile,
+                self.config.cwd.as_path(),
+                preset,
+            )
+        });
+        let default_index = presets
+            .iter()
+            .position(|preset| preset.id == "auto")
+            .unwrap_or_default();
+        let next_index = current_index.map_or(default_index, |index| (index + 1) % presets.len());
+        let preset = &presets[next_index];
+        let label = if preset.id == "auto" {
+            ASK_FOR_APPROVAL_LABEL.to_string()
+        } else {
+            preset.label.to_string()
+        };
+
+        for action in self.permission_mode_actions(
+            preset,
+            label,
+            ApprovalsReviewer::User,
+            /*profile_selection*/ None,
+            /*return_to_permissions*/ true,
+        ) {
+            action(&self.app_event_tx);
+        }
+    }
+
+    fn permission_cycle_presets(&self) -> Vec<ApprovalPreset> {
+        let presets = builtin_approval_presets();
+        ["read-only", "auto", "full-access"]
+            .into_iter()
+            .filter_map(|id| presets.iter().find(|preset| preset.id == id))
+            .filter(|preset| self.permission_cycle_preset_is_available(preset))
+            .cloned()
+            .collect()
+    }
+
+    fn permission_cycle_preset_is_available(&self, preset: &ApprovalPreset) -> bool {
+        self.config
+            .permissions
+            .approval_policy
+            .can_set(&preset.approval)
+            .is_ok()
+            && self
+                .config
+                .permissions
+                .can_set_permission_profile(&preset.permission_profile)
+                .is_ok()
+    }
+
     pub(super) fn approval_preset_actions(
         approval: AskForApproval,
         permission_profile: PermissionProfile,

@@ -9,9 +9,11 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event::McpInventoryTarget;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
+use crate::app_event::RateLimitRefreshTarget;
 use crate::config_update::format_config_error;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
+use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveParams;
@@ -104,16 +106,19 @@ impl App {
         &mut self,
         app_server: &AppServerSession,
         origin: RateLimitRefreshOrigin,
+        target: RateLimitRefreshTarget,
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
-        let auth_profile = self.config.selected_auth_profile.clone();
+        let auth_profile = target.auth_profile_key(self.config.selected_auth_profile.as_deref());
+        let params = rate_limit_params_for_target(&target);
         tokio::spawn(async move {
-            let result = fetch_account_rate_limits(request_handle)
+            let result = fetch_account_rate_limits(request_handle, params)
                 .await
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::RateLimitsLoaded {
                 origin,
+                target,
                 auth_profile,
                 result,
             });
@@ -788,17 +793,27 @@ async fn reload_mcp_servers(
 
 pub(super) async fn fetch_account_rate_limits(
     request_handle: AppServerRequestHandle,
+    params: GetAccountRateLimitsParams,
 ) -> Result<Vec<RateLimitSnapshot>> {
     let request_id = RequestId::String(format!("account-rate-limits-{}", Uuid::new_v4()));
     let response: GetAccountRateLimitsResponse = request_handle
-        .request_typed(ClientRequest::GetAccountRateLimits {
-            request_id,
-            params: None,
-        })
+        .request_typed(ClientRequest::GetAccountRateLimits { request_id, params })
         .await
         .wrap_err("account/rateLimits/read failed in TUI")?;
 
     Ok(app_server_rate_limit_snapshots(response))
+}
+
+fn rate_limit_params_for_target(target: &RateLimitRefreshTarget) -> GetAccountRateLimitsParams {
+    match target {
+        RateLimitRefreshTarget::Selected => GetAccountRateLimitsParams::default(),
+        RateLimitRefreshTarget::Root => GetAccountRateLimitsParams {
+            auth_profile: Some(None),
+        },
+        RateLimitRefreshTarget::Named(profile) => GetAccountRateLimitsParams {
+            auth_profile: Some(Some(profile.clone())),
+        },
+    }
 }
 
 pub(super) async fn fetch_session_recap(
@@ -1300,6 +1315,26 @@ mod tests {
         app.agent_navigation.mark_closed(thread_id);
 
         assert_eq!(app.mcp_inventory_request_thread_id(Some(thread_id)), None);
+    }
+
+    #[test]
+    fn rate_limit_params_for_target_maps_selected_root_and_named_profiles() {
+        assert_eq!(
+            rate_limit_params_for_target(&RateLimitRefreshTarget::Selected),
+            GetAccountRateLimitsParams { auth_profile: None }
+        );
+        assert_eq!(
+            rate_limit_params_for_target(&RateLimitRefreshTarget::Root),
+            GetAccountRateLimitsParams {
+                auth_profile: Some(None)
+            }
+        );
+        assert_eq!(
+            rate_limit_params_for_target(&RateLimitRefreshTarget::Named("work".to_string())),
+            GetAccountRateLimitsParams {
+                auth_profile: Some(Some("work".to_string()))
+            }
+        );
     }
 
     #[test]

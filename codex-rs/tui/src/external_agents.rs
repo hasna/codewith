@@ -33,7 +33,7 @@ pub(crate) fn external_agent_picker_params() -> SelectionViewParams {
     SelectionViewParams {
         view_id: Some("external-agent-picker"),
         title: Some("External Agent".to_string()),
-        subtitle: Some("Choose an external coding-agent runtime.".to_string()),
+        subtitle: Some("Choose a runtime; tasks open in linked agent threads.".to_string()),
         items,
         is_searchable: true,
         search_placeholder: Some("Type to filter runtimes...".to_string()),
@@ -98,8 +98,8 @@ mod tests {
             .map(|item| item.description.as_deref().unwrap_or_default())
             .collect::<Vec<_>>();
 
-        assert!(descriptions[0].contains("Command: cursor-agent acp"));
-        assert!(descriptions[1].contains("Command: grok agent stdio"));
+        assert!(descriptions[0].contains("Command: agent acp"));
+        assert!(descriptions[1].contains("Command: grok --no-auto-update agent stdio"));
         assert!(descriptions[2].contains("Command: claude"));
     }
 
@@ -130,11 +130,11 @@ mod tests {
             snapshot,
             @r###"
         title: External Agent
-        subtitle: Choose an external coding-agent runtime.
+        subtitle: Choose a runtime; tasks open in linked agent threads.
         search: Type to filter runtimes...
         items:
-        - Cursor | Run Cursor's agent through an ACP-compatible harness. Status: <readiness>. Command: cursor-agent acp
-        - Grok Build | Run Grok Build through xAI's ACP stdio agent. Status: <readiness>. Command: grok agent stdio
+        - Cursor | Run Cursor's agent through an ACP-compatible harness. Status: <readiness>. Command: agent acp
+        - Grok Build | Run Grok Build through xAI's ACP stdio agent. Status: <readiness>. Command: grok --no-auto-update agent stdio
         - Claude Code | Run Claude Code through Claude's CLI/Agent SDK stream. Status: <readiness>. Command: claude
         "###
         );

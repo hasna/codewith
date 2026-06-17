@@ -85,6 +85,8 @@ use codex_app_server_protocol::ThreadGoalClearParams;
 use codex_app_server_protocol::ThreadGoalClearResponse;
 use codex_app_server_protocol::ThreadGoalGetParams;
 use codex_app_server_protocol::ThreadGoalGetResponse;
+use codex_app_server_protocol::ThreadGoalListParams;
+use codex_app_server_protocol::ThreadGoalListResponse;
 use codex_app_server_protocol::ThreadGoalSetParams;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -327,6 +329,8 @@ impl AppServerSession {
                     limit: None,
                     include_hidden: Some(true),
                     model_provider: None,
+                    model_gateway: None,
+                    upstream_provider: None,
                 },
             })
             .await
@@ -419,6 +423,8 @@ impl AppServerSession {
                     limit: None,
                     include_hidden: Some(true),
                     model_provider: Some(provider_id),
+                    model_gateway: None,
+                    upstream_provider: None,
                 },
             })
             .await
@@ -544,6 +550,16 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        self.fork_thread_with_source(config, thread_id, ThreadSource::User)
+            .await
+    }
+
+    pub(crate) async fn fork_thread_with_source(
+        &mut self,
+        config: Config,
+        thread_id: ThreadId,
+        thread_source: ThreadSource,
+    ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(&config);
         let response: ThreadForkResponse = self
@@ -555,6 +571,7 @@ impl AppServerSession {
                     thread_id,
                     self.thread_params_mode(),
                     self.remote_cwd_override.as_deref(),
+                    thread_source,
                 ),
             })
             .await
@@ -982,6 +999,24 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/goal/get failed in TUI")
+    }
+
+    pub(crate) async fn thread_goal_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadGoalListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadGoalList {
+                request_id,
+                params: ThreadGoalListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("thread/goal/list failed in TUI")
     }
 
     pub(crate) async fn thread_goal_set(
@@ -1501,9 +1536,9 @@ impl AppServerSession {
         runtime_id: String,
         task: String,
         mode: ThreadExternalAgentMode,
-    ) -> Result<()> {
+    ) -> Result<ThreadExternalAgentStartResponse> {
         let request_id = self.next_request_id();
-        let _: ThreadExternalAgentStartResponse = self
+        let response: ThreadExternalAgentStartResponse = self
             .client
             .request_typed(ClientRequest::ThreadExternalAgentStart {
                 request_id,
@@ -1515,8 +1550,8 @@ impl AppServerSession {
                 },
             })
             .await
-            .wrap_err("thread/externalAgent/start failed in TUI")?;
-        Ok(())
+            .wrap_err("external-agent start request failed")?;
+        Ok(response)
     }
 
     pub(crate) async fn thread_approve_guardian_denied_action(
@@ -2045,6 +2080,7 @@ fn thread_fork_params_from_config(
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
+    thread_source: ThreadSource,
 ) -> ThreadForkParams {
     let permissions = permissions_selection_from_config(&config, thread_params_mode);
     let sandbox = permissions
@@ -2075,7 +2111,7 @@ fn thread_fork_params_from_config(
             config.developer_instructions.clone(),
         ),
         ephemeral: config.ephemeral,
-        thread_source: Some(ThreadSource::User),
+        thread_source: Some(thread_source),
         ..ThreadForkParams::default()
     }
 }
@@ -2639,6 +2675,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
 
         assert_eq!(start.cwd, None);
@@ -2696,6 +2733,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
 
         assert_eq!(start.auth_profile, Some(Some("work".to_string())));
@@ -2790,6 +2828,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
+            ThreadSource::User,
         );
 
         assert_eq!(start.cwd.as_deref(), Some("repo/on/server"));
@@ -2842,6 +2881,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
 
         let expected_service_tier = Some(Some(ServiceTier::Fast.request_value().to_string()));
@@ -2887,6 +2927,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_fork_params_can_mark_subagent_source() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+
+        let params = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ThreadSource::Subagent,
+        );
+
+        assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+    }
+
+    #[tokio::test]
     async fn thread_fork_params_forward_instruction_overrides() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&temp_dir).await;
@@ -2899,6 +2956,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
 
         assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
@@ -2932,6 +2990,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
 
         assert_eq!(control_start.developer_instructions, None);
@@ -2961,6 +3020,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ThreadSource::User,
         );
         let expected = format!(
             "Developer override.\n\n{}",

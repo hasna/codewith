@@ -4,7 +4,10 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_model_provider_info::HASNA_GATEWAY_NAME;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::model_gateway_for_provider;
+use codex_model_provider_info::model_gateway_name;
 
 const MAX_PICKER_DESCRIPTION_WORDS: usize = 8;
 
@@ -71,7 +74,13 @@ impl ChatWidget {
                 } else {
                     name.to_string()
                 };
-                (id.clone(), display_name, provider.requires_openai_auth)
+                let gateway_id = model_gateway_for_provider(id);
+                let gateway_name = model_gateway_name(gateway_id).unwrap_or(HASNA_GATEWAY_NAME);
+                (
+                    id.clone(),
+                    format!("{gateway_name} / {display_name}"),
+                    provider.requires_openai_auth,
+                )
             })
             .collect::<Vec<_>>();
         providers.sort_by(|left, right| {
@@ -110,8 +119,8 @@ impl ChatWidget {
             .collect();
 
         let mut header = ColumnRenderable::new();
-        header.push(Line::from("Select Provider".bold()));
-        header.push(Line::from("Switch chat provider and model.".dim()));
+        header.push(Line::from("Select Gateway / Provider".bold()));
+        header.push(Line::from("Switch gateway, provider, and model.".dim()));
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
             items,
@@ -308,7 +317,12 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header("Select Model and Effort", "Pick a model and effort.");
+        let subtitle = self
+            .model_catalog
+            .provider_id()
+            .map(|provider_id| format!("{} / {provider_id}", self.model_catalog.gateway_name()))
+            .unwrap_or_else(|| self.model_catalog.gateway_name().to_string());
+        let header = self.model_menu_header("Select Model and Effort", &subtitle);
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,

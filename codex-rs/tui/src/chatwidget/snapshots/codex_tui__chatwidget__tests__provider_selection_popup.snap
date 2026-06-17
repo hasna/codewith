@@ -2,12 +2,12 @@
 source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: popup
 ---
-  Select Provider
-  Switch chat provider and model.
+  Select Gateway / Provider
+  Switch gateway, provider, and model.
 
-› 1. OpenAI (current)  Uses Codewith or OpenAI login
-  2. Cerebras          cerebras
-  3. NVIDIA            nvidia
-  4. OpenRouter        openrouter
+› 1. Hasna / OpenAI (current)  Uses Codewith or OpenAI login
+  2. Hasna / Cerebras          cerebras
+  3. Hasna / NVIDIA            nvidia
+  4. OpenRouter / OpenRouter   openrouter
 
   Press enter to confirm or esc to go back

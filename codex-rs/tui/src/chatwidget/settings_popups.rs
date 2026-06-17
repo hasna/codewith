@@ -126,27 +126,65 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_config_popup(&mut self) {
-        let items = crate::common_config_options::common_config_options(&self.config)
-            .into_iter()
-            .map(config_selection_item)
+        let items = crate::common_config_options::common_config_sections()
+            .iter()
+            .copied()
+            .map(|section| config_section_item(&self.config, section))
             .collect();
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Config".bold()));
         header.push(Line::from(
-            "Toggle common config.toml settings for future turns.".dim(),
+            "Choose a focused config.toml settings section.".dim(),
         ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: Box::new(header),
+            footer_hint: Some(Line::from("Press enter to open; esc to close")),
+            items,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_config_section_popup(
+        &mut self,
+        section: crate::common_config_options::CommonConfigSection,
+    ) {
+        let mut items: Vec<SelectionItem> =
+            crate::common_config_options::common_config_options_for_section(&self.config, section)
+                .into_iter()
+                .map(config_selection_item)
+                .collect();
+        items.push(back_to_config_menu_item());
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from(format!("Config: {}", section.label()).bold()));
+        header.push(Line::from(section.description().dim()));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
             footer_hint: Some(Line::from("Press space to toggle; esc to close")),
             items,
             is_searchable: true,
+            search_placeholder: Some(format!("Search {} settings", section.label())),
             ..Default::default()
         });
     }
 
     pub(crate) fn apply_config_popup_value(&mut self, key_path: &str, value: &serde_json::Value) {
+        if key_path == "goals.auto_execute" {
+            let Some(value) = value.as_str() else {
+                return;
+            };
+            self.config.goals.auto_execute = match value {
+                "ai-directed" => crate::legacy_core::config::GoalAutoExecuteMode::AiDirected,
+                "ready-only" => crate::legacy_core::config::GoalAutoExecuteMode::ReadyOnly,
+                "off" => crate::legacy_core::config::GoalAutoExecuteMode::Off,
+                _ => self.config.goals.auto_execute,
+            };
+            return;
+        }
+
         let Some(enabled) = value.as_bool() else {
             return;
         };
@@ -169,6 +207,13 @@ impl ChatWidget {
             }
             "session_recap.enabled" => {
                 self.config.session_recap.enabled = enabled;
+            }
+            "tui.animations" => {
+                self.config.animations = enabled;
+                self.bottom_pane.set_animations_enabled(enabled);
+            }
+            "tui.show_tooltips" => {
+                self.config.show_tooltips = enabled;
             }
             "hide_agent_reasoning" => {
                 self.config.hide_agent_reasoning = enabled;
@@ -364,6 +409,46 @@ impl ChatWidget {
             Personality::Friendly => "Warm, collaborative, and helpful.",
             Personality::Pragmatic => "Concise, task-focused, and direct.",
         }
+    }
+}
+
+fn config_section_item(
+    config: &crate::legacy_core::config::Config,
+    section: crate::common_config_options::CommonConfigSection,
+) -> SelectionItem {
+    let setting_count =
+        crate::common_config_options::common_config_options_for_section(config, section).len();
+    let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+        tx.send(AppEvent::OpenConfigSection { section });
+    })];
+    SelectionItem {
+        name: section.label().to_string(),
+        description: Some(format!(
+            "{} {setting_count} settings.",
+            section.description()
+        )),
+        actions,
+        dismiss_on_select: true,
+        search_value: Some(format!(
+            "{} {} {}",
+            section.id(),
+            section.label(),
+            section.description()
+        )),
+        ..Default::default()
+    }
+}
+
+fn back_to_config_menu_item() -> SelectionItem {
+    let actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+        tx.send(AppEvent::OpenConfigMenu);
+    })];
+    SelectionItem {
+        name: "Back to sections".to_string(),
+        description: Some("Return to the config section menu.".to_string()),
+        actions,
+        dismiss_on_select: true,
+        ..Default::default()
     }
 }
 

@@ -471,6 +471,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_animations_enabled(&mut self, enabled: bool) {
+        self.animations_enabled = enabled;
+        self.request_redraw();
+    }
+
     pub(crate) fn toggle_vim_enabled(&mut self) -> bool {
         let enabled = self.composer.toggle_vim_enabled();
         self.request_redraw();

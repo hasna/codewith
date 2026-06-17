@@ -2837,7 +2837,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("personal"));
     assert!(popup.contains("work"));
     assert!(popup.contains("Log in new profile"));
-    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
+    assert!(popup.contains("ChatGPT Pro / el@elyratelier.com"));
     assert!(!popup.contains("ChatGPT / Pro"));
     assert!(!popup.contains("ChatGPT / ApiKey"));
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
@@ -2847,9 +2847,11 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_selection_popup_profile_actions", popup);
-    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
+    assert!(popup.contains("usage unknown"));
+    assert!(!popup.contains("› 2. personal            ChatGPT Pro / el@elyratelier.com"));
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
     assert!(popup.contains("Press enter to confirm or esc to go back"));
+    drain_profile_usage_refresh_events(&mut rx);
 
     chat.open_profile_popup();
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -2963,6 +2965,21 @@ async fn profile_login_prompt_snapshot_and_submit() {
         }) if profile == "work-dev"
             && subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
     );
+}
+
+fn drain_profile_usage_refresh_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            matches!(
+                event,
+                AppEvent::RefreshRateLimits {
+                    origin: RateLimitRefreshOrigin::Heartbeat,
+                    ..
+                }
+            ),
+            "unexpected event while draining profile usage refreshes: {event:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3091,16 +3108,17 @@ async fn profile_selection_popup_shows_usage_hints() {
         .insert(Some("personal".to_string()), stale_snapshots);
 
     chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
     let popup = render_bottom_popup(&chat, /*width*/ 120);
     assert_chatwidget_snapshot!("profile_selection_popup_usage_hints", popup);
     assert!(!popup.contains("usage unknown"));
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
     assert!(popup.contains("Press enter to confirm or esc to go back"));
-    assert!(popup.contains("ChatGPT Pro · el@elyratelier.com"));
-    assert!(popup.contains("stale 5h 30% left"));
+    assert!(!popup.contains("ChatGPT Pro / el@elyratelier.com"));
+    assert!(popup.contains("stale weekly 60% left, 5h 30% left"));
     assert!(popup.contains("weekly"));
-    assert!(popup.contains("60% left"));
+    assert!(popup.contains("ChatGPT API key"));
     assert!(popup.contains("Enter switch / l relogin / r rename"));
 }
 
@@ -3110,15 +3128,16 @@ async fn profile_popup_requests_usage_heartbeat_when_selected_usage_is_missing()
     chat.thread_id = Some(ThreadId::new());
     chat.config.selected_auth_profile = Some("work".to_string());
     set_chatgpt_auth(&mut chat);
-    save_popup_auth_profile(&chat, "work");
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
     while rx.try_recv().is_ok() {}
 
     chat.open_profile_popup();
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::RefreshRateLimits {
-            origin: RateLimitRefreshOrigin::Heartbeat
-        })
+            origin: RateLimitRefreshOrigin::Heartbeat,
+            target: RateLimitRefreshTarget::Named(profile),
+        }) if profile == "work"
     );
 
     chat.open_profile_popup();
@@ -3131,7 +3150,7 @@ async fn profile_popup_skips_usage_heartbeat_when_selected_usage_is_fresh() {
     chat.thread_id = Some(ThreadId::new());
     chat.config.selected_auth_profile = Some("work".to_string());
     set_chatgpt_auth(&mut chat);
-    save_popup_auth_profile(&chat, "work");
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
     chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
         /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
     )));
@@ -3139,6 +3158,19 @@ async fn profile_popup_skips_usage_heartbeat_when_selected_usage_is_fresh() {
 
     chat.open_profile_popup();
     assert_no_rate_limit_refresh_event(&mut rx);
+}
+
+#[tokio::test]
+async fn usage_heartbeat_includes_saved_chatgpt_profile_when_active_session_is_api_key() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    assert!(!chat.should_prefetch_rate_limits());
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
 }
 
 fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
@@ -3183,11 +3215,47 @@ async fn config_popup_snapshot_and_toggle() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_popup", popup);
-    assert!(popup.contains("Update checks"));
-    assert!(popup.contains("Codewith"));
-    assert!(popup.contains("Auth profile auto-switch"));
-    assert!(popup.contains("Paste burst detection"));
+    assert!(popup.contains("Account & automation"));
+    assert!(popup.contains("AI context"));
+    assert!(popup.contains("Interface & privacy"));
 
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenConfigSection { section })
+            if section == crate::common_config_options::CommonConfigSection::AccountAutomation
+    );
+
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::AccountAutomation,
+    );
+    let account_popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_account_automation_popup", account_popup);
+    assert!(account_popup.contains("Update checks"));
+    assert!(account_popup.contains("Codewith"));
+    assert!(account_popup.contains("Auth profile auto-switch"));
+    assert!(account_popup.contains("Session recap"));
+
+    chat.open_config_section_popup(crate::common_config_options::CommonConfigSection::AiContext);
+    let ai_context_popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_ai_context_popup", ai_context_popup);
+    assert!(ai_context_popup.contains("Environment context"));
+    assert!(ai_context_popup.contains("Permission instructions"));
+    assert!(ai_context_popup.contains("Skill instructions"));
+
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::InterfacePrivacy,
+    );
+    let interface_popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_interface_privacy_popup", interface_popup);
+    assert!(interface_popup.contains("Paste burst detection"));
+    assert!(interface_popup.contains("Animations"));
+    assert!(interface_popup.contains("Tooltips"));
+    assert!(interface_popup.contains("Feedback"));
+
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::AccountAutomation,
+    );
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert_matches!(

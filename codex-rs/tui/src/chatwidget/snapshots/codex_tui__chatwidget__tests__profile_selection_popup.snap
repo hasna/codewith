@@ -5,8 +5,8 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
-› 1. default (current)   Root login
-  2. personal            ChatGPT Pro · el@elyratelier.com
+› 1. default (current)   usage unknown
+  2. personal            ChatGPT Pro / el@elyratelier.com
   3. work                ChatGPT API key
   4. Log in new profile  Create a saved auth profile
 

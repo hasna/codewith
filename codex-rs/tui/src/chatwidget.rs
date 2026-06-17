@@ -267,6 +267,7 @@ use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
+use crate::app_event::RateLimitRefreshTarget;
 #[cfg(any(target_os = "windows", test))]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -586,6 +587,7 @@ pub(crate) struct ChatWidget {
     /// Holds the platform clipboard lease so copied text remains available while supported.
     clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     copy_last_response_binding: Vec<KeyBinding>,
+    cycle_permissions_binding: Vec<KeyBinding>,
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
@@ -1987,6 +1989,11 @@ impl ChatWidget {
     /// runtime overrides applied via TUI, e.g., model or approval policy).
     pub(crate) fn config_ref(&self) -> &Config {
         &self.config
+    }
+
+    #[cfg(test)]
+    pub(crate) fn config_mut_for_tests(&mut self) -> &mut Config {
+        &mut self.config
     }
 
     #[cfg(test)]

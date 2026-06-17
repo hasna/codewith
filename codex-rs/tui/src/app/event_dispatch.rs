@@ -10,6 +10,7 @@ use crate::config_update::format_config_error;
 use crate::style::accent_color;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
+use codex_model_provider_info::model_gateway_for_provider;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
@@ -43,6 +44,7 @@ impl App {
         match crate::config_update::write_config_batch(app_server.request_handle(), edits).await {
             Ok(_) => {
                 self.config.model_provider_id = provider_id.clone();
+                self.config.model_gateway_id = model_gateway_for_provider(&provider_id).to_string();
                 self.config.model_provider = provider_info.clone();
                 self.config.model = Some(model.clone());
                 self.config.model_reasoning_effort = effort.clone();
@@ -893,8 +895,13 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
-            AppEvent::RefreshRateLimits { origin } => {
-                self.refresh_rate_limits(app_server, origin);
+            AppEvent::RefreshRateLimits { origin, target } => {
+                self.refresh_rate_limits(app_server, origin, target);
+            }
+            AppEvent::RefreshAuthProfileUsageHeartbeats => {
+                for target in self.chat_widget.auth_profile_usage_refresh_targets() {
+                    self.refresh_rate_limits(app_server, RateLimitRefreshOrigin::Heartbeat, target);
+                }
             }
             AppEvent::RefreshMiniMaxUsage { origin } => {
                 self.refresh_minimax_usage(origin);
@@ -1122,6 +1129,22 @@ impl App {
             AppEvent::StartBackgroundAgent { prompt } => {
                 self.start_background_agent(app_server, prompt).await;
             }
+            AppEvent::StartExternalAgentChildThread {
+                runtime_id,
+                runtime_display_name,
+                task,
+                mode,
+            } => {
+                self.start_external_agent_child_thread(
+                    tui,
+                    app_server,
+                    runtime_id,
+                    runtime_display_name,
+                    task,
+                    mode,
+                )
+                .await;
+            }
             AppEvent::ReadBackgroundAgent { agent_id } => {
                 self.read_background_agent(app_server, agent_id).await;
             }
@@ -1173,10 +1196,11 @@ impl App {
             }
             AppEvent::RateLimitsLoaded {
                 origin,
+                target,
                 auth_profile,
                 result,
             } => {
-                if self.apply_rate_limits_loaded(origin, auth_profile, result)
+                if self.apply_rate_limits_loaded(origin, target, auth_profile, result)
                     == RateLimitRefreshCompletion::ScheduleFrame
                 {
                     tui.frame_requester().schedule_frame();
@@ -1288,7 +1312,8 @@ impl App {
                 reason,
                 resume_queued_input,
             } => {
-                self.submit_auth_profile_switch(profile, &reason, resume_queued_input);
+                self.submit_auth_profile_switch(profile, &reason, resume_queued_input)
+                    .await;
             }
             AppEvent::OpenAuthProfileRenamePrompt { profile } => {
                 self.chat_widget.open_auth_profile_rename_prompt(profile);
@@ -1349,6 +1374,12 @@ impl App {
             } => {
                 self.update_config_value_with_app_server(app_server, key_path, value, label)
                     .await;
+            }
+            AppEvent::OpenConfigMenu => {
+                self.chat_widget.open_config_popup();
+            }
+            AppEvent::OpenConfigSection { section } => {
+                self.chat_widget.open_config_section_popup(section);
             }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
@@ -2139,6 +2170,7 @@ impl App {
                     Some(RuntimePermissionProfileOverride::from_config(&self.config));
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
+                self.persist_current_auth_profile_permission_settings();
                 self.chat_widget.submit_initial_user_message_if_pending();
 
                 // If a managed filesystem sandbox is active, run the Windows
@@ -2185,6 +2217,7 @@ impl App {
                 self.chat_widget.set_approvals_reviewer(policy);
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
+                self.persist_current_auth_profile_permission_settings();
                 if let Err(err) = crate::config_update::write_config_batch(
                     app_server.request_handle(),
                     vec![crate::config_update::replace_config_value(
@@ -2689,17 +2722,70 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
-    pub(super) fn submit_auth_profile_switch(
+    pub(super) async fn submit_auth_profile_switch(
         &mut self,
         profile: Option<String>,
         reason: &crate::app_event::AuthProfileSwitchReason,
         resume_queued_input: bool,
     ) {
-        let submitted = self
-            .chat_widget
-            .submit_op(AppCommand::override_turn_context_auth_profile(
-                profile.clone(),
-            ));
+        let op = match profile.as_deref() {
+            Some(profile_name) => {
+                match codex_login::load_auth_profile_metadata(&self.config.codex_home, profile_name)
+                {
+                    Ok(metadata) => match metadata.last_permissions {
+                        Some(settings) => match self
+                            .rebuild_config_for_auth_profile_permission_settings(&settings)
+                            .await
+                        {
+                            Ok(config) => AppCommand::OverrideTurnContext {
+                                cwd: None,
+                                approval_policy: Some(AskForApproval::from(
+                                    config.permissions.approval_policy.value(),
+                                )),
+                                approvals_reviewer: Some(config.approvals_reviewer),
+                                permission_profile: Some(
+                                    config.permissions.permission_profile().clone(),
+                                ),
+                                active_permission_profile: config
+                                    .permissions
+                                    .active_permission_profile(),
+                                auth_profile: Some(profile.clone()),
+                                windows_sandbox_level: None,
+                                model_provider: None,
+                                model: None,
+                                effort: None,
+                                summary: None,
+                                service_tier: None,
+                                collaboration_mode: None,
+                                personality: None,
+                            },
+                            Err(err) => {
+                                tracing::warn!(
+                                    profile = profile_name,
+                                    error = %err,
+                                    "failed to apply saved auth profile permissions during profile switch"
+                                );
+                                self.chat_widget.add_error_message(format!(
+                                "Saved permissions for auth profile `{profile_name}` could not be applied: {err}"
+                            ));
+                                AppCommand::override_turn_context_auth_profile(profile.clone())
+                            }
+                        },
+                        None => AppCommand::override_turn_context_auth_profile(profile.clone()),
+                    },
+                    Err(err) => {
+                        tracing::warn!(
+                            profile = profile_name,
+                            error = %err,
+                            "failed to load auth profile metadata during profile switch"
+                        );
+                        AppCommand::override_turn_context_auth_profile(profile.clone())
+                    }
+                }
+            }
+            None => AppCommand::override_turn_context_auth_profile(profile.clone()),
+        };
+        let submitted = self.chat_widget.submit_op(op);
         if submitted {
             let queued_input_will_resume =
                 resume_queued_input && self.chat_widget.has_queued_follow_up_messages();
@@ -2909,10 +2995,12 @@ impl App {
     pub(super) fn apply_rate_limits_loaded(
         &mut self,
         origin: RateLimitRefreshOrigin,
+        target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
     ) -> RateLimitRefreshCompletion {
-        if auth_profile != self.config.selected_auth_profile {
+        let is_current_profile = auth_profile == self.config.selected_auth_profile;
+        if target.targets_selected_profile() && !is_current_profile {
             tracing::debug!(
                 request_auth_profile = ?auth_profile,
                 current_auth_profile = ?self.config.selected_auth_profile,
@@ -2927,8 +3015,13 @@ impl App {
 
         match result {
             Ok(snapshots) => {
-                for snapshot in snapshots {
-                    self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
+                if is_current_profile {
+                    for snapshot in snapshots {
+                        self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
+                    }
+                } else {
+                    self.chat_widget
+                        .on_auth_profile_rate_limit_snapshots(auth_profile, snapshots);
                 }
                 match origin {
                     RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
@@ -2943,7 +3036,14 @@ impl App {
                 }
             }
             Err(err) => {
-                tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
+                if matches!(origin, RateLimitRefreshOrigin::StatusCommand { .. })
+                    || target.targets_selected_profile()
+                    || is_current_profile
+                {
+                    tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
+                } else {
+                    tracing::debug!("account/rateLimits/read heartbeat failed: {err}");
+                }
                 if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
                     self.chat_widget
                         .finish_status_rate_limit_refresh(request_id);

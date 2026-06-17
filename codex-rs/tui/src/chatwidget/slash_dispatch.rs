@@ -121,18 +121,112 @@ const BACKGROUND_AGENT_USAGE_HINT: &str =
     "Examples: /agent peers, /agent send <thread-id> hello, /agent start fix the flaky test";
 const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <thread-id> <message>";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
-const EXTERNAL_AGENT_USAGE: &str = "Usage: /external-agent [cursor|grok-build|claude] [task]";
+const EXTERNAL_AGENT_USAGE: &str =
+    "Usage: /external-agent [inline|--inline] [plan|propose] [cursor|grok-build|claude] [task]";
 const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
 
-fn parse_external_agent_args(trimmed: &str) -> Option<(&str, &str)> {
+#[derive(Debug, PartialEq, Eq)]
+enum ExternalAgentSlashCommand<'a> {
+    Runtime {
+        runtime_id: &'a str,
+        prompt: &'a str,
+        mode: ThreadExternalAgentMode,
+        inline: bool,
+    },
+}
+
+fn split_external_agent_token(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    if input.is_empty() {
+        return None;
+    }
+    let token_end = input.find(char::is_whitespace).unwrap_or(input.len());
+    let (token, rest) = input.split_at(token_end);
+    Some((token, rest.trim_start()))
+}
+
+fn parse_external_agent_mode(token: &str) -> Option<ThreadExternalAgentMode> {
+    match token {
+        "plan" => Some(ThreadExternalAgentMode::Plan),
+        "propose" => Some(ThreadExternalAgentMode::Propose),
+        _ => None,
+    }
+}
+
+fn parse_external_agent_options(
+    mut input: &str,
+    mut mode: ThreadExternalAgentMode,
+    allow_inline: bool,
+) -> Option<(ThreadExternalAgentMode, bool, &str)> {
+    let mut inline = false;
+    loop {
+        let Some((token, rest)) = split_external_agent_token(input) else {
+            return Some((mode, inline, input.trim()));
+        };
+        if let Some(mode_token) = token.strip_prefix("--mode=") {
+            mode = parse_external_agent_mode(mode_token)?;
+            input = rest;
+            continue;
+        }
+        match token {
+            "inline" | "--inline" if allow_inline => {
+                inline = true;
+                input = rest;
+            }
+            "child" | "--child" if allow_inline => {
+                inline = false;
+                input = rest;
+            }
+            "plan" | "--plan" => {
+                mode = ThreadExternalAgentMode::Plan;
+                input = rest;
+            }
+            "propose" | "--propose" => {
+                mode = ThreadExternalAgentMode::Propose;
+                input = rest;
+            }
+            "--mode" => {
+                let (mode_token, mode_rest) = split_external_agent_token(rest)?;
+                mode = parse_external_agent_mode(mode_token)?;
+                input = mode_rest;
+            }
+            _ => return Some((mode, inline, input.trim())),
+        }
+    }
+}
+
+fn parse_external_agent_args(trimmed: &str) -> Option<ExternalAgentSlashCommand<'_>> {
     let trimmed = trimmed.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let runtime_id = parts.next()?;
-    let prompt = parts.next().unwrap_or_default().trim();
-    Some((runtime_id, prompt))
+    let (mode, inline, rest) =
+        parse_external_agent_options(trimmed, ThreadExternalAgentMode::Plan, true)?;
+    let (head, rest) = split_external_agent_token(rest)?;
+    Some(ExternalAgentSlashCommand::Runtime {
+        runtime_id: head,
+        prompt: rest.trim(),
+        mode,
+        inline,
+    })
+}
+
+fn external_agent_mode_label(mode: ThreadExternalAgentMode) -> &'static str {
+    match mode {
+        ThreadExternalAgentMode::Plan => "plan",
+        ThreadExternalAgentMode::Propose => "propose",
+    }
+}
+
+fn resolve_visible_external_agent_runtime(
+    runtime_id: &str,
+) -> Result<&'static codex_external_agent::ExternalAgentRuntimeDescriptor, String> {
+    if runtime_id == "grok" {
+        return Err("Use `/external-agent grok-build` for Grok Build.".to_string());
+    }
+    find_external_agent_runtime(runtime_id)
+        .filter(|runtime| runtime.visible)
+        .ok_or_else(|| EXTERNAL_AGENT_USAGE.to_string())
 }
 
 fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
@@ -338,6 +432,7 @@ impl ChatWidget {
         if let Some(request_id) = rate_limit_request_id {
             self.app_event_tx.send(AppEvent::RefreshRateLimits {
                 origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+                target: RateLimitRefreshTarget::Selected,
             });
         }
         if let Some(request_id) = minimax_request_id {
@@ -353,60 +448,95 @@ impl ChatWidget {
     }
 
     fn handle_external_agent_command_args(&mut self, trimmed: &str) {
-        let Some((runtime_id, prompt)) = parse_external_agent_args(trimmed) else {
+        let Some(command) = parse_external_agent_args(trimmed) else {
             self.add_error_message(EXTERNAL_AGENT_USAGE.to_string());
             return;
         };
-        if runtime_id == "grok" {
-            self.add_error_message("Use `/external-agent grok-build` for Grok Build.".to_string());
-            return;
-        }
-        let Some(runtime) =
-            find_external_agent_runtime(runtime_id).filter(|runtime| runtime.visible)
-        else {
-            self.add_error_message(EXTERNAL_AGENT_USAGE.to_string());
-            return;
-        };
-        let readiness = external_agent_runtime_readiness(runtime);
-        let readiness_status = match readiness.status {
-            ExternalAgentReadinessStatus::Ready => "command ready",
-            ExternalAgentReadinessStatus::MissingRuntime => "missing command",
-            ExternalAgentReadinessStatus::MissingAuth => "missing auth",
-            ExternalAgentReadinessStatus::Unsupported => "unsupported",
-            ExternalAgentReadinessStatus::Disabled => "disabled",
-        };
-        let command = if runtime.command.args.is_empty() {
-            runtime.command.program.to_string()
-        } else {
-            format!(
-                "{} {}",
-                runtime.command.program,
-                runtime.command.args.join(" ")
-            )
-        };
-        if prompt.is_empty() {
-            self.add_info_message(
-                format!("External agent runtime `{runtime_id}` selected ({readiness_status})."),
-                Some(format!(
-                    "Command: {command}. Add a task after the runtime id to stage it."
-                )),
-            );
-        } else {
-            if self.thread_id.is_none() {
-                self.add_error_message(
-                    "'/external-agent' is unavailable before the session starts.".to_string(),
-                );
-                return;
+        match command {
+            ExternalAgentSlashCommand::Runtime {
+                runtime_id,
+                prompt,
+                mode,
+                inline,
+            } => {
+                let runtime = match resolve_visible_external_agent_runtime(runtime_id) {
+                    Ok(runtime) => runtime,
+                    Err(message) => {
+                        self.add_error_message(message);
+                        return;
+                    }
+                };
+                let readiness = external_agent_runtime_readiness(runtime);
+                let readiness_status = match readiness.status {
+                    ExternalAgentReadinessStatus::Ready => "command ready",
+                    ExternalAgentReadinessStatus::MissingRuntime => "missing command",
+                    ExternalAgentReadinessStatus::MissingAuth => "missing auth",
+                    ExternalAgentReadinessStatus::Unsupported => "unsupported",
+                    ExternalAgentReadinessStatus::Disabled => "disabled",
+                };
+                let command = if runtime.command.args.is_empty() {
+                    runtime.command.program.to_string()
+                } else {
+                    format!(
+                        "{} {}",
+                        runtime.command.program,
+                        runtime.command.args.join(" ")
+                    )
+                };
+                if prompt.is_empty() {
+                    self.add_info_message(
+                        format!(
+                            "External agent runtime `{runtime_id}` selected ({readiness_status})."
+                        ),
+                        Some(format!(
+                            "Command: {command}. Add a task after the runtime id to stage it."
+                        )),
+                    );
+                } else {
+                    if self.thread_id.is_none() {
+                        self.add_error_message(
+                            "'/external-agent' is unavailable before the session starts."
+                                .to_string(),
+                        );
+                        return;
+                    }
+                    if inline {
+                        self.submit_op(AppCommand::start_external_agent(
+                            runtime_id.to_string(),
+                            prompt.to_string(),
+                            mode,
+                        ));
+                        self.add_info_message(
+                            format!(
+                                "{} external-agent task routed inline.",
+                                runtime.display_name
+                            ),
+                            Some(format!(
+                                "Mode: {}. The run stays in the current thread.",
+                                external_agent_mode_label(mode)
+                            )),
+                        );
+                    } else {
+                        self.app_event_tx
+                            .send(AppEvent::StartExternalAgentChildThread {
+                                runtime_id: runtime_id.to_string(),
+                                runtime_display_name: runtime.display_name.to_string(),
+                                task: prompt.to_string(),
+                                mode,
+                            });
+                        self.add_info_message(
+                            format!(
+                                "{} external-agent child thread requested.",
+                                runtime.display_name
+                            ),
+                            Some(format!(
+                                "Mode: {}. A linked agent thread will open for the run.",
+                                external_agent_mode_label(mode)
+                            )),
+                        );
+                    }
+                }
             }
-            self.submit_op(AppCommand::start_external_agent(
-                runtime_id.to_string(),
-                prompt.to_string(),
-                ThreadExternalAgentMode::Plan,
-            ));
-            self.add_info_message(
-                format!("{} external-agent task routed.", runtime.display_name),
-                Some("Mode: plan. The app-server host will keep execution gated until the runtime bridge is ready.".to_string()),
-            );
         }
     }
 
@@ -2262,22 +2392,64 @@ fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
 
 #[cfg(test)]
 mod external_agent_arg_tests {
+    use super::ExternalAgentSlashCommand;
     use super::TmuxSlashCommand;
     use super::parse_external_agent_args;
     use super::parse_tmux_slash_args;
+    use codex_app_server_protocol::ThreadExternalAgentMode;
 
     #[test]
     fn parses_external_agent_runtime_and_prompt() {
         assert_eq!(
             parse_external_agent_args("grok-build inspect this repo"),
-            Some(("grok-build", "inspect this repo"))
+            Some(ExternalAgentSlashCommand::Runtime {
+                runtime_id: "grok-build",
+                prompt: "inspect this repo",
+                mode: ThreadExternalAgentMode::Plan,
+                inline: false,
+            })
         );
-        assert_eq!(parse_external_agent_args("cursor"), Some(("cursor", "")));
+        assert_eq!(
+            parse_external_agent_args("cursor"),
+            Some(ExternalAgentSlashCommand::Runtime {
+                runtime_id: "cursor",
+                prompt: "",
+                mode: ThreadExternalAgentMode::Plan,
+                inline: false,
+            })
+        );
         assert_eq!(
             parse_external_agent_args("claude inspect this repo"),
-            Some(("claude", "inspect this repo"))
+            Some(ExternalAgentSlashCommand::Runtime {
+                runtime_id: "claude",
+                prompt: "inspect this repo",
+                mode: ThreadExternalAgentMode::Plan,
+                inline: false,
+            })
         );
         assert_eq!(parse_external_agent_args("   "), None);
+    }
+
+    #[test]
+    fn parses_external_agent_inline_modes() {
+        assert_eq!(
+            parse_external_agent_args("inline propose claude inspect this repo"),
+            Some(ExternalAgentSlashCommand::Runtime {
+                runtime_id: "claude",
+                prompt: "inspect this repo",
+                mode: ThreadExternalAgentMode::Propose,
+                inline: true,
+            })
+        );
+        assert_eq!(
+            parse_external_agent_args("inline --mode=propose claude inspect this repo"),
+            Some(ExternalAgentSlashCommand::Runtime {
+                runtime_id: "claude",
+                prompt: "inspect this repo",
+                mode: ThreadExternalAgentMode::Propose,
+                inline: true,
+            })
+        );
     }
 
     #[test]

@@ -87,6 +87,11 @@ pub(crate) fn normalize_key_parts(
     key: KeyCode,
     mut modifiers: KeyModifiers,
 ) -> (KeyCode, KeyModifiers) {
+    if matches!(key, KeyCode::BackTab) {
+        modifiers.insert(KeyModifiers::SHIFT);
+        return (KeyCode::Tab, modifiers);
+    }
+
     let KeyCode::Char(ch) = key else {
         return (key, modifiers);
     };
@@ -254,6 +259,15 @@ mod tests {
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)));
+    }
+
+    #[test]
+    fn backtab_matches_shift_tab_binding() {
+        let binding = shift(KeyCode::Tab);
+        let event = KeyEvent::from(KeyCode::BackTab);
+
+        assert!(binding.is_press(event));
+        assert_eq!(KeyBinding::from_event(event), binding);
     }
 
     #[test]

@@ -70,6 +70,8 @@ pub(crate) struct AppKeymap {
     pub(crate) toggle_fast_mode: Vec<KeyBinding>,
     /// Toggle raw scrollback mode for copy-friendly transcript selection.
     pub(crate) toggle_raw_output: Vec<KeyBinding>,
+    /// Cycle to the next permissions preset.
+    pub(crate) cycle_permissions: Vec<KeyBinding>,
 }
 
 /// Chat-level keybindings evaluated at the app event layer.
@@ -421,6 +423,11 @@ impl RuntimeKeymap {
                 keymap.global.toggle_raw_output.as_ref(),
                 &defaults.app.toggle_raw_output,
                 "tui.keymap.global.toggle_raw_output",
+            )?,
+            cycle_permissions: resolve_bindings(
+                keymap.global.cycle_permissions.as_ref(),
+                &defaults.app.cycle_permissions,
+                "tui.keymap.global.cycle_permissions",
             )?,
         };
 
@@ -809,6 +816,10 @@ impl RuntimeKeymap {
                 keymap.global.toggle_raw_output.as_ref(),
                 app.toggle_raw_output.as_slice(),
             ),
+            (
+                keymap.global.cycle_permissions.as_ref(),
+                app.cycle_permissions.as_slice(),
+            ),
             (keymap.list.move_up.as_ref(), list_move_up.as_slice()),
             (keymap.list.move_down.as_ref(), list_move_down.as_slice()),
             (keymap.list.accept.as_ref(), list_accept.as_slice()),
@@ -916,6 +927,7 @@ impl RuntimeKeymap {
                 toggle_vim_mode: default_bindings![],
                 toggle_fast_mode: default_bindings![],
                 toggle_raw_output: default_bindings![alt(KeyCode::Char('r'))],
+                cycle_permissions: default_bindings![shift(KeyCode::Tab)],
             },
             chat: ChatKeymap {
                 interrupt_turn: default_bindings![plain(KeyCode::Esc)],
@@ -1175,6 +1187,7 @@ impl RuntimeKeymap {
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
+                ("cycle_permissions", self.app.cycle_permissions.as_slice()),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
                     "chat.decrease_reasoning_effort",
@@ -1218,6 +1231,7 @@ impl RuntimeKeymap {
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
+                ("cycle_permissions", self.app.cycle_permissions.as_slice()),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
                     "chat.decrease_reasoning_effort",
@@ -1267,6 +1281,7 @@ impl RuntimeKeymap {
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
+                ("cycle_permissions", self.app.cycle_permissions.as_slice()),
             ],
             [
                 ("list.move_up", self.list.move_up.as_slice()),
@@ -1341,6 +1356,7 @@ impl RuntimeKeymap {
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
+                ("cycle_permissions", self.app.cycle_permissions.as_slice()),
                 (
                     "composer.history_search_previous",
                     self.composer.history_search_previous.as_slice(),
@@ -1789,10 +1805,6 @@ const MAIN_RESERVED_BINDINGS: &[(&str, KeyBinding)] = &[
     ("fixed.quit", key_hint::ctrl(KeyCode::Char('d'))),
     ("fixed.paste_image", key_hint::ctrl(KeyCode::Char('v'))),
     ("fixed.paste_image", key_hint::ctrl_alt(KeyCode::Char('v'))),
-    (
-        "fixed.cycle_collaboration_mode",
-        key_hint::shift(KeyCode::Tab),
-    ),
     ("fixed.backtrack", key_hint::plain(KeyCode::Esc)),
     ("fixed.previous_agent", key_hint::alt(KeyCode::Left)),
     ("fixed.next_agent", key_hint::alt(KeyCode::Right)),
@@ -2047,6 +2059,13 @@ mod tests {
     }
 
     #[test]
+    fn parses_shift_tab_binding() {
+        let binding = parse_keybinding("shift-tab").expect("binding should parse");
+
+        assert_eq!(binding, key_hint::shift(KeyCode::Tab));
+    }
+
+    #[test]
     fn rejects_shadowing_composer_binding_in_app_scope() {
         let mut keymap = TuiKeymap::default();
         keymap.global.open_transcript = Some(one("ctrl-t"));
@@ -2205,6 +2224,10 @@ mod tests {
             vec![key_hint::ctrl(KeyCode::Char('l'))]
         );
         assert_eq!(runtime.app.toggle_fast_mode, Vec::new());
+        assert_eq!(
+            runtime.app.cycle_permissions,
+            vec![key_hint::shift(KeyCode::Tab)]
+        );
         assert_eq!(
             runtime.chat.interrupt_turn,
             vec![key_hint::plain(KeyCode::Esc)]
@@ -2828,6 +2851,22 @@ mod tests {
         assert_eq!(
             runtime.app.toggle_raw_output,
             vec![key_hint::plain(KeyCode::F(12))]
+        );
+    }
+
+    #[test]
+    fn cycle_permissions_can_be_remapped() {
+        let mut keymap = TuiKeymap::default();
+        keymap.global.cycle_permissions = Some(one("ctrl-shift-p"));
+
+        let runtime = RuntimeKeymap::from_config(&keymap).expect("config should parse");
+
+        assert_eq!(
+            runtime.app.cycle_permissions,
+            vec![KeyBinding::new(
+                KeyCode::Char('p'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )]
         );
     }
 

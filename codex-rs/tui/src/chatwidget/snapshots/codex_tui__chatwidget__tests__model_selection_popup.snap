@@ -3,7 +3,7 @@ source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: popup
 ---
   Select Model and Effort
-  Pick a model and effort.
+  Hasna
 
   1. gpt-5.5 (default)    Frontier model for complex coding, research, and
                           real-world

@@ -26,6 +26,10 @@ fn model_provider_selection_edits_update_provider_model_and_effort() {
                 serde_json::json!("openrouter"),
             ),
             replace_config_value(
+                "profiles.\"team.prod\".model_gateway",
+                serde_json::json!("openrouter"),
+            ),
+            replace_config_value(
                 "profiles.\"team.prod\".model",
                 serde_json::json!("openai/o4-mini"),
             ),
@@ -48,6 +52,7 @@ fn model_provider_selection_edits_clear_default_effort() {
         ),
         vec![
             replace_config_value("model_provider", serde_json::json!("openrouter")),
+            replace_config_value("model_gateway", serde_json::json!("openrouter")),
             replace_config_value("model", serde_json::json!("openai/o4-mini")),
             clear_config_value("model_reasoning_effort"),
         ]

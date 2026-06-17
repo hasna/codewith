@@ -1,0 +1,21 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: ai_context_popup
+---
+  Config: AI context
+  What Codewith shows the model.
+
+  Search AI context settings
+› [*] Environment context         Include the environment_context block in model-visible
+                                  context.
+  [*] Permission instructions     Include current sandbox and approval instructions in
+                                  model-visible context.
+  [*] App instructions            Include app and tool-surface instructions in model-
+                                  visible context.
+  [*] Collaboration instructions  Include collaboration-mode instructions in model-
+                                  visible context.
+  [*] Skill instructions          Include installed skill instructions in model-visible
+                                  context.
+  Back to sections                Return to the config section menu.
+
+  Press space to toggle; esc to close

@@ -87,16 +87,17 @@ async fn plan_mode_nudge_dismissal_is_scoped_to_current_thread() {
 }
 
 #[tokio::test]
-async fn plan_mode_nudge_shift_tab_uses_existing_mode_cycle_path() {
+async fn plan_mode_nudge_shift_tab_does_not_cycle_collaboration_mode() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.config.notices.hide_full_access_warning = Some(true);
     chat.set_composer_text("make a plan".to_string(), Vec::new(), Vec::new());
     chat.pre_draw_tick();
     assert!(chat.bottom_pane.plan_mode_nudge_visible());
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.pre_draw_tick();
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
-    assert!(!chat.bottom_pane.plan_mode_nudge_visible());
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
+    assert!(chat.bottom_pane.plan_mode_nudge_visible());
 }
 
 #[tokio::test]
@@ -1294,14 +1295,11 @@ async fn enter_submits_when_plan_stream_is_not_active() {
 }
 
 #[tokio::test]
-async fn collab_mode_shift_tab_cycles_only_when_idle() {
+async fn collab_mode_shift_tab_no_longer_cycles_modes() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.hide_full_access_warning = Some(true);
 
     let initial = chat.current_collaboration_mode().clone();
-    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
-    assert_eq!(chat.current_collaboration_mode(), &initial);
-
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_collaboration_mode(), &initial);

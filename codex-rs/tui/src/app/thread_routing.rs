@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::session_resume::read_session_model;
+use codex_app_server_protocol::ThreadExternalAgentStartStatus;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
@@ -689,7 +690,7 @@ impl App {
                 task,
                 mode,
             } => {
-                app_server
+                let response = app_server
                     .thread_external_agent_start(
                         thread_id,
                         runtime_id.to_string(),
@@ -697,6 +698,22 @@ impl App {
                         *mode,
                     )
                     .await?;
+                match response.status {
+                    ThreadExternalAgentStartStatus::Started => {
+                        self.chat_widget.add_info_message(
+                            format!("External-agent `{runtime_id}` started."),
+                            response
+                                .run_id
+                                .map(|run_id| format!("Run: {run_id}. Mode: {mode:?}.")),
+                        );
+                    }
+                    ThreadExternalAgentStartStatus::Gated => {
+                        self.chat_widget.add_error_message(format!(
+                            "External-agent `{runtime_id}` gated: {}",
+                            response.message
+                        ));
+                    }
+                }
                 Ok(true)
             }
             AppCommand::ReloadUserConfig => {

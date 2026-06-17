@@ -127,8 +127,8 @@ fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
 }
 
 #[tokio::test]
-async fn external_agent_slash_with_task_submits_thread_scoped_op() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn external_agent_slash_with_task_requests_child_thread() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
 
     chat.handle_slash_command_with_args_dispatch(
@@ -137,28 +137,59 @@ async fn external_agent_slash_with_task_submits_thread_scoped_op() {
         Vec::new(),
     );
 
-    match op_rx.try_recv() {
-        Ok(Op::StartExternalAgent {
+    match rx.try_recv() {
+        Ok(AppEvent::StartExternalAgentChildThread {
             runtime_id,
+            runtime_display_name,
             task,
             mode,
         }) => {
             assert_eq!(runtime_id, "grok-build");
+            assert_eq!(runtime_display_name, "Grok Build");
             assert_eq!(task, "inspect the diff");
             assert_eq!(mode, ThreadExternalAgentMode::Plan);
         }
-        other => panic!("expected external-agent op, got {other:?}"),
+        other => panic!("expected external-agent child-thread event, got {other:?}"),
     }
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[tokio::test]
-async fn external_agent_slash_with_claude_task_submits_thread_scoped_op() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn external_agent_slash_with_claude_task_requests_child_thread() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
 
     chat.handle_slash_command_with_args_dispatch(
         SlashCommand::ExternalAgent,
         "claude inspect the diff".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::StartExternalAgentChildThread {
+            runtime_id,
+            runtime_display_name,
+            task,
+            mode,
+        }) => {
+            assert_eq!(runtime_id, "claude");
+            assert_eq!(runtime_display_name, "Claude Code");
+            assert_eq!(task, "inspect the diff");
+            assert_eq!(mode, ThreadExternalAgentMode::Plan);
+        }
+        other => panic!("expected external-agent child-thread event, got {other:?}"),
+    }
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn external_agent_slash_inline_task_submits_current_thread_op() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::ExternalAgent,
+        "inline propose claude inspect the diff".to_string(),
         Vec::new(),
     );
 
@@ -170,10 +201,12 @@ async fn external_agent_slash_with_claude_task_submits_thread_scoped_op() {
         }) => {
             assert_eq!(runtime_id, "claude");
             assert_eq!(task, "inspect the diff");
-            assert_eq!(mode, ThreadExternalAgentMode::Plan);
+            assert_eq!(mode, ThreadExternalAgentMode::Propose);
         }
-        other => panic!("expected external-agent op, got {other:?}"),
+        other => panic!("expected inline external-agent op, got {other:?}"),
     }
+    assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[tokio::test]
@@ -187,6 +220,33 @@ async fn external_agent_slash_rejects_grok_alias_without_submitting_op() {
         Vec::new(),
     );
 
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn external_agent_slash_rejects_adversarial_alias_without_submitting_op() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::ExternalAgent,
+        "adversarial claude cursor inspect the diff".to_string(),
+        Vec::new(),
+    );
+
+    let event = rx.try_recv().expect("expected external-agent usage error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(
+                rendered.contains(
+                    "Usage: /external-agent [inline|--inline] [plan|propose] [cursor|grok-build|claude] [task]"
+                ),
+                "expected external-agent usage error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }
 
@@ -2396,6 +2456,25 @@ async fn slash_keymap_debug_can_inspect_app_shortcuts() {
         );
     }
 
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "debug inspector should not run app shortcut side effects"
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_keymap_debug_can_inspect_permission_cycle_shortcut() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Keymap, "debug".to_string(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        popup.contains("global.cycle_permissions (Cycle Permissions)"),
+        "expected permission cycle shortcut in debug popup, got {popup:?}"
+    );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "debug inspector should not run app shortcut side effects"

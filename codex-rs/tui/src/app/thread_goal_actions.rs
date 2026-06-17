@@ -24,7 +24,7 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
-        let result = app_server.thread_goal_get(thread_id).await;
+        let result = app_server.thread_goal_list(thread_id).await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
         }
@@ -38,15 +38,15 @@ impl App {
             }
         };
 
-        let Some(goal) = response.goal else {
+        if response.goal.is_none() && response.goal_plans.is_empty() {
             self.chat_widget.add_info_message(
                 GOAL_USAGE.to_string(),
                 Some("No goal is currently set.".to_string()),
             );
             return;
-        };
+        }
 
-        self.chat_widget.show_goal_summary(goal);
+        self.chat_widget.show_goal_manager(thread_id, response);
     }
 
     pub(super) async fn maybe_prompt_resume_paused_goal_after_resume(

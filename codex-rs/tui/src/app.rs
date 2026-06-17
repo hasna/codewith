@@ -12,6 +12,7 @@ use crate::app_event::FeedbackCategory;
 use crate::app_event::HistoryLookupResponse;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
+use crate::app_event::RateLimitRefreshTarget;
 use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -206,6 +207,7 @@ mod background_agent_actions;
 mod background_requests;
 mod config_persistence;
 mod event_dispatch;
+mod external_agent_actions;
 mod history_ui;
 mod input;
 mod loaded_threads;
@@ -1127,7 +1129,11 @@ See the Codewith keymap documentation for supported actions and examples."
         // Kick off a non-blocking rate-limit prefetch so the first `/status`
         // already has data, without delaying the initial frame render.
         if requires_openai_auth && has_chatgpt_account {
-            app.refresh_rate_limits(&app_server, RateLimitRefreshOrigin::StartupPrefetch);
+            app.refresh_rate_limits(
+                &app_server,
+                RateLimitRefreshOrigin::StartupPrefetch,
+                RateLimitRefreshTarget::Selected,
+            );
         }
 
         let mut listen_for_app_server_events = true;

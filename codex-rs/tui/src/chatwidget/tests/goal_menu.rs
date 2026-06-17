@@ -1,4 +1,10 @@
 use super::*;
+use codex_app_server_protocol::ThreadGoalListResponse;
+use codex_app_server_protocol::ThreadGoalPlan;
+use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
+use codex_app_server_protocol::ThreadGoalPlanNode;
+use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
+use codex_app_server_protocol::ThreadGoalPlanStatus;
 
 #[tokio::test]
 async fn goal_menu_active_snapshot() {
@@ -103,6 +109,55 @@ async fn goal_edit_prompt_snapshot() {
     assert_chatwidget_snapshot!(
         "goal_edit_prompt",
         render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
+async fn goal_manager_with_plan_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let thread_id_string = thread_id.to_string();
+
+    chat.show_goal_manager(
+        thread_id,
+        ThreadGoalListResponse {
+            goal: Some(test_goal(
+                thread_id,
+                AppThreadGoalStatus::Active,
+                /*token_budget*/ Some(80_000),
+            )),
+            next_cursor: None,
+            goal_plans: vec![ThreadGoalPlan {
+                plan_id: "plan_goal_rollout".to_string(),
+                thread_id: thread_id_string.clone(),
+                status: ThreadGoalPlanStatus::Active,
+                auto_execute: ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                created_at: 1_776_272_300,
+                updated_at: 1_776_272_460,
+                nodes: vec![
+                    test_plan_node(
+                        "discover",
+                        "Map existing goal persistence and UI surfaces",
+                        ThreadGoalPlanNodeStatus::Active,
+                        /*depends_on*/ Vec::new(),
+                        &thread_id_string,
+                    ),
+                    test_plan_node(
+                        "ship",
+                        "Implement durable dependent goal execution",
+                        ThreadGoalPlanNodeStatus::Pending,
+                        vec!["discover".to_string()],
+                        &thread_id_string,
+                    ),
+                ],
+            }],
+        },
+    );
+
+    assert_chatwidget_snapshot!(
+        "goal_manager_with_plan",
+        render_bottom_popup(&chat, /*width*/ 110)
     );
 }
 
@@ -267,6 +322,32 @@ fn test_goal(
         tokens_used: 12_500,
         time_used_seconds: 90,
         created_at: 1_776_272_400,
+        updated_at: 1_776_272_460,
+    }
+}
+
+fn test_plan_node(
+    key: &str,
+    objective: &str,
+    status: ThreadGoalPlanNodeStatus,
+    depends_on: Vec<String>,
+    thread_id: &str,
+) -> ThreadGoalPlanNode {
+    ThreadGoalPlanNode {
+        node_id: format!("node_{key}"),
+        plan_id: "plan_goal_rollout".to_string(),
+        thread_id: thread_id.to_string(),
+        key: key.to_string(),
+        sequence: 0,
+        priority: 0,
+        objective: objective.to_string(),
+        status,
+        token_budget: None,
+        tokens_used: 12_500,
+        time_used_seconds: 90,
+        projected_goal_id: Some(format!("projected_{key}")),
+        depends_on,
+        created_at: 1_776_272_300,
         updated_at: 1_776_272_460,
     }
 }

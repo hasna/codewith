@@ -48,6 +48,76 @@ fn app_server_workspace_write_profile(extra_root: AbsolutePathBuf) -> Permission
     }
 }
 
+fn drain_app_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+fn set_auto_permissions(chat: &mut ChatWidget) {
+    chat.set_approval_policy(AskForApproval::OnRequest);
+    chat.set_permission_profile_with_active_profile(
+        PermissionProfile::workspace_write(),
+        Some(ActivePermissionProfile::new(":workspace")),
+    )
+    .expect("auto permissions should be valid");
+}
+
+fn set_read_only_permissions(chat: &mut ChatWidget) {
+    chat.set_approval_policy(AskForApproval::OnRequest);
+    chat.set_permission_profile_with_active_profile(
+        PermissionProfile::read_only(),
+        Some(ActivePermissionProfile::read_only()),
+    )
+    .expect("read-only permissions should be valid");
+}
+
+fn prepare_permission_cycle_shortcut_test(chat: &mut ChatWidget) {
+    chat.config.notices.hide_full_access_warning = Some(true);
+    #[cfg(target_os = "windows")]
+    {
+        chat.config.notices.hide_world_writable_warning = Some(true);
+        chat.set_windows_sandbox_mode(Some(WindowsSandboxModeToml::Unelevated));
+    }
+}
+
+fn permission_override_summary(events: &[AppEvent]) -> Option<(AskForApproval, String)> {
+    events.iter().find_map(|event| match event {
+        AppEvent::CodexOp(Op::OverrideTurnContext {
+            approval_policy: Some(approval_policy),
+            active_permission_profile: Some(active_permission_profile),
+            ..
+        }) => Some((*approval_policy, active_permission_profile.id.clone())),
+        _ => None,
+    })
+}
+
+fn apply_permission_override_from_events(chat: &mut ChatWidget, events: &[AppEvent]) {
+    let Some((approval_policy, permission_profile, active_permission_profile)) =
+        events.iter().find_map(|event| match event {
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                approval_policy: Some(approval_policy),
+                permission_profile: Some(permission_profile),
+                active_permission_profile,
+                ..
+            }) => Some((
+                *approval_policy,
+                permission_profile.clone(),
+                active_permission_profile.clone(),
+            )),
+            _ => None,
+        })
+    else {
+        panic!("expected permission override event, got {events:?}");
+    };
+
+    chat.set_approval_policy(approval_policy);
+    chat.set_permission_profile_with_active_profile(permission_profile, active_permission_profile)
+        .expect("permission override should be valid");
+}
+
 fn windows_sandbox_requirements_stack(
     allowed_sandbox_implementations: Vec<WindowsSandboxModeToml>,
 ) -> ConfigLayerStack {
@@ -714,6 +784,136 @@ async fn approvals_popup_navigation_skips_disabled() {
             })
         )),
         "disabled preset should not be selected"
+    );
+}
+
+#[tokio::test]
+async fn permissions_cycle_shortcut_requests_full_access_confirmation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.hide_full_access_warning = None;
+    set_auto_permissions(&mut chat);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    let events = drain_app_events(&mut rx);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::OpenFullAccessConfirmation { preset, .. } if preset.id == "full-access"
+        )),
+        "expected Shift+Tab to request full-access confirmation, got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn permissions_cycle_shortcut_emits_next_preset_actions() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    prepare_permission_cycle_shortcut_test(&mut chat);
+    set_auto_permissions(&mut chat);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    let events = drain_app_events(&mut rx);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                approval_policy: Some(AskForApproval::Never),
+                personality: None,
+                ..
+            })
+        )),
+        "expected Shift+Tab to emit full-access override, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateAskForApprovalPolicy(AskForApproval::Never)
+        )),
+        "expected Shift+Tab to update approval policy, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateActivePermissionProfile(profile) if profile.id == ":danger-full-access"
+        )),
+        "expected Shift+Tab to update active permission profile, got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn permissions_cycle_shortcut_cycles_presets_in_order() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    prepare_permission_cycle_shortcut_test(&mut chat);
+    set_read_only_permissions(&mut chat);
+
+    for (expected_policy, expected_profile_id) in [
+        (AskForApproval::OnRequest, ":workspace"),
+        (AskForApproval::Never, ":danger-full-access"),
+        (AskForApproval::OnRequest, ":read-only"),
+    ] {
+        chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+        let events = drain_app_events(&mut rx);
+        assert_eq!(
+            permission_override_summary(&events),
+            Some((expected_policy, expected_profile_id.to_string())),
+            "unexpected permission cycle step events: {events:?}"
+        );
+        apply_permission_override_from_events(&mut chat, &events);
+    }
+}
+
+#[tokio::test]
+async fn permissions_cycle_shortcut_unknown_state_falls_back_to_auto() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    prepare_permission_cycle_shortcut_test(&mut chat);
+    chat.set_approval_policy(AskForApproval::OnFailure);
+    chat.set_permission_profile_with_active_profile(
+        PermissionProfile::read_only(),
+        Some(ActivePermissionProfile::new("custom-read-only")),
+    )
+    .expect("custom permissions should be valid");
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    let events = drain_app_events(&mut rx);
+    assert_eq!(
+        permission_override_summary(&events),
+        Some((AskForApproval::OnRequest, ":workspace".to_string())),
+        "unknown permission state should fall back to auto, got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn permissions_cycle_shortcut_follows_live_keymap_remap() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    prepare_permission_cycle_shortcut_test(&mut chat);
+    set_auto_permissions(&mut chat);
+
+    let mut keymap_config = chat.config_ref().tui_keymap.clone();
+    keymap_config.global.cycle_permissions = Some(codex_config::types::KeybindingsSpec::One(
+        codex_config::types::KeybindingSpec("ctrl-shift-p".to_string()),
+    ));
+    let runtime_keymap =
+        crate::keymap::RuntimeKeymap::from_config(&keymap_config).expect("valid remap");
+    chat.apply_keymap_update(keymap_config, &runtime_keymap);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert!(
+        drain_app_events(&mut rx).is_empty(),
+        "old Shift+Tab shortcut should not cycle after remap"
+    );
+
+    chat.handle_key_event(KeyEvent::new(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    let events = drain_app_events(&mut rx);
+    assert_eq!(
+        permission_override_summary(&events),
+        Some((AskForApproval::Never, ":danger-full-access".to_string())),
+        "remapped shortcut should cycle permissions, got {events:?}"
     );
 }
 

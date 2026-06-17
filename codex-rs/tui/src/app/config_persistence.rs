@@ -63,6 +63,78 @@ impl App {
         .await
     }
 
+    pub(super) async fn rebuild_config_for_auth_profile_permission_settings(
+        &self,
+        settings: &codex_login::AuthProfilePermissionSettings,
+    ) -> Result<Config> {
+        let mut overrides = self.harness_overrides.clone();
+        overrides.cwd = Some(self.chat_widget.config_ref().cwd.to_path_buf());
+        overrides.sandbox_mode = None;
+        overrides.permission_profile = None;
+        overrides.default_permissions = Some(settings.default_permissions.clone());
+        overrides.approval_policy = Some(settings.approval_policy);
+        overrides.approvals_reviewer = Some(settings.approvals_reviewer);
+        let builder = ConfigBuilder::default()
+            .codex_home(self.config.codex_home.to_path_buf())
+            .cli_overrides(self.cli_kv_overrides.clone())
+            .harness_overrides(overrides)
+            .loader_overrides(self.loader_overrides.clone());
+        build_config_on_runtime_worker(
+            builder,
+            format!(
+                "Failed to rebuild config for saved auth profile permission profile {}",
+                settings.default_permissions
+            ),
+        )
+        .await
+    }
+
+    pub(super) fn persist_current_auth_profile_permission_settings(&mut self) {
+        let current_config = self.chat_widget.config_ref();
+        let Some(profile) = current_config.selected_auth_profile.clone() else {
+            return;
+        };
+        let Some(active_permission_profile) =
+            current_config.permissions.active_permission_profile()
+        else {
+            return;
+        };
+        let codex_home = current_config.codex_home.clone();
+        let settings = codex_login::AuthProfilePermissionSettings {
+            default_permissions: active_permission_profile.id,
+            approval_policy: current_config.permissions.approval_policy.value(),
+            approvals_reviewer: current_config.approvals_reviewer,
+        };
+        let mut metadata =
+            match codex_login::load_auth_profile_metadata(&codex_home, profile.as_str()) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    tracing::warn!(
+                        profile,
+                        error = %err,
+                        "failed to load auth profile metadata while saving permissions"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to save permissions for auth profile `{profile}`: {err}"
+                    ));
+                    return;
+                }
+            };
+        metadata.last_permissions = Some(settings);
+        if let Err(err) =
+            codex_login::save_auth_profile_metadata(&codex_home, profile.as_str(), metadata)
+        {
+            tracing::warn!(
+                profile,
+                error = %err,
+                "failed to save auth profile permissions"
+            );
+            self.chat_widget.add_error_message(format!(
+                "Failed to save permissions for auth profile `{profile}`: {err}"
+            ));
+        }
+    }
+
     #[cfg(target_os = "windows")]
     pub(super) async fn windows_setup_permissions(
         &self,
@@ -179,6 +251,7 @@ impl App {
             Some(RuntimePermissionProfileOverride::from_config(&self.config));
         self.sync_active_thread_permission_settings_to_cached_session()
             .await;
+        self.persist_current_auth_profile_permission_settings();
         self.app_event_tx
             .send(AppEvent::CodexOp(AppCommand::override_turn_context(
                 /*cwd*/ None,
@@ -251,7 +324,7 @@ impl App {
         } else {
             value
         };
-        crate::config_update::write_config_batch(
+        let write_response = crate::config_update::write_config_batch(
             app_server.request_handle(),
             vec![crate::config_update::replace_config_value(
                 key_path.clone(),
@@ -260,6 +333,22 @@ impl App {
         )
         .await
         .map_err(|err| format!("Failed to update {label}: {err}"))?;
+        if write_response.status == WriteStatus::OkOverridden {
+            let message = overridden_write_message(&write_response);
+            tracing::warn!(
+                message,
+                %key_path,
+                "config value write was overridden by effective config"
+            );
+            return Err(format!("{label} was saved but not applied: {message}"));
+        }
+
+        if key_path == "goals.auto_execute" {
+            apply_goal_auto_execute_value(&mut self.config, &value);
+            self.chat_widget.apply_config_popup_value(&key_path, &value);
+            self.refresh_status_line();
+            return Ok(());
+        }
 
         if let Some(enabled) = value.as_bool() {
             match key_path.as_str() {
@@ -280,6 +369,12 @@ impl App {
                 }
                 "session_recap.enabled" => {
                     self.config.session_recap.enabled = enabled;
+                }
+                "tui.animations" => {
+                    self.config.animations = enabled;
+                }
+                "tui.show_tooltips" => {
+                    self.config.show_tooltips = enabled;
                 }
                 "hide_agent_reasoning" => {
                     self.config.hide_agent_reasoning = enabled;
@@ -1085,6 +1180,18 @@ impl App {
                 )));
         }
     }
+}
+
+fn apply_goal_auto_execute_value(config: &mut Config, value: &serde_json::Value) {
+    let Some(value) = value.as_str() else {
+        return;
+    };
+    config.goals.auto_execute = match value {
+        "ai-directed" => crate::legacy_core::config::GoalAutoExecuteMode::AiDirected,
+        "ready-only" => crate::legacy_core::config::GoalAutoExecuteMode::ReadyOnly,
+        "off" => crate::legacy_core::config::GoalAutoExecuteMode::Off,
+        _ => config.goals.auto_execute,
+    };
 }
 
 fn overridden_write_message(write_response: &ConfigWriteResponse) -> &str {

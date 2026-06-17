@@ -10,7 +10,9 @@ use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::common_config_options::CommonConfigOption;
+use crate::common_config_options::CommonConfigSection;
 use crate::common_config_options::common_config_options;
+use crate::common_config_options::common_config_sections;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
@@ -57,8 +59,16 @@ struct StatusSurfaceOption {
 }
 
 #[derive(Debug, Serialize)]
+struct ConfigSectionOutput {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct ConfigOptionOutput {
     id: &'static str,
+    section_id: &'static str,
     label: &'static str,
     description: &'static str,
     enabled: bool,
@@ -257,6 +267,7 @@ impl App {
         match args.action.as_str() {
             "list_options" => Ok(json!({
                 "surface": "config",
+                "sections": config_section_outputs(),
                 "options": config_option_outputs(&self.config),
             })),
             "set" => {
@@ -289,6 +300,7 @@ impl App {
                             .ok_or_else(|| format!("config option `{}` is managed", option.id))?;
                         Ok((
                             option.id,
+                            option.section.id(),
                             key_path,
                             option.label,
                             option.value_for_enabled(update.enabled),
@@ -297,7 +309,7 @@ impl App {
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 let mut applied = Vec::with_capacity(planned_updates.len());
-                for (option_id, key_path, label, value, enabled) in planned_updates {
+                for (option_id, section_id, key_path, label, value, enabled) in planned_updates {
                     self.try_update_config_value_with_app_server(
                         app_server,
                         key_path.to_string(),
@@ -307,6 +319,7 @@ impl App {
                     .await?;
                     applied.push(json!({
                         "option_id": option_id,
+                        "section_id": section_id,
                         "enabled": enabled,
                     }));
                 }
@@ -413,6 +426,22 @@ where
         .collect()
 }
 
+fn config_section_outputs() -> Vec<ConfigSectionOutput> {
+    common_config_sections()
+        .iter()
+        .copied()
+        .map(config_section_output)
+        .collect()
+}
+
+fn config_section_output(section: CommonConfigSection) -> ConfigSectionOutput {
+    ConfigSectionOutput {
+        id: section.id(),
+        label: section.label(),
+        description: section.description(),
+    }
+}
+
 fn config_option_outputs(config: &crate::legacy_core::config::Config) -> Vec<ConfigOptionOutput> {
     common_config_options(config)
         .into_iter()
@@ -423,6 +452,7 @@ fn config_option_outputs(config: &crate::legacy_core::config::Config) -> Vec<Con
 fn config_option_output(option: CommonConfigOption) -> ConfigOptionOutput {
     ConfigOptionOutput {
         id: option.id,
+        section_id: option.section.id(),
         label: option.label,
         description: option.description,
         enabled: option.enabled,
@@ -472,6 +502,20 @@ mod tests {
         let unknown = parse_terminal_title_items(&["not-real".to_string()])
             .expect_err("unknown ids should fail");
         assert!(unknown.contains("list_options"));
+    }
+
+    #[test]
+    fn config_section_outputs_match_config_menu_sections() {
+        let sections = config_section_outputs();
+        let ids = sections
+            .into_iter()
+            .map(|section| section.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec!["account-automation", "ai-context", "interface-privacy"]
+        );
     }
 
     #[test]

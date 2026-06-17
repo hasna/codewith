@@ -1,0 +1,20 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: interface_popup
+---
+  Config: Interface & privacy
+  Composer, transcript, privacy, and TUI behavior.
+
+  Search Interface & privacy settings
+› [*] Paste burst detection      Detect fast pasted input before inserting it into the
+                                 composer.
+  [ ] Hide reasoning summaries   Hide agent reasoning events from the transcript.
+  [ ] Show raw reasoning         Show raw reasoning content when the model emits it.
+  [*] Animations                 Show spinners, shimmer, and other TUI motion.
+  [*] Tooltips                   Show first-run tips and contextual TUI hints.
+  [*] Analytics                  Allow analytics across product surfaces on this
+                                 machine.
+  [*] Feedback                   Allow feedback collection from the TUI.
+  [*] Unstable feature warnings  Show warnings for enabled under-development features.
+
+  Press space to toggle; esc to close

@@ -76,6 +76,10 @@ impl ChatWidget {
             .as_ref()
             .map(|keymap| keymap.app.copy.clone())
             .unwrap_or_else(|| default_keymap.app.copy.clone());
+        let cycle_permissions_binding = runtime_keymap
+            .as_ref()
+            .map(|keymap| keymap.app.cycle_permissions.clone())
+            .unwrap_or_else(|| default_keymap.app.cycle_permissions.clone());
         let chat_keymap = runtime_keymap
             .as_ref()
             .map(|keymap| keymap.chat.clone())
@@ -142,6 +146,7 @@ impl ChatWidget {
             plan_stream_controller: None,
             clipboard_lease: None,
             copy_last_response_binding,
+            cycle_permissions_binding,
             running_commands: HashMap::new(),
             collab_agent_metadata: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),

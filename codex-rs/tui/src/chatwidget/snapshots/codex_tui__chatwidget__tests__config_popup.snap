@@ -3,25 +3,10 @@ source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: popup
 ---
   Config
-  Toggle common config.toml settings for future turns.
+  Choose a focused config.toml settings section.
 
+› 1. Account & automation  Auth failover, recaps, and update policy. 6 settings.
+  2. AI context            What Codewith shows the model. 5 settings.
+  3. Interface & privacy   Composer, transcript, privacy, and TUI behavior. 8 settings.
 
-  [ ] Update checks (current) (disabled)  Off for this internal app. Updates come from
-                                          explicit internal releases. (disabled: Managed
-                                          by Codewith.)
-› [ ] Auth profile auto-switch            Switch to another configured profile after
-                                          rate limits are exhausted.
-  [*] Switch on 5h limit                  Allow auto-switching when the five-hour limit
-                                          is exhausted.
-  [*] Switch on weekly limit              Allow auto-switching when the weekly limit is
-                                          exhausted.
-  [*] Paste burst detection               Detect fast pasted input before inserting it
-                                          into the composer.
-  [*] Session recap                       Prepare a one-line summary while the terminal
-                                          is unfocused.
-  [ ] Hide reasoning summaries            Hide agent reasoning events from the
-                                          transcript.
-  [ ] Show raw reasoning                  Show raw reasoning content when the model
-                                          emits it.
-
-  Press space to toggle; esc to close
+  Press enter to open; esc to close

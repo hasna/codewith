@@ -1,0 +1,24 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: account_popup
+---
+  Config: Account & automation
+  Auth failover, recaps, and update policy.
+
+  Search Account & automation settings
+  [ ] Update checks (current) (disabled)  Off for this internal app. Updates come from
+                                          explicit internal releases. (disabled: Managed
+                                          by Codewith.)
+› [ ] Auth profile auto-switch            Switch to another configured profile after
+                                          rate limits are exhausted.
+  [*] Switch on 5h limit                  Allow auto-switching when the five-hour limit
+                                          is exhausted.
+  [*] Switch on weekly limit              Allow auto-switching when the weekly limit is
+                                          exhausted.
+  [*] Session recap                       Prepare a one-line summary while the terminal
+                                          is unfocused.
+  [ ] Automated goal plans                Advance goal plans when exactly one next goal
+                                          is ready.
+  Back to sections                        Return to the config section menu.
+
+  Press space to toggle; esc to close

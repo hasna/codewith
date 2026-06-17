@@ -17,6 +17,7 @@ use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_config::loader::project_trust_key;
 use codex_features::should_clear_user_config_feature_toggle;
+use codex_model_provider_info::model_gateway_for_provider;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -96,10 +97,16 @@ pub(crate) fn build_model_provider_selection_edits(
     model: &str,
     effort: Option<impl ToString>,
 ) -> Vec<ConfigEdit> {
-    let mut edits = vec![replace_config_value(
-        profile_scoped_key_path(profile, "model_provider"),
-        serde_json::json!(provider_id),
-    )];
+    let mut edits = vec![
+        replace_config_value(
+            profile_scoped_key_path(profile, "model_provider"),
+            serde_json::json!(provider_id),
+        ),
+        replace_config_value(
+            profile_scoped_key_path(profile, "model_gateway"),
+            serde_json::json!(model_gateway_for_provider(provider_id)),
+        ),
+    ];
     edits.extend(build_model_selection_edits(profile, model, effort));
     edits
 }

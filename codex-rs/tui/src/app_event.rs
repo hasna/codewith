@@ -25,6 +25,7 @@ use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
@@ -144,6 +145,31 @@ pub(crate) enum RateLimitRefreshOrigin {
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
+}
+
+/// Selects which auth profile a rate-limit refresh should read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RateLimitRefreshTarget {
+    /// Read limits for the auth profile currently selected by the TUI session.
+    Selected,
+    /// Read limits for the default root login.
+    Root,
+    /// Read limits for a saved named auth profile.
+    Named(String),
+}
+
+impl RateLimitRefreshTarget {
+    pub(crate) fn auth_profile_key(&self, selected_auth_profile: Option<&str>) -> Option<String> {
+        match self {
+            Self::Selected => selected_auth_profile.map(str::to_string),
+            Self::Root => None,
+            Self::Named(profile) => Some(profile.clone()),
+        }
+    }
+
+    pub(crate) fn targets_selected_profile(&self) -> bool {
+        matches!(self, Self::Selected)
+    }
 }
 
 /// Distinguishes why a MiniMax usage refresh was requested.
@@ -319,7 +345,11 @@ pub(crate) enum AppEvent {
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,
+        target: RateLimitRefreshTarget,
     },
+
+    /// Refresh cached usage for every auth profile that needs a heartbeat.
+    RefreshAuthProfileUsageHeartbeats,
 
     /// Refresh MiniMax Token Plan usage in the background.
     RefreshMiniMaxUsage {
@@ -597,6 +627,14 @@ pub(crate) enum AppEvent {
         prompt: String,
     },
 
+    /// Start an external-agent run in a forked child thread.
+    StartExternalAgentChildThread {
+        runtime_id: String,
+        runtime_display_name: String,
+        task: String,
+        mode: ThreadExternalAgentMode,
+    },
+
     /// Show the latest state for one durable background agent.
     ReadBackgroundAgent {
         agent_id: Option<String>,
@@ -648,6 +686,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
+        target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
@@ -1089,6 +1128,14 @@ pub(crate) enum AppEvent {
         key_path: String,
         value: serde_json::Value,
         label: String,
+    },
+
+    /// Reopen the root config section menu.
+    OpenConfigMenu,
+
+    /// Open one focused config section from the root config menu.
+    OpenConfigSection {
+        section: crate::common_config_options::CommonConfigSection,
     },
 
     /// Persist the selected model and reasoning effort to the appropriate config.

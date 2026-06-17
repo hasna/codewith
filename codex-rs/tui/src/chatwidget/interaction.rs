@@ -32,6 +32,18 @@ impl ChatWidget {
         }
 
         if key_event.kind == KeyEventKind::Press
+            && self.cycle_permissions_binding.is_pressed(key_event)
+            && !self.bottom_pane.is_task_running()
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.bottom_pane.clear_quit_shortcut_hint();
+            self.quit_shortcut_expires_at = None;
+            self.quit_shortcut_key = None;
+            self.cycle_permission_level();
+            return;
+        }
+
+        if key_event.kind == KeyEventKind::Press
             && self.copy_last_response_binding.is_pressed(key_event)
         {
             self.bottom_pane.clear_quit_shortcut_hint();
@@ -137,24 +149,9 @@ impl ChatWidget {
             return;
         }
 
-        match key_event {
-            KeyEvent {
-                code: KeyCode::BackTab,
-                kind: KeyEventKind::Press,
-                ..
-            } if self.collaboration_modes_enabled()
-                && !self.bottom_pane.is_task_running()
-                && self.bottom_pane.no_modal_or_popup_active() =>
-            {
-                self.cycle_collaboration_mode();
-                self.refresh_plan_mode_nudge();
-            }
-            _ => {
-                let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
-                let input_result = self.bottom_pane.handle_key_event(key_event);
-                self.handle_composer_input_result(input_result, had_modal_or_popup);
-            }
-        }
+        let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
+        let input_result = self.bottom_pane.handle_key_event(key_event);
+        self.handle_composer_input_result(input_result, had_modal_or_popup);
     }
 
     /// Attach a local image to the composer when the active model supports image inputs.

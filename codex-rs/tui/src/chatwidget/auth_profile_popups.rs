@@ -23,8 +23,7 @@ use std::time::Instant;
 
 const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
-const AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN: Duration =
-    Duration::from_secs(RATE_LIMIT_STALE_THRESHOLD_MINUTES as u64 * 60);
+const AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN: Duration = Duration::from_secs(60);
 
 impl ChatWidget {
     pub(crate) fn open_profile_popup(&mut self) {
@@ -50,10 +49,16 @@ impl ChatWidget {
         let selected_idx = self
             .bottom_pane
             .selected_index_for_active_view(AUTH_PROFILE_POPUP_VIEW_ID);
-        let current = self.config.selected_auth_profile.as_deref();
-        let params = self.profile_selection_view_params(profiles, current, selected_idx);
+        let current = self.config.selected_auth_profile.clone();
+        let heartbeat_targets = self.auth_profile_usage_refresh_targets_for_profiles(&profiles);
+        let params = self.profile_selection_view_params(profiles, current.as_deref(), selected_idx);
         self.bottom_pane.show_selection_view(params);
-        self.maybe_request_auth_profile_usage_heartbeat();
+        for target in heartbeat_targets {
+            self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::Heartbeat,
+                target,
+            });
+        }
     }
 
     fn profile_selection_view_params(
@@ -123,11 +128,8 @@ impl ChatWidget {
         })];
         SelectionItem {
             name: "default".to_string(),
-            description: Some(auth_profile_description_with_usage(
-                "Root login",
-                &usage_hint,
-            )),
-            selected_description: None,
+            description: Some("Root login".to_string()),
+            selected_description: Some(usage_hint),
             is_current,
             actions,
             dismiss_on_select: true,
@@ -156,10 +158,8 @@ impl ChatWidget {
     ) -> SelectionItem {
         let profile_name = profile.name.clone();
         let usage_hint = self.auth_profile_usage_hint(Some(profile.name.as_str()));
-        let description = Some(auth_profile_description_with_usage(
-            &auth_profile_description(&profile),
-            &usage_hint,
-        ));
+        let description = Some(auth_profile_description(&profile));
+        let selected_description = Some(usage_hint);
         let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::SwitchAuthProfile {
                 profile: Some(profile_name.clone()),
@@ -234,7 +234,7 @@ impl ChatWidget {
         SelectionItem {
             name: profile.name.clone(),
             description,
-            selected_description: None,
+            selected_description,
             is_current: current == Some(profile.name.as_str()),
             actions,
             shortcut_actions,
@@ -350,20 +350,66 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
-    fn maybe_request_auth_profile_usage_heartbeat(&mut self) {
-        if !self.should_prefetch_rate_limits() {
-            return;
+    pub(crate) fn auth_profile_usage_refresh_targets(&mut self) -> Vec<RateLimitRefreshTarget> {
+        let profiles = match list_auth_profiles(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+        ) {
+            Ok(profiles) => profiles,
+            Err(err) => {
+                tracing::debug!("failed to list auth profiles for usage heartbeat: {err}");
+                Vec::new()
+            }
+        };
+        self.auth_profile_usage_refresh_targets_for_profiles(&profiles)
+    }
+
+    fn auth_profile_usage_refresh_targets_for_profiles(
+        &mut self,
+        profiles: &[AuthProfile],
+    ) -> Vec<RateLimitRefreshTarget> {
+        let mut targets = Vec::new();
+        if self.root_auth_profile_supports_usage()
+            && self.should_request_auth_profile_usage_heartbeat(None)
+        {
+            targets.push(RateLimitRefreshTarget::Root);
         }
 
-        let profile = self.config.selected_auth_profile.clone();
-        let snapshots_are_stale = self
-            .auth_profile_rate_limit_snapshots_by_profile
-            .get(&profile)
-            .is_none_or(auth_profile_usage_snapshots_are_stale);
-        if !snapshots_are_stale {
-            return;
+        for profile in profiles
+            .iter()
+            .filter(|profile| profile_supports_usage(profile))
+        {
+            if self.should_request_auth_profile_usage_heartbeat(Some(profile.name.as_str())) {
+                targets.push(RateLimitRefreshTarget::Named(profile.name.clone()));
+            }
         }
 
+        targets
+    }
+
+    fn root_auth_profile_supports_usage(&self) -> bool {
+        if self.config.selected_auth_profile.is_none() && self.should_prefetch_rate_limits() {
+            return true;
+        }
+
+        codex_login::load_auth_dot_json(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|auth| auth_dot_json_supports_usage(&auth))
+    }
+
+    fn should_request_auth_profile_usage_heartbeat(&mut self, profile: Option<&str>) -> bool {
+        if self
+            .auth_profile_usage_snapshots(profile)
+            .is_some_and(auth_profile_usage_snapshots_are_fresh)
+        {
+            return false;
+        }
+
+        let profile = profile.map(str::to_string);
         if self
             .auth_profile_usage_heartbeat_requested_at_by_profile
             .get(&profile)
@@ -371,14 +417,12 @@ impl ChatWidget {
                 requested_at.elapsed() < AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN
             })
         {
-            return;
+            return false;
         }
 
         self.auth_profile_usage_heartbeat_requested_at_by_profile
             .insert(profile, Instant::now());
-        self.app_event_tx.send(AppEvent::RefreshRateLimits {
-            origin: RateLimitRefreshOrigin::Heartbeat,
-        });
+        true
     }
 
     pub(crate) fn open_auth_profile_delete_confirm(&mut self, profile: String) {
@@ -461,6 +505,7 @@ impl ChatWidget {
             &profile,
             AuthProfileMetadata {
                 subscription_provider,
+                last_permissions: None,
             },
         ) {
             self.add_error_message(format!("Failed to create auth profile: {err}"));
@@ -540,21 +585,25 @@ impl ChatWidget {
     }
 
     fn auth_profile_usage_hint(&self, profile: Option<&str>) -> String {
-        let selected_profile = self.config.selected_auth_profile.as_deref();
-        let active_profile_matches = selected_profile == profile;
-        let snapshots =
-            if active_profile_matches && !self.rate_limit_snapshots_by_limit_id.is_empty() {
-                Some(&self.rate_limit_snapshots_by_limit_id)
-            } else {
-                let profile_key = profile.map(str::to_string);
-                self.auth_profile_rate_limit_snapshots_by_profile
-                    .get(&profile_key)
-            };
-
-        let Some(snapshots) = snapshots else {
+        let Some(snapshots) = self.auth_profile_usage_snapshots(profile) else {
             return "usage unknown".to_string();
         };
         compact_usage_hint_for_snapshots(snapshots)
+    }
+
+    fn auth_profile_usage_snapshots(
+        &self,
+        profile: Option<&str>,
+    ) -> Option<&BTreeMap<String, RateLimitSnapshotDisplay>> {
+        let selected_profile = self.config.selected_auth_profile.as_deref();
+        let active_profile_matches = selected_profile == profile;
+        if active_profile_matches && !self.rate_limit_snapshots_by_limit_id.is_empty() {
+            return Some(&self.rate_limit_snapshots_by_limit_id);
+        }
+
+        let profile_key = profile.map(str::to_string);
+        self.auth_profile_rate_limit_snapshots_by_profile
+            .get(&profile_key)
     }
 }
 
@@ -624,7 +673,7 @@ fn auth_profile_description(profile: &AuthProfile) -> String {
     if let Some(email) = &profile.email {
         parts.push(email.clone());
     }
-    parts.join(" · ")
+    parts.join(" / ")
 }
 
 fn auth_profile_auth_mode_label(auth_mode: codex_app_server_protocol::AuthMode) -> &'static str {
@@ -637,25 +686,36 @@ fn auth_profile_auth_mode_label(auth_mode: codex_app_server_protocol::AuthMode) 
     }
 }
 
-fn auth_profile_description_with_usage(description: &str, usage_hint: &str) -> String {
-    if usage_hint == "usage unknown" {
-        return description.to_string();
+fn profile_supports_usage(profile: &AuthProfile) -> bool {
+    profile.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
+        && auth_mode_supports_usage(profile.auth_mode)
+}
+
+fn auth_mode_supports_usage(auth_mode: Option<codex_app_server_protocol::AuthMode>) -> bool {
+    matches!(
+        auth_mode,
+        Some(
+            codex_app_server_protocol::AuthMode::Chatgpt
+                | codex_app_server_protocol::AuthMode::ChatgptAuthTokens
+                | codex_app_server_protocol::AuthMode::PersonalAccessToken
+                | codex_app_server_protocol::AuthMode::AgentIdentity
+        )
+    )
+}
+
+fn auth_dot_json_supports_usage(auth: &codex_login::AuthDotJson) -> bool {
+    if let Some(auth_mode) = auth.auth_mode {
+        return auth_mode_supports_usage(Some(auth_mode));
     }
-    format!("{description} · {usage_hint}")
+
+    auth.openai_api_key.is_none()
+        && (auth.tokens.is_some()
+            || auth.personal_access_token.is_some()
+            || auth.agent_identity.is_some())
 }
 
 fn auth_profile_popup_action_hint() -> Line<'static> {
     Line::from("Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down")
-}
-
-fn auth_profile_usage_snapshots_are_stale(
-    snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
-) -> bool {
-    let now = Local::now();
-    snapshots.values().all(|snapshot| {
-        now.signed_duration_since(snapshot.captured_at)
-            > chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
-    })
 }
 
 fn compact_usage_hint_for_snapshots(
@@ -670,14 +730,14 @@ fn compact_usage_hint_for_snapshots(
 
 fn compact_usage_hint_for_snapshot(snapshot: &RateLimitSnapshotDisplay) -> String {
     let mut hints = Vec::new();
-    if let Some(secondary) = snapshot.secondary.as_ref() {
-        hints.push(compact_usage_hint_for_window(
-            secondary, /*is_secondary*/ true,
-        ));
-    }
     if let Some(primary) = snapshot.primary.as_ref() {
         hints.push(compact_usage_hint_for_window(
             primary, /*is_secondary*/ false,
+        ));
+    }
+    if let Some(secondary) = snapshot.secondary.as_ref() {
+        hints.push(compact_usage_hint_for_window(
+            secondary, /*is_secondary*/ true,
         ));
     }
 
@@ -685,7 +745,7 @@ fn compact_usage_hint_for_snapshot(snapshot: &RateLimitSnapshotDisplay) -> Strin
         return "usage unknown".to_string();
     }
 
-    let hint = hints.join(" · ");
+    let hint = hints.join(", ");
     if Local::now().signed_duration_since(snapshot.captured_at)
         > chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
     {
@@ -693,6 +753,16 @@ fn compact_usage_hint_for_snapshot(snapshot: &RateLimitSnapshotDisplay) -> Strin
     } else {
         hint
     }
+}
+
+fn auth_profile_usage_snapshots_are_fresh(
+    snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
+) -> bool {
+    let heartbeat_interval =
+        chrono::Duration::seconds(AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN.as_secs() as i64);
+    snapshots.values().any(|snapshot| {
+        Local::now().signed_duration_since(snapshot.captured_at) <= heartbeat_interval
+    })
 }
 
 fn compact_usage_hint_for_window(window: &RateLimitWindowDisplay, is_secondary: bool) -> String {

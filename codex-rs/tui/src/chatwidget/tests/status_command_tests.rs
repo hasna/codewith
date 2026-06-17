@@ -34,6 +34,7 @@ async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgp
     let request_id = match rx.try_recv() {
         Ok(AppEvent::RefreshRateLimits {
             origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+            target: RateLimitRefreshTarget::Selected,
         }) => request_id,
         other => panic!("expected rate-limit refresh request, got {other:?}"),
     };
@@ -54,6 +55,7 @@ async fn status_command_refresh_updates_cached_limits_for_future_status_outputs(
     let first_request_id = match rx.try_recv() {
         Ok(AppEvent::RefreshRateLimits {
             origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+            target: RateLimitRefreshTarget::Selected,
         }) => request_id,
         other => panic!("expected rate-limit refresh request, got {other:?}"),
     };
@@ -263,6 +265,7 @@ async fn status_command_overlapping_refreshes_update_matching_cells_only() {
     let first_request_id = match rx.try_recv() {
         Ok(AppEvent::RefreshRateLimits {
             origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+            target: RateLimitRefreshTarget::Selected,
         }) => request_id,
         other => panic!("expected first refresh request, got {other:?}"),
     };
@@ -277,6 +280,7 @@ async fn status_command_overlapping_refreshes_update_matching_cells_only() {
     let second_request_id = match rx.try_recv() {
         Ok(AppEvent::RefreshRateLimits {
             origin: RateLimitRefreshOrigin::StatusCommand { request_id },
+            target: RateLimitRefreshTarget::Selected,
         }) => request_id,
         other => panic!("expected second refresh request, got {other:?}"),
     };
