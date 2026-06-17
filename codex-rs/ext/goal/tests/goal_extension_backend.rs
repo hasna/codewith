@@ -18,9 +18,11 @@ use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
+use codex_extension_api::ToolSpec;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
+use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
@@ -101,11 +103,246 @@ async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
     assert_eq!(
         vec![
             "get_goal".to_string(),
+            "get_goal_plan".to_string(),
             "create_goal".to_string(),
+            "create_goal_plan".to_string(),
+            "activate_goal_plan_node".to_string(),
             "update_goal".to_string(),
             "resume_goal".to_string(),
         ],
         tool_names(&tools)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "investigate",
+                    "objective": "Investigate chained goals"
+                },
+                {
+                    "key": "implement",
+                    "objective": "Implement chained goals",
+                    "depends_on": ["investigate"],
+                    "token_budget": 50000
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["objective"], "Investigate chained goals");
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Investigate chained goals"
+    );
+    assert_eq!(result["goal"]["tokenBudget"], serde_json::Value::Null);
+    assert_eq!(result["goalPlans"][0]["autoExecute"], "ai_directed");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "active");
+    assert_eq!(
+        result["goalPlans"][0]["nodes"][0]["tokenBudget"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        result["goalPlans"][0]["nodes"][1]["dependsOn"][0],
+        "investigate"
+    );
+    assert_eq!(result["remainingTokens"], serde_json::Value::Null);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_with_auto_off_clears_replaced_goal_without_activation()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime.clone(),
+        thread_id,
+        GoalExtensionConfig {
+            enabled: true,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_auto_goals_per_plan: 12,
+            max_tokens_per_goal_plan: None,
+        },
+    )
+    .await?;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "existing active goal" }),
+        ))
+        .await?;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "clear_existing_goal": true,
+            "goals": [
+                {
+                    "key": "followup",
+                    "objective": "Run later when automatic goal plans are disabled"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"], serde_json::Value::Null);
+    assert_eq!(result["goalPlans"][0]["autoExecute"], "off");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "pending");
+    assert_eq!(
+        None,
+        runtime.thread_goals().get_thread_goal(thread_id).await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn activate_goal_plan_node_allows_explicit_activation_when_auto_off() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            enabled: true,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_auto_goals_per_plan: 12,
+            max_tokens_per_goal_plan: None,
+        },
+    )
+    .await?;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "manual",
+                    "objective": "Activate this goal explicitly"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("node id should be returned"))?;
+
+    let activate_tool = tool_by_name(&tools, "activate_goal_plan_node");
+    let invocation = tool_call(
+        "activate_goal_plan_node",
+        "call-activate-goal-plan-node",
+        json!({ "node_id": node_id }),
+    );
+    let output = activate_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["objective"], "Activate this goal explicitly");
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Activate this goal explicitly"
+    );
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "active");
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_rejects_invalid_node_keys() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan-invalid-key",
+            json!({
+                "goals": [
+                    {
+                        "key": "invalid key",
+                        "objective": "Try to create a plan with an invalid key"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("invalid goal plan key should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "goal plan node key `invalid key` must contain only ASCII letters, numbers, underscores, or hyphens"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_create_goal_tool_describes_default_task_use() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    let ToolSpec::Function(create_goal_tool) = tool_by_name(&tools, "create_goal").spec() else {
+        panic!("create_goal should be a function tool");
+    };
+
+    assert!(
+        create_goal_tool
+            .description
+            .contains("Start a durable thread goal when explicitly requested")
+    );
+    assert!(
+        create_goal_tool
+            .description
+            .contains("Do not use this as the default for ordinary coding")
+    );
+    assert!(
+        create_goal_tool
+            .description
+            .contains("Skip it for simple requests")
     );
     Ok(())
 }
@@ -800,6 +1037,55 @@ async fn usage_limit_stale_turn_does_not_stop_current_goal() -> anyhow::Result<(
 }
 
 #[tokio::test]
+async fn update_goal_stale_turn_does_not_complete_current_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+    harness.stop_turn("turn-1").await;
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let err = match update_tool
+        .handle(tool_call(
+            "update_goal",
+            "call-update-stale-goal",
+            json!({ "status": "complete" }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("stale update_goal should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cannot update goal because this tool call is no longer associated with the active goal turn"
+                .to_string()
+        )
+    );
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
 async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -1371,7 +1657,7 @@ async fn installed_tools_with_start(
         /*metrics_client*/ None,
         Weak::new(),
         goal_service,
-        |_| true,
+        |_| test_goal_extension_config(),
     );
     let registry = builder.build();
     let session_store = ExtensionData::new("session-1");
@@ -1399,6 +1685,15 @@ fn tool_names(tools: &[Arc<dyn ToolExecutor<ToolCall>>]) -> Vec<String> {
     tools.iter().map(|tool| tool.tool_name().name).collect()
 }
 
+fn test_goal_extension_config() -> GoalExtensionConfig {
+    GoalExtensionConfig {
+        enabled: true,
+        auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
+        max_auto_goals_per_plan: 12,
+        max_tokens_per_goal_plan: None,
+    }
+}
+
 struct GoalExtensionHarness {
     registry: codex_extension_api::ExtensionRegistry<()>,
     session_store: ExtensionData,
@@ -1412,6 +1707,14 @@ impl GoalExtensionHarness {
         runtime: Arc<codex_state::StateRuntime>,
         thread_id: ThreadId,
     ) -> anyhow::Result<Self> {
+        Self::new_with_config(runtime, thread_id, test_goal_extension_config()).await
+    }
+
+    async fn new_with_config(
+        runtime: Arc<codex_state::StateRuntime>,
+        thread_id: ThreadId,
+        config: GoalExtensionConfig,
+    ) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
         let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
@@ -1421,7 +1724,7 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| true,
+            move |_| config.clone(),
         );
         let registry = builder.build();
         let session_store = ExtensionData::new("session-1");

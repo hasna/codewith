@@ -85,7 +85,7 @@ async fn generate_with_model(
     recap_request: Option<&str>,
 ) -> CodexResult<String> {
     let turn_context = recap_turn_context(sess, config, model).await;
-    let mut client_session = sess.runtime_model_client().new_session();
+    let mut client_session = sess.runtime_model_client().new_http_session();
     let prompt = recap_prompt(sess, &turn_context, recap_request).await;
     drain_recap_summary(sess, &turn_context, &mut client_session, &prompt).await
 }

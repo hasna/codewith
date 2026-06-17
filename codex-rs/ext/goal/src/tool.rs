@@ -19,29 +19,42 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
+use crate::runtime::GoalPlanRuntimeConfig;
+use crate::spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
+use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
+use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
+use crate::spec::create_activate_goal_plan_node_tool;
+use crate::spec::create_create_goal_plan_tool;
 use crate::spec::create_create_goal_tool;
+use crate::spec::create_get_goal_plan_tool;
 use crate::spec::create_get_goal_tool;
 use crate::spec::create_resume_goal_tool;
 use crate::spec::create_update_goal_tool;
+use crate::tool_plan::ActivatedGoalAccounting;
+use crate::tool_plan::GoalPlanResponse;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
     kind: GoalToolKind,
-    thread_id: ThreadId,
-    state_db: Arc<codex_state::StateRuntime>,
-    accounting_state: Arc<GoalAccountingState>,
-    event_emitter: GoalEventEmitter,
-    metrics: GoalMetrics,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) state_db: Arc<codex_state::StateRuntime>,
+    pub(crate) accounting_state: Arc<GoalAccountingState>,
+    pub(crate) event_emitter: GoalEventEmitter,
+    pub(crate) metrics: GoalMetrics,
+    pub(crate) plan_config: Option<GoalPlanRuntimeConfig>,
 }
 
 #[derive(Clone, Copy)]
 enum GoalToolKind {
     Get,
     Create,
+    GetPlan,
+    CreatePlan,
+    ActivatePlanNode,
     Update,
     Resume,
 }
@@ -63,14 +76,18 @@ struct UpdateGoalArgs {
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GoalToolResponse {
+pub(crate) struct GoalToolResponse {
     goal: Option<ThreadGoal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activated_goal: Option<ThreadGoal>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    goal_plans: Vec<GoalPlanResponse>,
     remaining_tokens: Option<i64>,
     completion_budget_report: Option<String>,
 }
 
 #[derive(Clone, Copy)]
-enum CompletionBudgetReport {
+pub(crate) enum CompletionBudgetReport {
     Include,
     Omit,
 }
@@ -90,6 +107,7 @@ impl GoalToolExecutor {
             accounting_state,
             event_emitter,
             metrics,
+            plan_config: None,
         }
     }
 
@@ -107,6 +125,64 @@ impl GoalToolExecutor {
             accounting_state,
             event_emitter,
             metrics,
+            plan_config: None,
+        }
+    }
+
+    pub(crate) fn get_plan(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfig,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::GetPlan,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
+    pub(crate) fn create_plan(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfig,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::CreatePlan,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
+    pub(crate) fn activate_plan_node(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfig,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::ActivatePlanNode,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
         }
     }
 
@@ -124,6 +200,7 @@ impl GoalToolExecutor {
             accounting_state,
             event_emitter,
             metrics,
+            plan_config: None,
         }
     }
 
@@ -141,6 +218,7 @@ impl GoalToolExecutor {
             accounting_state,
             event_emitter,
             metrics,
+            plan_config: None,
         }
     }
 }
@@ -151,6 +229,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
         ToolName::plain(match self.kind {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
             GoalToolKind::Create => CREATE_GOAL_TOOL_NAME,
+            GoalToolKind::GetPlan => GET_GOAL_PLAN_TOOL_NAME,
+            GoalToolKind::CreatePlan => CREATE_GOAL_PLAN_TOOL_NAME,
+            GoalToolKind::ActivatePlanNode => ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
             GoalToolKind::Resume => RESUME_GOAL_TOOL_NAME,
         })
@@ -160,6 +241,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
         match self.kind {
             GoalToolKind::Get => create_get_goal_tool(),
             GoalToolKind::Create => create_create_goal_tool(),
+            GoalToolKind::GetPlan => create_get_goal_plan_tool(),
+            GoalToolKind::CreatePlan => create_create_goal_plan_tool(),
+            GoalToolKind::ActivatePlanNode => create_activate_goal_plan_node_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
             GoalToolKind::Resume => create_resume_goal_tool(),
         }
@@ -169,6 +253,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
         match self.kind {
             GoalToolKind::Get => self.handle_get(invocation).await,
             GoalToolKind::Create => self.handle_create(invocation).await,
+            GoalToolKind::GetPlan => self.handle_get_plan(invocation).await,
+            GoalToolKind::CreatePlan => self.handle_create_plan(invocation).await,
+            GoalToolKind::ActivatePlanNode => self.handle_activate_plan_node(invocation).await,
             GoalToolKind::Update => self.handle_update(invocation).await,
             GoalToolKind::Resume => self.handle_resume(invocation).await,
         }
@@ -203,6 +290,17 @@ impl GoalToolExecutor {
             .map_err(FunctionCallError::RespondToModel)?;
         validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
 
+        let existing_goal = if request.clear_existing_goal {
+            self.state_db
+                .thread_goals()
+                .get_thread_goal(self.thread_id)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
+                })?
+        } else {
+            None
+        };
         if request.clear_existing_goal {
             self.account_active_goal_progress(
                 codex_state::GoalAccountingMode::ActiveOnly,
@@ -210,6 +308,7 @@ impl GoalToolExecutor {
                 BudgetLimitedGoalDisposition::ClearActive,
             )
             .await?;
+            self.mark_existing_plan_goal_replaced(existing_goal).await?;
         }
         let goal = if request.clear_existing_goal {
             self.state_db
@@ -269,7 +368,18 @@ impl GoalToolExecutor {
             ));
         }
 
-        self.account_active_goal_progress(
+        let expected_goal_id = self
+            .accounting_state
+            .active_goal_id_for_current_turn(invocation.turn_id.as_str())
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot update goal because this tool call is no longer associated with the active goal turn"
+                        .to_string(),
+                )
+            })?;
+
+        self.account_active_goal_progress_for_turn(
+            invocation.turn_id.as_str(),
             match args.status {
                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
                 ThreadGoalStatus::Blocked => codex_state::GoalAccountingMode::ActiveOrStopped,
@@ -283,7 +393,7 @@ impl GoalToolExecutor {
         )
         .await?;
         let previous_status = self
-            .current_goal_status_for_metrics(/*expected_goal_id*/ None)
+            .current_goal_status_for_metrics(Some(expected_goal_id.as_str()))
             .await?;
         let goal = self
             .state_db
@@ -294,7 +404,7 @@ impl GoalToolExecutor {
                     objective: None,
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
-                    expected_goal_id: None,
+                    expected_goal_id: Some(expected_goal_id),
                 },
             )
             .await
@@ -308,11 +418,44 @@ impl GoalToolExecutor {
             })?;
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
+        let plan_outcome = if args.status == ThreadGoalStatus::Complete {
+            self.state_db
+                .thread_goals()
+                .complete_goal_plan_node_and_maybe_advance(self.thread_id, &goal)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to advance goal plan: {err}"))
+                })?
+                .map(|outcome| (outcome.snapshot, outcome.activated_goal))
+        } else {
+            self.state_db
+                .thread_goals()
+                .sync_goal_plan_node_for_goal(self.thread_id, &goal)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to sync goal plan: {err}"))
+                })?
+                .map(|snapshot| (snapshot, None))
+        };
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
-        goal_response(
+        let (goal_plans, activated_goal) = if let Some((snapshot, activated_goal)) = plan_outcome {
+            let activated_goal = self
+                .apply_activated_goal_from_plan(
+                    &invocation,
+                    activated_goal,
+                    ActivatedGoalAccounting::Idle,
+                )
+                .await?;
+            (vec![GoalPlanResponse::from(snapshot)], activated_goal)
+        } else {
+            (Vec::new(), None)
+        };
+        goal_response_with_plan(
             Some(goal),
+            activated_goal,
+            goal_plans,
             if args.status == ThreadGoalStatus::Complete {
                 CompletionBudgetReport::Include
             } else {
@@ -394,6 +537,15 @@ impl GoalToolExecutor {
             })?;
         self.metrics
             .record_resumed_if_status_changed(Some(previous_status), goal.status);
+        self.state_db
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(self.thread_id, &goal)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to sync resumed goal plan: {err}"
+                ))
+            })?;
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
@@ -416,7 +568,7 @@ impl GoalToolExecutor {
             .thread_goal_updated(invocation.call_id.clone(), turn_id, goal);
     }
 
-    async fn account_active_goal_progress(
+    pub(crate) async fn account_active_goal_progress(
         &self,
         mode: codex_state::GoalAccountingMode,
         event_id: &str,
@@ -425,6 +577,22 @@ impl GoalToolExecutor {
         let Some(turn_id) = self.accounting_state.current_turn_id() else {
             return Ok(None);
         };
+        self.account_active_goal_progress_for_turn(
+            turn_id.as_str(),
+            mode,
+            event_id,
+            budget_limited_goal_disposition,
+        )
+        .await
+    }
+
+    pub(crate) async fn account_active_goal_progress_for_turn(
+        &self,
+        turn_id: &str,
+        mode: codex_state::GoalAccountingMode,
+        event_id: &str,
+        budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+    ) -> Result<Option<ThreadGoal>, FunctionCallError> {
         let _accounting_permit = self
             .accounting_state
             .progress_accounting_permit()
@@ -434,7 +602,7 @@ impl GoalToolExecutor {
                     "goal progress accounting semaphore closed: {err}"
                 ))
             })?;
-        let Some(snapshot) = self.accounting_state.progress_snapshot(turn_id.as_str()) else {
+        let Some(snapshot) = self.accounting_state.progress_snapshot(turn_id) else {
             return Ok(None);
         };
         let previous_status = self
@@ -458,8 +626,17 @@ impl GoalToolExecutor {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
                 self.metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
+                self.state_db
+                    .thread_goals()
+                    .sync_goal_plan_node_for_goal(self.thread_id, &goal)
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "failed to sync goal plan progress: {err}"
+                        ))
+                    })?;
                 self.accounting_state.mark_progress_accounted_for_status(
-                    turn_id.as_str(),
+                    turn_id,
                     &snapshot,
                     goal.status,
                     budget_limited_goal_disposition,
@@ -467,7 +644,7 @@ impl GoalToolExecutor {
                 let goal = protocol_goal_from_state(goal);
                 self.event_emitter.thread_goal_updated(
                     event_id.to_string(),
-                    Some(turn_id),
+                    Some(turn_id.to_string()),
                     goal.clone(),
                 );
                 Some(goal)
@@ -498,7 +675,7 @@ impl GoalToolExecutor {
     }
 }
 
-fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
+pub(crate) fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -519,13 +696,37 @@ fn goal_response(
     goal: Option<ThreadGoal>,
     completion_budget_report: CompletionBudgetReport,
 ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-    let value = serde_json::to_value(GoalToolResponse::new(goal, completion_budget_report))
-        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    goal_response_with_plan(
+        goal,
+        /*activated_goal*/ None,
+        Vec::new(),
+        completion_budget_report,
+    )
+}
+
+pub(crate) fn goal_response_with_plan(
+    goal: Option<ThreadGoal>,
+    activated_goal: Option<ThreadGoal>,
+    goal_plans: Vec<GoalPlanResponse>,
+    completion_budget_report: CompletionBudgetReport,
+) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    let value = serde_json::to_value(GoalToolResponse::new(
+        goal,
+        activated_goal,
+        goal_plans,
+        completion_budget_report,
+    ))
+    .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(Box::new(JsonToolOutput::new(value)))
 }
 
 impl GoalToolResponse {
-    fn new(goal: Option<ThreadGoal>, report_mode: CompletionBudgetReport) -> Self {
+    fn new(
+        goal: Option<ThreadGoal>,
+        activated_goal: Option<ThreadGoal>,
+        goal_plans: Vec<GoalPlanResponse>,
+        report_mode: CompletionBudgetReport,
+    ) -> Self {
         let remaining_tokens = goal.as_ref().and_then(|goal| {
             goal.token_budget
                 .map(|budget| (budget - goal.tokens_used).max(0))
@@ -539,6 +740,8 @@ impl GoalToolResponse {
         };
         Self {
             goal,
+            activated_goal,
+            goal_plans,
             remaining_tokens,
             completion_budget_report,
         }

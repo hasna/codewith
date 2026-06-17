@@ -882,22 +882,30 @@ ON CONFLICT(id) DO UPDATE SET
 
     /// Delete a thread metadata row by id.
     pub async fn delete_thread(&self, thread_id: ThreadId) -> anyhow::Result<u64> {
+        let thread_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM threads WHERE id = ?")
+            .bind(thread_id.to_string())
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+        if thread_exists.is_none() {
+            return Ok(0);
+        }
+
+        self.memories.delete_thread_memory(thread_id).await?;
+        self.thread_goals.delete_thread_goal(thread_id).await?;
+        self.thread_goals
+            .delete_thread_goal_plans_for_thread(thread_id)
+            .await?;
+        self.thread_schedules
+            .delete_thread_schedules_for_thread(thread_id)
+            .await?;
+        self.thread_monitors
+            .delete_thread_monitors_for_thread(thread_id)
+            .await?;
         let result = sqlx::query("DELETE FROM threads WHERE id = ?")
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
             .await?;
-        let rows_affected = result.rows_affected();
-        self.memories.delete_thread_memory(thread_id).await?;
-        if rows_affected > 0 {
-            self.thread_goals.delete_thread_goal(thread_id).await?;
-            self.thread_schedules
-                .delete_thread_schedules_for_thread(thread_id)
-                .await?;
-            self.thread_monitors
-                .delete_thread_monitors_for_thread(thread_id)
-                .await?;
-        }
-        Ok(rows_affected)
+        Ok(result.rows_affected())
     }
 }
 

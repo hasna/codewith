@@ -27,6 +27,8 @@ use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::GoalsAutoExecuteToml;
+use codex_config::config_toml::GoalsConfigToml;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -73,8 +75,10 @@ use codex_features::NetworkProxyConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
+use codex_login::AuthProfilePermissionSettings;
 use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::load_auth_profile_metadata;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
 use codex_memories_read::memory_root;
@@ -83,6 +87,9 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
+use codex_model_provider_info::model_gateway_family;
+use codex_model_provider_info::model_gateway_for_provider;
+use codex_model_provider_info::provider_belongs_to_model_gateway;
 use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
@@ -234,6 +241,42 @@ impl Default for SessionRecapConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalAutoExecuteMode {
+    Off,
+    ReadyOnly,
+    AiDirected,
+}
+
+impl From<GoalsAutoExecuteToml> for GoalAutoExecuteMode {
+    fn from(value: GoalsAutoExecuteToml) -> Self {
+        match value {
+            GoalsAutoExecuteToml::Off => Self::Off,
+            GoalsAutoExecuteToml::ReadyOnly => Self::ReadyOnly,
+            GoalsAutoExecuteToml::AiDirected => Self::AiDirected,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GoalsConfig {
+    pub auto_execute: GoalAutoExecuteMode,
+    pub max_auto_goals_per_plan: usize,
+    pub max_tokens_per_goal_plan: Option<i64>,
+}
+
+pub const MAX_AUTO_GOALS_PER_PLAN: usize = 64;
+
+impl Default for GoalsConfig {
+    fn default() -> Self {
+        Self {
+            auto_execute: GoalAutoExecuteMode::Off,
+            max_auto_goals_per_plan: 12,
+            max_tokens_per_goal_plan: None,
+        }
+    }
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -333,6 +376,23 @@ fn non_empty_env(name: &str) -> Option<String> {
     }
 }
 
+fn load_auth_profile_permission_settings(
+    codex_home: &Path,
+    profile: &str,
+) -> Option<AuthProfilePermissionSettings> {
+    match load_auth_profile_metadata(codex_home, profile) {
+        Ok(metadata) => metadata.last_permissions,
+        Err(err) => {
+            tracing::warn!(
+                profile,
+                error = %err,
+                "failed to load saved auth profile permissions"
+            );
+            None
+        }
+    }
+}
+
 fn validate_selected_auth_profile(profile: String, source: &str) -> std::io::Result<String> {
     let trimmed = profile.trim();
     if trimmed.is_empty() {
@@ -403,6 +463,28 @@ fn resolve_session_recap_config(config: Option<SessionRecapToml>) -> SessionReca
         model,
         fallback_model,
         reasoning_effort: config.reasoning_effort.unwrap_or(defaults.reasoning_effort),
+    }
+}
+
+fn resolve_goals_config(config: Option<GoalsConfigToml>) -> GoalsConfig {
+    let defaults = GoalsConfig::default();
+    let Some(config) = config else {
+        return defaults;
+    };
+
+    GoalsConfig {
+        auto_execute: config
+            .auto_execute
+            .map(GoalAutoExecuteMode::from)
+            .unwrap_or(defaults.auto_execute),
+        max_auto_goals_per_plan: config
+            .max_auto_goals_per_plan
+            .filter(|max_auto_goals_per_plan| *max_auto_goals_per_plan > 0)
+            .map(|max_auto_goals_per_plan| max_auto_goals_per_plan.min(MAX_AUTO_GOALS_PER_PLAN))
+            .unwrap_or(defaults.max_auto_goals_per_plan),
+        max_tokens_per_goal_plan: config
+            .max_tokens_per_goal_plan
+            .filter(|max_tokens_per_goal_plan| *max_tokens_per_goal_plan > 0),
     }
 }
 
@@ -759,6 +841,9 @@ pub struct Config {
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
+
+    /// Gateway above the selected model provider.
+    pub model_gateway_id: String,
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
@@ -1154,6 +1239,9 @@ pub struct Config {
 
     /// Settings specific to the task-path-based multi-agent tool surface.
     pub multi_agent_v2: MultiAgentV2Config,
+
+    /// Settings for durable goal plans and automatic goal-to-goal execution.
+    pub goals: GoalsConfig,
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
@@ -2778,11 +2866,11 @@ impl Config {
             model,
             review_model: override_review_model,
             cwd,
-            approval_policy: approval_policy_override,
-            approvals_reviewer: approvals_reviewer_override,
+            approval_policy: mut approval_policy_override,
+            approvals_reviewer: mut approvals_reviewer_override,
             sandbox_mode,
             permission_profile,
-            default_permissions: default_permissions_override,
+            default_permissions: mut default_permissions_override,
             model_provider,
             service_tier: service_tier_override,
             codex_self_exe,
@@ -2808,9 +2896,22 @@ impl Config {
                 .transpose()?,
             None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
         };
+        let runtime_permission_overrides_present = sandbox_mode.is_some()
+            || permission_profile.is_some()
+            || default_permissions_override.is_some()
+            || approval_policy_override.is_some()
+            || approvals_reviewer_override.is_some();
+        let auth_profile_permission_settings = if runtime_permission_overrides_present {
+            None
+        } else {
+            selected_auth_profile
+                .as_deref()
+                .and_then(|profile| load_auth_profile_permission_settings(&codex_home, profile))
+        };
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
         let session_recap = resolve_session_recap_config(cfg.session_recap.clone());
+        let goals = resolve_goals_config(cfg.goals.clone());
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -2925,6 +3026,23 @@ impl Config {
             sandbox_mode,
         );
         let requirements_toml = config_layer_stack.requirements_toml();
+        if let Some(settings) = auth_profile_permission_settings {
+            if auth_profile_permission_profile_id_is_available_and_allowed(
+                settings.default_permissions.as_str(),
+                cfg.permissions.as_ref(),
+                requirements_toml,
+            ) {
+                default_permissions_override = Some(settings.default_permissions.clone());
+                approval_policy_override = Some(settings.approval_policy);
+                approvals_reviewer_override = Some(settings.approvals_reviewer);
+            } else {
+                tracing::warn!(
+                    auth_profile = ?selected_auth_profile,
+                    profile_id = %settings.default_permissions,
+                    "ignoring saved auth profile permissions because the permission profile is unavailable"
+                );
+            }
+        }
         let effective_permission_selection = resolve_effective_permission_selection(
             cfg.permissions.as_ref(),
             default_permissions_override.as_deref(),
@@ -3252,6 +3370,23 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        let model_gateway_id = cfg
+            .model_gateway
+            .unwrap_or_else(|| model_gateway_for_provider(&model_provider_id).to_string());
+        if model_gateway_family(&model_gateway_id).is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Model gateway `{model_gateway_id}` not found"),
+            ));
+        }
+        if !provider_belongs_to_model_gateway(&model_provider_id, &model_gateway_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Model provider `{model_provider_id}` is not available through gateway `{model_gateway_id}`"
+                ),
+            ));
+        }
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -3611,6 +3746,7 @@ impl Config {
                 .model_auto_compact_token_limit_scope
                 .unwrap_or_default(),
             model_provider_id,
+            model_gateway_id,
             model_provider,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
@@ -3763,6 +3899,7 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
+            goals,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning
@@ -3994,6 +4131,26 @@ fn merge_managed_permission_profiles(
     }
 
     Ok(Some(merged_permissions))
+}
+
+fn auth_profile_permission_profile_id_is_available_and_allowed(
+    profile_id: &str,
+    configured_permissions: Option<&PermissionsToml>,
+    requirements_toml: &ConfigRequirementsToml,
+) -> bool {
+    let available = is_builtin_permission_profile_name(profile_id)
+        || configured_permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.entries.contains_key(profile_id))
+        || requirements_toml
+            .permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.profiles.contains_key(profile_id));
+    let allowed = requirements_toml
+        .allowed_permission_profiles
+        .as_ref()
+        .is_none_or(|allowed| is_permission_allowed(allowed, profile_id));
+    available && allowed
 }
 
 fn resolve_effective_permission_selection<'a>(

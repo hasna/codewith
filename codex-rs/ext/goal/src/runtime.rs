@@ -26,6 +26,9 @@ pub struct GoalRuntimeHandle {
 pub(crate) struct GoalRuntimeConfig {
     pub(crate) enabled: bool,
     pub(crate) tools_available_for_thread: bool,
+    pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+    pub(crate) max_auto_goals_per_plan: usize,
+    pub(crate) max_tokens_per_goal_plan: Option<i64>,
 }
 
 pub(crate) enum ActiveGoalStopReason {
@@ -42,7 +45,15 @@ struct GoalRuntimeInner {
     accounting_state: Arc<GoalAccountingState>,
     enabled: AtomicBool,
     tools_available_for_thread: bool,
+    plan_config: std::sync::RwLock<GoalPlanRuntimeConfig>,
     goal_state_lock: Semaphore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GoalPlanRuntimeConfig {
+    pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+    pub(crate) max_auto_goals_per_plan: usize,
+    pub(crate) max_tokens_per_goal_plan: Option<i64>,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -93,13 +104,25 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 enabled: AtomicBool::new(config.enabled),
                 tools_available_for_thread: config.tools_available_for_thread,
+                plan_config: std::sync::RwLock::new(GoalPlanRuntimeConfig {
+                    auto_execute: config.auto_execute,
+                    max_auto_goals_per_plan: config.max_auto_goals_per_plan,
+                    max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                }),
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
             }),
         }
     }
 
-    pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
+    pub(crate) fn set_config(&self, config: GoalRuntimeConfig) {
+        self.inner.enabled.store(config.enabled, Ordering::Relaxed);
+        if let Ok(mut plan_config) = self.inner.plan_config.write() {
+            *plan_config = GoalPlanRuntimeConfig {
+                auto_execute: config.auto_execute,
+                max_auto_goals_per_plan: config.max_auto_goals_per_plan,
+                max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+            };
+        }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -110,12 +133,28 @@ impl GoalRuntimeHandle {
         self.is_enabled() && self.inner.tools_available_for_thread
     }
 
+    pub(crate) fn tools_available_for_thread(&self) -> bool {
+        self.inner.tools_available_for_thread
+    }
+
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.inner.thread_id
     }
 
     pub(crate) fn accounting_state(&self) -> Arc<GoalAccountingState> {
         Arc::clone(&self.inner.accounting_state)
+    }
+
+    pub(crate) fn plan_config(&self) -> GoalPlanRuntimeConfig {
+        self.inner
+            .plan_config
+            .read()
+            .map(|config| *config)
+            .unwrap_or(GoalPlanRuntimeConfig {
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+                max_auto_goals_per_plan: 1,
+                max_tokens_per_goal_plan: None,
+            })
     }
 
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
@@ -175,6 +214,22 @@ impl GoalRuntimeHandle {
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
+        let plan_advance = if goal.status == codex_state::ThreadGoalStatus::Complete {
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .complete_goal_plan_node_and_maybe_advance(self.thread_id(), &goal)
+                .await
+                .map_err(|err| err.to_string())?
+        } else {
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
+                .await
+                .map_err(|err| err.to_string())?;
+            None
+        };
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
@@ -208,6 +263,20 @@ impl GoalRuntimeHandle {
                 self.inner.accounting_state.clear_active_goal();
             }
         }
+        if let Some(outcome) = plan_advance
+            && let Some(activated_goal) = outcome.activated_goal
+        {
+            self.inner.metrics.record_created();
+            self.inner
+                .accounting_state
+                .mark_idle_goal_active(activated_goal.goal_id.clone());
+            self.inner.event_emitter.thread_goal_updated(
+                format!("{}:external-goal-advance", self.thread_id()),
+                /*turn_id*/ None,
+                protocol_goal_from_state(activated_goal),
+            );
+            self.continue_if_idle().await?;
+        }
         Ok(())
     }
 
@@ -216,6 +285,12 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .block_active_goal_plan_nodes_for_thread(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
         self.inner.accounting_state.clear_active_goal();
         Ok(())
     }
@@ -302,6 +377,12 @@ impl GoalRuntimeHandle {
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
+            .await
+            .map_err(|err| err.to_string())?;
         self.inner.accounting_state.clear_active_goal();
         let goal = protocol_goal_from_state(goal);
         self.inner.event_emitter.thread_goal_updated(
@@ -445,6 +526,12 @@ impl GoalRuntimeHandle {
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
+                    .await
+                    .map_err(|err| err.to_string())?;
                 accounting.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
@@ -499,6 +586,12 @@ impl GoalRuntimeHandle {
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
+                    .await
+                    .map_err(|err| err.to_string())?;
                 accounting.mark_idle_progress_accounted_for_status(
                     &snapshot,
                     goal.status,

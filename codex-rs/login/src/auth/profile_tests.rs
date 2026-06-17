@@ -353,13 +353,20 @@ fn auth_profile_metadata_round_trips_and_renames() -> anyhow::Result<()> {
         load_auth_profile_metadata(codex_home.path(), "work")?,
         AuthProfileMetadata {
             subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+            last_permissions: None,
         }
     );
 
     let metadata = AuthProfileMetadata {
         subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        last_permissions: Some(AuthProfilePermissionSettings {
+            default_permissions:
+                codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string(),
+            approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            approvals_reviewer: codex_config::types::ApprovalsReviewer::User,
+        }),
     };
-    save_auth_profile_metadata(codex_home.path(), "work", metadata)?;
+    save_auth_profile_metadata(codex_home.path(), "work", metadata.clone())?;
 
     let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
     assert_eq!(
@@ -401,8 +408,9 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
 
     let metadata = AuthProfileMetadata {
         subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        last_permissions: None,
     };
-    save_auth_profile_metadata(codex_home.path(), "claude", metadata)?;
+    save_auth_profile_metadata(codex_home.path(), "claude", metadata.clone())?;
 
     let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
     assert_eq!(
@@ -454,6 +462,7 @@ fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<(
     let codex_home = tempdir()?;
     let metadata = AuthProfileMetadata {
         subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        last_permissions: None,
     };
     save_auth_profile_metadata(codex_home.path(), "claude", metadata)?;
     save_profile_auth(
@@ -496,6 +505,7 @@ fn mirror_active_auth_profile_skips_external_profiles() -> anyhow::Result<()> {
         "claude",
         AuthProfileMetadata {
             subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
         },
     )?;
     write_active_profile(codex_home.path(), "claude")?;
@@ -523,6 +533,7 @@ fn chatgpt_auth_cannot_be_saved_into_external_profile() -> anyhow::Result<()> {
         "claude",
         AuthProfileMetadata {
             subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
         },
     )?;
 

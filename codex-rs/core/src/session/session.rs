@@ -4,13 +4,11 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::config::ConstraintError;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_known_provider_models::fallback_models_for_provider;
 use codex_known_provider_models::provider_for_fallback_model;
 use codex_model_provider::model_cache_key_for_configured_provider;
-use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
-use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
-use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
-use codex_model_provider_info::XIAOMI_PROVIDER_ID;
+use codex_model_provider_info::model_gateway_for_provider;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -498,6 +496,7 @@ fn apply_model_provider_id(
         });
     };
     let mut config = (*next_configuration.original_config_do_not_use).clone();
+    config.model_gateway_id = model_gateway_for_provider(model_provider_id).to_string();
     config.model_provider_id = model_provider_id.to_string();
     config.model_provider.clone_from(&provider);
     next_configuration.provider = provider;
@@ -508,16 +507,13 @@ fn apply_model_provider_id(
 fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str> {
     if model_provider_id.eq_ignore_ascii_case(OPENAI_PROVIDER_ID) {
         Some("gpt-5.2-codex")
-    } else if model_provider_id.eq_ignore_ascii_case(CEREBRAS_PROVIDER_ID) {
-        Some("gpt-oss-120b")
-    } else if model_provider_id.eq_ignore_ascii_case(NVIDIA_PROVIDER_ID)
-        || model_provider_id.eq_ignore_ascii_case(OPENROUTER_PROVIDER_ID)
-    {
-        Some("openai/gpt-oss-120b")
-    } else if model_provider_id.eq_ignore_ascii_case(XIAOMI_PROVIDER_ID) {
-        Some("mimo-v2.5-pro-ultraspeed")
     } else {
-        None
+        let fallback_models = fallback_models_for_provider(model_provider_id);
+        fallback_models
+            .iter()
+            .find(|model| model.is_default)
+            .or_else(|| fallback_models.first())
+            .map(|model| model.id)
     }
 }
 

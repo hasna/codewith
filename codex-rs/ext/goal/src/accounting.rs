@@ -108,6 +108,15 @@ impl GoalAccountingState {
         turn.account_tokens && turn.active_goal_id.is_some()
     }
 
+    pub(crate) fn active_goal_id_for_current_turn(&self, turn_id: &str) -> Option<String> {
+        let inner = self.inner();
+        if inner.current_turn_id.as_deref() != Some(turn_id) {
+            return None;
+        }
+        let turn = inner.turns.get(turn_id)?;
+        turn.account_tokens.then(|| turn.active_goal_id()).flatten()
+    }
+
     pub(crate) fn record_token_usage(
         &self,
         turn_id: impl Into<String>,

@@ -718,6 +718,7 @@ async fn external_subscription_profile_does_not_fall_back_to_openai_auth() -> an
         "claude",
         AuthProfileMetadata {
             subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
         },
     )?;
 

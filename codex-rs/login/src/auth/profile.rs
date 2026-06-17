@@ -11,8 +11,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::AuthMode;
+use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::account::PlanType as AccountPlanType;
+use codex_protocol::protocol::AskForApproval;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -66,10 +68,21 @@ impl fmt::Display for AuthProfileSubscriptionProvider {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthProfileMetadata {
     pub subscription_provider: AuthProfileSubscriptionProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permissions: Option<AuthProfilePermissionSettings>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthProfilePermissionSettings {
+    pub default_permissions: String,
+    pub approval_policy: AskForApproval,
+    #[serde(default)]
+    pub approvals_reviewer: ApprovalsReviewer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,7 +230,7 @@ pub fn save_current_auth_profile(
     save_profile_auth(codex_home, auth_credentials_store_mode, name, &auth)?;
     write_profile_metadata(
         &auth_profile_dir(codex_home, name),
-        AuthProfileMetadata::default(),
+        &AuthProfileMetadata::default(),
     )?;
     write_active_profile(codex_home, name)?;
     Ok(profile_from_auth(
@@ -241,7 +254,7 @@ pub fn save_auth_profile(
     save_profile_auth(codex_home, auth_credentials_store_mode, name, auth)?;
     write_profile_metadata(
         &auth_profile_dir(codex_home, name),
-        AuthProfileMetadata::default(),
+        &AuthProfileMetadata::default(),
     )?;
     Ok(profile_from_auth(
         name.to_string(),
@@ -398,7 +411,7 @@ pub fn rename_auth_profile(
     } else {
         create_private_dir_all(&new_profile_dir)?;
     }
-    write_profile_metadata(&auth_profile_dir(codex_home, new_name), metadata)?;
+    write_profile_metadata(&auth_profile_dir(codex_home, new_name), &metadata)?;
     delete_profile_storage_dir(old_profile_dir, auth_credentials_store_mode)?;
     if active {
         write_active_profile(codex_home, new_name)?;
@@ -489,7 +502,7 @@ pub fn save_auth_profile_metadata(
     metadata: AuthProfileMetadata,
 ) -> Result<(), AuthProfileError> {
     let profile_dir = ensure_auth_profile_storage_dir(codex_home, name)?;
-    write_profile_metadata(&profile_dir, metadata)?;
+    write_profile_metadata(&profile_dir, &metadata)?;
     Ok(())
 }
 
@@ -576,7 +589,7 @@ fn load_profile_metadata(profile_dir: &Path) -> Result<AuthProfileMetadata, Auth
 
 fn write_profile_metadata(
     profile_dir: &Path,
-    metadata: AuthProfileMetadata,
+    metadata: &AuthProfileMetadata,
 ) -> Result<(), AuthProfileError> {
     let json = serde_json::to_string_pretty(&metadata)
         .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;

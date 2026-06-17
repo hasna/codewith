@@ -39,6 +39,9 @@ use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
+use crate::spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
+use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
+use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
@@ -47,12 +50,9 @@ use crate::tool::GoalToolExecutor;
 #[derive(Clone, Debug)]
 pub struct GoalExtensionConfig {
     pub enabled: bool,
-}
-
-impl GoalExtensionConfig {
-    fn from_enabled(enabled: bool) -> Self {
-        Self { enabled }
-    }
+    pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+    pub max_auto_goals_per_plan: usize,
+    pub max_tokens_per_goal_plan: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -62,7 +62,7 @@ pub struct GoalExtension<C> {
     metrics: GoalMetrics,
     thread_manager: Weak<ThreadManager>,
     goal_service: Arc<GoalService>,
-    goals_enabled: Arc<dyn Fn(&C) -> bool + Send + Sync>,
+    goals_config: Arc<dyn Fn(&C) -> GoalExtensionConfig + Send + Sync>,
 }
 
 impl<C> std::fmt::Debug for GoalExtension<C> {
@@ -78,7 +78,7 @@ impl<C> GoalExtension<C> {
         metrics_client: Option<MetricsClient>,
         thread_manager: Weak<ThreadManager>,
         goal_service: Arc<GoalService>,
-        goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+        goals_config: impl Fn(&C) -> GoalExtensionConfig + Send + Sync + 'static,
     ) -> Self {
         Self {
             state_dbs,
@@ -86,7 +86,7 @@ impl<C> GoalExtension<C> {
             metrics: GoalMetrics::new(metrics_client),
             thread_manager,
             goal_service,
-            goals_enabled: Arc::new(goals_enabled),
+            goals_config: Arc::new(goals_config),
         }
     }
 }
@@ -97,15 +97,13 @@ where
     C: Send + Sync + 'static,
 {
     async fn on_thread_start(&self, input: ThreadStartInput<'_, C>) {
-        let enabled = (self.goals_enabled)(input.config);
+        let config = (self.goals_config)(input.config);
         let tools_available_for_thread = input.persistent_thread_state_available
             && !matches!(
                 input.session_source,
                 SessionSource::SubAgent(SubAgentSource::Review)
             );
-        input
-            .thread_store
-            .insert(GoalExtensionConfig::from_enabled(enabled));
+        input.thread_store.insert(config.clone());
         let accounting_state = input
             .thread_store
             .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
@@ -121,12 +119,21 @@ where
                 self.thread_manager.clone(),
                 accounting_state,
                 GoalRuntimeConfig {
-                    enabled,
+                    enabled: config.enabled,
                     tools_available_for_thread,
+                    auto_execute: config.auto_execute,
+                    max_auto_goals_per_plan: config.max_auto_goals_per_plan,
+                    max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
                 },
             )
         });
-        runtime.set_enabled(enabled);
+        runtime.set_config(GoalRuntimeConfig {
+            enabled: config.enabled,
+            tools_available_for_thread: runtime.tools_available_for_thread(),
+            auto_execute: config.auto_execute,
+            max_auto_goals_per_plan: config.max_auto_goals_per_plan,
+            max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+        });
         self.goal_service.register_runtime(&runtime);
     }
 
@@ -174,10 +181,16 @@ where
         _previous_config: &C,
         new_config: &C,
     ) {
-        let enabled = (self.goals_enabled)(new_config);
-        thread_store.insert(GoalExtensionConfig::from_enabled(enabled));
+        let config = (self.goals_config)(new_config);
+        thread_store.insert(config.clone());
         if let Some(runtime) = goal_runtime_handle(thread_store) {
-            runtime.set_enabled(enabled);
+            runtime.set_config(GoalRuntimeConfig {
+                enabled: config.enabled,
+                tools_available_for_thread: runtime.tools_available_for_thread(),
+                auto_execute: config.auto_execute,
+                max_auto_goals_per_plan: config.max_auto_goals_per_plan,
+                max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+            });
         }
     }
 }
@@ -346,7 +359,11 @@ where
                 && !(input.tool_name.namespace.is_none()
                     && matches!(
                         input.tool_name.name.as_str(),
-                        UPDATE_GOAL_TOOL_NAME | RESUME_GOAL_TOOL_NAME
+                        UPDATE_GOAL_TOOL_NAME
+                            | RESUME_GOAL_TOOL_NAME
+                            | GET_GOAL_PLAN_TOOL_NAME
+                            | CREATE_GOAL_PLAN_TOOL_NAME
+                            | ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME
                     ));
             if !should_count_for_goal_progress {
                 return;
@@ -410,12 +427,36 @@ where
                 self.event_emitter.clone(),
                 self.metrics.clone(),
             )),
+            Arc::new(GoalToolExecutor::get_plan(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config(),
+            )),
             Arc::new(GoalToolExecutor::create(
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
+            )),
+            Arc::new(GoalToolExecutor::create_plan(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config(),
+            )),
+            Arc::new(GoalToolExecutor::activate_plan_node(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config(),
             )),
             Arc::new(GoalToolExecutor::update(
                 runtime.thread_id(),
@@ -441,7 +482,7 @@ pub fn install_with_backend<C>(
     metrics_client: Option<MetricsClient>,
     thread_manager: Weak<ThreadManager>,
     goal_service: Arc<GoalService>,
-    goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+    goals_config: impl Fn(&C) -> GoalExtensionConfig + Send + Sync + 'static,
 ) where
     C: Send + Sync + 'static,
 {
@@ -451,7 +492,7 @@ pub fn install_with_backend<C>(
         metrics_client,
         thread_manager,
         Arc::clone(&goal_service),
-        goals_enabled,
+        goals_config,
     ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());

@@ -4061,6 +4061,40 @@ async fn session_settings_model_provider_update_replaces_stale_provider_model() 
 }
 
 #[tokio::test]
+async fn session_settings_provider_only_update_uses_fallback_default_for_all_known_providers() {
+    let cases = [
+        ("anthropic", "claude-fable-5"),
+        ("cerebras", "gpt-oss-120b"),
+        ("deepseek", "deepseek-v4-flash"),
+        ("google", "gemini-3.5-flash"),
+        ("minimax", "MiniMax-M3"),
+        ("nvidia", "openai/gpt-oss-120b"),
+        ("openrouter", "openai/gpt-oss-120b"),
+        ("qwen", "qwen3.5-flash"),
+        ("xai", "grok-4.3"),
+        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("zai", "glm-5.2"),
+    ];
+
+    for (provider_id, expected_model) in cases {
+        let session_configuration = make_session_configuration_for_tests().await;
+
+        let updated = session_configuration
+            .apply(&SessionSettingsUpdate {
+                model_provider_id: Some(provider_id.to_string()),
+                ..Default::default()
+            })
+            .unwrap_or_else(|err| panic!("{provider_id} provider update should apply: {err:?}"));
+
+        let snapshot = updated.thread_config_snapshot();
+        assert_eq!(snapshot.model_provider_id, provider_id);
+        assert_eq!(snapshot.model, expected_model);
+        assert_eq!(updated.collaboration_mode.model(), expected_model);
+        assert_eq!(updated.collaboration_mode.reasoning_effort(), None);
+    }
+}
+
+#[tokio::test]
 async fn thread_settings_provider_only_update_uses_provider_default_model() -> anyhow::Result<()> {
     let (session, _rx_event) = make_session_with_config_and_rx(|_config| {}).await?;
 

@@ -128,6 +128,7 @@ fn save_config_resolved_fields(
     lock_config: &mut ConfigToml,
 ) -> anyhow::Result<()> {
     lock_config.web_search = Some(config.web_search_mode.value());
+    lock_config.model_gateway = Some(config.model_gateway_id.clone());
     lock_config.model_provider = Some(config.model_provider_id.clone());
     lock_config.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort.clone();
     lock_config.model_verbosity = config.model_verbosity;

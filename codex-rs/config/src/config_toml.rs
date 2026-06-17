@@ -139,6 +139,32 @@ of strings; comma-separated strings are not supported. Use \
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum GoalsAutoExecuteToml {
+    #[default]
+    Off,
+    ReadyOnly,
+    AiDirected,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct GoalsConfigToml {
+    /// Controls whether goal plans may advance to ready goals without asking the
+    /// user between goals.
+    pub auto_execute: Option<GoalsAutoExecuteToml>,
+
+    /// Maximum number of goals the model may add to one automatically executed
+    /// plan. Omit for the default cap.
+    #[schemars(range(min = 1, max = 64))]
+    pub max_auto_goals_per_plan: Option<usize>,
+
+    /// Optional combined token cap for all goals in a plan. Omit for unlimited.
+    #[schemars(range(min = 1))]
+    pub max_tokens_per_goal_plan: Option<i64>,
+}
+
 /// Base config deserialized from ~/.codewith/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -150,6 +176,9 @@ pub struct ConfigToml {
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
+
+    /// Gateway to use above the selected model provider.
+    pub model_gateway: Option<String>,
 
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
@@ -172,6 +201,10 @@ pub struct ConfigToml {
     /// Optional policy instructions for the guardian auto-reviewer.
     #[serde(default)]
     pub auto_review: Option<AutoReviewToml>,
+
+    /// Goal plan automation defaults.
+    #[serde(default)]
+    pub goals: Option<GoalsConfigToml>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,

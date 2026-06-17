@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct GoalStore {
-    pool: Arc<SqlitePool>,
+    pub(crate) pool: Arc<SqlitePool>,
 }
 
 impl GoalStore {
@@ -71,6 +71,21 @@ WHERE thread_id = ?
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
+        let mut tx = self.pool.begin().await?;
+        let previous_goal_id: Option<String> = sqlx::query_scalar(
+            r#"
+SELECT goal_id
+FROM thread_goals
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(previous_goal_id) = previous_goal_id.as_deref() {
+            block_projected_goal_plan_nodes_in_tx(&mut tx, thread_id, previous_goal_id, now_ms)
+                .await?;
+        }
         let row = sqlx::query(
             r#"
 INSERT INTO thread_goals (
@@ -112,10 +127,12 @@ RETURNING
         .bind(token_budget)
         .bind(now_ms)
         .bind(now_ms)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(&mut *tx)
         .await?;
 
-        thread_goal_from_row(&row)
+        let goal = thread_goal_from_row(&row)?;
+        tx.commit().await?;
+        Ok(goal)
     }
 
     pub async fn insert_thread_goal(
@@ -369,6 +386,22 @@ WHERE thread_id = ?
     }
 
     pub async fn delete_thread_goal(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let previous_goal_id: Option<String> = sqlx::query_scalar(
+            r#"
+SELECT goal_id
+FROM thread_goals
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(previous_goal_id) = previous_goal_id.as_deref() {
+            block_projected_goal_plan_nodes_in_tx(&mut tx, thread_id, previous_goal_id, now_ms)
+                .await?;
+        }
         let result = sqlx::query(
             r#"
 DELETE FROM thread_goals
@@ -376,8 +409,9 @@ WHERE thread_id = ?
             "#,
         )
         .bind(thread_id.to_string())
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -499,6 +533,48 @@ RETURNING
 
 fn thread_goal_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<crate::ThreadGoal> {
     ThreadGoalRow::try_from_row(row).and_then(crate::ThreadGoal::try_from)
+}
+
+async fn block_projected_goal_plan_nodes_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    thread_id: ThreadId,
+    projected_goal_id: &str,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let rows = sqlx::query(
+        r#"
+UPDATE thread_goal_plan_nodes
+SET status = ?, updated_at_ms = ?
+WHERE thread_id = ?
+  AND projected_goal_id = ?
+  AND status != 'complete'
+RETURNING plan_id
+        "#,
+    )
+    .bind(crate::ThreadGoalPlanNodeStatus::Blocked.as_str())
+    .bind(now_ms)
+    .bind(thread_id.to_string())
+    .bind(projected_goal_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    for row in rows {
+        let plan_id: String = row.try_get("plan_id")?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plans
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status != 'complete'
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanStatus::Blocked.as_str())
+        .bind(now_ms)
+        .bind(plan_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 fn status_after_budget_limit(

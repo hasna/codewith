@@ -66,8 +66,11 @@ use codex_core_plugins::PluginsManager;
 use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
+use codex_model_provider_info::HASNA_GATEWAY_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_GATEWAY_ID;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
@@ -685,6 +688,73 @@ region = "us-west-2"
     assert!(err.to_string().contains(
         "model_providers.amazon-bedrock only supports changing `aws.profile` and `aws.region`; other non-default provider fields are not supported"
     ));
+}
+
+#[tokio::test]
+async fn load_config_defaults_to_hasna_gateway_for_direct_providers() {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "openai"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_gateway_id, HASNA_GATEWAY_ID);
+}
+
+#[tokio::test]
+async fn load_config_accepts_openrouter_gateway_for_openrouter_provider() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "{OPENROUTER_PROVIDER_ID}"
+model_gateway = "{OPENROUTER_GATEWAY_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(config.model_gateway_id, OPENROUTER_GATEWAY_ID);
+}
+
+#[tokio::test]
+async fn load_config_rejects_incompatible_gateway_provider_pair() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "openai"
+model_gateway = "{OPENROUTER_GATEWAY_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string()
+            .contains("Model provider `openai` is not available through gateway `openrouter`")
+    );
 }
 
 #[test]
@@ -4945,6 +5015,287 @@ async fn config_resolves_selected_auth_profile_from_override() -> std::io::Resul
     Ok(())
 }
 
+fn saved_auth_profile_permission_metadata(
+    default_permissions: &str,
+    approval_policy: AskForApproval,
+) -> codex_login::AuthProfileMetadata {
+    codex_login::AuthProfileMetadata {
+        subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+        last_permissions: Some(codex_login::AuthProfilePermissionSettings {
+            default_permissions: default_permissions.to_string(),
+            approval_policy,
+            approvals_reviewer: ApprovalsReviewer::User,
+        }),
+    }
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_applies_saved_auth_profile_permissions() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        saved_auth_profile_permission_metadata(
+            BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+            AskForApproval::Never,
+        ),
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.permissions.permission_profile(),
+        &PermissionProfile::Disabled
+    );
+    assert_eq!(
+        config
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS)
+    );
+    assert_eq!(
+        config.permissions.approval_policy.value(),
+        AskForApproval::Never
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_applies_saved_auth_profile_permissions_for_custom_profile() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    let writable_dir = TempDir::new()?;
+    let writable_path =
+        AbsolutePathBuf::from_absolute_path(std::fs::canonicalize(writable_dir.path())?)?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        saved_auth_profile_permission_metadata("dev", AskForApproval::OnRequest),
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "dev".to_string(),
+                    PermissionProfileToml {
+                        description: Some("Development workspace".to_string()),
+                        extends: None,
+                        workspace_roots: None,
+                        filesystem: Some(FilesystemPermissionsToml {
+                            glob_scan_max_depth: None,
+                            entries: BTreeMap::from([(
+                                writable_path.to_string_lossy().into_owned(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Write),
+                            )]),
+                        }),
+                        network: None,
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.custom_permission_profiles,
+        vec![CustomPermissionProfileSummary {
+            id: "dev".to_string(),
+            description: Some("Development workspace".to_string()),
+        }]
+    );
+    assert_eq!(
+        config
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some("dev")
+    );
+    assert!(
+        config
+            .permissions
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(writable_path.as_path(), config.cwd.as_path())
+    );
+    assert_eq!(
+        config.permissions.approval_policy.value(),
+        AskForApproval::OnRequest
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_runtime_permission_overrides_ignore_saved_auth_profile_permissions()
+-> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        saved_auth_profile_permission_metadata(
+            BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+            AskForApproval::Never,
+        ),
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some(Some("work".to_string())),
+            default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string()),
+            approval_policy: Some(AskForApproval::OnRequest),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_ne!(
+        config.permissions.permission_profile(),
+        &PermissionProfile::Disabled
+    );
+    assert_eq!(
+        config
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY)
+    );
+    assert_eq!(
+        config.permissions.approval_policy.value(),
+        AskForApproval::OnRequest
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_ignores_unavailable_saved_auth_profile_permissions() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        saved_auth_profile_permission_metadata("missing-profile", AskForApproval::Never),
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_ne!(
+        config.permissions.permission_profile(),
+        &PermissionProfile::Disabled
+    );
+    assert_ne!(
+        config.permissions.approval_policy.value(),
+        AskForApproval::Never
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_ignores_requirements_disallowed_saved_auth_profile_permissions()
+-> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        saved_auth_profile_permission_metadata(
+            BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+            AskForApproval::Never,
+        ),
+    )?;
+    let requirements_toml = codex_config::ConfigRequirementsToml {
+        allowed_permission_profiles: Some(BTreeMap::from([
+            (BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string(), true),
+            (BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string(), true),
+            (
+                BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string(),
+                false,
+            ),
+        ])),
+        ..Default::default()
+    };
+    let config_layer_stack = ConfigLayerStack::new(
+        Vec::new(),
+        codex_config::ConfigRequirements::default(),
+        requirements_toml,
+    )
+    .expect("config layer stack");
+
+    let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
+        ConfigToml::default(),
+        ConfigOverrides {
+            auth_profile: Some(Some("work".to_string())),
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+        config_layer_stack,
+    )
+    .await?;
+
+    assert_ne!(
+        config.permissions.permission_profile(),
+        &PermissionProfile::Disabled
+    );
+    assert_ne!(
+        config.permissions.approval_policy.value(),
+        AskForApproval::Never
+    );
+    assert_ne!(
+        config
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS)
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_override_can_clear_selected_auth_profile_env() -> std::io::Result<()> {
@@ -9124,6 +9475,37 @@ allow_login_shell = false
     .await?;
 
     assert!(!config.permissions.allow_login_shell);
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_loads_goals_config_from_toml_and_caps_plan_size() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+model = "gpt-5.4"
+
+[goals]
+auto_execute = "ai-directed"
+max_auto_goals_per_plan = 9999
+max_tokens_per_goal_plan = 123456
+"#,
+    )
+    .expect("TOML deserialization should succeed for goals config");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(GoalAutoExecuteMode::AiDirected, config.goals.auto_execute);
+    assert_eq!(
+        MAX_AUTO_GOALS_PER_PLAN,
+        config.goals.max_auto_goals_per_plan
+    );
+    assert_eq!(Some(123456), config.goals.max_tokens_per_goal_plan);
     Ok(())
 }
 

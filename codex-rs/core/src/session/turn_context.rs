@@ -7,6 +7,7 @@ use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider_with_id;
 use codex_model_provider::model_cache_key_for_configured_provider;
+use codex_model_provider_info::model_gateway_for_provider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -191,6 +192,7 @@ impl TurnContext {
             && model_provider_id != config.model_provider_id
             && let Some(provider) = config.model_providers.get(&model_provider_id).cloned()
         {
+            config.model_gateway_id = model_gateway_for_provider(&model_provider_id).to_string();
             config.model_provider_id = model_provider_id;
             config.model_provider = provider;
         }
@@ -447,6 +449,7 @@ impl Session {
             && model_provider_id != config.model_provider_id
             && let Some(provider) = config.model_providers.get(model_provider_id).cloned()
         {
+            config.model_gateway_id = model_gateway_for_provider(model_provider_id).to_string();
             config.model_provider_id = model_provider_id.to_string();
             config.model_provider = provider;
         }

@@ -9,6 +9,7 @@ mod runtime;
 mod spec;
 mod steering;
 mod tool;
+mod tool_plan;
 
 pub use api::GoalObjectiveUpdate;
 pub use api::GoalService;
@@ -21,7 +22,10 @@ pub use extension::GoalExtensionConfig;
 pub use extension::install_with_backend;
 pub use runtime::GoalRuntimeHandle;
 pub use runtime::PreviousGoalSnapshot;
+pub use spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
+pub use spec::CREATE_GOAL_PLAN_TOOL_NAME;
 pub use spec::CREATE_GOAL_TOOL_NAME;
+pub use spec::GET_GOAL_PLAN_TOOL_NAME;
 pub use spec::GET_GOAL_TOOL_NAME;
 pub use spec::UPDATE_GOAL_TOOL_NAME;
 pub use tool::CreateGoalRequest;

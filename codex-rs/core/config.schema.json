@@ -720,6 +720,10 @@
           ],
           "description": "Optional path to a JSON model catalog (applied on startup only)."
         },
+        "model_gateway": {
+          "description": "Gateway to use above the selected model provider.",
+          "type": "string"
+        },
         "model_instructions_file": {
           "allOf": [
             {
@@ -994,6 +998,41 @@
         "ignore_large_untracked_files": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "GoalsAutoExecuteToml": {
+      "enum": [
+        "off",
+        "ready-only",
+        "ai-directed"
+      ],
+      "type": "string"
+    },
+    "GoalsConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_execute": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalsAutoExecuteToml"
+            }
+          ],
+          "description": "Controls whether goal plans may advance to ready goals without asking the user between goals."
+        },
+        "max_auto_goals_per_plan": {
+          "description": "Maximum number of goals the model may add to one automatically executed plan. Omit for the default cap.",
+          "format": "uint",
+          "maximum": 64.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "max_tokens_per_goal_plan": {
+          "description": "Optional combined token cap for all goals in a plan. Omit for unlimited.",
+          "format": "int64",
+          "minimum": 1.0,
           "type": "integer"
         }
       },
@@ -2908,6 +2947,7 @@
             "global": {
               "clear_terminal": null,
               "copy": null,
+              "cycle_permissions": null,
               "open_external_editor": null,
               "open_transcript": null,
               "queue": null,
@@ -3428,6 +3468,14 @@
           ],
           "description": "Copy the last agent response to the clipboard."
         },
+        "cycle_permissions": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Cycle to the next permissions preset."
+        },
         "open_external_editor": {
           "allOf": [
             {
@@ -3578,6 +3626,7 @@
           "default": {
             "clear_terminal": null,
             "copy": null,
+            "cycle_permissions": null,
             "open_external_editor": null,
             "open_transcript": null,
             "queue": null,
@@ -4917,6 +4966,15 @@
       "default": null,
       "description": "Compatibility-only settings retained so legacy `ghost_snapshot` config still loads."
     },
+    "goals": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalsConfigToml"
+        }
+      ],
+      "default": null,
+      "description": "Goal plan automation defaults."
+    },
     "hide_agent_reasoning": {
       "default": false,
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
@@ -5042,6 +5100,10 @@
       "description": "Size of the context window for the model, in tokens.",
       "format": "int64",
       "type": "integer"
+    },
+    "model_gateway": {
+      "description": "Gateway to use above the selected model provider.",
+      "type": "string"
     },
     "model_instructions_file": {
       "allOf": [

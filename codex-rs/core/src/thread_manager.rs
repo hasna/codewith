@@ -935,12 +935,15 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        let session_source = Self::session_source_for_fork(thread_source, forked_from_thread_id)
+            .unwrap_or_else(|| self.session_source());
+        let parent_thread_id = session_source.parent_thread_id();
         let multi_agent_version = self
             .state
             .effective_multi_agent_version_for_spawn(
                 &history,
-                /*session_source*/ None,
-                /*parent_thread_id*/ None,
+                Some(&session_source),
+                parent_thread_id,
                 forked_from_thread_id,
                 &config,
             )
@@ -952,16 +955,19 @@ impl ThreadManager {
             self.state.environment_manager.as_ref(),
             &config.cwd,
         );
-        Box::pin(self.state.spawn_thread(
+        Box::pin(self.state.spawn_thread_with_source(
             config,
             history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
-            /*parent_thread_id*/ None,
+            session_source,
+            parent_thread_id,
             forked_from_thread_id,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
+            /*inherited_shell_snapshot*/ None,
+            /*inherited_exec_policy*/ None,
             parent_trace,
             environments,
             /*user_shell_override*/ None,
@@ -971,6 +977,25 @@ impl ThreadManager {
 
     pub(crate) fn agent_control(&self) -> AgentControl {
         AgentControl::new(Arc::downgrade(&self.state))
+    }
+
+    fn session_source_for_fork(
+        thread_source: Option<ThreadSource>,
+        forked_from_thread_id: Option<ThreadId>,
+    ) -> Option<SessionSource> {
+        match (thread_source, forked_from_thread_id) {
+            (Some(ThreadSource::Subagent), Some(parent_thread_id)) => {
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                }))
+            }
+            (Some(ThreadSource::User) | Some(ThreadSource::MemoryConsolidation) | None, _) => None,
+            (Some(ThreadSource::Subagent), None) => None,
+        }
     }
 
     #[cfg(test)]

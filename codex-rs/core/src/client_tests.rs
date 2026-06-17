@@ -322,6 +322,38 @@ fn build_subagent_headers_sets_internal_memory_consolidation_label() {
 }
 
 #[test]
+fn http_session_disables_websockets_without_changing_client_fallback_state() {
+    let mut provider =
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    provider.supports_websockets = true;
+    let thread_id = ThreadId::new();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id.into(),
+        thread_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider.name.clone(),
+        provider,
+        SessionSource::Exec,
+        /*parent_thread_id*/ None,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+    );
+
+    assert!(client.responses_websocket_enabled());
+
+    let normal_session = client.new_session();
+    assert!(normal_session.responses_websocket_enabled());
+
+    let http_session = client.new_http_session();
+    assert!(!http_session.responses_websocket_enabled());
+    assert!(client.responses_websocket_enabled());
+}
+
+#[test]
 fn nvidia_responses_request_omits_unsupported_advanced_tools() {
     let client = test_model_client(SessionSource::Cli);
     let namespace_tool = test_function_tool("spawn_agent");

@@ -18,6 +18,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -832,6 +833,29 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
         .shutdown_and_wait()
         .await
         .expect("shutdown resumed thread");
+}
+
+#[test]
+fn subagent_fork_thread_source_uses_thread_spawn_session_source() {
+    let parent_thread_id = ThreadId::new();
+
+    assert_eq!(
+        ThreadManager::session_source_for_fork(
+            Some(ThreadSource::Subagent),
+            Some(parent_thread_id),
+        ),
+        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }))
+    );
+    assert_eq!(
+        ThreadManager::session_source_for_fork(Some(ThreadSource::User), Some(parent_thread_id)),
+        None
+    );
 }
 
 #[tokio::test]

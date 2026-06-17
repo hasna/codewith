@@ -25,6 +25,7 @@ pub use auth::AuthProfile;
 pub use auth::AuthProfileError;
 pub use auth::AuthProfileMetadata;
 pub use auth::AuthProfileMoveDirection;
+pub use auth::AuthProfilePermissionSettings;
 pub use auth::AuthProfileSubscriptionProvider;
 pub use auth::CLIENT_ID;
 pub use auth::CODEWITH_AUTH_PROFILE_ENV_VAR;
