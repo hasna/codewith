@@ -38,6 +38,30 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.40] - 2026-06-17
+
+Tag: `rust-v0.1.40`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.40>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.39...rust-v0.1.40>
+
+### Added
+
+- Added model gateway metadata and gateway-aware model/provider browsing,
+  including OpenRouter routing details in the app-server API and TUI pickers.
+- Added durable goal-plan storage, app-server plan listing, AI goal-plan tools,
+  and a TUI goal manager view for plan progress.
+- Added external-agent readiness checks, cancellation, safer readable roots, and
+  hardened Cursor, Claude, and Grok Build flows.
+- Added `Shift+Tab` permission preset cycling with `/keymap` remapping support.
+
+### Changed
+
+- Preserved auth-profile permission choices across profile switches and added
+  profile-targeted rate-limit reads for fresher profile picker usage state.
+- Reorganized config popups into clearer sections and expanded common config
+  toggle coverage.
+- Updated built-in provider/model metadata and model availability display.
+
 ## [0.1.39] - 2026-06-16
 
 Tag: `rust-v0.1.39`
