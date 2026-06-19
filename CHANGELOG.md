@@ -38,6 +38,18 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.42] - 2026-06-19
+
+Tag: `rust-v0.1.42`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.42>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.41...rust-v0.1.42>
+
+### Fixed
+
+- Fixed scheduled loop prompts resuming unloaded threads without the thread's
+  saved auth profile, which could route model requests through the wrong auth
+  context and leave loops failing or backing off.
+
 ## [0.1.41] - 2026-06-19
 
 Tag: `rust-v0.1.41`
