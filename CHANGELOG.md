@@ -38,6 +38,36 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.41] - 2026-06-19
+
+Tag: `rust-v0.1.41`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.41>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.40...rust-v0.1.41>
+
+### Added
+
+- Added shared collaboration surfaces for Mission Control, managed worktrees,
+  active sessions, workflows, mailboxes, pending interactions, and local session
+  discovery through the app-server API and TUI.
+- Added durable workflow and worktree state, including managed worktree
+  assignment, cleanup policies, workflow plan projections, and machine
+  registry support.
+- Added interactive TUI flows for `/worktree`, Mission Control, workflow
+  displays, usage profile routing, and goal-plan detail navigation.
+
+### Changed
+
+- Promoted the Mission Control and worktree app-server entrypoints from
+  experimental-only APIs to stable protocol surfaces.
+- Bounded goal-plan event payloads so large plans stay useful without flooding
+  model-visible event context.
+
+### Fixed
+
+- Hardened worktree assignment rollback, stale owner cleanup, agent attachment
+  validation, workflow prompt bounds, and cancelled goal-plan status handling
+  after adversarial review.
+
 ## [0.1.40] - 2026-06-17
 
 Tag: `rust-v0.1.40`
