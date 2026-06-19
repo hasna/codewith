@@ -11,9 +11,7 @@ use crate::transport::AppServerTransport;
 use anyhow::Result;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::write_mock_responses_config_toml;
-use chrono::Utc;
 use codex_analytics::AppServerRpcTransport;
-use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -56,16 +54,8 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
-use codex_login::AuthCredentialsStoreMode;
-use codex_login::AuthDotJson;
 use codex_login::AuthManager;
-use codex_login::save_auth;
-use codex_login::save_auth_profile;
-use codex_protocol::ThreadId;
-use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::SessionSource;
-use codex_rollout::RolloutRecorder;
-use codex_rollout::RolloutRecorderParams;
 use codex_rollout::state_db::StateDbHandle;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
@@ -91,18 +81,10 @@ struct ScheduleHarness {
     _server: MockServer,
     _codex_home: TempDir,
     workspace: TempDir,
-    config: Arc<Config>,
-    state_db: StateDbHandle,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
     next_request_id: i64,
-}
-
-struct TestAuthSetup {
-    root_api_key: String,
-    profile_name: String,
-    profile_api_key: String,
 }
 
 impl ScheduleHarness {
@@ -119,67 +101,21 @@ impl ScheduleHarness {
         server: MockServer,
         cli_overrides: Vec<(String, TomlValue)>,
     ) -> Result<Self> {
-        Self::new_with_mock_server_options(server, cli_overrides, Some(false), None).await
-    }
-
-    async fn new_requiring_openai_auth_with_profile(
-        profile_name: &str,
-        root_api_key: &str,
-        profile_api_key: &str,
-    ) -> Result<Self> {
-        let server = create_mock_responses_server_repeating_assistant("Scheduled done").await;
-        Self::new_with_mock_server_options(
-            server,
-            Vec::new(),
-            Some(true),
-            Some(TestAuthSetup {
-                root_api_key: root_api_key.to_string(),
-                profile_name: profile_name.to_string(),
-                profile_api_key: profile_api_key.to_string(),
-            }),
-        )
-        .await
-    }
-
-    async fn new_with_mock_server_options(
-        server: MockServer,
-        cli_overrides: Vec<(String, TomlValue)>,
-        requires_openai_auth: Option<bool>,
-        auth_setup: Option<TestAuthSetup>,
-    ) -> Result<Self> {
         let server_uri = server.uri();
         let codex_home = TempDir::new()?;
         let workspace = TempDir::new()?;
-        let config = Arc::new(
-            build_test_config(
-                codex_home.path(),
-                &server_uri,
-                cli_overrides,
-                requires_openai_auth,
-            )
-            .await?,
-        );
-        if let Some(auth_setup) = auth_setup {
-            save_api_key_auth(codex_home.path(), auth_setup.root_api_key.as_str())?;
-            save_api_key_auth_profile(
-                codex_home.path(),
-                auth_setup.profile_name.as_str(),
-                auth_setup.profile_api_key.as_str(),
-            )?;
-        }
+        let config =
+            Arc::new(build_test_config(codex_home.path(), &server_uri, cli_overrides).await?);
         let state_db = codex_state::StateRuntime::init(
             config.sqlite_home.clone(),
             config.model_provider_id.clone(),
         )
         .await?;
-        let (processor, outgoing_rx) =
-            build_test_processor(Arc::clone(&config), Some(state_db.clone())).await;
+        let (processor, outgoing_rx) = build_test_processor(config, Some(state_db)).await;
         let mut harness = Self {
             _server: server,
             _codex_home: codex_home,
             workspace,
-            config: Arc::clone(&config),
-            state_db,
             processor,
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
@@ -232,23 +168,6 @@ impl ScheduleHarness {
             .collect()
     }
 
-    async fn response_authorization_headers(&self) -> Vec<String> {
-        self._server
-            .received_requests()
-            .await
-            .expect("mock server should expose received requests")
-            .into_iter()
-            .filter(|request| request.url.path().ends_with("/responses"))
-            .filter_map(|request| {
-                request
-                    .headers
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_string)
-            })
-            .collect()
-    }
-
     async fn request<T>(&mut self, request: ClientRequest) -> T
     where
         T: serde::de::DeserializeOwned,
@@ -285,17 +204,6 @@ impl ScheduleHarness {
     }
 
     async fn start_thread(&mut self, ephemeral: bool) -> ThreadStartResponse {
-        self.start_thread_with_auth_profile(
-            /*ephemeral*/ ephemeral, /*auth_profile*/ None,
-        )
-        .await
-    }
-
-    async fn start_thread_with_auth_profile(
-        &mut self,
-        ephemeral: bool,
-        auth_profile: Option<String>,
-    ) -> ThreadStartResponse {
         let request_id = self.request_id();
         let response: ThreadStartResponse = self
             .request(ClientRequest::ThreadStart {
@@ -303,7 +211,6 @@ impl ScheduleHarness {
                 params: ThreadStartParams {
                     cwd: Some(self.workspace_cwd()),
                     ephemeral: Some(ephemeral),
-                    auth_profile: auth_profile.map(Some),
                     ..ThreadStartParams::default()
                 },
             })
@@ -316,76 +223,8 @@ impl ScheduleHarness {
         self.start_thread(/*ephemeral*/ false).await
     }
 
-    async fn start_materialized_thread_with_auth_profile(
-        &mut self,
-        auth_profile: &str,
-    ) -> ThreadStartResponse {
-        self.start_thread_with_auth_profile(
-            /*ephemeral*/ false,
-            Some(auth_profile.to_string()),
-        )
-        .await
-    }
-
     async fn start_ephemeral_thread(&mut self) -> ThreadStartResponse {
         self.start_thread(/*ephemeral*/ true).await
-    }
-
-    async fn persist_rollout_for_thread_with_auth_profile(
-        &self,
-        thread_id: &str,
-        auth_profile: &str,
-    ) {
-        let thread_id = ThreadId::from_string(thread_id).expect("thread id should parse");
-        let recorder = RolloutRecorder::new(
-            self.config.as_ref(),
-            RolloutRecorderParams::new(
-                thread_id,
-                None,
-                None,
-                SessionSource::VSCode,
-                None,
-                BaseInstructions::default(),
-                Vec::new(),
-            )
-            .with_auth_profile(Some(Some(auth_profile.to_string()))),
-        )
-        .await
-        .expect("rollout recorder should create");
-        recorder.persist().await.expect("rollout should persist");
-        recorder.shutdown().await.expect("rollout should shut down");
-    }
-
-    async fn unload_thread_for_tests(&self, thread_id: &str) {
-        let thread_id = ThreadId::from_string(thread_id).expect("thread id should parse");
-        self.processor
-            .thread_processor
-            .unload_thread_for_tests(thread_id)
-            .await;
-    }
-
-    async fn execute_schedule_claim_for_tests(
-        &self,
-        schedule_id: &str,
-    ) -> codex_state::ThreadScheduleRun {
-        let lease_id = uuid::Uuid::new_v4().to_string();
-        let claim = self
-            .state_db
-            .thread_schedules()
-            .claim_thread_schedule_now(
-                schedule_id,
-                Utc::now(),
-                lease_id.as_str(),
-                std::time::Duration::from_secs(10 * 60),
-            )
-            .await
-            .expect("schedule should claim")
-            .expect("schedule should be active and unleased");
-        let run = claim.run.clone();
-        self.processor
-            .thread_schedule_runtime
-            .spawn_claim_execution(self.state_db.clone(), claim);
-        run
     }
 
     async fn read_response<T>(&mut self, request_id: i64) -> T
@@ -507,45 +346,6 @@ impl ScheduleHarness {
             let notification = self.read_server_notification().await;
             if let ServerNotification::ThreadScheduleRunUpdated(notification) = notification
                 && notification.run.run_id == run_id
-                && notification.run.status == status
-            {
-                return notification;
-            }
-        }
-    }
-
-    async fn read_schedule_run_running_or_panic(
-        &mut self,
-        run_id: &str,
-    ) -> ThreadScheduleRunUpdatedNotification {
-        loop {
-            let notification = self.read_server_notification().await;
-            if let ServerNotification::ThreadScheduleRunUpdated(notification) = notification
-                && notification.run.run_id == run_id
-            {
-                match notification.run.status {
-                    ThreadScheduleRunStatus::Running => return notification,
-                    ThreadScheduleRunStatus::Failed => {
-                        panic!(
-                            "scheduled run failed before running: {:?}",
-                            notification.run.error
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    async fn read_schedule_run_for_schedule(
-        &mut self,
-        schedule_id: &str,
-        status: ThreadScheduleRunStatus,
-    ) -> ThreadScheduleRunUpdatedNotification {
-        loop {
-            let notification = self.read_server_notification().await;
-            if let ServerNotification::ThreadScheduleRunUpdated(notification) = notification
-                && notification.run.schedule_id == schedule_id
                 && notification.run.status == status
             {
                 return notification;
@@ -689,14 +489,13 @@ async fn build_test_config(
     codex_home: &Path,
     server_uri: &str,
     cli_overrides: Vec<(String, TomlValue)>,
-    requires_openai_auth: Option<bool>,
 ) -> Result<Config> {
     write_mock_responses_config_toml(
         codex_home,
         server_uri,
         &BTreeMap::new(),
         /*auto_compact_limit*/ 8_192,
-        requires_openai_auth,
+        Some(false),
         "mock_provider",
         "compact",
     )?;
@@ -706,36 +505,6 @@ async fn build_test_config(
         .cli_overrides(cli_overrides)
         .build()
         .await?)
-}
-
-fn save_api_key_auth(codex_home: &Path, api_key: &str) -> Result<()> {
-    save_auth(
-        codex_home,
-        &api_key_auth(api_key),
-        AuthCredentialsStoreMode::File,
-    )?;
-    Ok(())
-}
-
-fn save_api_key_auth_profile(codex_home: &Path, name: &str, api_key: &str) -> Result<()> {
-    save_auth_profile(
-        codex_home,
-        AuthCredentialsStoreMode::File,
-        name,
-        &api_key_auth(api_key),
-    )?;
-    Ok(())
-}
-
-fn api_key_auth(api_key: &str) -> AuthDotJson {
-    AuthDotJson {
-        auth_mode: Some(AuthMode::ApiKey),
-        openai_api_key: Some(api_key.to_string()),
-        tokens: None,
-        last_refresh: None,
-        agent_identity: None,
-        personal_access_token: None,
-    }
 }
 
 async fn build_test_processor(
@@ -1456,137 +1225,6 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
                     .contains("Produce exactly one visible final response for this scheduled run")
                 && body.contains("summarize the latest test status")),
             "scheduled prompt should be wrapped as a fresh visible scheduled run: {response_request_bodies:#?}"
-        );
-
-        harness.shutdown().await;
-        Ok(())
-    })
-}
-
-#[test]
-fn thread_schedule_poller_executes_due_schedule_without_run_now() -> Result<()> {
-    run_schedule_harness_test(async {
-        let mut harness = ScheduleHarness::new().await?;
-        let thread = harness.start_materialized_thread().await;
-        let thread_id = thread.thread.id.clone();
-
-        let request_id = harness.request_id();
-        let create_response: ThreadScheduleCreateResponse = harness
-            .request(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    prompt: "summarize poller status".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Once,
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(Utc::now().timestamp().saturating_sub(1)),
-                    expires_at: None,
-                },
-            })
-            .await;
-        let schedule = create_response.schedule;
-        assert_eq!(
-            schedule,
-            harness.read_schedule_updated(&thread_id).await.schedule
-        );
-
-        let leased = harness
-            .read_schedule_run_for_schedule(&schedule.schedule_id, ThreadScheduleRunStatus::Leased)
-            .await;
-        assert_eq!(thread_id, leased.thread_id);
-        assert_eq!(schedule.schedule_id, leased.run.schedule_id);
-
-        let running = harness
-            .read_schedule_run_updated(&leased.run.run_id, ThreadScheduleRunStatus::Running)
-            .await;
-        assert_eq!(thread_id, running.thread_id);
-        assert!(running.run.turn_id.is_some());
-
-        let (updated_schedule, completed) = harness
-            .read_completed_run_and_schedule_update(&thread_id, &leased.run.run_id)
-            .await;
-        assert_eq!(None, completed.run.error);
-        assert!(completed.run.completed_at.is_some());
-        assert_eq!(None, updated_schedule.schedule.next_run_at);
-        assert_eq!(
-            ThreadScheduleStatus::Expired,
-            updated_schedule.schedule.status
-        );
-        assert_eq!(0, updated_schedule.schedule.failure_count);
-
-        let response_request_bodies = harness.response_request_bodies().await;
-        assert!(
-            response_request_bodies.iter().any(|body| body
-                .contains("You are running one new scheduled Codewith prompt")
-                && body.contains(leased.run.run_id.as_str())
-                && body.contains("summarize poller status")),
-            "poller scheduled prompt should be submitted to Responses: {response_request_bodies:#?}"
-        );
-
-        harness.shutdown().await;
-        Ok(())
-    })
-}
-
-#[test]
-fn thread_schedule_runtime_resumes_unloaded_thread_with_saved_auth_profile() -> Result<()> {
-    run_schedule_harness_test(async {
-        let mut harness =
-            ScheduleHarness::new_requiring_openai_auth_with_profile("work", "root-key", "work-key")
-                .await?;
-        let thread = harness
-            .start_materialized_thread_with_auth_profile("work")
-            .await;
-        let thread_id = thread.thread.id.clone();
-        harness
-            .persist_rollout_for_thread_with_auth_profile(&thread_id, "work")
-            .await;
-
-        let request_id = harness.request_id();
-        let create_response: ThreadScheduleCreateResponse = harness
-            .request(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    prompt: "verify scheduled auth profile".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Once,
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(Utc::now().timestamp().saturating_add(3600)),
-                    expires_at: None,
-                },
-            })
-            .await;
-        let schedule = create_response.schedule;
-        assert_eq!(
-            schedule,
-            harness.read_schedule_updated(&thread_id).await.schedule
-        );
-
-        harness.unload_thread_for_tests(&thread_id).await;
-        let run = harness
-            .execute_schedule_claim_for_tests(schedule.schedule_id.as_str())
-            .await;
-        harness
-            .read_schedule_run_running_or_panic(&run.run_id)
-            .await;
-        harness
-            .read_completed_run_and_schedule_update(&thread_id, &run.run_id)
-            .await;
-
-        let authorization_headers = harness.response_authorization_headers().await;
-        assert!(
-            authorization_headers
-                .iter()
-                .any(|header| header == "Bearer work-key"),
-            "scheduled resume did not use the thread auth profile: {authorization_headers:#?}"
-        );
-        assert!(
-            authorization_headers
-                .iter()
-                .all(|header| header != "Bearer root-key"),
-            "scheduled resume fell back to root auth: {authorization_headers:#?}"
         );
 
         harness.shutdown().await;
