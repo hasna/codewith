@@ -973,6 +973,14 @@ impl ThreadRequestProcessor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn unload_thread_for_tests(&self, thread_id: ThreadId) {
+        if let Some(thread) = self.thread_manager.remove_thread(&thread_id).await {
+            let _ = wait_for_thread_shutdown(&thread).await;
+        }
+        self.finalize_thread_teardown(thread_id).await;
+    }
+
     async fn request_trace_context(
         &self,
         request_id: &ConnectionRequestId,

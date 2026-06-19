@@ -1177,7 +1177,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn merge_persisted_auth_profile_from_history_uses_latest_current_turn_context() {
+    fn merge_persisted_auth_profile_from_history_uses_session_metadata_over_turn_context() {
         let thread_id = ThreadId::new();
         let mut typesafe_overrides = ConfigOverrides::default();
         let history = InitialHistory::Resumed(ResumedHistory {
@@ -1191,7 +1191,10 @@ mod thread_processor_behavior_tests {
 
         merge_persisted_auth_profile_from_history(&mut typesafe_overrides, &history);
 
-        assert_eq!(typesafe_overrides.auth_profile, Some(None));
+        assert_eq!(
+            typesafe_overrides.auth_profile,
+            Some(Some("work".to_string()))
+        );
     }
 
     #[test]

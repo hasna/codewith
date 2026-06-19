@@ -316,6 +316,7 @@ impl ThreadScheduleRuntime {
         let history_cwd = initial_history.session_cwd();
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();
+        typesafe_overrides.auth_profile = initial_history.get_auth_profile();
         apply_persisted_schedule_resume_metadata(
             state_db,
             thread_id,

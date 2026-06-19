@@ -2542,19 +2542,28 @@ fn auth_profile_from_items(
     items: &[RolloutItem],
     thread_id: Option<ThreadId>,
 ) -> Option<Option<String>> {
-    items.iter().rev().find_map(|item| match item {
-        RolloutItem::TurnContext(turn_context)
-            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
-        {
-            turn_context.auth_profile.clone()
-        }
-        RolloutItem::SessionMeta(meta_line)
-            if thread_id.is_none_or(|thread_id| meta_line.meta.id == thread_id) =>
-        {
-            meta_line.meta.auth_profile.clone()
-        }
-        _ => None,
-    })
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line)
+                if thread_id.is_none_or(|thread_id| meta_line.meta.id == thread_id) =>
+            {
+                meta_line.meta.auth_profile.clone()
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            items.iter().rev().find_map(|item| match item {
+                RolloutItem::TurnContext(turn_context)
+                    if thread_id
+                        .is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+                {
+                    turn_context.auth_profile.clone()
+                }
+                _ => None,
+            })
+        })
 }
 
 fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
@@ -5410,6 +5419,93 @@ mod tests {
                 Some(thread_id),
             ),
             Some(MultiAgentVersion::V2)
+        );
+        Ok(())
+    }
+
+    fn auth_profile_session_meta(
+        thread_id: ThreadId,
+        auth_profile: Option<Option<&str>>,
+    ) -> RolloutItem {
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                auth_profile: auth_profile.map(|profile| profile.map(str::to_string)),
+                ..Default::default()
+            },
+            git: None,
+        })
+    }
+
+    fn auth_profile_turn_context(
+        thread_id: ThreadId,
+        auth_profile: Option<Option<&str>>,
+    ) -> RolloutItem {
+        RolloutItem::TurnContext(TurnContextItem {
+            thread_id: Some(thread_id),
+            turn_id: None,
+            cwd: test_path_buf("/tmp"),
+            workspace_roots: None,
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
+            network: None,
+            file_system_sandbox_policy: None,
+            model: "gpt-5".to_string(),
+            model_provider_id: None,
+            personality: None,
+            collaboration_mode: None,
+            multi_agent_version: None,
+            auth_profile: auth_profile.map(|profile| profile.map(str::to_string)),
+            realtime_active: None,
+            effort: None,
+            summary: ReasoningSummaryConfig::Auto,
+        })
+    }
+
+    #[test]
+    fn auth_profile_prefers_session_metadata_over_later_turn_context() -> Result<()> {
+        let thread_id = ThreadId::from_string("77e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let history = vec![
+            auth_profile_session_meta(thread_id, Some(Some("account001"))),
+            auth_profile_turn_context(thread_id, Some(None)),
+        ];
+
+        assert_eq!(
+            auth_profile_from_items(&history, Some(thread_id)),
+            Some(Some("account001".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auth_profile_uses_turn_context_when_session_metadata_is_legacy() -> Result<()> {
+        let thread_id = ThreadId::from_string("87e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let history = vec![
+            auth_profile_session_meta(thread_id, None),
+            auth_profile_turn_context(thread_id, Some(Some("work"))),
+        ];
+
+        assert_eq!(
+            auth_profile_from_items(&history, Some(thread_id)),
+            Some(Some("work".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auth_profile_uses_null_turn_context_when_no_session_metadata_exists() -> Result<()> {
+        let thread_id = ThreadId::from_string("97e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let history = vec![
+            auth_profile_session_meta(thread_id, None),
+            auth_profile_turn_context(thread_id, Some(None)),
+        ];
+
+        assert_eq!(
+            auth_profile_from_items(&history, Some(thread_id)),
+            Some(None)
         );
         Ok(())
     }
