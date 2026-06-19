@@ -32,6 +32,7 @@ use codex_app_server_protocol::AgentDetachParams;
 use codex_app_server_protocol::AgentDetachResponse;
 use codex_app_server_protocol::AgentEventsListParams;
 use codex_app_server_protocol::AgentEventsListResponse;
+use codex_app_server_protocol::AgentExecutionContextParams;
 use codex_app_server_protocol::AgentListParams;
 use codex_app_server_protocol::AgentListResponse;
 use codex_app_server_protocol::AgentReadParams;
@@ -56,6 +57,10 @@ use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MemoryResetResponse;
+use codex_app_server_protocol::MissionControlOverviewParams;
+use codex_app_server_protocol::MissionControlOverviewResponse;
+use codex_app_server_protocol::MissionControlRespondInteractionParams;
+use codex_app_server_protocol::MissionControlRespondInteractionResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
@@ -67,6 +72,7 @@ use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
@@ -87,6 +93,8 @@ use codex_app_server_protocol::ThreadGoalGetParams;
 use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalListParams;
 use codex_app_server_protocol::ThreadGoalListResponse;
+use codex_app_server_protocol::ThreadGoalPlanActivateNodeParams;
+use codex_app_server_protocol::ThreadGoalPlanActivateNodeResponse;
 use codex_app_server_protocol::ThreadGoalSetParams;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -112,6 +120,7 @@ use codex_app_server_protocol::ThreadMonitorRestartParams;
 use codex_app_server_protocol::ThreadMonitorRestartResponse;
 use codex_app_server_protocol::ThreadMonitorStopParams;
 use codex_app_server_protocol::ThreadMonitorStopResponse;
+use codex_app_server_protocol::ThreadPendingInteractionStatus;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -151,6 +160,7 @@ use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadShellCommandResponse;
+use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -159,6 +169,8 @@ use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadWorkflowListParams;
+use codex_app_server_protocol::ThreadWorkflowListResponse;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -167,6 +179,14 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WorktreeAttachParams;
+use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeDetachParams;
+use codex_app_server_protocol::WorktreeDetachResponse;
+use codex_app_server_protocol::WorktreeListParams;
+use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeReadParams;
+use codex_app_server_protocol::WorktreeReadResponse;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -191,6 +211,7 @@ use uuid::Uuid;
 
 const JSONRPC_INVALID_REQUEST: i64 = -32600;
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+const MISSION_CONTROL_OVERVIEW_LIMIT: u32 = 50;
 const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
@@ -681,10 +702,10 @@ impl AppServerSession {
             .wrap_err("failed to list active sessions from app server")
     }
 
-    /// Sends an active-only message to a loaded thread.
+    /// Sends an active-only message to a loaded peer.
     pub(crate) async fn active_session_send(
         &mut self,
-        target_thread_id: String,
+        target_peer_id: String,
         message: String,
         sender_thread_id: Option<ThreadId>,
         delivery: ActiveSessionMessageDelivery,
@@ -694,7 +715,8 @@ impl AppServerSession {
             .request_typed(ClientRequest::ActiveSessionSend {
                 request_id,
                 params: ActiveSessionSendParams {
-                    target_thread_id,
+                    target_thread_id: None,
+                    target_peer_id: Some(target_peer_id),
                     message,
                     sender_thread_id: sender_thread_id.map(|thread_id| thread_id.to_string()),
                     sender_label: Some("Codewith TUI".to_string()),
@@ -985,6 +1007,46 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn mission_control_overview(
+        &mut self,
+    ) -> Result<MissionControlOverviewResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::MissionControlOverview {
+                request_id,
+                params: MissionControlOverviewParams {
+                    cursor: None,
+                    limit: Some(MISSION_CONTROL_OVERVIEW_LIMIT),
+                    sort_key: Some(ThreadSortKey::UpdatedAt),
+                    sort_direction: Some(SortDirection::Desc),
+                    cwd: None,
+                    session_statuses: None,
+                    search_term: None,
+                    pending_interaction_cursor: None,
+                    pending_interaction_limit: Some(MISSION_CONTROL_OVERVIEW_LIMIT),
+                    pending_interaction_statuses: Some(vec![
+                        ThreadPendingInteractionStatus::Pending,
+                        ThreadPendingInteractionStatus::Delivered,
+                    ]),
+                    include_goal_plans: true,
+                    use_state_db_only: false,
+                },
+            })
+            .await
+            .wrap_err("missionControl/overview failed in TUI")
+    }
+
+    pub(crate) async fn mission_control_respond_interaction(
+        &mut self,
+        params: MissionControlRespondInteractionParams,
+    ) -> Result<MissionControlRespondInteractionResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::MissionControlRespondInteraction { request_id, params })
+            .await
+            .wrap_err("missionControl/respondInteraction failed in TUI")
+    }
+
     pub(crate) async fn thread_goal_get(
         &mut self,
         thread_id: ThreadId,
@@ -1057,6 +1119,42 @@ impl AppServerSession {
             .wrap_err("thread/goal/clear failed in TUI")
     }
 
+    pub(crate) async fn thread_goal_plan_activate_node(
+        &mut self,
+        thread_id: ThreadId,
+        node_id: String,
+    ) -> Result<ThreadGoalPlanActivateNodeResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadGoalPlanActivateNode {
+                request_id,
+                params: ThreadGoalPlanActivateNodeParams {
+                    thread_id: thread_id.to_string(),
+                    node_id,
+                },
+            })
+            .await
+            .wrap_err("thread/goalPlan/activateNode failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadWorkflowListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowList {
+                request_id,
+                params: ThreadWorkflowListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/list failed in TUI")
+    }
+
     pub(crate) async fn thread_schedule_create(
         &mut self,
         thread_id: ThreadId,
@@ -1123,6 +1221,7 @@ impl AppServerSession {
         &mut self,
         prompt: String,
         cwd: Option<String>,
+        workspace_roots: Option<Vec<String>>,
         parent_thread_id: Option<ThreadId>,
         auth_profile_ref: Option<String>,
     ) -> Result<AgentStartResponse> {
@@ -1148,7 +1247,25 @@ impl AppServerSession {
                     auth_profile_ref,
                     config_fingerprint: None,
                     version_fingerprint: None,
-                    execution_context: None,
+                    execution_context: workspace_roots.map(|workspace_roots| {
+                        Box::new(AgentExecutionContextParams {
+                            workspace_roots: Some(workspace_roots),
+                            approval_policy: None,
+                            permission_profile: None,
+                            sandbox_policy: None,
+                            network_policy: None,
+                            model: None,
+                            provider: None,
+                            service_tier: None,
+                            mcp_tool_allowlist: None,
+                            env_snapshot_policy: None,
+                            shell_snapshot: None,
+                            config_source_hashes: None,
+                            max_runtime_seconds: None,
+                            max_tokens: None,
+                            recovery_policy: None,
+                        })
+                    }),
                 },
             })
             .await
@@ -1274,6 +1391,116 @@ impl AppServerSession {
             })
             .await
             .wrap_err("agent/daemon/diagnostics failed in TUI")
+    }
+
+    pub(crate) async fn worktree_list(
+        &mut self,
+        base_repo_path: Option<String>,
+    ) -> Result<WorktreeListResponse> {
+        let mut data = Vec::new();
+        let mut cursor = None;
+        let mut policy = None;
+        loop {
+            let response = self
+                .worktree_list_page(base_repo_path.clone(), cursor, Some(200))
+                .await?;
+            let WorktreeListResponse {
+                data: page_data,
+                next_cursor,
+                policy: page_policy,
+            } = response;
+            data.extend(page_data);
+            let Some(next_cursor) = next_cursor else {
+                return Ok(WorktreeListResponse {
+                    data,
+                    next_cursor: None,
+                    policy: policy.unwrap_or(page_policy),
+                });
+            };
+            if policy.is_none() {
+                policy = Some(page_policy);
+            }
+            cursor = Some(next_cursor);
+        }
+    }
+
+    async fn worktree_list_page(
+        &mut self,
+        base_repo_path: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<WorktreeListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeList {
+                request_id,
+                params: WorktreeListParams {
+                    base_repo_path,
+                    include_deleted: Some(true),
+                    cursor,
+                    limit,
+                },
+            })
+            .await
+            .wrap_err("worktree/list failed in TUI")
+    }
+
+    pub(crate) async fn worktree_read(
+        &mut self,
+        worktree_id: String,
+        base_repo_path: Option<String>,
+    ) -> Result<WorktreeReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeRead {
+                request_id,
+                params: WorktreeReadParams {
+                    worktree_id,
+                    base_repo_path,
+                },
+            })
+            .await
+            .wrap_err("worktree/read failed in TUI")
+    }
+
+    pub(crate) async fn worktree_attach(
+        &mut self,
+        worktree_id: String,
+        thread_id: Option<String>,
+        agent_run_id: Option<String>,
+    ) -> Result<WorktreeAttachResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeAttach {
+                request_id,
+                params: WorktreeAttachParams {
+                    worktree_id,
+                    thread_id,
+                    agent_run_id,
+                },
+            })
+            .await
+            .wrap_err("worktree/attach failed in TUI")
+    }
+
+    pub(crate) async fn worktree_detach(
+        &mut self,
+        worktree_id: String,
+        thread_id: Option<String>,
+        agent_run_id: Option<String>,
+    ) -> Result<WorktreeDetachResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeDetach {
+                request_id,
+                params: WorktreeDetachParams {
+                    worktree_id,
+                    thread_id,
+                    agent_run_id,
+                },
+            })
+            .await
+            .wrap_err("worktree/detach failed in TUI")
     }
 
     pub(crate) async fn thread_monitor_read(

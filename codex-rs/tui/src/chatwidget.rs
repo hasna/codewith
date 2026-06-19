@@ -121,6 +121,7 @@ use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
+use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
@@ -356,7 +357,11 @@ mod goal_validation;
 mod ide_context;
 mod loop_display;
 mod loop_slash;
+mod mission_control_menu;
 mod monitor_display;
+mod workflow_display;
+mod workflow_slash;
+mod worktree_display;
 use self::ide_context::IdeContextState;
 mod input_queue;
 use self::input_queue::InputQueueState;
@@ -434,6 +439,10 @@ use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
+mod usage_profile_broker;
+mod usage_self_heal;
+use self::usage_self_heal::UsageSelfHealErrorKind;
+use self::usage_self_heal::UsageSelfHealState;
 mod user_messages;
 use self::user_messages::PendingSteer;
 use self::user_messages::PendingSteerCompareKey;
@@ -578,6 +587,7 @@ pub(crate) struct ChatWidget {
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
+    usage_self_heal: UsageSelfHealState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,
     // Stream lifecycle controller
@@ -742,6 +752,7 @@ pub(crate) struct ChatWidget {
     // Current thread-goal status shown in the status line when plan mode is inactive.
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
+    current_goal_plan: Option<AppThreadGoalPlan>,
     external_editor_state: ExternalEditorState,
     realtime_conversation: RealtimeConversationUiState,
     last_rendered_user_message_display: Option<UserMessageDisplay>,

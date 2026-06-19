@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "MissionControlDeliveryPolicy": {
+      "enum": [
+        "liveOnly",
+        "resumeAndTrigger"
+      ],
+      "type": "string"
+    },
+    "ThreadMailboxMessageKind": {
+      "enum": [
+        "userInstruction",
+        "userReply",
+        "control"
+      ],
+      "type": "string"
+    },
+    "ThreadMailboxMessageStatus": {
+      "enum": [
+        "queued",
+        "claimed",
+        "acknowledged",
+        "failed",
+        "poisoned",
+        "expired",
+        "canceled"
+      ],
+      "type": "string"
+    },
+    "ThreadMailboxMessageSummary": {
+      "properties": {
+        "acknowledgedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "attemptCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ThreadMailboxMessageKind"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "leaseExpiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxAttempts": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "nextAttemptAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "payloadPreview": {
+          "type": "string"
+        },
+        "payloadSha256": {
+          "type": "string"
+        },
+        "priority": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "redactions": {
+          "items": {
+            "$ref": "#/definitions/ThreadMailboxRedaction"
+          },
+          "type": "array"
+        },
+        "senderLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "senderThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadMailboxMessageStatus"
+        },
+        "targetThreadId": {
+          "type": "string"
+        },
+        "terminalAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attemptCount",
+        "createdAt",
+        "kind",
+        "maxAttempts",
+        "messageId",
+        "nextAttemptAt",
+        "payloadPreview",
+        "payloadSha256",
+        "priority",
+        "redactions",
+        "status",
+        "targetThreadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadMailboxRedaction": {
+      "enum": [
+        "messageBody",
+        "idempotencyKey"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "created": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "deliveryPolicy": {
+      "$ref": "#/definitions/MissionControlDeliveryPolicy"
+    },
+    "dryRun": {
+      "type": "boolean"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadMailboxMessageSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "preview": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "deliveryPolicy",
+    "dryRun",
+    "preview"
+  ],
+  "title": "MissionControlEnqueueInstructionResponse",
+  "type": "object"
+}

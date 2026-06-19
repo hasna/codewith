@@ -60,12 +60,17 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
+use codex_app_server_protocol::LocalSessionListParams;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceRemoveParams;
 use codex_app_server_protocol::MarketplaceUpgradeParams;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpServerToolCallParams;
+use codex_app_server_protocol::MissionControlEnqueueInstructionParams;
+use codex_app_server_protocol::MissionControlMailboxReceiptsParams;
+use codex_app_server_protocol::MissionControlOverviewParams;
+use codex_app_server_protocol::MissionControlRespondInteractionParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::ModelGatewayListParams;
 use codex_app_server_protocol::ModelListParams;
@@ -100,6 +105,13 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadMailboxAckParams;
+use codex_app_server_protocol::ThreadMailboxClaimParams;
+use codex_app_server_protocol::ThreadMailboxEnqueueParams;
+use codex_app_server_protocol::ThreadMailboxFailParams;
+use codex_app_server_protocol::ThreadMailboxListParams;
+use codex_app_server_protocol::ThreadMailboxReadParams;
+use codex_app_server_protocol::ThreadMailboxReceiptsListParams;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadReadParams;
@@ -600,6 +612,118 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/loaded/list", params).await
+    }
+
+    /// Send a `localSession/list` JSON-RPC request.
+    pub async fn send_local_session_list_request(
+        &mut self,
+        params: LocalSessionListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("localSession/list", params).await
+    }
+
+    /// Send a `thread/mailbox/enqueue` JSON-RPC request.
+    pub async fn send_thread_mailbox_enqueue_request(
+        &mut self,
+        params: ThreadMailboxEnqueueParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/enqueue", params).await
+    }
+
+    /// Send a `thread/mailbox/list` JSON-RPC request.
+    pub async fn send_thread_mailbox_list_request(
+        &mut self,
+        params: ThreadMailboxListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/list", params).await
+    }
+
+    /// Send a `thread/mailbox/read` JSON-RPC request.
+    pub async fn send_thread_mailbox_read_request(
+        &mut self,
+        params: ThreadMailboxReadParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/read", params).await
+    }
+
+    /// Send a `thread/mailbox/claim` JSON-RPC request.
+    pub async fn send_thread_mailbox_claim_request(
+        &mut self,
+        params: ThreadMailboxClaimParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/claim", params).await
+    }
+
+    /// Send a `thread/mailbox/ack` JSON-RPC request.
+    pub async fn send_thread_mailbox_ack_request(
+        &mut self,
+        params: ThreadMailboxAckParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/ack", params).await
+    }
+
+    /// Send a `thread/mailbox/fail` JSON-RPC request.
+    pub async fn send_thread_mailbox_fail_request(
+        &mut self,
+        params: ThreadMailboxFailParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/fail", params).await
+    }
+
+    /// Send a `thread/mailbox/receipts/list` JSON-RPC request.
+    pub async fn send_thread_mailbox_receipts_list_request(
+        &mut self,
+        params: ThreadMailboxReceiptsListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/mailbox/receipts/list", params)
+            .await
+    }
+
+    /// Send a `missionControl/overview` JSON-RPC request.
+    pub async fn send_mission_control_overview_request(
+        &mut self,
+        params: MissionControlOverviewParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("missionControl/overview", params).await
+    }
+
+    /// Send a `missionControl/enqueueInstruction` JSON-RPC request.
+    pub async fn send_mission_control_enqueue_instruction_request(
+        &mut self,
+        params: MissionControlEnqueueInstructionParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("missionControl/enqueueInstruction", params)
+            .await
+    }
+
+    /// Send a `missionControl/mailboxReceipts` JSON-RPC request.
+    pub async fn send_mission_control_mailbox_receipts_request(
+        &mut self,
+        params: MissionControlMailboxReceiptsParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("missionControl/mailboxReceipts", params)
+            .await
+    }
+
+    /// Send a `missionControl/respondInteraction` JSON-RPC request.
+    pub async fn send_mission_control_respond_interaction_request(
+        &mut self,
+        params: MissionControlRespondInteractionParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("missionControl/respondInteraction", params)
+            .await
     }
 
     /// Send an `activeSession/list` JSON-RPC request.

@@ -38,13 +38,12 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
 }
 
 fn run_tmux_handoff(handoff: TmuxHandoffExit) -> anyhow::Result<()> {
-    let target = format!("={}", handoff.session_name);
     let tmux_command = match handoff.attach_mode {
         TmuxHandoffAttachMode::Attach => "attach-session",
         TmuxHandoffAttachMode::SwitchClient => "switch-client",
     };
     let status = std::process::Command::new("tmux")
-        .args([tmux_command, "-t", &target])
+        .args([tmux_command, "-t", &handoff.target])
         .status()
         .map_err(|err| anyhow::anyhow!("failed to run tmux {tmux_command}: {err}"))?;
     if !status.success() {

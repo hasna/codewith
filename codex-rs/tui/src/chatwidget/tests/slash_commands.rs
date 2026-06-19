@@ -1,6 +1,7 @@
 use super::*;
 use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::tmux_handoff::TmuxHandoffDestination;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -1444,12 +1445,12 @@ async fn agent_slash_command_emits_active_session_events() {
             (
                 "send",
                 AppEvent::SendActiveSessionMessage {
-                    target_thread_id,
+                    target_peer_id,
                     message,
                     wake,
                 },
             ) => {
-                assert_eq!(target_thread_id, expected_target);
+                assert_eq!(target_peer_id, expected_target);
                 assert_eq!(message, expected_message);
                 assert_eq!(wake, expected_wake);
             }
@@ -1463,26 +1464,49 @@ async fn agent_slash_command_emits_active_session_events() {
 #[tokio::test]
 async fn background_agent_slash_command_emits_manage_events() {
     let cases = [
-        ("/agent list", "list", None, None),
+        ("/agent list", "list", None, None, None),
         (
             "/agent start fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
         ),
-        ("/background-agent list", "list", None, None),
-        ("/background-agent diagnostics", "diagnostics", None, None),
+        (
+            "/agent start --worktree wt-123 fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("wt-123"),
+        ),
+        ("/background-agent list", "list", None, None, None),
+        (
+            "/background-agent diagnostics",
+            "diagnostics",
+            None,
+            None,
+            None,
+        ),
         (
             "/background-agent start fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
         ),
-        ("/background-agent read", "read", None, None),
+        (
+            "/background-agent start --worktree=wt-456 fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("wt-456"),
+        ),
+        ("/background-agent read", "read", None, None, None),
         (
             "/background-agent read agent-1",
             "read",
             Some("agent-1"),
+            None,
             None,
         ),
         (
@@ -1490,11 +1514,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             "logs",
             Some("agent-1"),
             None,
+            None,
         ),
         (
             "/background-agent attach agent-1",
             "attach",
             Some("agent-1"),
+            None,
             None,
         ),
         (
@@ -1502,11 +1528,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             "detach",
             Some("agent-1"),
             None,
+            None,
         ),
         (
             "/background-agent stop agent-1",
             "stop",
             Some("agent-1"),
+            None,
             None,
         ),
         (
@@ -1514,10 +1542,12 @@ async fn background_agent_slash_command_emits_manage_events() {
             "delete",
             Some("agent-1"),
             None,
+            None,
         ),
     ];
 
-    for (command, expected_kind, expected_agent_id, expected_prompt) in cases {
+    for (command, expected_kind, expected_agent_id, expected_prompt, expected_worktree_id) in cases
+    {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
         submit_composer_text(&mut chat, command);
@@ -1528,8 +1558,15 @@ async fn background_agent_slash_command_emits_manage_events() {
         match (expected_kind, event) {
             ("list", AppEvent::OpenBackgroundAgentManager) => {}
             ("diagnostics", AppEvent::ShowBackgroundAgentDiagnostics) => {}
-            ("start", AppEvent::StartBackgroundAgent { prompt }) => {
+            (
+                "start",
+                AppEvent::StartBackgroundAgent {
+                    prompt,
+                    worktree_id,
+                },
+            ) => {
                 assert_eq!(Some(prompt.as_str()), expected_prompt);
+                assert_eq!(worktree_id.as_deref(), expected_worktree_id);
             }
             ("read", AppEvent::ReadBackgroundAgent { agent_id }) => {
                 assert_eq!(agent_id.as_deref(), expected_agent_id);
@@ -1550,6 +1587,61 @@ async fn background_agent_slash_command_emits_manage_events() {
                 assert_eq!(agent_id.as_deref(), expected_agent_id);
             }
             (kind, event) => panic!("expected {kind} background-agent event, got {event:?}"),
+        }
+        assert_no_submit_op(&mut op_rx);
+        assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
+}
+
+#[tokio::test]
+async fn worktree_slash_command_emits_manage_events() {
+    let cases = [
+        ("/worktree", "list", None),
+        ("/worktree list", "list", None),
+        ("/worktree read wt-123", "read", Some("wt-123")),
+        ("/worktree actions wt-456", "actions", Some("wt-456")),
+        ("/worktree use wt-789", "use", Some("wt-789")),
+    ];
+
+    for (command, expected_kind, expected_worktree_id) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected worktree event");
+        match (expected_kind, event) {
+            ("list", AppEvent::OpenWorktreeManager) => {}
+            (
+                "read",
+                AppEvent::ReadWorktree {
+                    worktree_id,
+                    base_repo_path,
+                },
+            ) => {
+                assert_eq!(worktree_id.as_deref(), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+            }
+            (
+                "actions",
+                AppEvent::OpenWorktreeActions {
+                    worktree_id,
+                    base_repo_path,
+                },
+            ) => {
+                assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+            }
+            (
+                "use",
+                AppEvent::UseWorktree {
+                    worktree_id,
+                    base_repo_path,
+                },
+            ) => {
+                assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+            }
+            (kind, event) => panic!("expected {kind} worktree event, got {event:?}"),
         }
         assert_no_submit_op(&mut op_rx);
         assert_eq!(recall_latest_after_clearing(&mut chat), command);
@@ -1779,6 +1871,7 @@ async fn goal_control_slash_commands_emit_goal_events() {
         ("/goal clear", None),
         ("/goal pause", Some(AppThreadGoalStatus::Paused)),
         ("/goal resume", Some(AppThreadGoalStatus::Active)),
+        ("/goal cancel", Some(AppThreadGoalStatus::Cancelled)),
     ];
 
     for (command, status) in cases {
@@ -1827,7 +1920,7 @@ async fn goal_control_slash_command_without_thread_shows_full_usage() {
     assert_eq!(cells.len(), 1, "expected goal usage message");
     insta::assert_snapshot!(
         lines_to_single_string(&cells[0]),
-        @"• Usage: /goal [<objective>|clear|edit|pause|resume] The session must start before you can change a goal."
+        @"• Usage: /goal [<objective>|cancel|clear|edit|pause|resume] The session must start before you can change a goal."
     );
 }
 
@@ -1848,6 +1941,73 @@ async fn goal_edit_slash_command_opens_goal_editor() {
             panic!("expected OpenThreadGoalEditor, got {event:?}");
         };
         assert_eq!(actual_thread_id, thread_id);
+        assert_no_submit_op(&mut op_rx);
+    }
+}
+
+#[tokio::test]
+async fn workflow_list_slash_command_emits_metadata_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/workflow list";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected workflow manager event");
+    let AppEvent::OpenThreadWorkflowManager {
+        thread_id: actual_thread_id,
+    } = event
+    else {
+        panic!("expected OpenThreadWorkflowManager, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn workflow_draft_slash_command_prefills_yaml_generation_prompt_without_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(
+        &mut chat,
+        "/workflow draft build a SaaS that collects leads for dentists",
+    );
+
+    let event = rx
+        .try_recv()
+        .expect("expected workflow draft prefill event");
+    let AppEvent::PrefillComposer { text: submitted } = event else {
+        panic!("expected PrefillComposer, got {event:?}");
+    };
+    assert!(submitted.contains("Return only raw YAML"));
+    assert!(submitted.contains("workflow.codex.codewith/v0"));
+    assert!(submitted.contains("model_gateway, provider, model, reasoning"));
+    assert!(submitted.contains("ancient Greek or Roman"));
+    assert!(submitted.contains("at least two adversarial"));
+    assert!(submitted.contains("bounded test-loop"));
+    assert!(submitted.contains("Do not start goals, schedules, monitors, agents"));
+    assert!(submitted.contains("collects leads for dentists"));
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn workflow_commands_are_inert_when_feature_is_disabled() {
+    for command in [
+        "/workflow",
+        "/workflow list",
+        "/workflow draft build a SaaS that collects leads for dentists",
+    ] {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+
+        submit_composer_text(&mut chat, command);
+
+        assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
         assert_no_submit_op(&mut op_rx);
     }
 }
@@ -2627,6 +2787,7 @@ async fn active_goal_without_follow_up_suppresses_agent_turn_complete_notificati
                 turn_id: None,
                 goal: codex_app_server_protocol::ThreadGoal {
                     thread_id: "thread-1".to_string(),
+                    goal_id: "goal-1".to_string(),
                     objective: "finish the benchmark".to_string(),
                     status: codex_app_server_protocol::ThreadGoalStatus::Active,
                     token_budget: None,
@@ -3059,8 +3220,8 @@ async fn slash_tmux_requests_default_handoff() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenInTmux { name, replace_existing })
-            if name.is_none() && replace_existing
+        Ok(AppEvent::OpenInTmux { destination, replace_existing })
+            if destination == TmuxHandoffDestination::default() && replace_existing
     );
 }
 
@@ -3113,8 +3274,33 @@ async fn slash_tmux_with_args_requests_named_handoff() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenInTmux { name, replace_existing })
-            if name.as_deref() == Some("named session") && !replace_existing
+        Ok(AppEvent::OpenInTmux { destination, replace_existing })
+            if destination == (TmuxHandoffDestination::NewSession {
+                name: Some("named session".to_string()),
+            })
+                && !replace_existing
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn slash_tmux_with_target_session_requests_window_handoff() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        "/tmux --session dev --window codewith".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenInTmux { destination, replace_existing })
+            if destination == (TmuxHandoffDestination::ExistingSession {
+                session_name: "dev".to_string(),
+                window_name: Some("codewith".to_string()),
+            }) && replace_existing
     );
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }

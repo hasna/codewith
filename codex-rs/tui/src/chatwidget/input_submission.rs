@@ -406,6 +406,16 @@ impl ChatWidget {
         if !self.submit_op(op.clone()) {
             return (false, None);
         }
+        self.record_usage_self_heal_submitted_turn(
+            &UserMessage {
+                text: text.clone(),
+                local_images: local_images.clone(),
+                remote_image_urls: remote_image_urls.clone(),
+                text_elements: text_elements.clone(),
+                mention_bindings: mention_bindings.clone(),
+            },
+            &history_record,
+        );
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
         }

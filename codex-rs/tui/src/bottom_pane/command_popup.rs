@@ -61,6 +61,7 @@ pub(crate) struct CommandPopupFlags {
     pub(crate) plugins_command_enabled: bool,
     pub(crate) service_tier_commands_enabled: bool,
     pub(crate) goal_command_enabled: bool,
+    pub(crate) workflow_command_enabled: bool,
     pub(crate) scheduled_tasks_command_enabled: bool,
     pub(crate) personality_command_enabled: bool,
     pub(crate) realtime_conversation_enabled: bool,
@@ -77,6 +78,7 @@ impl From<CommandPopupFlags> for BuiltinCommandFlags {
             plugins_command_enabled: value.plugins_command_enabled,
             service_tier_commands_enabled: value.service_tier_commands_enabled,
             goal_command_enabled: value.goal_command_enabled,
+            workflow_command_enabled: value.workflow_command_enabled,
             scheduled_tasks_command_enabled: value.scheduled_tasks_command_enabled,
             personality_command_enabled: value.personality_command_enabled,
             realtime_conversation_enabled: value.realtime_conversation_enabled,
@@ -520,7 +522,7 @@ mod tests {
                 .take(4)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["model", "memories", "mention", "mcp"]
+            vec!["model", "memories", "mission-control", "mention"]
         );
     }
 
@@ -738,6 +740,7 @@ mod tests {
                 plugins_command_enabled: false,
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
+                workflow_command_enabled: false,
                 scheduled_tasks_command_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: false,
@@ -767,6 +770,7 @@ mod tests {
                 plugins_command_enabled: false,
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
+                workflow_command_enabled: false,
                 scheduled_tasks_command_enabled: false,
                 personality_command_enabled: false,
                 realtime_conversation_enabled: false,
@@ -794,6 +798,7 @@ mod tests {
                 plugins_command_enabled: false,
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
+                workflow_command_enabled: false,
                 scheduled_tasks_command_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: false,
@@ -823,6 +828,7 @@ mod tests {
                 plugins_command_enabled: false,
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
+                workflow_command_enabled: false,
                 scheduled_tasks_command_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: true,

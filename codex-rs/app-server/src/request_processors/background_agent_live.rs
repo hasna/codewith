@@ -1,6 +1,8 @@
 use super::background_agent_processor::BackgroundAgentRequestProcessor;
 use super::thread_processor::ThreadRequestProcessor;
+use crate::error_code::invalid_params;
 use anyhow::Context;
+use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_app_server_protocol::AgentAttachParams;
@@ -16,6 +18,15 @@ use codex_app_server_protocol::AgentStartParams;
 use codex_app_server_protocol::AgentStopParams;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::WorktreeAttachParams;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
+use codex_app_server_protocol::WorktreeDetachParams;
+use codex_app_server_protocol::WorktreeListParams;
+use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreePolicy;
+use codex_app_server_protocol::WorktreeReadParams;
+use codex_app_server_protocol::WorktreeReadResponse;
+use codex_app_server_protocol::WorktreeSessionMode;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
@@ -41,6 +52,14 @@ use codex_background_agent::process_lifecycle::WorkerProcessStatus;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::WorktreeCleanupMode as CoreWorktreeCleanupMode;
+use codex_core::config::WorktreeSessionMode as CoreWorktreeSessionMode;
+use codex_exec_server::LOCAL_FS;
+use codex_git_utils::GitWorktreeStatusSnapshot;
+use codex_git_utils::get_git_worktree_status_snapshot;
+use codex_git_utils::list_git_worktrees;
+use codex_git_utils::remove_linked_git_worktree;
+use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
@@ -84,6 +103,9 @@ const BACKGROUND_AGENT_INTERACTION_POLL_INTERVAL: Duration = Duration::from_mill
 const BACKGROUND_AGENT_INTERACTION_TIMEOUT: ChronoDuration = ChronoDuration::hours(12);
 const BACKGROUND_AGENT_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const BACKGROUND_AGENT_WORKER_STDERR_DIR: &str = "workers";
+const MANAGED_WORKTREE_CLEANUP_BATCH_LIMIT: u32 = 20;
+const MANAGED_WORKTREE_CLEANUP_RETRY_DELAY: ChronoDuration = ChronoDuration::minutes(15);
+const BACKGROUND_AGENT_USAGE_PROFILE_WAIT_PREFIX: &str = "usage_profile_wait_until:";
 
 #[derive(Debug)]
 struct BackgroundAgentOwnershipLost {
@@ -113,6 +135,22 @@ fn background_agent_ownership_lost(run_id: &str, generation: i64) -> anyhow::Err
 
 fn is_background_agent_ownership_lost(err: &anyhow::Error) -> bool {
     err.downcast_ref::<BackgroundAgentOwnershipLost>().is_some()
+}
+
+fn api_worktree_cleanup_policy_from_config(mode: CoreWorktreeCleanupMode) -> WorktreeCleanupPolicy {
+    match mode {
+        CoreWorktreeCleanupMode::Retain => WorktreeCleanupPolicy::Retain,
+        CoreWorktreeCleanupMode::DeleteIfClean => WorktreeCleanupPolicy::DeleteIfClean,
+        CoreWorktreeCleanupMode::ForceDelete => WorktreeCleanupPolicy::ForceDelete,
+    }
+}
+
+fn api_worktree_session_mode_from_config(mode: CoreWorktreeSessionMode) -> WorktreeSessionMode {
+    match mode {
+        CoreWorktreeSessionMode::Off => WorktreeSessionMode::Off,
+        CoreWorktreeSessionMode::Manual => WorktreeSessionMode::Manual,
+        CoreWorktreeSessionMode::Auto => WorktreeSessionMode::Auto,
+    }
 }
 
 impl ThreadRequestProcessor {
@@ -332,6 +370,144 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn worktree_list(
+        &self,
+        mut params: WorktreeListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
+            .await?;
+        let policy = self.worktree_policy(base_repo_path.as_deref());
+        let Some(base_repo_path) = base_repo_path else {
+            return Ok(Some(
+                WorktreeListResponse {
+                    data: Vec::new(),
+                    next_cursor: None,
+                    policy,
+                }
+                .into(),
+            ));
+        };
+        params.base_repo_path = Some(base_repo_path.to_string_lossy().into_owned());
+        self.background_agent_state_processor()
+            .worktree_list_inner(params, policy)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn worktree_read(
+        &self,
+        params: WorktreeReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
+            .await?;
+        let policy = self.worktree_policy(base_repo_path.as_deref());
+        let Some(base_repo_path) = base_repo_path else {
+            return Ok(Some(
+                WorktreeReadResponse {
+                    worktree: None,
+                    policy,
+                }
+                .into(),
+            ));
+        };
+        self.background_agent_state_processor()
+            .worktree_read_inner(params, Some(base_repo_path.as_path()), policy)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn worktree_attach(
+        &self,
+        params: WorktreeAttachParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let policy = self.worktree_policy(/*current_base_repo_path*/ None);
+        if !policy.enabled {
+            return Err(invalid_params("managed worktrees are disabled in config"));
+        }
+        if params.thread_id.is_some() && policy.main_sessions == WorktreeSessionMode::Off {
+            return Err(invalid_params(
+                "main-session worktrees are disabled in config",
+            ));
+        }
+        if params.agent_run_id.is_some() && policy.sub_sessions == WorktreeSessionMode::Off {
+            return Err(invalid_params(
+                "sub-session worktrees are disabled in config",
+            ));
+        }
+        self.background_agent_state_processor()
+            .worktree_attach_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn worktree_detach(
+        &self,
+        params: WorktreeDetachParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let policy = self.worktree_policy(/*current_base_repo_path*/ None);
+        if !policy.enabled {
+            return Err(invalid_params("managed worktrees are disabled in config"));
+        }
+        if params.thread_id.is_some() && policy.main_sessions == WorktreeSessionMode::Off {
+            return Err(invalid_params(
+                "main-session worktrees are disabled in config",
+            ));
+        }
+        if params.agent_run_id.is_some() && policy.sub_sessions == WorktreeSessionMode::Off {
+            return Err(invalid_params(
+                "sub-session worktrees are disabled in config",
+            ));
+        }
+        self.background_agent_state_processor()
+            .worktree_detach_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    async fn resolve_worktree_base_repo_path(
+        &self,
+        requested_base_repo_path: Option<&str>,
+    ) -> Result<Option<PathBuf>, JSONRPCErrorError> {
+        let current_base_repo_path =
+            resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &self.config.cwd)
+                .await
+                .map(AbsolutePathBuf::into_path_buf);
+        let requested_base_repo_path = requested_base_repo_path
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let Some(requested_base_repo_path) = requested_base_repo_path else {
+            return Ok(current_base_repo_path);
+        };
+
+        let requested_base_repo_path = PathBuf::from(requested_base_repo_path);
+        if !requested_base_repo_path.is_absolute() {
+            return Err(invalid_params("worktree baseRepoPath must be absolute"));
+        }
+        let requested_base_repo_path =
+            AbsolutePathBuf::from_absolute_path_checked(requested_base_repo_path)
+                .map_err(|err| invalid_params(format!("invalid worktree baseRepoPath: {err}")))?;
+        let resolved_base_repo_path =
+            resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &requested_base_repo_path)
+                .await
+                .unwrap_or(requested_base_repo_path);
+        Ok(Some(resolved_base_repo_path.into_path_buf()))
+    }
+
+    fn worktree_policy(&self, current_base_repo_path: Option<&Path>) -> WorktreePolicy {
+        let config = &self.config.worktrees;
+        WorktreePolicy {
+            enabled: config.enabled,
+            root: config.root.clone(),
+            cleanup_default: api_worktree_cleanup_policy_from_config(config.cleanup_default),
+            main_sessions: api_worktree_session_mode_from_config(config.main_sessions),
+            sub_sessions: api_worktree_session_mode_from_config(config.sub_sessions),
+            current_base_repo_path: current_base_repo_path
+                .map(|path| path.to_string_lossy().into_owned()),
+        }
+    }
+
     async fn cancel_background_agent_worker(&self, run_id: &str) {
         let token = self
             .background_agent_workers
@@ -491,6 +667,7 @@ async fn reconcile_background_agents(
         .state_db
         .orphan_stale_background_agent_runs(BACKGROUND_AGENT_HEARTBEAT_TIMEOUT)
         .await?;
+    reconcile_managed_worktree_cleanup(&context.state_db).await?;
     let runs = match only_run_id {
         Some(run_id) => context
             .state_db
@@ -570,6 +747,7 @@ async fn reconcile_background_agent_worker_processes(
         .state_db
         .orphan_stale_background_agent_runs(BACKGROUND_AGENT_HEARTBEAT_TIMEOUT)
         .await?;
+    reconcile_managed_worktree_cleanup(&context.state_db).await?;
     rehydrate_background_agent_worker_processes(&context).await?;
     prune_finished_background_agent_worker_processes(&context).await;
     let runs = match only_run_id {
@@ -621,6 +799,145 @@ async fn reconcile_background_agent_worker_processes(
             .await?;
     }
     Ok(())
+}
+
+async fn reconcile_managed_worktree_cleanup(state_db: &StateDbHandle) -> anyhow::Result<()> {
+    let candidates = state_db
+        .managed_worktrees()
+        .list_cleanup_candidates(Utc::now(), MANAGED_WORKTREE_CLEANUP_BATCH_LIMIT)
+        .await?;
+    for worktree in candidates {
+        if let Err(err) = cleanup_managed_worktree_candidate(state_db, worktree).await {
+            warn!("managed worktree cleanup reconcile failed: {err}");
+        }
+    }
+    Ok(())
+}
+
+async fn cleanup_managed_worktree_candidate(
+    state_db: &StateDbHandle,
+    worktree: codex_state::ManagedWorktree,
+) -> anyhow::Result<()> {
+    let base_repo_path = worktree.base_repo_path.clone();
+    let worktree_path = worktree.worktree_path.clone();
+    let status_result = tokio::task::spawn_blocking({
+        let worktree_path = worktree_path.clone();
+        move || get_git_worktree_status_snapshot(&worktree_path)
+    })
+    .await?;
+    let status_snapshot = match status_result {
+        Ok(status_snapshot) => status_snapshot,
+        Err(err) => {
+            if linked_worktree_is_absent(base_repo_path.clone(), worktree_path.clone()).await? {
+                state_db
+                    .mark_managed_worktree_cleanup_succeeded(worktree.worktree_id.as_str())
+                    .await?;
+            } else {
+                record_managed_worktree_cleanup_failure(
+                    state_db,
+                    worktree.worktree_id.as_str(),
+                    format!("git worktree status failed: {err}"),
+                    GitWorktreeStatusSnapshot {
+                        dirty: true,
+                        branch: None,
+                        head_sha: None,
+                        records: vec![format!("status probe failed: {err}")],
+                    },
+                    /*force_delete_required*/ false,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+    };
+    let force_delete = worktree.force_delete_requested
+        || worktree.cleanup_policy == codex_state::ManagedWorktreeCleanupPolicy::ForceDelete;
+    if status_snapshot.dirty && !force_delete {
+        record_managed_worktree_cleanup_failure(
+            state_db,
+            worktree.worktree_id.as_str(),
+            "dirty worktree retained",
+            status_snapshot,
+            /*force_delete_required*/ true,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let remove_result = tokio::task::spawn_blocking({
+        let base_repo_path = base_repo_path.clone();
+        let worktree_path = worktree_path.clone();
+        move || remove_linked_git_worktree(&base_repo_path, &worktree_path, force_delete)
+    })
+    .await?;
+    match remove_result {
+        Ok(()) => {
+            state_db
+                .mark_managed_worktree_cleanup_succeeded(worktree.worktree_id.as_str())
+                .await?;
+        }
+        Err(err) => {
+            record_managed_worktree_cleanup_failure(
+                state_db,
+                worktree.worktree_id.as_str(),
+                format!("git worktree remove failed: {err}"),
+                status_snapshot,
+                !force_delete,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn linked_worktree_is_absent(
+    base_repo_path: PathBuf,
+    worktree_path: PathBuf,
+) -> anyhow::Result<bool> {
+    let entries =
+        tokio::task::spawn_blocking(move || list_git_worktrees(&base_repo_path)).await??;
+    Ok(!entries
+        .iter()
+        .any(|entry| paths_match(entry.path.as_path(), worktree_path.as_path())))
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+async fn record_managed_worktree_cleanup_failure(
+    state_db: &StateDbHandle,
+    worktree_id: &str,
+    reason: impl Into<String>,
+    status_snapshot: GitWorktreeStatusSnapshot,
+    force_delete_required: bool,
+) -> anyhow::Result<()> {
+    state_db
+        .record_managed_worktree_cleanup_failure(codex_state::ManagedWorktreeCleanupFailureParams {
+            worktree_id: worktree_id.to_string(),
+            reason: reason.into(),
+            dirty: status_snapshot.dirty,
+            status_snapshot_json: git_status_snapshot_json(status_snapshot),
+            retry_after: Some(Utc::now() + MANAGED_WORKTREE_CLEANUP_RETRY_DELAY),
+            force_delete_required,
+        })
+        .await?;
+    Ok(())
+}
+
+fn git_status_snapshot_json(status_snapshot: GitWorktreeStatusSnapshot) -> Value {
+    json!({
+        "branch": status_snapshot.branch,
+        "headSha": status_snapshot.head_sha,
+        "dirty": status_snapshot.dirty,
+        "records": status_snapshot.records,
+    })
 }
 
 async fn rehydrate_background_agent_worker_processes(
@@ -758,11 +1075,20 @@ async fn worker_process_start_token(_worker_process: bool) -> anyhow::Result<Opt
 }
 
 fn should_start_background_run(run: &BackgroundAgentRun) -> bool {
-    run.desired_state == BackgroundAgentDesiredState::Running
-        && matches!(
+    if run.desired_state != BackgroundAgentDesiredState::Running
+        || !matches!(
             run.status,
             BackgroundAgentRunStatus::Queued | BackgroundAgentRunStatus::Orphaned
         )
+    {
+        return false;
+    }
+    if let Some(wait_until) =
+        background_agent_usage_profile_wait_until(run.status_reason.as_deref())
+    {
+        return wait_until <= Utc::now().timestamp();
+    }
+    true
 }
 
 async fn run_background_agent_worker(
@@ -787,6 +1113,20 @@ async fn run_background_agent_worker(
     else {
         debug!(run_id = %run.id, "background agent run was not claimable");
         return Ok(());
+    };
+
+    let config = match resolve_background_agent_config(&context, &run).await? {
+        BackgroundAgentConfigResolution::Ready(config) => *config,
+        BackgroundAgentConfigResolution::UsageProfileWait { retry_at } => {
+            defer_background_agent_for_usage_profile_wait(
+                &context,
+                run.id.as_str(),
+                generation,
+                retry_at,
+            )
+            .await?;
+            return Ok(());
+        }
     };
 
     let pid_value = i64::from(std::process::id());
@@ -858,7 +1198,7 @@ async fn run_background_agent_worker(
         generation,
         "start background thread",
         retry_transient_sqlite_busy("start background thread", || {
-            start_or_resume_background_thread(&context, &run)
+            start_or_resume_background_thread(&context, &run, config.clone())
         }),
     )
     .await?;
@@ -974,8 +1314,8 @@ async fn run_background_agent_worker(
 async fn start_or_resume_background_thread(
     context: &BackgroundAgentWorkerContext,
     run: &BackgroundAgentRun,
+    config: codex_core::config::Config,
 ) -> anyhow::Result<NewThread> {
-    let config = load_background_agent_config(context, run).await?;
     if let Some(rollout_path) = run.rollout_path.as_ref() {
         return context
             .thread_manager
@@ -1007,10 +1347,15 @@ async fn start_or_resume_background_thread(
         .map_err(anyhow::Error::from)
 }
 
-async fn load_background_agent_config(
+enum BackgroundAgentConfigResolution {
+    Ready(Box<codex_core::config::Config>),
+    UsageProfileWait { retry_at: DateTime<Utc> },
+}
+
+async fn resolve_background_agent_config(
     context: &BackgroundAgentWorkerContext,
     run: &BackgroundAgentRun,
-) -> anyhow::Result<codex_core::config::Config> {
+) -> anyhow::Result<BackgroundAgentConfigResolution> {
     let snapshot = context
         .state_db
         .get_latest_execution_snapshot(run.id.as_str())
@@ -1039,6 +1384,23 @@ async fn load_background_agent_config(
         .map(str::to_string);
     let model_provider = payload
         .and_then(|payload| payload.get("provider"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let model_gateway = payload
+        .and_then(|payload| {
+            payload
+                .get("modelGateway")
+                .or_else(|| payload.get("model_gateway"))
+        })
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let reasoning_effort = payload
+        .and_then(|payload| {
+            payload
+                .get("reasoning")
+                .or_else(|| payload.get("modelReasoningEffort"))
+                .or_else(|| payload.get("model_reasoning_effort"))
+        })
         .and_then(Value::as_str)
         .map(str::to_string);
     let service_tier = payload
@@ -1078,28 +1440,130 @@ async fn load_background_agent_config(
         None
     };
 
-    context
+    let mut request_overrides = HashMap::new();
+    if let Some(model_gateway) = model_gateway {
+        request_overrides.insert("model_gateway".to_string(), json!(model_gateway));
+    }
+    if let Some(reasoning_effort) = reasoning_effort {
+        request_overrides.insert(
+            "model_reasoning_effort".to_string(),
+            json!(reasoning_effort),
+        );
+    }
+    let request_overrides = (!request_overrides.is_empty()).then_some(request_overrides);
+
+    let mut config_overrides = ConfigOverrides {
+        model,
+        model_provider,
+        service_tier,
+        cwd,
+        workspace_roots,
+        approval_policy,
+        sandbox_mode,
+        permission_profile,
+        default_permissions,
+        auth_profile: Some(run.auth_profile_ref.clone()),
+        codex_linux_sandbox_exe: context.arg0_paths.codex_linux_sandbox_exe.clone(),
+        main_execve_wrapper_exe: context.arg0_paths.main_execve_wrapper_exe.clone(),
+        ..Default::default()
+    };
+    let config = context
         .config_manager
-        .load_with_overrides(
-            /*config_overrides*/ None,
-            ConfigOverrides {
-                model,
-                model_provider,
-                service_tier,
-                cwd,
-                workspace_roots,
-                approval_policy,
-                sandbox_mode,
-                permission_profile,
-                default_permissions,
-                auth_profile: Some(run.auth_profile_ref.clone()),
-                codex_linux_sandbox_exe: context.arg0_paths.codex_linux_sandbox_exe.clone(),
-                main_execve_wrapper_exe: context.arg0_paths.main_execve_wrapper_exe.clone(),
-                ..Default::default()
-            },
-        )
+        .load_with_overrides(request_overrides.clone(), config_overrides.clone())
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(anyhow::Error::from)?;
+
+    let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
+        &context.auth_manager,
+        &config,
+        config_overrides.auth_profile.clone(),
+    )
+    .await;
+    if let Some(profile) = broker_decision.selected_profile.as_ref() {
+        tracing::debug!(
+            run_id = %run.id,
+            auth_profile = %profile,
+            reason = ?broker_decision.reason,
+            "usage profile broker selected auth profile for background agent"
+        );
+        config_overrides.auth_profile = Some(Some(profile.clone()));
+        return context
+            .config_manager
+            .load_with_overrides(request_overrides, config_overrides)
+            .await
+            .map(Box::new)
+            .map(BackgroundAgentConfigResolution::Ready)
+            .map_err(anyhow::Error::from);
+    }
+    if let Some(retry_at) = broker_decision.retry_at
+        && let Some(retry_at) = background_agent_broker_retry_at(&config, retry_at)
+    {
+        tracing::debug!(
+            run_id = %run.id,
+            retry_at = %retry_at.to_rfc3339(),
+            reason = ?broker_decision.reason,
+            "usage profile broker deferred background agent"
+        );
+        return Ok(BackgroundAgentConfigResolution::UsageProfileWait { retry_at });
+    }
+    Ok(BackgroundAgentConfigResolution::Ready(Box::new(config)))
+}
+
+async fn defer_background_agent_for_usage_profile_wait(
+    context: &BackgroundAgentWorkerContext,
+    run_id: &str,
+    generation: i64,
+    retry_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let status_reason = background_agent_usage_profile_wait_reason(retry_at);
+    append_status(
+        context,
+        run_id,
+        generation,
+        BackgroundAgentRunStatus::Queued,
+        status_reason.as_str(),
+        "agent.usageProfileWait",
+        json!({
+            "retryAt": retry_at.timestamp(),
+        }),
+    )
+    .await?;
+    retry_transient_sqlite_busy("finish background agent usage profile wait lease", || {
+        context.state_db.finish_background_agent_process_lease(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+            /*exit_code*/ None,
+            /*exit_signal*/ None,
+            Some("usage profile wait"),
+        )
+    })
+    .await?;
+    Ok(())
+}
+
+fn background_agent_broker_retry_at(
+    config: &codex_core::config::Config,
+    retry_at: i64,
+) -> Option<DateTime<Utc>> {
+    let retry_at = DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0)?;
+    let buffer_secs = i64::try_from(config.usage_self_heal.reset_retry_buffer_secs).ok()?;
+    let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
+    (retry_at > Utc::now()).then_some(retry_at)
+}
+
+fn background_agent_usage_profile_wait_reason(retry_at: DateTime<Utc>) -> String {
+    format!(
+        "{BACKGROUND_AGENT_USAGE_PROFILE_WAIT_PREFIX}{}",
+        retry_at.timestamp()
+    )
+}
+
+fn background_agent_usage_profile_wait_until(status_reason: Option<&str>) -> Option<i64> {
+    status_reason?
+        .strip_prefix(BACKGROUND_AGENT_USAGE_PROFILE_WAIT_PREFIX)?
+        .parse()
+        .ok()
 }
 
 fn is_background_agent_core_permission_profile_value(value: &Value) -> bool {
@@ -2290,6 +2754,48 @@ mod tests {
         assert_ne!(slash_component, underscore_component);
         assert_eq!(slash_component, "run%2Fa");
         assert_eq!(underscore_component, "run_a");
+    }
+
+    #[tokio::test]
+    async fn usage_profile_wait_status_reason_defers_queued_run_until_reset() -> anyhow::Result<()>
+    {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "usage-wait-run").await?;
+
+        let future_retry_at = Utc::now() + ChronoDuration::seconds(60);
+        let future_wait_reason = background_agent_usage_profile_wait_reason(future_retry_at);
+        state_db
+            .update_background_agent_run_status(
+                "usage-wait-run",
+                BackgroundAgentRunStatus::Queued,
+                Some(future_wait_reason.as_str()),
+            )
+            .await?;
+        let run = state_db
+            .get_background_agent_run("usage-wait-run")
+            .await?
+            .expect("seeded run should exist");
+        assert!(!should_start_background_run(&run));
+
+        let past_retry_at = Utc::now() - ChronoDuration::seconds(60);
+        let past_wait_reason = background_agent_usage_profile_wait_reason(past_retry_at);
+        state_db
+            .update_background_agent_run_status(
+                "usage-wait-run",
+                BackgroundAgentRunStatus::Queued,
+                Some(past_wait_reason.as_str()),
+            )
+            .await?;
+        let run = state_db
+            .get_background_agent_run("usage-wait-run")
+            .await?
+            .expect("seeded run should exist");
+        assert!(should_start_background_run(&run));
+
+        Ok(())
     }
 
     #[tokio::test]

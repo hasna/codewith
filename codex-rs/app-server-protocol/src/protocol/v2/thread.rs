@@ -732,6 +732,7 @@ v2_enum_from_core! {
         UsageLimited,
         BudgetLimited,
         Complete,
+        Cancelled,
     }
 }
 
@@ -740,6 +741,7 @@ v2_enum_from_core! {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoal {
     pub thread_id: String,
+    pub goal_id: String,
     pub objective: String,
     pub status: ThreadGoalStatus,
     #[ts(type = "number | null")]
@@ -758,6 +760,7 @@ impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
     fn from(value: codex_protocol::protocol::ThreadGoal) -> Self {
         Self {
             thread_id: value.thread_id.to_string(),
+            goal_id: value.goal_id,
             objective: value.objective,
             status: value.status.into(),
             token_budget: value.token_budget,
@@ -818,6 +821,7 @@ pub enum ThreadGoalPlanStatus {
     Blocked,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -840,6 +844,7 @@ pub enum ThreadGoalPlanNodeStatus {
     UsageLimited,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -856,6 +861,7 @@ pub struct ThreadGoalPlanNode {
     pub priority: i64,
     pub objective: String,
     pub status: ThreadGoalPlanNodeStatus,
+    pub ready: bool,
     #[ts(type = "number | null")]
     pub token_budget: Option<i64>,
     #[ts(type = "number")]
@@ -882,10 +888,131 @@ pub struct ThreadGoalPlan {
     #[ts(type = "number | null")]
     pub max_tokens: Option<i64>,
     #[ts(type = "number")]
+    pub total_tokens_used: i64,
+    #[ts(type = "number")]
+    pub total_time_used_seconds: i64,
+    #[ts(type = "number | null")]
+    pub remaining_tokens: Option<i64>,
+    #[ts(type = "number")]
+    pub node_count: i64,
+    #[ts(type = "number")]
+    pub completed_node_count: i64,
+    #[ts(type = "number")]
+    pub ready_node_count: i64,
+    #[ts(type = "number")]
+    pub active_node_count: i64,
+    #[ts(type = "number")]
+    pub pending_node_count: i64,
+    #[ts(type = "number")]
+    pub paused_node_count: i64,
+    #[ts(type = "number")]
+    pub blocked_node_count: i64,
+    #[ts(type = "number")]
+    pub usage_limited_node_count: i64,
+    #[ts(type = "number")]
+    pub budget_limited_node_count: i64,
+    #[ts(type = "number")]
+    pub cancelled_node_count: i64,
+    #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
     pub nodes: Vec<ThreadGoalPlanNode>,
+}
+
+impl From<codex_protocol::protocol::ThreadGoalPlan> for ThreadGoalPlan {
+    fn from(value: codex_protocol::protocol::ThreadGoalPlan) -> Self {
+        Self {
+            plan_id: value.plan_id,
+            thread_id: value.thread_id.to_string(),
+            status: value.status.into(),
+            auto_execute: value.auto_execute.into(),
+            max_tokens: value.max_tokens,
+            total_tokens_used: value.total_tokens_used,
+            total_time_used_seconds: value.total_time_used_seconds,
+            remaining_tokens: value.remaining_tokens,
+            node_count: value.node_count,
+            completed_node_count: value.completed_node_count,
+            ready_node_count: value.ready_node_count,
+            active_node_count: value.active_node_count,
+            pending_node_count: value.pending_node_count,
+            paused_node_count: value.paused_node_count,
+            blocked_node_count: value.blocked_node_count,
+            usage_limited_node_count: value.usage_limited_node_count,
+            budget_limited_node_count: value.budget_limited_node_count,
+            cancelled_node_count: value.cancelled_node_count,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            nodes: value
+                .nodes
+                .into_iter()
+                .map(ThreadGoalPlanNode::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
+    fn from(value: codex_protocol::protocol::ThreadGoalPlanNode) -> Self {
+        Self {
+            node_id: value.node_id,
+            plan_id: value.plan_id,
+            thread_id: value.thread_id.to_string(),
+            key: value.key,
+            sequence: value.sequence,
+            priority: value.priority,
+            objective: value.objective,
+            status: value.status.into(),
+            ready: value.ready,
+            token_budget: value.token_budget,
+            tokens_used: value.tokens_used,
+            time_used_seconds: value.time_used_seconds,
+            projected_goal_id: value.projected_goal_id,
+            depends_on: value.depends_on,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<codex_protocol::protocol::ThreadGoalPlanStatus> for ThreadGoalPlanStatus {
+    fn from(value: codex_protocol::protocol::ThreadGoalPlanStatus) -> Self {
+        match value {
+            codex_protocol::protocol::ThreadGoalPlanStatus::Active => Self::Active,
+            codex_protocol::protocol::ThreadGoalPlanStatus::Paused => Self::Paused,
+            codex_protocol::protocol::ThreadGoalPlanStatus::Blocked => Self::Blocked,
+            codex_protocol::protocol::ThreadGoalPlanStatus::BudgetLimited => Self::BudgetLimited,
+            codex_protocol::protocol::ThreadGoalPlanStatus::Complete => Self::Complete,
+            codex_protocol::protocol::ThreadGoalPlanStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<codex_protocol::protocol::ThreadGoalPlanAutoExecute> for ThreadGoalPlanAutoExecute {
+    fn from(value: codex_protocol::protocol::ThreadGoalPlanAutoExecute) -> Self {
+        match value {
+            codex_protocol::protocol::ThreadGoalPlanAutoExecute::Off => Self::Off,
+            codex_protocol::protocol::ThreadGoalPlanAutoExecute::ReadyOnly => Self::ReadyOnly,
+            codex_protocol::protocol::ThreadGoalPlanAutoExecute::AiDirected => Self::AiDirected,
+        }
+    }
+}
+
+impl From<codex_protocol::protocol::ThreadGoalPlanNodeStatus> for ThreadGoalPlanNodeStatus {
+    fn from(value: codex_protocol::protocol::ThreadGoalPlanNodeStatus) -> Self {
+        match value {
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Pending => Self::Pending,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Active => Self::Active,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Paused => Self::Paused,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Blocked => Self::Blocked,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::UsageLimited => Self::UsageLimited,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::BudgetLimited => {
+                Self::BudgetLimited
+            }
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Complete => Self::Complete,
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Cancelled => Self::Cancelled,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -906,6 +1033,22 @@ pub struct ThreadGoalListResponse {
     pub goal: Option<ThreadGoal>,
     pub goal_plans: Vec<ThreadGoalPlan>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanActivateNodeParams {
+    pub thread_id: String,
+    pub node_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanActivateNodeResponse {
+    pub goal: ThreadGoal,
+    pub plan: ThreadGoalPlan,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2101,6 +2244,15 @@ pub struct ThreadGoalUpdatedNotification {
     pub thread_id: String,
     pub turn_id: Option<String>,
     pub goal: ThreadGoal,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanUpdatedNotification {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub plan: ThreadGoalPlan,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -28,6 +28,7 @@ use crate::types::SkillsConfig;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
+use crate::types::UsageSelfHealToml;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
@@ -165,6 +166,50 @@ pub struct GoalsConfigToml {
     pub max_tokens_per_goal_plan: Option<i64>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorktreeSessionModeToml {
+    Off,
+    #[default]
+    Manual,
+    Auto,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorktreeCleanupToml {
+    Retain,
+    #[default]
+    DeleteIfClean,
+    ForceDelete,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WorktreeSessionConfigToml {
+    /// Controls whether this session class can use managed worktrees.
+    pub mode: Option<WorktreeSessionModeToml>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WorktreesConfigToml {
+    /// Global managed-worktree gate. When false, creation/attach actions should be unavailable.
+    pub enabled: Option<bool>,
+
+    /// Optional root directory for Codewith-owned managed worktrees.
+    pub root: Option<String>,
+
+    /// Default cleanup policy when a managed worktree is released.
+    pub cleanup_default: Option<WorktreeCleanupToml>,
+
+    /// Policy for ordinary interactive sessions.
+    pub main_sessions: Option<WorktreeSessionConfigToml>,
+
+    /// Policy for subagent and background-agent sessions.
+    pub sub_sessions: Option<WorktreeSessionConfigToml>,
+}
+
 /// Base config deserialized from ~/.codewith/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -205,6 +250,10 @@ pub struct ConfigToml {
     /// Goal plan automation defaults.
     #[serde(default)]
     pub goals: Option<GoalsConfigToml>,
+
+    /// Managed worktree defaults and session-class gates.
+    #[serde(default)]
+    pub worktrees: Option<WorktreesConfigToml>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
@@ -285,6 +334,10 @@ pub struct ConfigToml {
     /// Runtime auth-profile failover behavior for rate-limited sessions.
     #[serde(default)]
     pub auth_profile_auto_switch: Option<AuthProfileAutoSwitchToml>,
+
+    /// Automatic retry behavior for recoverable usage-limit and availability failures.
+    #[serde(default)]
+    pub usage_self_heal: Option<UsageSelfHealToml>,
 
     /// Lightweight recap generation for returning to interactive sessions.
     #[serde(default)]

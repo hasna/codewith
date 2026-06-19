@@ -1,0 +1,175 @@
+use anyhow::Result;
+use app_test_support::TestAppServer;
+use app_test_support::to_response;
+use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::RemoteDispatchCapability;
+use codex_app_server_protocol::RemoteDispatchDenialReason;
+use codex_app_server_protocol::RemoteDispatchNegotiateResponse;
+use codex_app_server_protocol::RemoteDispatchRequestStatus;
+use codex_app_server_protocol::RemoteDispatchSubmitResponse;
+use codex_app_server_protocol::RequestId;
+use codex_state::StateRuntime;
+use pretty_assertions::assert_eq;
+use serde::de::DeserializeOwned;
+use serde_json::json;
+use tempfile::TempDir;
+use tokio::time::timeout;
+
+const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tokio::test]
+async fn remote_dispatch_jsonrpc_enforces_trust_capabilities_and_expiry() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    upsert_machine(
+        &state_db,
+        "local",
+        codex_state::MachineTrustState::Local,
+        codex_state::MachineEnrollmentState::Local,
+    )
+    .await?;
+    upsert_machine(
+        &state_db,
+        "trusted",
+        codex_state::MachineTrustState::Trusted,
+        codex_state::MachineEnrollmentState::Manual,
+    )
+    .await?;
+    upsert_machine(
+        &state_db,
+        "untrusted",
+        codex_state::MachineTrustState::Untrusted,
+        codex_state::MachineEnrollmentState::Manual,
+    )
+    .await?;
+
+    let negotiation: RemoteDispatchNegotiateResponse = send_and_read(
+        &mut mcp,
+        "remoteDispatch/negotiate",
+        json!({
+            "sourceMachineId": "trusted",
+            "targetMachineId": "local",
+            "protocolVersion": 1,
+            "requestedCapabilities": null,
+        }),
+    )
+    .await?;
+    assert_eq!(Some("local".to_string()), negotiation.local_machine_id);
+    assert!(!negotiation.supported_capabilities.is_empty());
+    assert!(
+        !negotiation
+            .supported_capabilities
+            .contains(&RemoteDispatchCapability::MailboxReceiptRead)
+    );
+    assert!(
+        !negotiation
+            .supported_capabilities
+            .contains(&RemoteDispatchCapability::AuditReceipts)
+    );
+
+    let untrusted = remote_submit(&mut mcp, "untrusted", "local", None, None).await?;
+    assert_eq!(RemoteDispatchRequestStatus::Denied, untrusted.status);
+    assert_eq!(
+        Some(RemoteDispatchDenialReason::UntrustedMachine),
+        untrusted.receipt.denial.map(|denial| denial.reason)
+    );
+
+    let stale_capability = remote_submit(&mut mcp, "trusted", "local", Some("0"), None).await?;
+    assert_eq!(RemoteDispatchRequestStatus::Denied, stale_capability.status);
+    assert_eq!(
+        Some(RemoteDispatchDenialReason::CapabilityMismatch),
+        stale_capability.receipt.denial.map(|denial| denial.reason)
+    );
+
+    let expired = remote_submit(&mut mcp, "trusted", "local", None, Some(1)).await?;
+    assert_eq!(RemoteDispatchRequestStatus::Denied, expired.status);
+    assert_eq!(
+        Some(RemoteDispatchDenialReason::ExpiredRequest),
+        expired.receipt.denial.map(|denial| denial.reason)
+    );
+
+    Ok(())
+}
+
+async fn remote_submit(
+    mcp: &mut TestAppServer,
+    source_machine_id: &str,
+    target_machine_id: &str,
+    capability_version: Option<&str>,
+    expires_at: Option<i64>,
+) -> Result<RemoteDispatchSubmitResponse> {
+    send_and_read(
+        mcp,
+        "remoteDispatch/submit",
+        json!({
+            "requestId": format!("request-{source_machine_id}-{target_machine_id}"),
+            "sourceMachineId": source_machine_id,
+            "targetMachineId": target_machine_id,
+            "idempotencyKey": format!("idem-{source_machine_id}-{target_machine_id}"),
+            "operation": {
+                "type": "enqueueInstruction",
+                "params": {
+                    "targetThreadId": "00000000-0000-4000-8000-000000000201",
+                    "message": "remote hello",
+                    "senderThreadId": null,
+                    "senderLabel": null,
+                    "priority": null,
+                    "maxAttempts": null,
+                    "expiresAt": null,
+                    "resume": false,
+                },
+            },
+            "requestedAt": null,
+            "expiresAt": expires_at,
+            "capabilityVersion": capability_version,
+            "dryRun": false,
+        }),
+    )
+    .await
+}
+
+async fn upsert_machine(
+    state_db: &StateRuntime,
+    machine_id: &str,
+    trust_state: codex_state::MachineTrustState,
+    enrollment_state: codex_state::MachineEnrollmentState,
+) -> Result<()> {
+    state_db
+        .machine_registry()
+        .upsert_machine(codex_state::MachineRegistryUpsertParams {
+            machine_id: Some(machine_id.to_string()),
+            installation_id: None,
+            display_name: Some(machine_id.to_string()),
+            trust_state,
+            enrollment_state,
+            health_state: codex_state::MachineHealthState::Online,
+            source_kind: codex_state::MachineSourceKind::Manual,
+            adapter_name: None,
+            capabilities_json: json!({}),
+            endpoints: Vec::new(),
+            last_seen_at: None,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn send_and_read<T>(
+    mcp: &mut TestAppServer,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let request_id = mcp.send_raw_request(method, Some(params)).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    to_response(response)
+}

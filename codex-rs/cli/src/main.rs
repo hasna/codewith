@@ -865,19 +865,23 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 }
 
 fn run_tmux_handoff(handoff: TmuxHandoffExit) -> anyhow::Result<()> {
-    let target = format!("={}", handoff.session_name);
-    let tmux_command = match handoff.attach_mode {
-        TmuxHandoffAttachMode::Attach => "attach-session",
-        TmuxHandoffAttachMode::SwitchClient => "switch-client",
-    };
+    let (tmux_command, target) = tmux_handoff_command_parts(&handoff);
     let status = std::process::Command::new("tmux")
-        .args([tmux_command, "-t", &target])
+        .args([tmux_command, "-t", target])
         .status()
         .map_err(|err| anyhow::anyhow!("failed to run tmux {tmux_command}: {err}"))?;
     if !status.success() {
         anyhow::bail!("tmux {tmux_command} failed with status {status}");
     }
     Ok(())
+}
+
+fn tmux_handoff_command_parts(handoff: &TmuxHandoffExit) -> (&'static str, &str) {
+    let tmux_command = match handoff.attach_mode {
+        TmuxHandoffAttachMode::Attach => "attach-session",
+        TmuxHandoffAttachMode::SwitchClient => "switch-client",
+    };
+    (tmux_command, &handoff.target)
 }
 
 /// Run the update action and print the result.
@@ -3566,6 +3570,21 @@ mod tests {
                 "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run codewith resume, then select my-thread (123e4567-e89b-12d3-a456-426614174000)".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn tmux_handoff_uses_exact_target_from_tui() {
+        let handoff = TmuxHandoffExit {
+            session_name: "dev".to_string(),
+            window_name: "codewith".to_string(),
+            target: "=dev:@42".to_string(),
+            attach_mode: TmuxHandoffAttachMode::SwitchClient,
+        };
+
+        assert_eq!(
+            tmux_handoff_command_parts(&handoff),
+            ("switch-client", "=dev:@42")
         );
     }
 

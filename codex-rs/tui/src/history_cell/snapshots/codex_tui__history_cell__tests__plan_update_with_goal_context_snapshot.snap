@@ -1,0 +1,10 @@
+---
+source: tui/src/history_cell/tests.rs
+expression: rendered
+---
+• Updated Plan
+  └ Goal chain: 1/3 goals complete | 42k tokens
+    | 8m | active tui
+    Continuing the implementation slice.
+    ✔ Wire plan notifications
+    □ Render goal context beside plan updates

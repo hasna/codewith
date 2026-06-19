@@ -1,0 +1,20 @@
+---
+source: tui/src/chatwidget/tests/worktree_display.rs
+assertion_line: 87
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Read worktree
+  Choose a managed worktree to read for /tmp/project
+
+  Search worktrees
+  Managed worktree policy          enabled true | main manual | sub auto | cleanup delete-if-clean | root /tmp/
+                                   project/.codewith/worktrees | repo /tmp/project
+  Active (1)                       leased and available to inspect
+› 018f-act  active                 active - isolated - main session thread-m - /tmp/project/.codewith/worktrees/018f-
+                                   active-worktree
+  Cleanup pending (1)              released but retained because cleanup needs review
+  018f-cle  cleanup-pending        isolated - agent agent-cl waitingOnUser - dirty - updated 2026-06-18 12:46:40 -
+                                   branch codewith/018f-cleanup-pending - /tmp/project/.codewith/worktrees/018f-
+                                   cleanup-pending
+
+  Press enter to confirm or esc to go back

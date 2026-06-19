@@ -7,6 +7,7 @@ use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::context::TurnAborted;
 use crate::function_tool::FunctionCallError;
+use crate::session::handlers::inter_agent_communication;
 use crate::shell::default_user_shell;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills::render::SkillMetadataBudget;
@@ -9353,6 +9354,113 @@ async fn task_finish_emits_thread_idle_lifecycle_after_active_turn_clears() {
     assert!(session.active_turn.lock().await.is_none());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_starts_pending_trigger_turn_mailbox_work() {
+    struct ReleaseTask {
+        release_rx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl SessionTask for ReleaseTask {
+        fn kind(&self) -> TaskKind {
+            TaskKind::Regular
+        }
+
+        fn span_name(&self) -> &'static str {
+            "session_task.release"
+        }
+
+        async fn run(
+            self: Arc<Self>,
+            _session: Arc<SessionTaskContext>,
+            _ctx: Arc<TurnContext>,
+            _input: Vec<TurnInput>,
+            _cancellation_token: CancellationToken,
+        ) -> Option<String> {
+            let release_rx = self.release_rx.lock().await.take();
+            if let Some(release_rx) = release_rx {
+                let _ = release_rx.await;
+            }
+            None
+        }
+    }
+
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let session = Arc::new(session);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            ReleaseTask {
+                release_rx: tokio::sync::Mutex::new(Some(release_rx)),
+            },
+        )
+        .await;
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "pending trigger".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await;
+
+    release_tx
+        .send(())
+        .expect("release receiver should be alive");
+
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("event receiver open");
+            if let EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. }) = event.msg
+                && turn_id != turn_context.sub_id
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("mailbox turn should start after active turn finishes");
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn pending_trigger_turn_mailbox_work_takes_over_empty_active_turn() {
+    let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let session = Arc::new(session);
+    {
+        let mut active_turn = session.active_turn.lock().await;
+        *active_turn = Some(ActiveTurn::default());
+    }
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "pending trigger".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await;
+
+    assert!(session.maybe_start_turn_for_pending_work().await);
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("event receiver open");
+            if matches!(event.msg, EventMsg::TurnStarted(_)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("mailbox turn should start from an empty active turn reservation");
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[tokio::test]
 async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
     struct ThreadIdleRecorder {
@@ -9830,6 +9938,59 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
             TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
         ],
     );
+}
+
+#[tokio::test]
+async fn steered_input_keeps_trigger_turn_mailbox_delivery_queued() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    inter_agent_communication(
+        &sess,
+        "mailbox-turn".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "queued trigger update".to_string(),
+            /*trigger_turn*/ true,
+        ),
+    )
+    .await;
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "follow up".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steered input should be accepted");
+
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        vec![TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "follow up".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None
+        }],
+    );
+    assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]

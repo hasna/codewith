@@ -49,24 +49,36 @@
           "type": "string"
         },
         "senderLabel": {
+          "description": "Claimed sender label for attribution only.",
           "type": [
             "string",
             "null"
           ]
         },
         "senderThreadId": {
+          "description": "Claimed sender thread for attribution only. activeSession/send does not treat this as authentication or authorization.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetPeerId": {
+          "description": "Active peer routing key from activeSession/list.",
           "type": [
             "string",
             "null"
           ]
         },
         "targetThreadId": {
-          "type": "string"
+          "description": "Legacy local Codewith-thread target. target_peer_id is preferred for peers returned by activeSession/list.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "message",
-        "targetThreadId"
+        "message"
       ],
       "type": "object"
     },
@@ -98,6 +110,59 @@
         "application"
       ],
       "type": "string"
+    },
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/FileSystemSandboxEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "read": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/definitions/AbsolutePathBuf"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/definitions/AbsolutePathBuf"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalNetworkPermissions": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "AgentExecutionContextParams": {
       "properties": {
@@ -559,6 +624,85 @@
       ],
       "type": "object"
     },
+    "CommandExecutionApprovalDecision": {
+      "oneOf": [
+        {
+          "description": "User approved the command.",
+          "enum": [
+            "accept"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
+          "enum": [
+            "acceptForSession"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
+          "properties": {
+            "acceptWithExecpolicyAmendment": {
+              "properties": {
+                "execpolicy_amendment": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "execpolicy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "acceptWithExecpolicyAmendment"
+          ],
+          "title": "AcceptWithExecpolicyAmendmentCommandExecutionApprovalDecision",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User chose a persistent network policy rule (allow/deny) for this host.",
+          "properties": {
+            "applyNetworkPolicyAmendment": {
+              "properties": {
+                "network_policy_amendment": {
+                  "$ref": "#/definitions/NetworkPolicyAmendment"
+                }
+              },
+              "required": [
+                "network_policy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "applyNetworkPolicyAmendment"
+          ],
+          "title": "ApplyNetworkPolicyAmendmentCommandExecutionApprovalDecision",
+          "type": "object"
+        },
+        {
+          "description": "User denied the command. The agent will continue the turn.",
+          "enum": [
+            "decline"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "User denied the command. The turn will also be immediately interrupted.",
+          "enum": [
+            "cancel"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "CommandMigration": {
       "properties": {
         "name": {
@@ -733,6 +877,50 @@
             "type"
           ],
           "title": "OutputTextContentItem",
+          "type": "object"
+        }
+      ]
+    },
+    "DynamicToolCallOutputContentItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputText"
+              ],
+              "title": "InputTextDynamicToolCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "InputTextDynamicToolCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "imageUrl": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputImage"
+              ],
+              "title": "InputImageDynamicToolCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "imageUrl",
+            "type"
+          ],
+          "title": "InputImageDynamicToolCallOutputContentItem",
           "type": "object"
         }
       ]
@@ -928,6 +1116,234 @@
         "classification"
       ],
       "type": "object"
+    },
+    "FileChangeApprovalDecision": {
+      "oneOf": [
+        {
+          "description": "User approved the file changes.",
+          "enum": [
+            "accept"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "User approved the file changes and future changes to the same files should run without prompting.",
+          "enum": [
+            "acceptForSession"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "User denied the file changes. The agent will continue the turn.",
+          "enum": [
+            "decline"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "User denied the file changes. The turn will also be immediately interrupted.",
+          "enum": [
+            "cancel"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            "type": {
+              "enum": [
+                "path"
+              ],
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "type"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "glob_pattern"
+              ],
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern",
+            "type"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "special"
+              ],
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/definitions/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/definitions/FileSystemPath"
+        }
+      },
+      "required": [
+        "access",
+        "path"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "root"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "minimal"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "project_roots"
+              ],
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "tmpdir"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "slash_tmp"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "FsCopyParams": {
       "description": "Copy a file or directory tree on the host filesystem.",
@@ -1256,6 +1672,31 @@
       },
       "type": "object"
     },
+    "GrantedPermissionProfile": {
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalNetworkPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "HookMigration": {
       "properties": {
         "name": {
@@ -1372,6 +1813,17 @@
         }
       },
       "type": "object"
+    },
+    "LocalSessionStatus": {
+      "enum": [
+        "active",
+        "idle",
+        "systemError",
+        "closing",
+        "loadedWithoutActivePeer",
+        "notLoaded"
+      ],
+      "type": "string"
     },
     "LocalShellAction": {
       "oneOf": [
@@ -1599,6 +2051,14 @@
       ],
       "type": "object"
     },
+    "McpServerElicitationAction": {
+      "enum": [
+        "accept",
+        "decline",
+        "cancel"
+      ],
+      "type": "string"
+    },
     "McpServerMigration": {
       "properties": {
         "name": {
@@ -1738,6 +2198,203 @@
       },
       "type": "object"
     },
+    "MissionControlEnqueueInstructionParams": {
+      "properties": {
+        "dryRun": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxAttempts": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "priority": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resume": {
+          "type": "boolean"
+        },
+        "senderLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "senderThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
+    "MissionControlMailboxReceiptsParams": {
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "targetThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageId",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
+    "MissionControlOverviewParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadListCwdFilter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "includeGoalPlans": {
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pendingInteractionCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pendingInteractionLimit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pendingInteractionStatuses": {
+          "items": {
+            "$ref": "#/definitions/ThreadPendingInteractionStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionStatuses": {
+          "items": {
+            "$ref": "#/definitions/LocalSessionStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "sortDirection": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SortDirection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sortKey": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSortKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "useStateDbOnly": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "MissionControlRespondInteractionParams": {
+      "properties": {
+        "dryRun": {
+          "type": "boolean"
+        },
+        "interactionId": {
+          "type": "string"
+        },
+        "response": {
+          "$ref": "#/definitions/ThreadPendingInteractionResponsePayload"
+        },
+        "terminalStatus": {
+          "$ref": "#/definitions/ThreadPendingInteractionTerminalStatus"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "interactionId",
+        "response",
+        "terminalStatus"
+      ],
+      "type": "object"
+    },
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
@@ -1817,6 +2474,35 @@
       "enum": [
         "restricted",
         "enabled"
+      ],
+      "type": "string"
+    },
+    "NetworkPolicyAmendment": {
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/NetworkPolicyRuleAction"
+        },
+        "host": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "host"
+      ],
+      "type": "object"
+    },
+    "NetworkPolicyRuleAction": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "PermissionGrantScope": {
+      "enum": [
+        "turn",
+        "session"
       ],
       "type": "string"
     },
@@ -3514,6 +4200,21 @@
       ],
       "type": "object"
     },
+    "ThreadGoalPlanActivateNodeParams": {
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadGoalSetParams": {
       "properties": {
         "objective": {
@@ -3555,7 +4256,8 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
-        "complete"
+        "complete",
+        "cancelled"
       ],
       "type": "string"
     },
@@ -3701,6 +4403,26 @@
         }
       },
       "type": "object"
+    },
+    "ThreadMailboxMessageKind": {
+      "enum": [
+        "userInstruction",
+        "userReply",
+        "control"
+      ],
+      "type": "string"
+    },
+    "ThreadMailboxMessageStatus": {
+      "enum": [
+        "queued",
+        "claimed",
+        "acknowledged",
+        "failed",
+        "poisoned",
+        "expired",
+        "canceled"
+      ],
+      "type": "string"
     },
     "ThreadMemoryMode": {
       "enum": [
@@ -3908,6 +4630,208 @@
         "threadId"
       ],
       "type": "object"
+    },
+    "ThreadPendingInteractionKind": {
+      "enum": [
+        "commandApproval",
+        "fileChangeApproval",
+        "userInput",
+        "mcpElicitation",
+        "permissionGrant",
+        "dynamicTool",
+        "usageLimit",
+        "profileSwitch",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionResponsePayload": {
+      "oneOf": [
+        {
+          "properties": {
+            "decision": {
+              "$ref": "#/definitions/CommandExecutionApprovalDecision"
+            },
+            "type": {
+              "enum": [
+                "commandApproval"
+              ],
+              "title": "CommandApprovalThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "type"
+          ],
+          "title": "CommandApprovalThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "decision": {
+              "$ref": "#/definitions/FileChangeApprovalDecision"
+            },
+            "type": {
+              "enum": [
+                "fileChangeApproval"
+              ],
+              "title": "FileChangeApprovalThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "type"
+          ],
+          "title": "FileChangeApprovalThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "answers": {
+              "additionalProperties": {
+                "$ref": "#/definitions/ToolRequestUserInputAnswer"
+              },
+              "type": "object"
+            },
+            "type": {
+              "enum": [
+                "requestUserInput"
+              ],
+              "title": "RequestUserInputThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "answers",
+            "type"
+          ],
+          "title": "RequestUserInputThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/McpServerElicitationAction"
+            },
+            "content": true,
+            "meta": true,
+            "type": {
+              "enum": [
+                "mcpElicitation"
+              ],
+              "title": "McpElicitationThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "type"
+          ],
+          "title": "McpElicitationThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "permissions": {
+              "$ref": "#/definitions/GrantedPermissionProfile"
+            },
+            "scope": {
+              "$ref": "#/definitions/PermissionGrantScope"
+            },
+            "strictAutoReview": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "permissionsApproval"
+              ],
+              "title": "PermissionsApprovalThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "permissions",
+            "scope",
+            "type"
+          ],
+          "title": "PermissionsApprovalThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "contentItems": {
+              "items": {
+                "$ref": "#/definitions/DynamicToolCallOutputContentItem"
+              },
+              "type": "array"
+            },
+            "success": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "dynamicTool"
+              ],
+              "title": "DynamicToolThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentItems",
+            "success",
+            "type"
+          ],
+          "title": "DynamicToolThreadPendingInteractionResponsePayload",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "terminal"
+              ],
+              "title": "TerminalThreadPendingInteractionResponsePayloadType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "type"
+          ],
+          "title": "TerminalThreadPendingInteractionResponsePayload",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadPendingInteractionStatus": {
+      "enum": [
+        "pending",
+        "delivered",
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "noLongerWaiting"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionTerminalStatus": {
+      "enum": [
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "noLongerWaiting"
+      ],
+      "type": "string"
     },
     "ThreadReadParams": {
       "properties": {
@@ -4712,6 +5636,21 @@
       ],
       "type": "object"
     },
+    "ToolRequestUserInputAnswer": {
+      "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
+      "properties": {
+        "answers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "answers"
+      ],
+      "type": "object"
+    },
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
@@ -5086,6 +6025,100 @@
         "mode"
       ],
       "type": "object"
+    },
+    "WorktreeAttachParams": {
+      "properties": {
+        "agentRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktreeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktreeId"
+      ],
+      "type": "object"
+    },
+    "WorktreeDetachParams": {
+      "properties": {
+        "agentRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktreeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktreeId"
+      ],
+      "type": "object"
+    },
+    "WorktreeListParams": {
+      "properties": {
+        "baseRepoPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "includeDeleted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WorktreeReadParams": {
+      "properties": {
+        "baseRepoPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktreeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktreeId"
+      ],
+      "type": "object"
     }
   },
   "description": "Request from the client to the server.",
@@ -5329,6 +6362,30 @@
         "params"
       ],
       "title": "Thread/goal/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/goalPlan/activateNode"
+          ],
+          "title": "Thread/goalPlan/activateNodeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadGoalPlanActivateNodeParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/goalPlan/activateNodeRequest",
       "type": "object"
     },
     {
@@ -5689,6 +6746,198 @@
         "params"
       ],
       "title": "Thread/monitor/deleteRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "missionControl/overview"
+          ],
+          "title": "MissionControl/overviewRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/MissionControlOverviewParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "MissionControl/overviewRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "missionControl/enqueueInstruction"
+          ],
+          "title": "MissionControl/enqueueInstructionRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/MissionControlEnqueueInstructionParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "MissionControl/enqueueInstructionRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "missionControl/mailboxReceipts"
+          ],
+          "title": "MissionControl/mailboxReceiptsRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/MissionControlMailboxReceiptsParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "MissionControl/mailboxReceiptsRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "missionControl/respondInteraction"
+          ],
+          "title": "MissionControl/respondInteractionRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/MissionControlRespondInteractionParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "MissionControl/respondInteractionRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "worktree/list"
+          ],
+          "title": "Worktree/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WorktreeListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Worktree/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "worktree/read"
+          ],
+          "title": "Worktree/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WorktreeReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Worktree/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "worktree/attach"
+          ],
+          "title": "Worktree/attachRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WorktreeAttachParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Worktree/attachRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "worktree/detach"
+          ],
+          "title": "Worktree/detachRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WorktreeDetachParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Worktree/detachRequest",
       "type": "object"
     },
     {

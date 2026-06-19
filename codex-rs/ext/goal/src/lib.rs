@@ -5,6 +5,7 @@ mod api;
 mod events;
 mod extension;
 mod metrics;
+mod pending_interaction;
 mod runtime;
 mod spec;
 mod steering;

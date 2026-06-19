@@ -1,32 +1,49 @@
 use super::*;
 use crate::active_session_bridge::ActiveChannelDeliveryMode;
+use crate::active_session_bridge::ActiveChannelDeliveryOutcome;
 use crate::active_session_bridge::ActiveChannelEndpoint;
 use crate::active_session_bridge::ActiveChannelEnvelope;
+use crate::active_session_bridge::ActiveChannelRouter;
+use crate::active_session_bridge::active_channel_communication;
 use crate::active_session_registry::ActivePeer;
 use crate::active_session_registry::ActivePeerCapabilities;
 use crate::active_session_registry::ActivePeerCapability as RegistryCapability;
+use crate::active_session_registry::ActivePeerDirectory;
 use crate::active_session_registry::ActivePeerFreshness;
 use crate::active_session_registry::ActivePeerKind as RegistryPeerKind;
 use crate::active_session_registry::ActivePeerLookupError;
-use crate::active_session_registry::ActivePeerRegistration;
 use crate::active_session_registry::ActivePeerRegistry;
 use crate::active_session_registry::LastSeenAt;
-use codex_protocol::protocol::SubAgentSource;
 use std::time::Duration;
 
 const TARGET_NOT_LOADED_REASON: &str =
     "target thread is not currently loaded; no offline delivery was attempted";
 const SENDER_NOT_LOADED_REASON: &str =
     "sender thread is not currently loaded; no offline delivery was attempted";
+const TARGET_UNSUPPORTED_REASON: &str =
+    "target peer is active but this app-server cannot deliver to its owner yet";
+const MAX_ACTIVE_SESSION_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_ACTIVE_SESSION_SENDER_LABEL_BYTES: usize = 256;
+const MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES: usize = 256;
 
 #[derive(Clone)]
 pub(crate) struct ActiveSessionRequestProcessor {
-    thread_manager: Arc<ThreadManager>,
+    active_peer_directory: ActivePeerDirectory,
+    active_channel_router: ActiveChannelRouter,
 }
 
 impl ActiveSessionRequestProcessor {
-    pub(crate) fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub(crate) fn new(
+        thread_manager: Arc<ThreadManager>,
+        pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    ) -> Self {
+        Self {
+            active_peer_directory: ActivePeerDirectory::new(
+                Arc::clone(&thread_manager),
+                Arc::clone(&pending_thread_unloads),
+            ),
+            active_channel_router: ActiveChannelRouter::new(thread_manager, pending_thread_unloads),
+        }
     }
 
     pub(crate) async fn active_session_list(
@@ -97,6 +114,7 @@ impl ActiveSessionRequestProcessor {
     ) -> Result<ActiveSessionSendResponse, JSONRPCErrorError> {
         let ActiveSessionSendParams {
             target_thread_id,
+            target_peer_id,
             message,
             sender_thread_id,
             sender_label,
@@ -107,11 +125,22 @@ impl ActiveSessionRequestProcessor {
                 "activeSession/send message must not be empty",
             ));
         }
+        validate_max_bytes(
+            "activeSession/send message",
+            message.as_str(),
+            MAX_ACTIVE_SESSION_MESSAGE_BYTES,
+        )?;
+        if let Some(sender_label) = sender_label.as_deref() {
+            validate_max_bytes(
+                "activeSession/send senderLabel",
+                sender_label,
+                MAX_ACTIVE_SESSION_SENDER_LABEL_BYTES,
+            )?;
+        }
 
         let message_id = uuid::Uuid::now_v7().to_string();
-        let target = ThreadId::from_string(target_thread_id.as_str())
-            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
-        let target_thread_id = target.to_string();
+        let target_thread_id = optional_target_thread_id(target_thread_id)?;
+        let target_lookup = active_session_target_lookup(target_peer_id, target_thread_id)?;
         let sender_thread_id = match sender_thread_id {
             Some(sender_thread_id) => {
                 let sender = ThreadId::from_string(sender_thread_id.as_str())
@@ -122,17 +151,20 @@ impl ActiveSessionRequestProcessor {
         };
         let freshness = freshness_now();
         let registry = self.active_peer_registry(freshness.now).await?;
-        let target_peer = match registry.get_active(target_thread_id.as_str(), freshness) {
+        let target_peer = match registry.get_active(target_lookup.peer_id.as_str(), freshness) {
             Ok(peer) => peer,
             Err(ActivePeerLookupError::Unknown { .. } | ActivePeerLookupError::Inactive { .. }) => {
                 return Ok(active_session_not_loaded_response(
                     message_id,
-                    target_thread_id,
+                    target_lookup.peer_id,
+                    target_lookup.thread_id,
                     sender_thread_id,
-                    TARGET_NOT_LOADED_REASON,
+                    target_lookup.not_loaded_reason,
                 ));
             }
         };
+        let target_peer_id = target_peer.peer_id.clone();
+        let target_thread_id = Some(target_peer.thread_id.to_string());
         let sender_peer = match sender_thread_id.as_ref() {
             Some(sender_thread_id) => {
                 match registry.get_active(sender_thread_id.as_str(), freshness) {
@@ -143,6 +175,7 @@ impl ActiveSessionRequestProcessor {
                     ) => {
                         return Ok(active_session_not_loaded_response(
                             message_id,
+                            target_peer_id,
                             target_thread_id,
                             Some(sender_thread_id.clone()),
                             SENDER_NOT_LOADED_REASON,
@@ -152,48 +185,53 @@ impl ActiveSessionRequestProcessor {
             }
             None => None,
         };
-        let target_thread = match self.thread_manager.get_thread(target).await {
-            Ok(thread) => thread,
-            Err(CodexErr::ThreadNotFound(_)) => {
-                return Ok(active_session_not_loaded_response(
-                    message_id,
-                    target_thread_id,
-                    sender_thread_id,
-                    TARGET_NOT_LOADED_REASON,
-                ));
-            }
-            Err(err) => return Err(active_session_get_thread_error(err)),
-        };
         let envelope = active_channel_envelope(
             message_id.as_str(),
-            sender_label,
+            sender_label.as_deref(),
             sender_peer.as_ref(),
             &target_peer,
-            message,
+            message.as_str(),
             delivery
                 .unwrap_or(ActiveSessionMessageDelivery::QueueOnly)
                 .into(),
         );
-        let communication = active_session_communication(&envelope);
-        match target_thread
-            .submit(Op::InterAgentCommunication { communication })
+        let communication = active_channel_communication(&envelope);
+        let delivery_outcome = self
+            .active_channel_router
+            .deliver(&envelope, &target_peer, communication)
             .await
-        {
-            Ok(_) => {}
-            Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
-                return Ok(active_session_not_loaded_response(
+            .map_err(active_session_delivery_error)?;
+        match delivery_outcome {
+            ActiveChannelDeliveryOutcome::Delivered { .. } => {}
+            ActiveChannelDeliveryOutcome::NotLoaded { .. } => {
+                return Ok(active_session_send_response(
+                    ActiveSessionSendStatus::NotLoaded,
                     message_id,
+                    target_peer_id,
                     target_thread_id,
                     sender_thread_id,
-                    TARGET_NOT_LOADED_REASON,
+                    Some(TARGET_NOT_LOADED_REASON),
                 ));
             }
-            Err(err) => return Err(active_session_submit_error(err)),
+            ActiveChannelDeliveryOutcome::Unsupported { .. } => {
+                return Ok(active_session_send_response(
+                    ActiveSessionSendStatus::Unsupported,
+                    message_id,
+                    target_peer_id,
+                    target_thread_id,
+                    sender_thread_id,
+                    Some(TARGET_UNSUPPORTED_REASON),
+                ));
+            }
         }
 
+        // Delivered means the message was enqueued on the target session's live
+        // in-memory submission channel. It does not mean the target has drained
+        // the mailbox, started a turn, or persisted the communication.
         Ok(ActiveSessionSendResponse {
             status: ActiveSessionSendStatus::Delivered,
             message_id,
+            target_peer_id,
             target_thread_id,
             sender_thread_id,
             reason: None,
@@ -204,23 +242,10 @@ impl ActiveSessionRequestProcessor {
         &self,
         last_seen_at: LastSeenAt,
     ) -> Result<ActivePeerRegistry, JSONRPCErrorError> {
-        let mut registry = ActivePeerRegistry::default();
-        for thread_id in self.thread_manager.list_thread_ids().await {
-            let thread = match self.thread_manager.get_thread(thread_id).await {
-                Ok(thread) => thread,
-                Err(CodexErr::ThreadNotFound(_)) => continue,
-                Err(err) => return Err(active_session_get_thread_error(err)),
-            };
-            let config_snapshot = thread.config_snapshot().await;
-            let session_id = thread.session_configured().session_id.to_string();
-            let peer_id = thread_id.to_string();
-            registry.register(
-                active_peer_registration(thread_id, session_id, &config_snapshot),
-                last_seen_at,
-            );
-            let _ = registry.heartbeat(peer_id.as_str(), last_seen_at);
-        }
-        Ok(registry)
+        self.active_peer_directory
+            .snapshot(last_seen_at)
+            .await
+            .map_err(active_session_get_thread_error)
     }
 }
 
@@ -229,43 +254,7 @@ fn freshness_now() -> ActivePeerFreshness {
     ActivePeerFreshness::new(now, Duration::from_secs(0))
 }
 
-fn active_peer_registration(
-    thread_id: ThreadId,
-    session_id: String,
-    config_snapshot: &ThreadConfigSnapshot,
-) -> ActivePeerRegistration {
-    let agent_path = config_snapshot
-        .session_source
-        .get_agent_path()
-        .map(String::from);
-    let agent_nickname = config_snapshot.session_source.get_nickname();
-    let agent_role = config_snapshot.session_source.get_agent_role();
-    let display_name = agent_nickname
-        .or_else(|| agent_role.clone())
-        .or_else(|| agent_path.clone());
-    ActivePeerRegistration {
-        peer_id: thread_id.to_string(),
-        kind: active_peer_kind(&config_snapshot.session_source),
-        thread_id,
-        session_id,
-        cwd: config_snapshot.cwd.clone(),
-        display_name,
-        agent_path,
-        process: None,
-        capabilities: ActivePeerCapabilities::codewith_session(),
-    }
-}
-
-fn active_peer_kind(session_source: &SessionSource) -> RegistryPeerKind {
-    match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => {
-            RegistryPeerKind::SpawnedAgent
-        }
-        _ => RegistryPeerKind::CodewithSession,
-    }
-}
-
-fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
+pub(super) fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
     ActiveSessionPeer {
         peer_id: peer.peer_id,
         kind: api_peer_kind(peer.kind),
@@ -283,6 +272,7 @@ fn api_peer_kind(kind: RegistryPeerKind) -> ActiveSessionPeerKind {
     match kind {
         RegistryPeerKind::CodewithSession => ActiveSessionPeerKind::CodewithSession,
         RegistryPeerKind::SpawnedAgent => ActiveSessionPeerKind::SpawnedAgent,
+        RegistryPeerKind::BridgeAdapter => ActiveSessionPeerKind::BridgeAdapter,
     }
 }
 
@@ -310,27 +300,143 @@ fn api_capabilities(capabilities: ActivePeerCapabilities) -> Vec<ActiveSessionCa
     .collect()
 }
 
+fn validate_max_bytes(
+    field: &'static str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), JSONRPCErrorError> {
+    if value.len() > max_bytes {
+        return Err(invalid_params(format!(
+            "{field} must not exceed {max_bytes} bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ActiveSessionTargetLookup {
+    peer_id: String,
+    thread_id: Option<String>,
+    not_loaded_reason: &'static str,
+}
+
+fn optional_target_thread_id(
+    target_thread_id: Option<String>,
+) -> Result<Option<String>, JSONRPCErrorError> {
+    let Some(target_thread_id) = target_thread_id else {
+        return Ok(None);
+    };
+    if target_thread_id.trim().is_empty() {
+        return Ok(None);
+    }
+    ThreadId::from_string(target_thread_id.as_str())
+        .map(|thread_id| Some(thread_id.to_string()))
+        .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))
+}
+
+fn active_session_target_lookup(
+    target_peer_id: Option<String>,
+    target_thread_id: Option<String>,
+) -> Result<ActiveSessionTargetLookup, JSONRPCErrorError> {
+    if let Some(target_peer_id) = target_peer_id {
+        if target_peer_id.trim().is_empty() {
+            return Err(invalid_params(
+                "activeSession/send targetPeerId must not be empty",
+            ));
+        }
+        let target_peer_id = match ThreadId::from_string(target_peer_id.as_str()) {
+            Ok(thread_id) => thread_id.to_string(),
+            Err(_) => target_peer_id,
+        };
+        let target_thread_id = target_thread_id.or_else(|| {
+            ThreadId::from_string(target_peer_id.as_str())
+                .ok()
+                .map(|thread_id| thread_id.to_string())
+        });
+        return Ok(ActiveSessionTargetLookup {
+            peer_id: target_peer_id,
+            thread_id: target_thread_id,
+            not_loaded_reason: "target peer is not currently loaded; no offline delivery was attempted",
+        });
+    }
+
+    let Some(target_thread_id) = target_thread_id else {
+        return Err(invalid_params(
+            "activeSession/send requires targetThreadId or targetPeerId",
+        ));
+    };
+    Ok(ActiveSessionTargetLookup {
+        peer_id: target_thread_id.clone(),
+        thread_id: Some(target_thread_id),
+        not_loaded_reason: TARGET_NOT_LOADED_REASON,
+    })
+}
+
 fn active_channel_envelope(
     message_id: &str,
-    sender_label: Option<String>,
+    sender_label: Option<&str>,
     sender_peer: Option<&ActivePeer>,
     target_peer: &ActivePeer,
-    message: String,
+    message: &str,
     delivery: ActiveChannelDeliveryMode,
 ) -> ActiveChannelEnvelope {
-    let sender = sender_label
-        .or_else(|| sender_peer.and_then(|peer| peer.display_name.clone()))
-        .or_else(|| sender_peer.map(|peer| peer.peer_id.clone()))
-        .unwrap_or_else(|| "external active session".to_string());
+    let sender = untrusted_sender_descriptor(sender_label, sender_peer);
+    let claimed_sender = sender_peer.map(ActiveChannelEndpoint::from_peer);
     ActiveChannelEnvelope::new(
         message_id.to_string(),
-        sender_peer
-            .map(ActiveChannelEndpoint::from_peer)
-            .unwrap_or_else(external_active_channel_endpoint),
+        external_active_channel_endpoint(),
+        claimed_sender,
         ActiveChannelEndpoint::from_peer(target_peer),
         format!("Active session message {message_id} from {sender}:\n\n{message}"),
         delivery,
     )
+}
+
+fn untrusted_sender_descriptor(
+    sender_label: Option<&str>,
+    sender_peer: Option<&ActivePeer>,
+) -> String {
+    match (sender_peer, sender_label) {
+        (Some(peer), Some(label)) => {
+            let peer_label = peer
+                .display_name
+                .as_deref()
+                .unwrap_or(peer.peer_id.as_str());
+            let peer_label = bounded_descriptor_component(peer_label);
+            let label = bounded_descriptor_component(label);
+            format!("unverified app-server client claiming {peer_label} with label {label:?}")
+        }
+        (Some(peer), None) => {
+            let peer_label = peer
+                .display_name
+                .as_deref()
+                .unwrap_or(peer.peer_id.as_str());
+            let peer_label = bounded_descriptor_component(peer_label);
+            format!("unverified app-server client claiming {peer_label}")
+        }
+        (None, Some(label)) => {
+            let label = bounded_descriptor_component(label);
+            format!("unverified app-server client {label:?}")
+        }
+        (None, None) => "external active-session client".to_string(),
+    }
+}
+
+fn bounded_descriptor_component(value: &str) -> String {
+    if value.len() <= MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES {
+        return value.to_string();
+    }
+
+    let max_without_suffix = MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES.saturating_sub(3);
+    let mut truncated = String::new();
+    for ch in value.chars() {
+        if truncated.len() + ch.len_utf8() > max_without_suffix {
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated.push_str("...");
+    truncated
 }
 
 fn external_active_channel_endpoint() -> ActiveChannelEndpoint {
@@ -340,28 +446,6 @@ fn external_active_channel_endpoint() -> ActiveChannelEndpoint {
         label: Some("external active session".to_string()),
         agent_path: None,
     }
-}
-
-fn active_session_communication(envelope: &ActiveChannelEnvelope) -> InterAgentCommunication {
-    let author = envelope
-        .sender
-        .agent_path
-        .as_deref()
-        .and_then(|path| AgentPath::try_from(path).ok())
-        .unwrap_or_else(AgentPath::root);
-    let recipient = envelope
-        .recipient
-        .agent_path
-        .as_deref()
-        .and_then(|path| AgentPath::try_from(path).ok())
-        .unwrap_or_else(AgentPath::root);
-    InterAgentCommunication::new(
-        author,
-        recipient,
-        Vec::new(),
-        envelope.content.clone(),
-        envelope.delivery.trigger_turn(),
-    )
 }
 
 impl From<ActiveSessionMessageDelivery> for ActiveChannelDeliveryMode {
@@ -375,16 +459,36 @@ impl From<ActiveSessionMessageDelivery> for ActiveChannelDeliveryMode {
 
 fn active_session_not_loaded_response(
     message_id: String,
-    target_thread_id: String,
+    target_peer_id: String,
+    target_thread_id: Option<String>,
     sender_thread_id: Option<String>,
     reason: &'static str,
 ) -> ActiveSessionSendResponse {
-    ActiveSessionSendResponse {
-        status: ActiveSessionSendStatus::NotLoaded,
+    active_session_send_response(
+        ActiveSessionSendStatus::NotLoaded,
         message_id,
+        target_peer_id,
         target_thread_id,
         sender_thread_id,
-        reason: Some(reason.to_string()),
+        Some(reason),
+    )
+}
+
+fn active_session_send_response(
+    status: ActiveSessionSendStatus,
+    message_id: String,
+    target_peer_id: String,
+    target_thread_id: Option<String>,
+    sender_thread_id: Option<String>,
+    reason: Option<&'static str>,
+) -> ActiveSessionSendResponse {
+    ActiveSessionSendResponse {
+        status,
+        message_id,
+        target_peer_id,
+        target_thread_id,
+        sender_thread_id,
+        reason: reason.map(str::to_string),
     }
 }
 
@@ -397,11 +501,140 @@ fn active_session_get_thread_error(err: CodexErr) -> JSONRPCErrorError {
     }
 }
 
-fn active_session_submit_error(err: CodexErr) -> JSONRPCErrorError {
-    match err {
-        CodexErr::ThreadNotFound(thread_id) => {
-            invalid_request(format!("thread not found: {thread_id}"))
-        }
-        err => internal_error(format!("failed to deliver active session message: {err}")),
+fn active_session_delivery_error(
+    err: crate::active_session_bridge::ActiveChannelAdapterError,
+) -> JSONRPCErrorError {
+    internal_error(format!("failed to deliver active session message: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::active_session_registry::ActivePeerKind;
+    use crate::active_session_registry::ActivePeerOwner;
+    use codex_protocol::AgentPath;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn target_lookup_accepts_peer_id_without_thread_id() {
+        let lookup = active_session_target_lookup(Some("claude:session-1".to_string()), None)
+            .expect("targetPeerId should be enough");
+
+        assert_eq!(lookup.peer_id, "claude:session-1",);
+        assert_eq!(lookup.thread_id, None);
+        assert_eq!(
+            lookup.not_loaded_reason,
+            "target peer is not currently loaded; no offline delivery was attempted"
+        );
+    }
+
+    #[test]
+    fn target_lookup_requires_one_target_identifier() {
+        let err = active_session_target_lookup(None, None)
+            .expect_err("missing target should be rejected");
+
+        assert_eq!(
+            err.message,
+            "activeSession/send requires targetThreadId or targetPeerId"
+        );
+    }
+
+    #[test]
+    fn optional_target_thread_id_normalizes_uuid_text() {
+        let thread_id = ThreadId::new().to_string();
+        let normalized = optional_target_thread_id(Some(thread_id.to_ascii_uppercase()))
+            .expect("valid uuid")
+            .expect("thread id should be present");
+
+        assert_eq!(normalized, thread_id);
+    }
+
+    #[test]
+    fn untrusted_sender_descriptor_bounds_peer_display_name() {
+        let thread_id = ThreadId::new();
+        let peer = ActivePeer {
+            peer_id: thread_id.to_string(),
+            kind: ActivePeerKind::CodewithSession,
+            owner: ActivePeerOwner::LocalThread { thread_id },
+            thread_id,
+            session_id: "session".to_string(),
+            cwd: AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+                .expect("temp dir is absolute"),
+            display_name: Some("x".repeat(MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES + 100)),
+            agent_path: None,
+            process: None,
+            capabilities: ActivePeerCapabilities::codewith_session(),
+            last_seen_at: LastSeenAt::from_unix_seconds(100),
+        };
+
+        let descriptor = untrusted_sender_descriptor(None, Some(&peer));
+
+        assert!(descriptor.ends_with("..."));
+        assert!(
+            descriptor.len()
+                <= "unverified app-server client claiming ".len()
+                    + MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES
+        );
+    }
+
+    #[test]
+    fn active_channel_envelope_records_claimed_sender_without_trusting_author() {
+        let sender_thread_id = ThreadId::new();
+        let target_thread_id = ThreadId::new();
+        let sender_peer = ActivePeer {
+            peer_id: sender_thread_id.to_string(),
+            kind: ActivePeerKind::CodewithSession,
+            owner: ActivePeerOwner::LocalThread {
+                thread_id: sender_thread_id,
+            },
+            thread_id: sender_thread_id,
+            session_id: "sender-session".to_string(),
+            cwd: AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+                .expect("temp dir is absolute"),
+            display_name: Some("Sender".to_string()),
+            agent_path: Some("/claimed".to_string()),
+            process: None,
+            capabilities: ActivePeerCapabilities::codewith_session(),
+            last_seen_at: LastSeenAt::from_unix_seconds(100),
+        };
+        let target_peer = ActivePeer {
+            peer_id: target_thread_id.to_string(),
+            kind: ActivePeerKind::CodewithSession,
+            owner: ActivePeerOwner::LocalThread {
+                thread_id: target_thread_id,
+            },
+            thread_id: target_thread_id,
+            session_id: "target-session".to_string(),
+            cwd: AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+                .expect("temp dir is absolute"),
+            display_name: Some("Target".to_string()),
+            agent_path: Some("/target".to_string()),
+            process: None,
+            capabilities: ActivePeerCapabilities::codewith_session(),
+            last_seen_at: LastSeenAt::from_unix_seconds(100),
+        };
+
+        let envelope = active_channel_envelope(
+            "msg-1",
+            None,
+            Some(&sender_peer),
+            &target_peer,
+            "hello",
+            ActiveChannelDeliveryMode::QueueOnly,
+        );
+        let communication = active_channel_communication(&envelope);
+
+        assert_eq!(envelope.sender.id, "external-active-session");
+        assert_eq!(
+            envelope
+                .claimed_sender
+                .as_ref()
+                .expect("claimed sender should be preserved")
+                .id,
+            sender_thread_id.to_string()
+        );
+        assert_eq!(communication.author, AgentPath::root());
+        assert!(envelope.content.contains("claiming Sender"));
     }
 }

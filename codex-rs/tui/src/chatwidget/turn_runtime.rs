@@ -164,6 +164,7 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
         self.update_task_running_state();
+        self.clear_usage_self_heal_turn();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
@@ -325,6 +326,8 @@ impl ChatWidget {
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
+        let retry_delay = self
+            .maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::TransientAvailability);
         self.finalize_turn();
 
         let message = if message.trim().is_empty() {
@@ -334,11 +337,18 @@ impl ChatWidget {
         };
 
         self.add_to_history(history_cell::new_warning_event(message));
+        self.add_usage_self_heal_retry_message(retry_delay);
         self.request_redraw();
-        self.maybe_send_next_queued_input();
+        if retry_delay.is_none() {
+            self.maybe_send_next_queued_input();
+        }
     }
 
     pub(super) fn on_error(&mut self, message: String) {
+        self.on_error_with_queue_drain(message, /*drain_queue*/ true);
+    }
+
+    fn on_error_with_queue_drain(&mut self, message: String, drain_queue: bool) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
         self.finalize_turn();
@@ -349,8 +359,23 @@ impl ChatWidget {
         );
         self.request_redraw();
 
-        // After an error ends the turn, try sending the next queued input.
-        self.maybe_send_next_queued_input();
+        if drain_queue {
+            // After an error ends the turn, try sending the next queued input.
+            self.maybe_send_next_queued_input();
+        }
+    }
+
+    fn add_usage_self_heal_retry_message(&mut self, retry_delay: Option<Duration>) {
+        let Some(retry_delay) = retry_delay else {
+            return;
+        };
+        self.add_info_message(
+            format!(
+                "Codewith will retry this turn automatically in {}.",
+                Self::usage_self_heal_delay_label(retry_delay)
+            ),
+            /*hint*/ None,
+        );
     }
 
     pub(super) fn on_cyber_policy_error(&mut self) {
@@ -381,6 +406,18 @@ impl ChatWidget {
         });
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
 
+        let should_retry = matches!(error_kind, RateLimitErrorKind::UsageLimit)
+            && matches!(
+                rate_limit_reached_type,
+                Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached)
+                    | Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached)
+                    | Some(RateLimitReachedType::RateLimitReached)
+                    | None
+            );
+        let retry_delay = should_retry
+            .then(|| self.maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::UsageLimit))
+            .flatten();
+
         match rate_limit_reached_type {
             Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
                 self.on_error(
@@ -389,21 +426,25 @@ impl ChatWidget {
                 );
             }
             Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => {
-                self.on_error(
+                self.on_error_with_queue_drain(
                     "Usage limit reached. You've reached your usage limit. Increase your limits to continue using Codewith."
                         .to_string(),
+                    retry_delay.is_none(),
                 );
+                self.add_usage_self_heal_retry_message(retry_delay);
             }
             Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted) => {
                 self.on_error(message);
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::Credits);
             }
             Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) => {
-                self.on_error(message);
+                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.add_usage_self_heal_retry_message(retry_delay);
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::UsageLimit);
             }
             Some(RateLimitReachedType::RateLimitReached) | None => {
-                self.on_error(message);
+                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.add_usage_self_heal_retry_message(retry_delay);
             }
         }
     }
@@ -468,7 +509,10 @@ impl ChatWidget {
             .count();
         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
         self.refresh_status_surfaces();
-        self.add_to_history(history_cell::new_plan_update(update));
+        self.add_to_history(history_cell::new_plan_update(
+            update,
+            self.current_goal_plan_progress_summary(),
+        ));
     }
 
     pub(super) fn interrupted_turn_message(&self, reason: TurnAbortReason) -> String {

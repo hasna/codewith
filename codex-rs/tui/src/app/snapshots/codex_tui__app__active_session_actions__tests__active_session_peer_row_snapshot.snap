@@ -2,4 +2,4 @@
 source: tui/src/app/active_session_actions.rs
 expression: "format_active_session_peer(&peer, Some(peer.thread_id.as_str()))"
 ---
-019eca00-0000-7000-8000-000000000001  agent current  reviewer  /workspace/open-codewith
+019eca00-0000-7000-8000-000000000001  agent current  reviewer  caps: receive,queue,wake  /workspace/open-codewith

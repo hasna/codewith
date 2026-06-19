@@ -5,4 +5,19 @@ import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 import type { ActiveSessionCapability } from "./ActiveSessionCapability";
 import type { ActiveSessionPeerKind } from "./ActiveSessionPeerKind";
 
-export type ActiveSessionPeer = { peerId: string, kind: ActiveSessionPeerKind, threadId: string, sessionId: string, cwd: AbsolutePathBuf, displayName: string | null, agentPath: string | null, capabilities: Array<ActiveSessionCapability>, lastSeenAt: bigint, };
+export type ActiveSessionPeer = {
+/**
+ * Active peer routing key returned by activeSession/list. For local
+ * Codewith sessions this matches thread_id; bridge peers may use a
+ * transport-scoped id.
+ */
+peerId: string, kind: ActiveSessionPeerKind,
+/**
+ * Codewith thread that owns the active peer registration.
+ */
+threadId: string,
+/**
+ * Live session instance id for the loaded thread. This is not a durable
+ * mailbox or remote machine id.
+ */
+sessionId: string, cwd: AbsolutePathBuf, displayName: string | null, agentPath: string | null, capabilities: Array<ActiveSessionCapability>, lastSeenAt: bigint, };

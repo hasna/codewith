@@ -28,18 +28,22 @@ use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
 use crate::request_processors::GitRequestProcessor;
 use crate::request_processors::InitializeRequestProcessor;
+use crate::request_processors::MachineRegistryRequestProcessor;
 use crate::request_processors::MarketplaceRequestProcessor;
 use crate::request_processors::McpRequestProcessor;
 use crate::request_processors::PluginRequestProcessor;
 use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
+use crate::request_processors::RemoteDispatchRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
+use crate::request_processors::ThreadMailboxDispatcherRuntime;
 use crate::request_processors::ThreadMonitorRequestProcessor;
 use crate::request_processors::ThreadMonitorRuntime;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::ThreadScheduleRequestProcessor;
 use crate::request_processors::ThreadScheduleRuntime;
+use crate::request_processors::ThreadWorkflowRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
@@ -74,6 +78,7 @@ use codex_chatgpt::workspace_settings;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
+use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_login::AuthManager;
@@ -181,17 +186,21 @@ pub(crate) struct MessageProcessor {
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
+    machine_registry_processor: MachineRegistryRequestProcessor,
     marketplace_processor: MarketplaceRequestProcessor,
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
     remote_control_processor: RemoteControlRequestProcessor,
+    remote_dispatch_processor: RemoteDispatchRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
+    thread_mailbox_dispatcher_runtime: Option<ThreadMailboxDispatcherRuntime>,
     thread_monitor_processor: ThreadMonitorRequestProcessor,
     thread_monitor_runtime: ThreadMonitorRuntime,
     thread_processor: ThreadRequestProcessor,
     thread_schedule_processor: ThreadScheduleRequestProcessor,
     thread_schedule_runtime: ThreadScheduleRuntime,
+    thread_workflow_processor: ThreadWorkflowRequestProcessor,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
@@ -364,8 +373,10 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
         );
-        let active_session_processor =
-            ActiveSessionRequestProcessor::new(Arc::clone(&thread_manager));
+        let active_session_processor = ActiveSessionRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            Arc::clone(&pending_thread_unloads),
+        );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -429,7 +440,9 @@ impl MessageProcessor {
             config_manager.clone(),
             workspace_settings_cache,
         );
+        let machine_registry_processor = MachineRegistryRequestProcessor::new(state_db.clone());
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
+        let remote_dispatch_processor = RemoteDispatchRequestProcessor::new(state_db.clone());
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -461,6 +474,26 @@ impl MessageProcessor {
             state_db.clone(),
             thread_schedule_runtime.clone(),
         );
+        let thread_mailbox_dispatcher_runtime = config
+            .features
+            .enabled(Feature::MailboxDispatcher)
+            .then(|| {
+                let runtime = ThreadMailboxDispatcherRuntime::new(
+                    auth_manager.clone(),
+                    Arc::clone(&thread_manager),
+                    outgoing.clone(),
+                    Arc::clone(&config),
+                    config_manager.clone(),
+                    thread_state_manager.clone(),
+                    Arc::clone(&pending_thread_unloads),
+                    thread_watch_manager.clone(),
+                    Arc::clone(&thread_list_state_permit),
+                    Arc::clone(&skills_watcher),
+                    state_db.clone(),
+                );
+                runtime.start();
+                runtime
+            });
         let thread_monitor_runtime = ThreadMonitorRuntime::new(
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -474,6 +507,11 @@ impl MessageProcessor {
             Arc::clone(&config),
             state_db.clone(),
             thread_monitor_runtime.clone(),
+        );
+        let thread_workflow_processor = ThreadWorkflowRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            Arc::clone(&config),
+            state_db.clone(),
         );
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
@@ -567,17 +605,21 @@ impl MessageProcessor {
             fs_processor,
             git_processor,
             initialize_processor,
+            machine_registry_processor,
             marketplace_processor,
             mcp_processor,
             plugin_processor,
             remote_control_processor,
+            remote_dispatch_processor,
             search_processor,
             thread_goal_processor,
+            thread_mailbox_dispatcher_runtime,
             thread_monitor_processor,
             thread_monitor_runtime,
             thread_processor,
             thread_schedule_processor,
             thread_schedule_runtime,
+            thread_workflow_processor,
             turn_processor,
             windows_sandbox_processor,
             request_serialization_queues: RequestSerializationQueues::default(),
@@ -597,6 +639,9 @@ impl MessageProcessor {
         self.account_processor.clear_external_auth();
         self.apps_processor.shutdown();
         self.skills_watcher.shutdown();
+        if let Some(runtime) = self.thread_mailbox_dispatcher_runtime.as_ref() {
+            runtime.shutdown();
+        }
         self.thread_monitor_runtime.shutdown();
         self.thread_schedule_runtime.shutdown();
     }
@@ -779,6 +824,9 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        if let Some(runtime) = self.thread_mailbox_dispatcher_runtime.as_ref() {
+            runtime.drain_background_tasks().await;
+        }
         self.thread_monitor_runtime.drain_background_tasks().await;
         self.thread_schedule_runtime.drain_background_tasks().await;
         self.thread_processor.drain_background_tasks().await;
@@ -822,7 +870,7 @@ impl MessageProcessor {
     pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
-        self.outgoing.notify_client_response(id, result).await
+        self.outgoing.notify_client_response(id, result).await;
     }
 
     /// Handle an error object received from the peer.
@@ -1020,6 +1068,15 @@ impl MessageProcessor {
                 .clients_revoke(params)
                 .await
                 .map(|response| Some(response.into())),
+            ClientRequest::RemoteDispatchNegotiate { params, .. } => {
+                self.remote_dispatch_processor.negotiate(params).await
+            }
+            ClientRequest::RemoteDispatchSubmit { params, .. } => {
+                self.remote_dispatch_processor.submit(params).await
+            }
+            ClientRequest::RemoteDispatchReceiptRead { params, .. } => {
+                self.remote_dispatch_processor.receipt_read(params).await
+            }
             ClientRequest::ConfigRequirementsRead { params: _, .. } => self
                 .config_processor
                 .config_requirements_read()
@@ -1145,6 +1202,11 @@ impl MessageProcessor {
             ClientRequest::ThreadGoalList { params, .. } => {
                 self.thread_goal_processor.thread_goal_list(params).await
             }
+            ClientRequest::ThreadGoalPlanActivateNode { params, .. } => {
+                self.thread_goal_processor
+                    .thread_goal_plan_activate_node(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadGoalClear { params, .. } => {
                 self.thread_goal_processor
                     .thread_goal_clear(request_id.clone(), params)
@@ -1220,6 +1282,59 @@ impl MessageProcessor {
                     .thread_monitor_delete(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadWorkflowCreate { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_create(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowGet { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_get(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowList { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_list(params)
+                    .await
+            }
+            ClientRequest::ThreadMailboxEnqueue { params, .. } => {
+                self.thread_processor.thread_mailbox_enqueue(params).await
+            }
+            ClientRequest::ThreadMailboxList { params, .. } => {
+                self.thread_processor.thread_mailbox_list(params).await
+            }
+            ClientRequest::ThreadMailboxRead { params, .. } => {
+                self.thread_processor.thread_mailbox_read(params).await
+            }
+            ClientRequest::ThreadMailboxClaim { params, .. } => {
+                self.thread_processor.thread_mailbox_claim(params).await
+            }
+            ClientRequest::ThreadMailboxAck { params, .. } => {
+                self.thread_processor.thread_mailbox_ack(params).await
+            }
+            ClientRequest::ThreadMailboxFail { params, .. } => {
+                self.thread_processor.thread_mailbox_fail(params).await
+            }
+            ClientRequest::ThreadMailboxReceiptsList { params, .. } => {
+                self.thread_processor
+                    .thread_mailbox_receipts_list(params)
+                    .await
+            }
+            ClientRequest::ThreadPendingInteractionList { params, .. } => {
+                self.thread_processor
+                    .thread_pending_interaction_list(params)
+                    .await
+            }
+            ClientRequest::ThreadPendingInteractionRead { params, .. } => {
+                self.thread_processor
+                    .thread_pending_interaction_read(params)
+                    .await
+            }
+            ClientRequest::ThreadPendingInteractionRespond { params, .. } => {
+                self.thread_processor
+                    .thread_pending_interaction_respond(params)
+                    .await
+            }
             ClientRequest::AgentStart { params, .. } => {
                 self.thread_processor.agent_start(params).await
             }
@@ -1251,6 +1366,36 @@ impl MessageProcessor {
             }
             ClientRequest::AgentDaemonDiagnostics { params, .. } => {
                 self.thread_processor.agent_daemon_diagnostics(params).await
+            }
+            ClientRequest::WorktreeList { params, .. } => {
+                self.thread_processor.worktree_list(params).await
+            }
+            ClientRequest::WorktreeRead { params, .. } => {
+                self.thread_processor.worktree_read(params).await
+            }
+            ClientRequest::WorktreeAttach { params, .. } => {
+                self.thread_processor.worktree_attach(params).await
+            }
+            ClientRequest::WorktreeDetach { params, .. } => {
+                self.thread_processor.worktree_detach(params).await
+            }
+            ClientRequest::MachineRegistryList { params, .. } => {
+                self.machine_registry_processor.list(params).await
+            }
+            ClientRequest::MachineRegistryRead { params, .. } => {
+                self.machine_registry_processor.read(params).await
+            }
+            ClientRequest::MachineRegistryUpsert { params, .. } => {
+                self.machine_registry_processor.upsert(params).await
+            }
+            ClientRequest::MachineRegistryDisable { params, .. } => {
+                self.machine_registry_processor.disable(params).await
+            }
+            ClientRequest::MachineRegistryUpdateTrust { params, .. } => {
+                self.machine_registry_processor.update_trust(params).await
+            }
+            ClientRequest::MachineRegistryForget { params, .. } => {
+                self.machine_registry_processor.forget(params).await
             }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
                 self.thread_processor.thread_metadata_update(params).await
@@ -1295,6 +1440,27 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadLoadedList { params, .. } => {
                 self.thread_processor.thread_loaded_list(params).await
+            }
+            ClientRequest::LocalSessionList { params, .. } => {
+                self.thread_processor.local_session_list(params).await
+            }
+            ClientRequest::MissionControlOverview { params, .. } => {
+                self.thread_processor.mission_control_overview(params).await
+            }
+            ClientRequest::MissionControlEnqueueInstruction { params, .. } => {
+                self.thread_processor
+                    .mission_control_enqueue_instruction(params)
+                    .await
+            }
+            ClientRequest::MissionControlMailboxReceipts { params, .. } => {
+                self.thread_processor
+                    .mission_control_mailbox_receipts(params)
+                    .await
+            }
+            ClientRequest::MissionControlRespondInteraction { params, .. } => {
+                self.thread_processor
+                    .mission_control_respond_interaction(params)
+                    .await
             }
             ClientRequest::ActiveSessionList { params, .. } => {
                 self.active_session_processor

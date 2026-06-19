@@ -353,6 +353,11 @@ pub async fn inter_agent_communication(
     communication: InterAgentCommunication,
 ) {
     let trigger_turn = communication.trigger_turn;
+    if trigger_turn {
+        sess.input_queue
+            .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
+            .await;
+    }
     sess.input_queue
         .enqueue_mailbox_communication(communication)
         .await;

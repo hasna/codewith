@@ -14,6 +14,12 @@ pub(super) struct WindowsSetupPermissions {
     pub(super) workspace_roots: Vec<AbsolutePathBuf>,
 }
 
+enum PermissionProfileSelectionPersistence<'a> {
+    WriteToConfig(&'a AppServerSession),
+    #[cfg(test)]
+    SkipConfigWrite,
+}
+
 async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     error_context: String,
@@ -160,6 +166,31 @@ impl App {
 
     pub(super) async fn apply_permission_profile_selection(
         &mut self,
+        app_server: &AppServerSession,
+        selection: PermissionProfileSelection,
+    ) -> bool {
+        self.apply_permission_profile_selection_inner(
+            PermissionProfileSelectionPersistence::WriteToConfig(app_server),
+            selection,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn apply_permission_profile_selection_without_config_write_for_tests(
+        &mut self,
+        selection: PermissionProfileSelection,
+    ) -> bool {
+        self.apply_permission_profile_selection_inner(
+            PermissionProfileSelectionPersistence::SkipConfigWrite,
+            selection,
+        )
+        .await
+    }
+
+    async fn apply_permission_profile_selection_inner(
+        &mut self,
+        persistence: PermissionProfileSelectionPersistence<'_>,
         selection: PermissionProfileSelection,
     ) -> bool {
         let PermissionProfileSelection {
@@ -188,6 +219,49 @@ impl App {
         let permission_profile = selected_config.permissions.permission_profile();
         let active_permission_profile = selected_config.permissions.active_permission_profile();
         let network = selected_config.permissions.network.clone();
+
+        match persistence {
+            PermissionProfileSelectionPersistence::WriteToConfig(app_server) => {
+                let edits = crate::config_update::build_permission_profile_selection_edits(
+                    profile_id.as_str(),
+                    approval_policy,
+                    approvals_reviewer,
+                );
+                let write_response = match crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    edits,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        let error = crate::config_update::format_config_error(&err);
+                        tracing::error!(
+                            error = %error,
+                            profile_id,
+                            "failed to persist selected permission profile"
+                        );
+                        self.chat_widget
+                            .add_error_message(format!("Failed to save permissions: {error}"));
+                        return false;
+                    }
+                };
+                if write_response.status == WriteStatus::OkOverridden {
+                    let message = overridden_write_message(&write_response);
+                    tracing::warn!(
+                        message,
+                        profile_id,
+                        "permission profile config write was overridden by effective config"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Permissions were saved but not applied: {message}"
+                    ));
+                    return false;
+                }
+            }
+            #[cfg(test)]
+            PermissionProfileSelectionPersistence::SkipConfigWrite => {}
+        }
 
         let mut config = self.config.clone();
         if let Some(policy) = approval_policy
@@ -247,6 +321,7 @@ impl App {
             self.chat_widget.set_approvals_reviewer(reviewer);
         }
         self.chat_widget.set_permission_network(network);
+        self.maybe_spawn_world_writable_scan_for_permission_profile(permission_profile);
         self.runtime_permission_profile_override =
             Some(RuntimePermissionProfileOverride::from_config(&self.config));
         self.sync_active_thread_permission_settings_to_cached_session()
@@ -274,6 +349,47 @@ impl App {
             ),
         )));
         true
+    }
+
+    #[cfg(target_os = "windows")]
+    fn maybe_spawn_world_writable_scan_for_permission_profile(
+        &mut self,
+        permission_profile: &PermissionProfile,
+    ) {
+        if self.windows_sandbox.skip_world_writable_scan_once {
+            self.windows_sandbox.skip_world_writable_scan_once = false;
+            return;
+        }
+
+        let should_check = WindowsSandboxLevel::from_config(&self.config)
+            != WindowsSandboxLevel::Disabled
+            && managed_filesystem_sandbox_is_restricted(permission_profile)
+            && !self.chat_widget.world_writable_warning_hidden();
+        if !should_check {
+            return;
+        }
+
+        let cwd = self.config.cwd.clone();
+        let workspace_roots = self.config.effective_workspace_roots();
+        let env_map: std::collections::HashMap<String, String> = std::env::vars().collect();
+        let tx = self.app_event_tx.clone();
+        let logs_base_dir = self.config.codex_home.clone();
+        let permission_profile = self.config.permissions.effective_permission_profile();
+        Self::spawn_world_writable_scan(
+            cwd,
+            workspace_roots,
+            env_map,
+            logs_base_dir,
+            permission_profile,
+            tx,
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn maybe_spawn_world_writable_scan_for_permission_profile(
+        &mut self,
+        _permission_profile: &PermissionProfile,
+    ) {
     }
 
     pub(super) async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {

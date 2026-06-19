@@ -319,6 +319,7 @@ impl ThreadScheduleRuntime {
         apply_persisted_schedule_resume_metadata(
             state_db,
             thread_id,
+            &initial_history,
             &mut request_overrides,
             &mut typesafe_overrides,
         )
@@ -668,9 +669,15 @@ async fn finish_scheduled_run_state(
 async fn apply_persisted_schedule_resume_metadata(
     state_db: &StateDbHandle,
     thread_id: ThreadId,
+    initial_history: &InitialHistory,
     request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
     typesafe_overrides: &mut ConfigOverrides,
 ) {
+    super::thread_processor::merge_persisted_auth_profile_from_history(
+        typesafe_overrides,
+        initial_history,
+    );
+
     let persisted_metadata = match state_db.get_thread(thread_id).await {
         Ok(Some(metadata)) => metadata,
         Ok(None) => return,
@@ -812,9 +819,6 @@ fn looks_like_standalone_secret(word: &str) -> bool {
             '"' | '\'' | '`' | ',' | ';' | '.' | ')' | '(' | '[' | ']' | '{' | '}'
         )
     });
-    if trimmed.len() < 12 {
-        return false;
-    }
     // Known credential prefixes. Keep in sync with the repo's pre-commit secret
     // scan so non-`sk-` keys (GitHub, AWS, Google, xAI, Slack, …) are also
     // redacted from persisted run errors and notifications, not just OpenAI keys.
@@ -843,6 +847,10 @@ fn looks_like_standalone_secret(word: &str) -> bool {
         .any(|prefix| trimmed.starts_with(prefix))
     {
         return true;
+    }
+
+    if trimmed.len() < 12 {
+        return false;
     }
 
     // JSON Web Tokens (e.g. bearer tokens) — three base64url segments.
@@ -876,11 +884,33 @@ fn looks_like_jwt(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
+    use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::TurnCompleteEvent;
+    use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp")
+    }
+
+    fn resumed_history_with_auth_profile(
+        thread_id: ThreadId,
+        auth_profile: Option<Option<&str>>,
+    ) -> InitialHistory {
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    auth_profile: auth_profile.map(|profile| profile.map(str::to_string)),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            })],
+            rollout_path: None,
+        })
     }
 
     #[test]
@@ -933,6 +963,88 @@ mod tests {
 
         assert_eq!(None, parse_persisted_approval_mode(""));
         assert_eq!(None, parse_persisted_approval_mode("not-a-real-mode"));
+    }
+
+    #[tokio::test]
+    async fn scheduled_resume_metadata_restores_auth_profile_from_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        builder.model_provider = Some("openai".to_string());
+        builder.approval_mode = codex_protocol::protocol::AskForApproval::Never;
+        let mut metadata = builder.build("fallback-provider");
+        metadata.model = Some("gpt-5.5".to_string());
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread metadata should persist");
+
+        let history = resumed_history_with_auth_profile(thread_id, Some(Some("work")));
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(Some("work".to_string())),
+            typesafe_overrides.auth_profile
+        );
+        assert_eq!(Some("gpt-5.5".to_string()), typesafe_overrides.model);
+        assert_eq!(
+            Some("openai".to_string()),
+            typesafe_overrides.model_provider
+        );
+        assert_eq!(
+            Some(codex_protocol::protocol::AskForApproval::Never),
+            typesafe_overrides.approval_policy
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_resume_metadata_preserves_explicit_auth_profile_override() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let history = resumed_history_with_auth_profile(thread_id, Some(Some("work")));
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides {
+            auth_profile: Some(None),
+            ..ConfigOverrides::default()
+        };
+
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(Some(None), typesafe_overrides.auth_profile);
     }
 
     #[test]
@@ -1047,6 +1159,16 @@ mod tests {
         assert!(!sanitized.contains("sk-test-secret"));
         assert!(!sanitized.contains("plain-secret"));
         assert!(!sanitized.contains("sk-bearer-secret"));
+    }
+
+    #[test]
+    fn redacts_short_prefixed_api_keys_from_schedule_run_errors() {
+        let sanitized = schedule_run_error(
+            "unexpected status 401 Unauthorized: Incorrect API key provided: sk-work.".to_string(),
+        );
+
+        assert!(sanitized.contains("[redacted]"));
+        assert!(!sanitized.contains("sk-work"));
     }
 
     #[test]

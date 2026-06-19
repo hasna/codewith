@@ -46,6 +46,7 @@ use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
+use codex_tools::ZaiWebSearchConfig;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -384,6 +385,68 @@ fn nvidia_responses_request_omits_unsupported_advanced_tools() {
             &api_provider("nvidia", "https://integrate.api.nvidia.com/v1"),
             &prompt,
             &model_info,
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.tools,
+        vec![json!({
+            "type": "function",
+            "name": "exec_command",
+            "description": "test tool",
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false,
+            }
+        })]
+    );
+}
+
+#[test]
+fn responses_request_omits_hosted_web_search_for_models_without_search_support() {
+    let client = test_model_client(SessionSource::Cli);
+    let function_tool = test_function_tool("exec_command");
+    let prompt = crate::Prompt {
+        tools: vec![
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            },
+            ToolSpec::AnthropicWebSearch {
+                name: "web_search".to_string(),
+                max_uses: None,
+                allowed_domains: None,
+            },
+            ToolSpec::OpenRouterWebSearch {},
+            ToolSpec::XaiWebSearch {},
+            ToolSpec::XiaomiWebSearch {},
+            ToolSpec::QwenWebSearch {},
+            ToolSpec::ZaiWebSearch {
+                web_search: ZaiWebSearchConfig {
+                    enable: true,
+                    search_engine: "search-prime".to_string(),
+                    search_result: true,
+                },
+            },
+            ToolSpec::Function(function_tool),
+        ],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("xiaomi", "https://api.xiaomimimo.com/v1"),
+            &prompt,
+            &test_model_info(),
             /*effort*/ None,
             ReasoningSummary::Auto,
             /*service_tier*/ None,

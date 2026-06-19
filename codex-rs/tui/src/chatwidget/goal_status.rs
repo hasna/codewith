@@ -19,6 +19,22 @@ impl GoalStatusState {
         Self { goal, observed_at }
     }
 
+    pub(super) fn updated(
+        previous: Option<&Self>,
+        mut goal: AppThreadGoal,
+        observed_at: Instant,
+        active_turn_started_at: Option<Instant>,
+    ) -> Self {
+        if let Some(previous) = previous
+            && previous.goal.goal_id == goal.goal_id
+        {
+            goal.time_used_seconds = goal
+                .time_used_seconds
+                .max(previous.time_used_seconds_at(observed_at, active_turn_started_at));
+        }
+        Self::new(goal, observed_at)
+    }
+
     pub(super) fn is_active(&self) -> bool {
         self.goal.status == AppThreadGoalStatus::Active
     }
@@ -29,16 +45,21 @@ impl GoalStatusState {
         active_turn_started_at: Option<Instant>,
     ) -> Option<GoalStatusIndicator> {
         let mut goal = self.goal.clone();
-        if goal.status == AppThreadGoalStatus::Active
+        goal.time_used_seconds = self.time_used_seconds_at(now, active_turn_started_at);
+        goal_status_indicator_from_app_goal(&goal)
+    }
+
+    fn time_used_seconds_at(&self, now: Instant, active_turn_started_at: Option<Instant>) -> i64 {
+        let mut time_used_seconds = self.goal.time_used_seconds;
+        if self.goal.status == AppThreadGoalStatus::Active
             && let Some(active_turn_started_at) = active_turn_started_at
         {
             let baseline = self.observed_at.max(active_turn_started_at);
             let active_seconds = now.saturating_duration_since(baseline).as_secs();
-            goal.time_used_seconds = goal
-                .time_used_seconds
-                .saturating_add(i64::try_from(active_seconds).unwrap_or(i64::MAX));
+            time_used_seconds =
+                time_used_seconds.saturating_add(i64::try_from(active_seconds).unwrap_or(i64::MAX));
         }
-        goal_status_indicator_from_app_goal(&goal)
+        time_used_seconds
     }
 }
 
@@ -56,6 +77,13 @@ pub(super) fn goal_status_indicator_from_app_goal(
             usage: stopped_goal_budget_usage(goal.token_budget, goal.tokens_used),
         }),
         AppThreadGoalStatus::Complete => Some(GoalStatusIndicator::Complete {
+            usage: Some(completed_goal_usage(
+                goal.token_budget,
+                goal.tokens_used,
+                goal.time_used_seconds,
+            )),
+        }),
+        AppThreadGoalStatus::Cancelled => Some(GoalStatusIndicator::Cancelled {
             usage: Some(completed_goal_usage(
                 goal.token_budget,
                 goal.tokens_used,
@@ -210,19 +238,69 @@ mod tests {
         );
     }
 
-    fn active_goal_state(observed_at: Instant, time_used_seconds: i64) -> GoalStatusState {
-        GoalStatusState::new(
-            AppThreadGoal {
-                thread_id: "thread".to_string(),
-                objective: "do the thing".to_string(),
-                status: AppThreadGoalStatus::Active,
-                token_budget: None,
-                tokens_used: 0,
-                time_used_seconds,
-                created_at: 1,
-                updated_at: 1,
-            },
+    #[test]
+    fn same_goal_update_keeps_displayed_elapsed_time_monotonic() {
+        let observed_at = Instant::now();
+        let active_turn_started_at = observed_at;
+        let previous = active_goal_state(observed_at, /*time_used_seconds*/ 60);
+        let mut stale_goal = active_goal(/*time_used_seconds*/ 0);
+        stale_goal.goal_id = "goal".to_string();
+
+        let updated = GoalStatusState::updated(
+            Some(&previous),
+            stale_goal,
+            observed_at + Duration::from_secs(90),
+            Some(active_turn_started_at),
+        );
+
+        assert_eq!(
+            updated.indicator(
+                observed_at + Duration::from_secs(90),
+                Some(active_turn_started_at),
+            ),
+            Some(GoalStatusIndicator::Active {
+                usage: Some("2m".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn new_goal_update_can_restart_elapsed_time() {
+        let observed_at = Instant::now();
+        let previous = active_goal_state(observed_at, /*time_used_seconds*/ 60);
+        let mut next_goal = active_goal(/*time_used_seconds*/ 0);
+        next_goal.goal_id = "next-goal".to_string();
+
+        let updated = GoalStatusState::updated(
+            Some(&previous),
+            next_goal,
             observed_at,
-        )
+            /*active_turn_started_at*/ None,
+        );
+
+        assert_eq!(
+            updated.indicator(observed_at, /*active_turn_started_at*/ None),
+            Some(GoalStatusIndicator::Active {
+                usage: Some("0s".to_string())
+            })
+        );
+    }
+
+    fn active_goal_state(observed_at: Instant, time_used_seconds: i64) -> GoalStatusState {
+        GoalStatusState::new(active_goal(time_used_seconds), observed_at)
+    }
+
+    fn active_goal(time_used_seconds: i64) -> AppThreadGoal {
+        AppThreadGoal {
+            thread_id: "thread".to_string(),
+            goal_id: "goal".to_string(),
+            objective: "do the thing".to_string(),
+            status: AppThreadGoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds,
+            created_at: 1,
+            updated_at: 1,
+        }
     }
 }

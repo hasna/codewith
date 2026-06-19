@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/worktree_display.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Worktrees
+  No git repository detected for this session
+
+  Search worktrees
+› Managed worktree policy    Creation/attach actions respect this config.
+  Create worktre… (disabled) Planned: create a managed isolated worktree (disabled: No git
+                             repository detected for this session)
+  No Codewith-managed workt… No git repository was detected for this session
+
+  Press enter to confirm or esc to go back

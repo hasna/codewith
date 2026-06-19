@@ -1864,6 +1864,8 @@ dependencies = [
  "codex-utils-pty",
  "codex-web-search-extension",
  "codex-windows-sandbox",
+ "codex-workflows",
+ "codex-workflows-extension",
  "core_test_support",
  "croner",
  "flate2",
@@ -3715,13 +3717,16 @@ dependencies = [
  "chrono",
  "clap",
  "codex-git-utils",
+ "codex-prompts",
  "codex-protocol",
+ "codex-workflows",
  "dirs",
  "log",
  "owo-colors",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "strum 0.27.2",
  "tokio",
@@ -4203,6 +4208,34 @@ dependencies = [
  "tracing-appender",
  "windows 0.58.0",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-workflows"
+version = "0.1.40"
+dependencies = [
+ "codex-prompts",
+ "pretty_assertions",
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "codex-workflows-extension"
+version = "0.1.40"
+dependencies = [
+ "async-trait",
+ "codex-extension-api",
+ "codex-prompts",
+ "codex-protocol",
+ "codex-tools",
+ "codex-utils-output-truncation",
+ "codex-workflows",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

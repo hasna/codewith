@@ -56,6 +56,17 @@ pub(crate) struct GoalPlanRuntimeConfig {
     pub(crate) max_tokens_per_goal_plan: Option<i64>,
 }
 
+#[derive(Clone)]
+pub(crate) struct GoalPlanRuntimeConfigHandle {
+    runtime: GoalRuntimeHandle,
+}
+
+impl GoalPlanRuntimeConfigHandle {
+    pub(crate) fn current(&self) -> GoalPlanRuntimeConfig {
+        self.runtime.plan_config()
+    }
+}
+
 pub(crate) struct AccountedGoalProgress {
     pub(crate) goal: ThreadGoal,
     pub(crate) goal_id: String,
@@ -157,6 +168,12 @@ impl GoalRuntimeHandle {
             })
     }
 
+    pub(crate) fn plan_config_handle(&self) -> GoalPlanRuntimeConfigHandle {
+        GoalPlanRuntimeConfigHandle {
+            runtime: self.clone(),
+        }
+    }
+
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
         self.inner
             .goal_state_lock
@@ -218,7 +235,11 @@ impl GoalRuntimeHandle {
             self.inner
                 .state_dbs
                 .thread_goals()
-                .complete_goal_plan_node_and_maybe_advance(self.thread_id(), &goal)
+                .complete_goal_plan_node_and_maybe_advance(
+                    self.thread_id(),
+                    &goal,
+                    self.plan_config().auto_execute,
+                )
                 .await
                 .map_err(|err| err.to_string())?
         } else {
@@ -227,14 +248,32 @@ impl GoalRuntimeHandle {
                 .thread_goals()
                 .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
                 .await
-                .map_err(|err| err.to_string())?;
-            None
+                .map_err(|err| err.to_string())?
+                .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
+                    snapshot,
+                    activated_goal: None,
+                })
         };
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
+                if matches!(
+                    previous_status,
+                    Some(
+                        codex_state::ThreadGoalStatus::Blocked
+                            | codex_state::ThreadGoalStatus::UsageLimited
+                    )
+                ) {
+                    crate::pending_interaction::clear_goal_status_waits(
+                        self.inner.state_dbs.as_ref(),
+                        self.thread_id(),
+                        goal.goal_id.as_str(),
+                        "goal resumed",
+                    )
+                    .await?;
+                }
                 if self.inner.accounting_state.current_turn_id().is_some() {
                     let _ = self
                         .inner
@@ -256,26 +295,55 @@ impl GoalRuntimeHandle {
                     self.inner.accounting_state.clear_active_goal();
                 }
             }
+            codex_state::ThreadGoalStatus::Blocked
+            | codex_state::ThreadGoalStatus::UsageLimited => {
+                self.inner.accounting_state.clear_active_goal();
+                if previous_status != Some(goal.status) {
+                    let reason = match goal.status {
+                        codex_state::ThreadGoalStatus::Blocked => "external-goal-blocked",
+                        codex_state::ThreadGoalStatus::UsageLimited => "external-goal-usage-limit",
+                        codex_state::ThreadGoalStatus::Active
+                        | codex_state::ThreadGoalStatus::Paused
+                        | codex_state::ThreadGoalStatus::BudgetLimited
+                        | codex_state::ThreadGoalStatus::Complete
+                        | codex_state::ThreadGoalStatus::Cancelled => {
+                            unreachable!("status matched above")
+                        }
+                    };
+                    crate::pending_interaction::record_goal_status_wait(
+                        self.inner.state_dbs.as_ref(),
+                        self.thread_id(),
+                        &goal,
+                        /*turn_id*/ None,
+                        reason,
+                    )
+                    .await?;
+                }
+            }
             codex_state::ThreadGoalStatus::Paused
-            | codex_state::ThreadGoalStatus::Blocked
-            | codex_state::ThreadGoalStatus::UsageLimited
-            | codex_state::ThreadGoalStatus::Complete => {
+            | codex_state::ThreadGoalStatus::Complete
+            | codex_state::ThreadGoalStatus::Cancelled => {
                 self.inner.accounting_state.clear_active_goal();
             }
         }
-        if let Some(outcome) = plan_advance
-            && let Some(activated_goal) = outcome.activated_goal
-        {
-            self.inner.metrics.record_created();
-            self.inner
-                .accounting_state
-                .mark_idle_goal_active(activated_goal.goal_id.clone());
-            self.inner.event_emitter.thread_goal_updated(
-                format!("{}:external-goal-advance", self.thread_id()),
+        if let Some(outcome) = plan_advance {
+            self.inner.event_emitter.thread_goal_plan_updated(
+                format!("{}:external-goal-plan", self.thread_id()),
                 /*turn_id*/ None,
-                protocol_goal_from_state(activated_goal),
+                outcome.snapshot,
             );
-            self.continue_if_idle().await?;
+            if let Some(activated_goal) = outcome.activated_goal {
+                self.inner.metrics.record_created();
+                self.inner
+                    .accounting_state
+                    .mark_idle_goal_active(activated_goal.goal_id.clone());
+                self.inner.event_emitter.thread_goal_updated(
+                    format!("{}:external-goal-advance", self.thread_id()),
+                    /*turn_id*/ None,
+                    protocol_goal_from_state(activated_goal),
+                );
+                self.continue_if_idle().await?;
+            }
         }
         Ok(())
     }
@@ -285,12 +353,20 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        self.inner
+        let snapshots = self
+            .inner
             .state_dbs
             .thread_goals()
             .block_active_goal_plan_nodes_for_thread(self.thread_id())
             .await
             .map_err(|err| err.to_string())?;
+        for (index, snapshot) in snapshots.into_iter().enumerate() {
+            self.inner.event_emitter.thread_goal_plan_updated(
+                format!("{}:external-goal-clear:goal-plan:{index}", self.thread_id()),
+                /*turn_id*/ None,
+                snapshot,
+            );
+        }
         self.inner.accounting_state.clear_active_goal();
         Ok(())
     }
@@ -374,15 +450,31 @@ impl GoalRuntimeHandle {
         else {
             return Ok(());
         };
+        crate::pending_interaction::record_goal_status_wait(
+            self.inner.state_dbs.as_ref(),
+            self.thread_id(),
+            &goal,
+            Some(turn_id),
+            event_name,
+        )
+        .await?;
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
-        self.inner
+        let plan_snapshot = self
+            .inner
             .state_dbs
             .thread_goals()
             .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
             .await
             .map_err(|err| err.to_string())?;
+        if let Some(snapshot) = plan_snapshot {
+            self.inner.event_emitter.thread_goal_plan_updated(
+                format!("{turn_id}:{event_name}:goal-plan"),
+                Some(turn_id.to_string()),
+                snapshot,
+            );
+        }
         self.inner.accounting_state.clear_active_goal();
         let goal = protocol_goal_from_state(goal);
         self.inner.event_emitter.thread_goal_updated(
@@ -526,12 +618,20 @@ impl GoalRuntimeHandle {
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
-                self.inner
+                let plan_snapshot = self
+                    .inner
                     .state_dbs
                     .thread_goals()
                     .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
                     .await
                     .map_err(|err| err.to_string())?;
+                if let Some(snapshot) = plan_snapshot {
+                    self.inner.event_emitter.thread_goal_plan_updated(
+                        format!("{event_id}-goal-plan"),
+                        Some(turn_id.to_string()),
+                        snapshot,
+                    );
+                }
                 accounting.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
@@ -586,12 +686,20 @@ impl GoalRuntimeHandle {
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
-                self.inner
+                let plan_snapshot = self
+                    .inner
                     .state_dbs
                     .thread_goals()
                     .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
                     .await
                     .map_err(|err| err.to_string())?;
+                if let Some(snapshot) = plan_snapshot {
+                    self.inner.event_emitter.thread_goal_plan_updated(
+                        format!("{event_id}-goal-plan"),
+                        /*turn_id*/ None,
+                        snapshot,
+                    );
+                }
                 accounting.mark_idle_progress_accounted_for_status(
                     &snapshot,
                     goal.status,

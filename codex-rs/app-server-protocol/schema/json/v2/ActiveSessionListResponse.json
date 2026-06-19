@@ -23,6 +23,7 @@
           ]
         },
         "capabilities": {
+          "default": [],
           "items": {
             "$ref": "#/definitions/ActiveSessionCapability"
           },
@@ -38,29 +39,35 @@
           ]
         },
         "kind": {
-          "$ref": "#/definitions/ActiveSessionPeerKind"
+          "allOf": [
+            {
+              "$ref": "#/definitions/ActiveSessionPeerKind"
+            }
+          ],
+          "default": "codewithSession"
         },
         "lastSeenAt": {
           "format": "int64",
           "type": "integer"
         },
         "peerId": {
+          "default": "",
+          "description": "Active peer routing key returned by activeSession/list. For local Codewith sessions this matches thread_id; bridge peers may use a transport-scoped id.",
           "type": "string"
         },
         "sessionId": {
+          "default": "",
+          "description": "Live session instance id for the loaded thread. This is not a durable mailbox or remote machine id.",
           "type": "string"
         },
         "threadId": {
+          "description": "Codewith thread that owns the active peer registration.",
           "type": "string"
         }
       },
       "required": [
-        "capabilities",
         "cwd",
-        "kind",
         "lastSeenAt",
-        "peerId",
-        "sessionId",
         "threadId"
       ],
       "type": "object"

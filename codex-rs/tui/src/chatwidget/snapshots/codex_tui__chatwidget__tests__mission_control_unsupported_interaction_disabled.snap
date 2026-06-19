@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Waiting 1  Answerable 0
+
+  Sessions (2)  Projects (2)  [Questions (1)]  Work Queue (2)  Goal Chains (2)
+
+  Search sessions, projects, questions, queues, and goal chains
+› Codewith orchestration (disabled)  Thread 11111111 | interaction interaction-approval | Approve command rm -rf /tmp/
+                                     not-real? (disabled: This interaction needs a specialized approval UI in the
+                                     source session)
+
+  Press enter to confirm or esc to go back

@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Durable mailbox on  Waiting 1  Usage/profile waits 1  Unsupported controls retry/cancel
+
+  Sessions (2)  Projects (2)  Questions (1)  [Work Queue (2)]  Goal Chains (2)
+
+  Search sessions, projects, questions, queues, and goal chains
+  Mailbox message rows not loaded  Overview shows waiting sessions; individual queued messages and receipts need
+                                   mailbox list wiring
+› Codewith orchestration           Thread 11111111 | /tmp/codewith/open-codewith | active flags waiting-on-user-input
+                                   | peer peer receive,queue | goal usage-limited
+  Workflow builder                 workflows | idle | no waiting | queueable
+
+  Press enter to confirm or esc to go back

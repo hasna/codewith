@@ -85,37 +85,32 @@ fn prepare_permission_cycle_shortcut_test(chat: &mut ChatWidget) {
 
 fn permission_override_summary(events: &[AppEvent]) -> Option<(AskForApproval, String)> {
     events.iter().find_map(|event| match event {
-        AppEvent::CodexOp(Op::OverrideTurnContext {
+        AppEvent::SelectPermissionProfile(PermissionProfileSelection {
             approval_policy: Some(approval_policy),
-            active_permission_profile: Some(active_permission_profile),
+            profile_id,
             ..
-        }) => Some((*approval_policy, active_permission_profile.id.clone())),
+        }) => Some((*approval_policy, profile_id.clone())),
         _ => None,
     })
 }
 
 fn apply_permission_override_from_events(chat: &mut ChatWidget, events: &[AppEvent]) {
-    let Some((approval_policy, permission_profile, active_permission_profile)) =
-        events.iter().find_map(|event| match event {
-            AppEvent::CodexOp(Op::OverrideTurnContext {
-                approval_policy: Some(approval_policy),
-                permission_profile: Some(permission_profile),
-                active_permission_profile,
-                ..
-            }) => Some((
-                *approval_policy,
-                permission_profile.clone(),
-                active_permission_profile.clone(),
-            )),
-            _ => None,
-        })
-    else {
+    let Some((approval_policy, profile_id)) = permission_override_summary(events) else {
         panic!("expected permission override event, got {events:?}");
+    };
+    let permission_profile = match profile_id.as_str() {
+        ":workspace" => PermissionProfile::workspace_write(),
+        ":danger-full-access" => PermissionProfile::Disabled,
+        ":read-only" => PermissionProfile::read_only(),
+        _ => panic!("unexpected permission profile id {profile_id}"),
     };
 
     chat.set_approval_policy(approval_policy);
-    chat.set_permission_profile_with_active_profile(permission_profile, active_permission_profile)
-        .expect("permission override should be valid");
+    chat.set_permission_profile_with_active_profile(
+        permission_profile,
+        Some(ActivePermissionProfile::new(profile_id)),
+    )
+    .expect("permission override should be valid");
 }
 
 fn windows_sandbox_requirements_stack(
@@ -326,7 +321,7 @@ async fn profile_permissions_full_access_opens_confirmation() {
                 display_label,
             }),
         } if preset.id == "full-access"
-            && profile_id == ":danger-no-sandbox"
+            && profile_id == ":danger-full-access"
             && display_label == "Full Access"
     ));
 }
@@ -766,9 +761,8 @@ async fn approvals_popup_navigation_skips_disabled() {
     assert!(
         app_events.iter().any(|ev| matches!(
             ev,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
                 approval_policy: Some(AskForApproval::OnRequest),
-                personality: None,
                 ..
             })
         )),
@@ -777,9 +771,8 @@ async fn approvals_popup_navigation_skips_disabled() {
     assert!(
         !app_events.iter().any(|ev| matches!(
             ev,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
                 approval_policy: Some(AskForApproval::Never),
-                personality: None,
                 ..
             })
         )),
@@ -817,27 +810,14 @@ async fn permissions_cycle_shortcut_emits_next_preset_actions() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
                 approval_policy: Some(AskForApproval::Never),
-                personality: None,
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                profile_id,
                 ..
-            })
+            }) if profile_id == ":danger-full-access"
         )),
-        "expected Shift+Tab to emit full-access override, got {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateAskForApprovalPolicy(AskForApproval::Never)
-        )),
-        "expected Shift+Tab to update approval policy, got {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateActivePermissionProfile(profile) if profile.id == ":danger-full-access"
-        )),
-        "expected Shift+Tab to update active permission profile, got {events:?}"
+        "expected Shift+Tab to select full-access permissions, got {events:?}"
     );
 }
 
@@ -918,7 +898,7 @@ async fn permissions_cycle_shortcut_follows_live_keymap_remap() {
 }
 
 #[tokio::test]
-async fn permissions_selection_emits_history_cell_when_selection_changes() {
+async fn permissions_selection_emits_selection_event_when_selection_changes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     #[cfg(target_os = "windows")]
     {
@@ -931,21 +911,20 @@ async fn permissions_selection_emits_history_cell_when_selection_changes() {
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(
-        cells.len(),
-        1,
-        "expected one permissions selection history cell"
-    );
-    let rendered = lines_to_single_string(&cells[0]);
+    let events = drain_app_events(&mut rx);
     assert!(
-        rendered.contains("Permissions updated to"),
-        "expected permissions selection history message, got: {rendered}"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::SelectPermissionProfile(PermissionProfileSelection { .. })
+            )
+        }),
+        "expected one permissions selection event, got: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_history_snapshot_after_mode_switch() {
+async fn permissions_selection_event_after_mode_switch() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     #[cfg(target_os = "windows")]
     {
@@ -961,16 +940,21 @@ async fn permissions_selection_history_snapshot_after_mode_switch() {
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected one mode-switch history cell");
-    assert_chatwidget_snapshot!(
-        "permissions_selection_history_after_mode_switch",
-        lines_to_single_string(&cells[0])
+    let events = drain_app_events(&mut rx);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                display_label,
+                ..
+            }) if display_label == "Full Access"
+        )),
+        "expected full-access selection event, got: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_history_snapshot_full_access_to_default() {
+async fn permissions_selection_event_full_access_to_default() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     #[cfg(target_os = "windows")]
     {
@@ -996,24 +980,21 @@ async fn permissions_selection_history_snapshot_full_access_to_default() {
     }
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected one mode-switch history cell");
-    #[cfg(target_os = "windows")]
-    insta::with_settings!({ snapshot_suffix => "windows" }, {
-        assert_chatwidget_snapshot!(
-            "permissions_selection_history_full_access_to_default",
-            lines_to_single_string(&cells[0])
-        );
-    });
-    #[cfg(not(target_os = "windows"))]
-    assert_chatwidget_snapshot!(
-        "permissions_selection_history_full_access_to_default",
-        lines_to_single_string(&cells[0])
+    let events = drain_app_events(&mut rx);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                display_label,
+                ..
+            }) if display_label == ASK_FOR_APPROVAL_LABEL
+        )),
+        "expected default permissions selection event, got: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_emits_history_cell_when_current_is_selected() {
+async fn permissions_selection_emits_selection_event_when_current_is_selected() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     #[cfg(target_os = "windows")]
     {
@@ -1033,16 +1014,15 @@ async fn permissions_selection_emits_history_cell_when_current_is_selected() {
     chat.open_permissions_popup();
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(
-        cells.len(),
-        1,
-        "expected history cell even when selecting current permissions"
-    );
-    let rendered = lines_to_single_string(&cells[0]);
+    let events = drain_app_events(&mut rx);
     assert!(
-        rendered.contains("Permissions updated to"),
-        "expected permissions update history message, got: {rendered}"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::SelectPermissionProfile(PermissionProfileSelection { .. })
+            )
+        }),
+        "expected selection event even when selecting current permissions, got: {events:?}"
     );
 }
 
@@ -1223,7 +1203,10 @@ async fn permissions_selection_can_disable_auto_review() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateApprovalsReviewer(ApprovalsReviewer::User)
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                ..
+            })
         )),
         "expected selecting Ask for approval from Approve for me to switch back to manual approval review: {events:?}"
     );
@@ -1275,52 +1258,27 @@ async fn permissions_selection_sends_approvals_reviewer_in_override_turn_context
     );
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let op = std::iter::from_fn(|| rx.try_recv().ok())
+    let selection = std::iter::from_fn(|| rx.try_recv().ok())
         .find_map(|event| match event {
-            AppEvent::CodexOp(op @ Op::OverrideTurnContext { .. }) => Some(op),
+            AppEvent::SelectPermissionProfile(selection) => Some(selection),
             _ => None,
         })
-        .expect("expected OverrideTurnContext op");
+        .expect("expected SelectPermissionProfile event");
 
-    assert_eq!(
-        op,
-        Op::OverrideTurnContext {
-            cwd: None,
+    assert_matches!(
+        selection,
+        PermissionProfileSelection {
+            profile_id,
             approval_policy: Some(AskForApproval::OnRequest),
             approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
-            permission_profile: Some(PermissionProfile::workspace_write()),
-            active_permission_profile: Some(ActivePermissionProfile::new(
-                BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
-            )),
-            auth_profile: None,
-            windows_sandbox_level: None,
-            model_provider: None,
-            model: None,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        }
-    );
-
-    let active_permission_profile_update = std::iter::from_fn(|| rx.try_recv().ok())
-        .find_map(|event| match event {
-            AppEvent::UpdateActivePermissionProfile(active_permission_profile) => {
-                Some(active_permission_profile)
-            }
-            _ => None,
-        })
-        .expect("expected UpdateActivePermissionProfile event");
-
-    assert_eq!(
-        active_permission_profile_update,
-        ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE)
+            display_label,
+        } if profile_id == BUILT_IN_PERMISSION_PROFILE_WORKSPACE
+            && display_label == APPROVE_FOR_ME_LABEL
     );
 }
 
 #[tokio::test]
-async fn permissions_full_access_history_cell_emitted_only_after_confirmation() {
+async fn permissions_full_access_selection_emitted_only_after_confirmation() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     #[cfg(target_os = "windows")]
     {
@@ -1337,11 +1295,11 @@ async fn permissions_full_access_history_cell_emitted_only_after_confirmation() 
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let mut open_confirmation_event = None;
-    let mut cells_before_confirmation = Vec::new();
+    let mut selection_before_confirmation = false;
     while let Ok(event) = rx.try_recv() {
         match event {
-            AppEvent::InsertHistoryCell(cell) => {
-                cells_before_confirmation.push(cell.display_lines(/*width*/ 80));
+            AppEvent::SelectPermissionProfile(_) => {
+                selection_before_confirmation = true;
             }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
@@ -1353,12 +1311,10 @@ async fn permissions_full_access_history_cell_emitted_only_after_confirmation() 
             _ => {}
         }
     }
-    if cfg!(not(target_os = "windows")) {
-        assert!(
-            cells_before_confirmation.is_empty(),
-            "did not expect history cell before confirming full access"
-        );
-    }
+    assert!(
+        !selection_before_confirmation,
+        "did not expect full-access selection before confirmation"
+    );
     let (preset, return_to_permissions, profile_selection) =
         open_confirmation_event.expect("expected full access confirmation event");
     chat.open_full_access_confirmation(preset, return_to_permissions, profile_selection);
@@ -1370,19 +1326,15 @@ async fn permissions_full_access_history_cell_emitted_only_after_confirmation() 
     );
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    let cells_after_confirmation = drain_insert_history(&mut rx);
-    let total_history_cells = cells_before_confirmation.len() + cells_after_confirmation.len();
-    assert_eq!(
-        total_history_cells, 1,
-        "expected one full access history cell total"
-    );
-    let rendered = if !cells_before_confirmation.is_empty() {
-        lines_to_single_string(&cells_before_confirmation[0])
-    } else {
-        lines_to_single_string(&cells_after_confirmation[0])
-    };
+    let events = drain_app_events(&mut rx);
     assert!(
-        rendered.contains("Permissions updated to Full Access"),
-        "expected full access update history message, got: {rendered}"
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                display_label,
+                ..
+            }) if display_label == "Full Access"
+        )),
+        "expected full access selection after confirmation, got: {events:?}"
     );
 }

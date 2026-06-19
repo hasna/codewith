@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadPendingInteraction": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "deliveredAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "interactionId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ThreadPendingInteractionKind"
+        },
+        "noClientPolicy": {
+          "type": "string"
+        },
+        "requestPayload": true,
+        "requestPayloadPreview": {
+          "type": "string"
+        },
+        "requestPayloadSha256": {
+          "type": "string"
+        },
+        "requestRedactions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "respondedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "responsePayload": true,
+        "responsePayloadPreview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responsePayloadSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responseRedactions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sourceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceKind": {
+          "$ref": "#/definitions/ThreadPendingInteractionSourceKind"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadPendingInteractionStatus"
+        },
+        "terminalAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timeoutAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workerRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "createdAt",
+        "interactionId",
+        "kind",
+        "noClientPolicy",
+        "requestPayload",
+        "requestPayloadPreview",
+        "requestPayloadSha256",
+        "requestRedactions",
+        "responseRedactions",
+        "sourceKind",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadPendingInteractionKind": {
+      "enum": [
+        "commandApproval",
+        "fileChangeApproval",
+        "userInput",
+        "mcpElicitation",
+        "permissionGrant",
+        "dynamicTool",
+        "usageLimit",
+        "profileSwitch",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionSourceKind": {
+      "enum": [
+        "thread",
+        "backgroundAgent",
+        "goal",
+        "usageProfile"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionStatus": {
+      "enum": [
+        "pending",
+        "delivered",
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "noLongerWaiting"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "dryRun": {
+      "type": "boolean"
+    },
+    "interaction": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadPendingInteraction"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "dryRun",
+    "updated"
+  ],
+  "title": "MissionControlRespondInteractionResponse",
+  "type": "object"
+}

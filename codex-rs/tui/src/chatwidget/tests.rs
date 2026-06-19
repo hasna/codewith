@@ -229,6 +229,7 @@ mod helpers;
 mod history_replay;
 mod loop_menu;
 mod mcp_startup;
+mod mission_control;
 mod permissions;
 mod plan_mode;
 mod popups_and_settings;
@@ -239,6 +240,7 @@ mod status_and_layout;
 mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
+mod worktree_display;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;
 pub(crate) use helpers::set_chatgpt_auth;

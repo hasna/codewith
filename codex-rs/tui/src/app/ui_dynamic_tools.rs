@@ -1,4 +1,5 @@
 use super::App;
+use super::ui_management_tools::ActiveSessionsArgs;
 use super::ui_management_tools::BackgroundAgentsArgs;
 use super::ui_management_tools::BackgroundTerminalsArgs;
 use super::ui_management_tools::CapabilitiesArgs;
@@ -14,6 +15,7 @@ use crate::common_config_options::CommonConfigSection;
 use crate::common_config_options::common_config_options;
 use crate::common_config_options::common_config_sections;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
+use crate::tmux_handoff::TmuxHandoffDestination;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::DynamicToolCallResponse;
@@ -43,6 +45,8 @@ struct ConfigArgs {
 struct TmuxArgs {
     explicit_user_request: Option<bool>,
     name: Option<String>,
+    session: Option<String>,
+    window: Option<String>,
     replace: Option<bool>,
 }
 
@@ -139,6 +143,10 @@ impl App {
             crate::ui_dynamic_tools::BACKGROUND_AGENTS_TOOL => {
                 let args: BackgroundAgentsArgs = parse_arguments(&params.arguments)?;
                 self.handle_background_agents_tool(app_server, args).await
+            }
+            crate::ui_dynamic_tools::ACTIVE_SESSIONS_TOOL => {
+                let args: ActiveSessionsArgs = parse_arguments(&params.arguments)?;
+                self.handle_active_sessions_tool(app_server, args).await
             }
             crate::ui_dynamic_tools::SCHEDULES_TOOL => {
                 let args: SchedulesArgs = parse_arguments(&params.arguments)?;
@@ -339,8 +347,9 @@ impl App {
                     .to_string(),
             );
         }
+        let destination = tmux_destination_from_args(args.name, args.session, args.window)?;
         let summary = self.prepare_tmux_handoff_from_tool(
-            args.name,
+            destination,
             args.replace.unwrap_or(/*replace_existing*/ true),
         )?;
         self.app_event_tx.send(crate::app_event::AppEvent::Exit(
@@ -349,6 +358,7 @@ impl App {
         Ok(json!({
             "sessionName": summary.session_name,
             "windowName": summary.window_name,
+            "target": summary.attach_target,
             "handoffCommand": summary.handoff_command,
             "attachMode": summary.attach_mode,
         }))
@@ -382,6 +392,39 @@ where
 {
     serde_json::from_value(value.clone())
         .map_err(|err| format!("failed to parse Codewith UI tool arguments: {err}"))
+}
+
+fn tmux_destination_from_args(
+    name: Option<String>,
+    session: Option<String>,
+    window: Option<String>,
+) -> Result<TmuxHandoffDestination, String> {
+    let name = non_empty_trimmed(name);
+    let session = non_empty_trimmed(session);
+    let window = non_empty_trimmed(window);
+    match session {
+        Some(session_name) => {
+            if name.is_some() {
+                return Err("tmux tool cannot combine `name` with `session`".to_string());
+            }
+            Ok(TmuxHandoffDestination::ExistingSession {
+                session_name,
+                window_name: window,
+            })
+        }
+        None => {
+            if window.is_some() {
+                return Err("tmux tool `window` requires `session`".to_string());
+            }
+            Ok(TmuxHandoffDestination::NewSession { name })
+        }
+    }
+}
+
+fn non_empty_trimmed(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn dynamic_tool_response(output: JsonValue, success: bool) -> DynamicToolCallResponse {
@@ -516,6 +559,28 @@ mod tests {
             ids,
             vec!["account-automation", "ai-context", "interface-privacy"]
         );
+    }
+
+    #[test]
+    fn tmux_destination_from_args_preserves_legacy_name_and_explicit_target() {
+        assert_eq!(
+            tmux_destination_from_args(Some("named session".to_string()), None, None,),
+            Ok(TmuxHandoffDestination::NewSession {
+                name: Some("named session".to_string()),
+            })
+        );
+        assert_eq!(
+            tmux_destination_from_args(None, Some("dev".to_string()), Some("codewith".to_string()),),
+            Ok(TmuxHandoffDestination::ExistingSession {
+                session_name: "dev".to_string(),
+                window_name: Some("codewith".to_string()),
+            })
+        );
+        assert!(
+            tmux_destination_from_args(Some("named".to_string()), Some("dev".to_string()), None,)
+                .is_err()
+        );
+        assert!(tmux_destination_from_args(None, None, Some("codewith".to_string())).is_err());
     }
 
     #[test]

@@ -1,23 +1,23 @@
 //! Rate-limit warning, prompt, and notice surfaces for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::usage_profile_broker::UsageProfileAutoSwitchWindow;
+use crate::chatwidget::usage_profile_broker::auth_profile_auto_switch_target as broker_auth_profile_auto_switch_target;
+use crate::chatwidget::usage_profile_broker::auto_switch_trigger_key;
+use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window;
+use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window_for_snapshot;
+use crate::chatwidget::usage_profile_broker::fallback_limit_label as broker_fallback_limit_label;
+use crate::chatwidget::usage_profile_broker::get_limits_duration as broker_get_limits_duration;
+use crate::chatwidget::usage_profile_broker::limit_label_for_window as broker_limit_label_for_window;
 use crate::chatwidget::user_messages::QueueInsertionPosition;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
-use codex_app_server_protocol::RateLimitWindow;
-use codex_login::AuthProfile;
-use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::list_auth_profiles;
 use tokio::time::MissedTickBehavior;
 
 pub(super) const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
 pub(super) const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 
-const RATE_LIMIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
-const PRIMARY_LIMIT_FALLBACK_LABEL: &str = "usage";
-const SECONDARY_LIMIT_FALLBACK_LABEL: &str = "secondary usage";
-const FIVE_HOUR_LIMIT_LABEL: &str = "5h";
-const WEEKLY_LIMIT_LABEL: &str = "weekly";
 
 #[derive(Default)]
 pub(super) struct RateLimitWarningState {
@@ -82,177 +82,16 @@ impl RateLimitWarningState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AuthProfileAutoSwitchWindow {
-    label: String,
-    resets_at: Option<i64>,
-}
-
-fn exhausted_auto_switch_window(
-    snapshot: &RateLimitSnapshot,
-    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
-    is_codex_limit: bool,
-) -> Option<AuthProfileAutoSwitchWindow> {
-    if !config.enabled {
-        return None;
-    }
-
-    if !is_codex_limit {
-        return None;
-    }
-
-    [snapshot.secondary.as_ref(), snapshot.primary.as_ref()]
-        .into_iter()
-        .flatten()
-        .filter_map(exhausted_auto_switch_window_for_limit)
-        .find(|window| auth_profile_auto_switch_window_enabled(window, config))
-}
-
-fn exhausted_auto_switch_window_for_snapshot(
-    snapshot: &RateLimitSnapshot,
-    is_codex_limit: bool,
-) -> Option<AuthProfileAutoSwitchWindow> {
-    if !is_codex_limit {
-        return None;
-    }
-
-    [snapshot.secondary.as_ref(), snapshot.primary.as_ref()]
-        .into_iter()
-        .flatten()
-        .find_map(exhausted_auto_switch_window_for_limit)
-}
-
-fn exhausted_auto_switch_window_for_limit(
-    window: &RateLimitWindow,
-) -> Option<AuthProfileAutoSwitchWindow> {
-    if window.used_percent < 100 {
-        return None;
-    }
-    let label = get_limits_duration(window.window_duration_mins?)?;
-    matches!(label.as_str(), FIVE_HOUR_LIMIT_LABEL | WEEKLY_LIMIT_LABEL).then_some(
-        AuthProfileAutoSwitchWindow {
-            label,
-            resets_at: window.resets_at,
-        },
-    )
-}
-
-fn auth_profile_auto_switch_window_enabled(
-    window: &AuthProfileAutoSwitchWindow,
-    config: &crate::legacy_core::config::AuthProfileAutoSwitchConfig,
-) -> bool {
-    match window.label.as_str() {
-        FIVE_HOUR_LIMIT_LABEL => config.on_5h_limit,
-        WEEKLY_LIMIT_LABEL => config.on_weekly_limit,
-        _ => false,
-    }
-}
-
-fn auto_switch_trigger_key(limit_id: &str, window: &AuthProfileAutoSwitchWindow) -> String {
-    let resets_at = window
-        .resets_at
-        .map(|reset| reset.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    format!("{limit_id}:{}:{resets_at}", window.label)
-}
-
-fn next_auth_profile_for_auto_switch(
-    current: Option<&str>,
-    configured_profiles: &[String],
-    saved_profiles: &[AuthProfile],
-) -> Option<String> {
-    let saved_profiles = saved_profiles
-        .iter()
-        .filter(|profile| {
-            profile.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
-                && profile.auth_mode.is_some()
-        })
-        .collect::<Vec<_>>();
-    let saved_names = saved_profiles
-        .iter()
-        .map(|profile| profile.name.as_str())
-        .collect::<HashSet<_>>();
-    let ordered = if configured_profiles.is_empty() {
-        saved_profiles
-            .iter()
-            .map(|profile| profile.name.clone())
-            .collect::<Vec<_>>()
-    } else {
-        configured_profiles
-            .iter()
-            .filter(|profile| saved_names.contains(profile.as_str()))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let ordered = dedupe_profile_names(ordered);
-    if ordered.is_empty() {
-        return None;
-    }
-
-    let start = current
-        .and_then(|current| ordered.iter().position(|profile| profile == current))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    ordered
-        .iter()
-        .cycle()
-        .skip(start)
-        .take(ordered.len())
-        .find(|profile| current != Some(profile.as_str()))
-        .cloned()
-}
-
-fn dedupe_profile_names(profiles: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    profiles
-        .into_iter()
-        .filter(|profile| seen.insert(profile.clone()))
-        .collect()
-}
-
 pub(crate) fn limit_label_for_window(window_minutes: Option<i64>, is_secondary: bool) -> String {
-    window_minutes
-        .and_then(get_limits_duration)
-        .unwrap_or_else(|| fallback_limit_label(is_secondary).to_string())
+    broker_limit_label_for_window(window_minutes, is_secondary)
 }
 
 pub(crate) fn get_limits_duration(windows_minutes: i64) -> Option<String> {
-    const MINUTES_PER_HOUR: i64 = 60;
-    const MINUTES_PER_5_HOURS: i64 = 5 * MINUTES_PER_HOUR;
-    const MINUTES_PER_DAY: i64 = 24 * MINUTES_PER_HOUR;
-    const MINUTES_PER_WEEK: i64 = 7 * MINUTES_PER_DAY;
-    const MINUTES_PER_MONTH: i64 = 30 * MINUTES_PER_DAY;
-    const MINUTES_PER_YEAR: i64 = 365 * MINUTES_PER_DAY;
-
-    let windows_minutes = windows_minutes.max(0);
-
-    if is_approximate_window(windows_minutes, MINUTES_PER_5_HOURS) {
-        Some("5h".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_DAY) {
-        Some("daily".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_WEEK) {
-        Some("weekly".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_MONTH) {
-        Some("monthly".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_YEAR) {
-        Some("annual".to_string())
-    } else {
-        None
-    }
+    broker_get_limits_duration(windows_minutes)
 }
 
 pub(crate) fn fallback_limit_label(is_secondary: bool) -> &'static str {
-    if is_secondary {
-        SECONDARY_LIMIT_FALLBACK_LABEL
-    } else {
-        PRIMARY_LIMIT_FALLBACK_LABEL
-    }
-}
-
-fn is_approximate_window(minutes: i64, expected_minutes: i64) -> bool {
-    let minutes = minutes as f64;
-    let expected_minutes = expected_minutes as f64;
-    minutes >= expected_minutes * 0.95 && minutes <= expected_minutes * 1.05
+    broker_fallback_limit_label(is_secondary)
 }
 
 #[derive(Default)]
@@ -572,7 +411,7 @@ impl ChatWidget {
     fn auth_profile_auto_switch_target(
         &mut self,
         limit_id: &str,
-        window: &AuthProfileAutoSwitchWindow,
+        window: &UsageProfileAutoSwitchWindow,
     ) -> Option<(String, String)> {
         let trigger_key = auto_switch_trigger_key(limit_id, window);
         if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
@@ -589,17 +428,19 @@ impl ChatWidget {
                 return None;
             }
         };
-        let next_profile = next_auth_profile_for_auto_switch(
+        if let Some(target) = broker_auth_profile_auto_switch_target(
+            &self.config.auth_profile_auto_switch,
             self.config.selected_auth_profile.as_deref(),
-            &self.config.auth_profile_auto_switch.profiles,
             &profiles,
-        );
-        if let Some(next_profile) = next_profile {
-            return Some((next_profile, trigger_key));
+            &self.auth_profile_rate_limit_snapshots_by_profile,
+            limit_id,
+            window,
+        ) {
+            return Some((target.profile, target.trigger_key));
         }
 
         self.add_info_message(
-            "Auth profile auto-switch is enabled, but no alternate profile is available."
+            "Auth profile auto-switch is enabled, but no alternate profile with available usage is known."
                 .to_string(),
             /*hint*/ None,
         );
@@ -610,7 +451,7 @@ impl ChatWidget {
         &mut self,
         next_profile: String,
         trigger_key: String,
-        window: AuthProfileAutoSwitchWindow,
+        window: UsageProfileAutoSwitchWindow,
     ) {
         self.pending_auth_profile_auto_switch_trigger = Some(trigger_key.clone());
         self.last_auth_profile_auto_switch_trigger = Some(trigger_key);
@@ -634,8 +475,10 @@ impl ChatWidget {
         self.stop_rate_limit_poller();
 
         let app_event_tx = self.app_event_tx.clone();
+        let heartbeat_interval =
+            Duration::from_secs(self.config.auth_profile_auto_switch.heartbeat_interval_secs);
         self.rate_limit_poller = Some(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(RATE_LIMIT_HEARTBEAT_INTERVAL);
+            let mut interval = tokio::time::interval(heartbeat_interval);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
             interval.tick().await;
             loop {

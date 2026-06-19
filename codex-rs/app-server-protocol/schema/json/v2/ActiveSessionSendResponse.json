@@ -4,13 +4,15 @@
     "ActiveSessionSendStatus": {
       "enum": [
         "delivered",
-        "notLoaded"
+        "notLoaded",
+        "unsupported"
       ],
       "type": "string"
     }
   },
   "properties": {
     "messageId": {
+      "description": "App-server-generated id for this active delivery attempt. It is not a durable mailbox id or read receipt.",
       "type": "string"
     },
     "reason": {
@@ -20,6 +22,7 @@
       ]
     },
     "senderThreadId": {
+      "description": "Echoes the claimed sender_thread_id when present and valid.",
       "type": [
         "string",
         "null"
@@ -28,14 +31,20 @@
     "status": {
       "$ref": "#/definitions/ActiveSessionSendStatus"
     },
-    "targetThreadId": {
+    "targetPeerId": {
+      "default": "",
       "type": "string"
+    },
+    "targetThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
     "messageId",
-    "status",
-    "targetThreadId"
+    "status"
   ],
   "title": "ActiveSessionSendResponse",
   "type": "object"

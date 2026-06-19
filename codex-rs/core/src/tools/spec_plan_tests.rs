@@ -8,8 +8,13 @@ use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
 use codex_model_provider::create_model_provider_with_id;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::QWEN_PROVIDER_ID;
+use codex_model_provider_info::XAI_PROVIDER_ID;
+use codex_model_provider_info::XIAOMI_PROVIDER_ID;
+use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_models_manager::model_info::codex_spark_model_info;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -292,16 +297,24 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
 }
 
-fn use_openrouter_provider(turn: &mut TurnContext) {
-    let provider_info = ModelProviderInfo::create_openrouter_provider();
+fn use_provider_with_id(
+    turn: &mut TurnContext,
+    provider_id: &str,
+    provider_info: ModelProviderInfo,
+) {
     update_config(turn, |config| {
-        config.model_provider_id = OPENROUTER_PROVIDER_ID.to_string();
+        config.model_provider_id = provider_id.to_string();
         config.model_provider = provider_info.clone();
     });
-    turn.provider = create_model_provider_with_id(
+    turn.provider =
+        create_model_provider_with_id(provider_id, provider_info, turn.auth_manager.clone());
+}
+
+fn use_openrouter_provider(turn: &mut TurnContext) {
+    use_provider_with_id(
+        turn,
         OPENROUTER_PROVIDER_ID,
-        provider_info,
-        turn.auth_manager.clone(),
+        ModelProviderInfo::create_openrouter_provider(),
     );
 }
 
@@ -1272,6 +1285,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             config.multi_agent_v2.non_code_mode_only = true;
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
         });
+        turn.model_info.supports_search_tool = true;
     })
     .await;
 
@@ -1361,11 +1375,19 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         }
     );
 
+    let unsupported_model = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = false;
+    })
+    .await;
+    unsupported_model.assert_visible_lacks(&["web_search"]);
+
     let code_mode_only = probe(|turn| {
         use_chatgpt_auth(turn);
         set_features(turn, &[Feature::CodeModeOnly, Feature::MultiAgentV2]);
         set_web_search_mode(turn, WebSearchMode::Live);
         turn.model_info.input_modalities = vec![InputModality::Image];
+        turn.model_info.supports_search_tool = true;
     })
     .await;
     assert_eq!(
@@ -1416,4 +1438,102 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     })
     .await;
     unsupported_provider.assert_visible_lacks(&["web_search"]);
+
+    let openrouter_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_openrouter_provider(turn);
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert_eq!(
+        openrouter_search.visible_spec("web_search"),
+        &ToolSpec::OpenRouterWebSearch {}
+    );
+
+    let anthropic_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            ANTHROPIC_PROVIDER_ID,
+            ModelProviderInfo::create_anthropic_provider(),
+        );
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert!(matches!(
+        anthropic_search.visible_spec("web_search"),
+        &ToolSpec::AnthropicWebSearch { .. }
+    ));
+
+    let xai_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            XAI_PROVIDER_ID,
+            ModelProviderInfo::create_xai_provider(),
+        );
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert_eq!(
+        xai_search.visible_spec("web_search"),
+        &ToolSpec::XaiWebSearch {}
+    );
+
+    let xiaomi_without_model_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            XIAOMI_PROVIDER_ID,
+            ModelProviderInfo::create_xiaomi_provider(),
+        );
+        turn.model_info.supports_search_tool = false;
+    })
+    .await;
+    xiaomi_without_model_search.assert_visible_lacks(&["web_search"]);
+
+    let xiaomi_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            XIAOMI_PROVIDER_ID,
+            ModelProviderInfo::create_xiaomi_provider(),
+        );
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert_eq!(
+        xiaomi_search.visible_spec("web_search"),
+        &ToolSpec::XiaomiWebSearch {}
+    );
+
+    let qwen_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            QWEN_PROVIDER_ID,
+            ModelProviderInfo::create_qwen_provider(),
+        );
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert_eq!(
+        qwen_search.visible_spec("web_search"),
+        &ToolSpec::QwenWebSearch {}
+    );
+
+    let zai_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_provider_with_id(
+            turn,
+            ZAI_PROVIDER_ID,
+            ModelProviderInfo::create_zai_provider(),
+        );
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    assert!(matches!(
+        zai_search.visible_spec("web_search"),
+        &ToolSpec::ZaiWebSearch { .. }
+    ));
 }

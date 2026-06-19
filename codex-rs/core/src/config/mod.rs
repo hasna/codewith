@@ -33,6 +33,9 @@ use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::ThreadStoreToml;
+use codex_config::config_toml::WorktreeCleanupToml;
+use codex_config::config_toml::WorktreeSessionModeToml;
+use codex_config::config_toml::WorktreesConfigToml;
 use codex_config::config_toml::validate_model_providers;
 use codex_config::loader::load_config_layers_state;
 use codex_config::loader::project_trust_key;
@@ -40,6 +43,7 @@ use codex_config::permissions_toml::PermissionsToml;
 use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AuthProfileAutoSwitchStrategyToml;
 use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
@@ -58,6 +62,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginsConfigInput;
 use codex_exec_server::ExecutorFileSystem;
@@ -197,12 +202,35 @@ impl Default for GhostSnapshotConfig {
     }
 }
 
+pub const DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_INTERVAL_SECS: u64 = 60;
+pub const DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_FRESHNESS_SECS: u64 = 120;
+const MIN_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_INTERVAL_SECS: u64 = 60;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthProfileAutoSwitchStrategy {
+    #[default]
+    HighestAvailable,
+    Ordered,
+}
+
+impl From<AuthProfileAutoSwitchStrategyToml> for AuthProfileAutoSwitchStrategy {
+    fn from(value: AuthProfileAutoSwitchStrategyToml) -> Self {
+        match value {
+            AuthProfileAutoSwitchStrategyToml::HighestAvailable => Self::HighestAvailable,
+            AuthProfileAutoSwitchStrategyToml::Ordered => Self::Ordered,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthProfileAutoSwitchConfig {
     pub enabled: bool,
     pub profiles: Vec<String>,
     pub on_5h_limit: bool,
     pub on_weekly_limit: bool,
+    pub strategy: AuthProfileAutoSwitchStrategy,
+    pub heartbeat_interval_secs: u64,
+    pub heartbeat_freshness_secs: u64,
 }
 
 impl Default for AuthProfileAutoSwitchConfig {
@@ -212,6 +240,38 @@ impl Default for AuthProfileAutoSwitchConfig {
             profiles: Vec::new(),
             on_5h_limit: true,
             on_weekly_limit: true,
+            strategy: AuthProfileAutoSwitchStrategy::default(),
+            heartbeat_interval_secs: DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_INTERVAL_SECS,
+            heartbeat_freshness_secs: DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_FRESHNESS_SECS,
+        }
+    }
+}
+
+pub const DEFAULT_USAGE_SELF_HEAL_INITIAL_BACKOFF_SECS: u64 = 30;
+pub const DEFAULT_USAGE_SELF_HEAL_MAX_BACKOFF_SECS: u64 = 5 * 60;
+pub const DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS: u64 = 30;
+pub const DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS: u64 = 24 * 60 * 60;
+const DEFAULT_USAGE_SELF_HEAL_MAX_RETRIES: u64 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageSelfHealConfig {
+    pub enabled: bool,
+    pub max_retries: u64,
+    pub initial_backoff_secs: u64,
+    pub max_backoff_secs: u64,
+    pub reset_retry_buffer_secs: u64,
+    pub max_reset_retry_delay_secs: u64,
+}
+
+impl Default for UsageSelfHealConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_retries: DEFAULT_USAGE_SELF_HEAL_MAX_RETRIES,
+            initial_backoff_secs: DEFAULT_USAGE_SELF_HEAL_INITIAL_BACKOFF_SECS,
+            max_backoff_secs: DEFAULT_USAGE_SELF_HEAL_MAX_BACKOFF_SECS,
+            reset_retry_buffer_secs: DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS,
+            max_reset_retry_delay_secs: DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS,
         }
     }
 }
@@ -273,6 +333,61 @@ impl Default for GoalsConfig {
             auto_execute: GoalAutoExecuteMode::Off,
             max_auto_goals_per_plan: 12,
             max_tokens_per_goal_plan: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeSessionMode {
+    Off,
+    Manual,
+    Auto,
+}
+
+impl From<WorktreeSessionModeToml> for WorktreeSessionMode {
+    fn from(value: WorktreeSessionModeToml) -> Self {
+        match value {
+            WorktreeSessionModeToml::Off => Self::Off,
+            WorktreeSessionModeToml::Manual => Self::Manual,
+            WorktreeSessionModeToml::Auto => Self::Auto,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeCleanupMode {
+    Retain,
+    DeleteIfClean,
+    ForceDelete,
+}
+
+impl From<WorktreeCleanupToml> for WorktreeCleanupMode {
+    fn from(value: WorktreeCleanupToml) -> Self {
+        match value {
+            WorktreeCleanupToml::Retain => Self::Retain,
+            WorktreeCleanupToml::DeleteIfClean => Self::DeleteIfClean,
+            WorktreeCleanupToml::ForceDelete => Self::ForceDelete,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorktreesConfig {
+    pub enabled: bool,
+    pub root: Option<String>,
+    pub cleanup_default: WorktreeCleanupMode,
+    pub main_sessions: WorktreeSessionMode,
+    pub sub_sessions: WorktreeSessionMode,
+}
+
+impl Default for WorktreesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            root: None,
+            cleanup_default: WorktreeCleanupMode::DeleteIfClean,
+            main_sessions: WorktreeSessionMode::Manual,
+            sub_sessions: WorktreeSessionMode::Auto,
         }
     }
 }
@@ -425,12 +540,52 @@ fn resolve_auth_profile_auto_switch_config(
         )?);
     }
 
+    let heartbeat_interval_secs = config
+        .heartbeat_interval_secs
+        .unwrap_or(DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_INTERVAL_SECS)
+        .max(MIN_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_INTERVAL_SECS);
+    let heartbeat_freshness_secs = config
+        .heartbeat_freshness_secs
+        .unwrap_or(DEFAULT_AUTH_PROFILE_AUTO_SWITCH_HEARTBEAT_FRESHNESS_SECS)
+        .max(heartbeat_interval_secs);
+
     Ok(AuthProfileAutoSwitchConfig {
         enabled: config.enabled.unwrap_or(false),
         profiles,
         on_5h_limit: config.on_5h_limit.unwrap_or(true),
         on_weekly_limit: config.on_weekly_limit.unwrap_or(true),
+        strategy: config.strategy.map(Into::into).unwrap_or_default(),
+        heartbeat_interval_secs,
+        heartbeat_freshness_secs,
     })
+}
+
+fn resolve_usage_self_heal_config(config: Option<UsageSelfHealToml>) -> UsageSelfHealConfig {
+    let Some(config) = config else {
+        return UsageSelfHealConfig::default();
+    };
+    let defaults = UsageSelfHealConfig::default();
+    let initial_backoff_secs = config
+        .initial_backoff_secs
+        .unwrap_or(defaults.initial_backoff_secs)
+        .max(1);
+    let max_backoff_secs = config
+        .max_backoff_secs
+        .unwrap_or(defaults.max_backoff_secs)
+        .max(initial_backoff_secs);
+
+    UsageSelfHealConfig {
+        enabled: config.enabled.unwrap_or(defaults.enabled),
+        max_retries: config.max_retries.unwrap_or(defaults.max_retries),
+        initial_backoff_secs,
+        max_backoff_secs,
+        reset_retry_buffer_secs: config
+            .reset_retry_buffer_secs
+            .unwrap_or(defaults.reset_retry_buffer_secs),
+        max_reset_retry_delay_secs: config
+            .max_reset_retry_delay_secs
+            .unwrap_or(defaults.max_reset_retry_delay_secs),
+    }
 }
 
 fn resolve_session_recap_config(config: Option<SessionRecapToml>) -> SessionRecapConfig {
@@ -485,6 +640,32 @@ fn resolve_goals_config(config: Option<GoalsConfigToml>) -> GoalsConfig {
         max_tokens_per_goal_plan: config
             .max_tokens_per_goal_plan
             .filter(|max_tokens_per_goal_plan| *max_tokens_per_goal_plan > 0),
+    }
+}
+
+fn resolve_worktrees_config(config: Option<WorktreesConfigToml>) -> WorktreesConfig {
+    let defaults = WorktreesConfig::default();
+    let Some(config) = config else {
+        return defaults;
+    };
+
+    WorktreesConfig {
+        enabled: config.enabled.unwrap_or(defaults.enabled),
+        root: config.root.filter(|root| !root.trim().is_empty()),
+        cleanup_default: config
+            .cleanup_default
+            .map(WorktreeCleanupMode::from)
+            .unwrap_or(defaults.cleanup_default),
+        main_sessions: config
+            .main_sessions
+            .and_then(|sessions| sessions.mode)
+            .map(WorktreeSessionMode::from)
+            .unwrap_or(defaults.main_sessions),
+        sub_sessions: config
+            .sub_sessions
+            .and_then(|sessions| sessions.mode)
+            .map(WorktreeSessionMode::from)
+            .unwrap_or(defaults.sub_sessions),
     }
 }
 
@@ -1027,6 +1208,9 @@ pub struct Config {
     /// Runtime auth-profile failover behavior for exhausted rate-limit windows.
     pub auth_profile_auto_switch: AuthProfileAutoSwitchConfig,
 
+    /// Automatic retry behavior for recoverable usage-limit and availability failures.
+    pub usage_self_heal: UsageSelfHealConfig,
+
     /// Lightweight recap behavior for returning to interactive TUI sessions.
     pub session_recap: SessionRecapConfig,
 
@@ -1242,6 +1426,9 @@ pub struct Config {
 
     /// Settings for durable goal plans and automatic goal-to-goal execution.
     pub goals: GoalsConfig,
+
+    /// Settings for Codewith-managed git worktrees.
+    pub worktrees: WorktreesConfig,
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
@@ -2910,8 +3097,10 @@ impl Config {
         };
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
+        let usage_self_heal = resolve_usage_self_heal_config(cfg.usage_self_heal.clone());
         let session_recap = resolve_session_recap_config(cfg.session_recap.clone());
         let goals = resolve_goals_config(cfg.goals.clone());
+        let worktrees = resolve_worktrees_config(cfg.worktrees.clone());
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -3785,6 +3974,7 @@ impl Config {
             ),
             selected_auth_profile,
             auth_profile_auto_switch,
+            usage_self_heal,
             session_recap,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
@@ -3900,6 +4090,7 @@ impl Config {
             ghost_snapshot,
             multi_agent_v2,
             goals,
+            worktrees,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning

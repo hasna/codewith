@@ -60,6 +60,7 @@ pub(crate) struct BuiltinCommandFlags {
     pub(crate) plugins_command_enabled: bool,
     pub(crate) service_tier_commands_enabled: bool,
     pub(crate) goal_command_enabled: bool,
+    pub(crate) workflow_command_enabled: bool,
     pub(crate) scheduled_tasks_command_enabled: bool,
     pub(crate) personality_command_enabled: bool,
     pub(crate) realtime_conversation_enabled: bool,
@@ -77,6 +78,7 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
+        .filter(|(_, cmd)| flags.workflow_command_enabled || *cmd != SlashCommand::Workflow)
         .filter(|(_, cmd)| {
             flags.scheduled_tasks_command_enabled
                 || !matches!(
@@ -118,8 +120,13 @@ pub(crate) fn commands_for_input(
 ///
 /// Side-conversation gating is intentionally enforced by dispatch rather than exact lookup so a
 /// typed command can produce a side-specific unavailable message while the popup still hides it.
+/// Workflow follows the same pattern while the feature is disabled so exact `/workflow` text cannot
+/// fall through as a normal chat submission.
 pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Option<SlashCommand> {
     let cmd = SlashCommand::from_str(name).ok()?;
+    if cmd == SlashCommand::Workflow && !flags.workflow_command_enabled {
+        return Some(cmd);
+    }
     let visible_cmd = match cmd {
         SlashCommand::BackgroundAgent => SlashCommand::Agent,
         SlashCommand::MultiAgents => SlashCommand::Session,
@@ -178,6 +185,7 @@ mod tests {
             plugins_command_enabled: true,
             service_tier_commands_enabled: true,
             goal_command_enabled: true,
+            workflow_command_enabled: true,
             scheduled_tasks_command_enabled: true,
             personality_command_enabled: true,
             realtime_conversation_enabled: true,
@@ -337,6 +345,21 @@ mod tests {
         let mut flags = all_enabled_flags();
         flags.audio_device_selection_enabled = false;
         assert_eq!(find_builtin_command("settings", flags), None);
+    }
+
+    #[test]
+    fn workflow_command_is_hidden_when_workflows_are_disabled() {
+        let mut flags = all_enabled_flags();
+        flags.workflow_command_enabled = false;
+        assert!(
+            !builtins_for_input(flags)
+                .into_iter()
+                .any(|(_, command)| command == SlashCommand::Workflow)
+        );
+        assert_eq!(
+            find_builtin_command("workflow", flags),
+            Some(SlashCommand::Workflow)
+        );
     }
 
     #[test]

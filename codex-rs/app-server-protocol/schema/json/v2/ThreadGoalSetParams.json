@@ -8,7 +8,8 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
-        "complete"
+        "complete",
+        "cancelled"
       ],
       "type": "string"
     }

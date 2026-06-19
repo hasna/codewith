@@ -6,6 +6,7 @@ use codex_protocol::protocol::ThreadGoalStatus;
 fn continuation_prompt_allows_complete_and_strict_blocked_updates() {
     let prompt = continuation_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-continuation".to_string(),
         objective: "finish the stack".to_string(),
         status: ThreadGoalStatus::Active,
         token_budget: Some(10_000),
@@ -25,6 +26,9 @@ fn continuation_prompt_allows_complete_and_strict_blocked_updates() {
     assert!(prompt.contains("same blocking condition"));
     assert!(prompt.contains("original/user-triggered turn"));
     assert!(prompt.contains("truly at an impasse"));
+    assert!(prompt.contains("Use at least one adversarial agent"));
+    assert!(prompt.contains("even if the user did not ask for one"));
+    assert!(prompt.contains("adversarial self-review"));
     assert!(!prompt.contains("budgetLimited"));
     assert!(!prompt.contains("status \"paused\""));
 }
@@ -33,6 +37,7 @@ fn continuation_prompt_allows_complete_and_strict_blocked_updates() {
 fn budget_limit_prompt_steers_model_to_wrap_up_without_pausing() {
     let prompt = budget_limit_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-budget".to_string(),
         objective: "finish the stack".to_string(),
         status: ThreadGoalStatus::BudgetLimited,
         token_budget: Some(10_000),
@@ -48,6 +53,8 @@ fn budget_limit_prompt_steers_model_to_wrap_up_without_pausing() {
     assert!(prompt.contains("Token budget: 10000"));
     assert!(prompt.contains("Tokens used: 10100"));
     assert!(prompt.to_lowercase().contains("wrap up this turn soon"));
+    assert!(prompt.contains("adversarial verification has already been reconciled"));
+    assert!(prompt.contains("completion remains unverified"));
     assert!(!prompt.contains("status \"paused\""));
 }
 
@@ -55,6 +62,7 @@ fn budget_limit_prompt_steers_model_to_wrap_up_without_pausing() {
 fn objective_updated_prompt_supersedes_previous_goal_context() {
     let prompt = objective_updated_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-updated".to_string(),
         objective: "finish the revised stack".to_string(),
         status: ThreadGoalStatus::Active,
         token_budget: Some(10_000),
@@ -72,6 +80,9 @@ fn objective_updated_prompt_supersedes_previous_goal_context() {
     );
     assert!(prompt.contains("Token budget: 10000"));
     assert!(prompt.contains("Tokens remaining: 8766"));
+    assert!(prompt.contains("Use at least one adversarial agent"));
+    assert!(prompt.contains("even if the user did not ask for one"));
+    assert!(prompt.contains("adversarial self-review"));
     assert!(
         prompt.contains("Do not call update_goal unless the updated goal is actually complete.")
     );
@@ -84,6 +95,7 @@ fn goal_prompts_escape_objective_delimiters() {
 
     let continuation = continuation_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-escaped-continuation".to_string(),
         objective: objective.to_string(),
         status: ThreadGoalStatus::Active,
         token_budget: None,
@@ -94,6 +106,7 @@ fn goal_prompts_escape_objective_delimiters() {
     });
     let budget_limit = budget_limit_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-escaped-budget".to_string(),
         objective: objective.to_string(),
         status: ThreadGoalStatus::BudgetLimited,
         token_budget: Some(10_000),
@@ -104,6 +117,7 @@ fn goal_prompts_escape_objective_delimiters() {
     });
     let objective_updated = objective_updated_prompt(&ThreadGoal {
         thread_id: ThreadId::new(),
+        goal_id: "goal-escaped-updated".to_string(),
         objective: objective.to_string(),
         status: ThreadGoalStatus::Active,
         token_budget: Some(10_000),

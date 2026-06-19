@@ -254,6 +254,15 @@ pub(crate) fn current_syntax_theme() -> Theme {
     }
 }
 
+/// Return the active syntax theme's default background, if it declares a concrete RGB color.
+pub(crate) fn current_theme_background_rgb() -> Option<(u8, u8, u8)> {
+    let bg = current_syntax_theme().settings.background?;
+    if bg.a == ANSI_ALPHA_DEFAULT {
+        return None;
+    }
+    Some((bg.r, bg.g, bg.b))
+}
+
 /// Raw RGB background colors extracted from syntax theme diff/markup scopes.
 ///
 /// These are theme-provided colors, not yet adapted for any particular color

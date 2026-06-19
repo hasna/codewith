@@ -1,5 +1,7 @@
 use super::App;
 use crate::app_server_session::AppServerSession;
+use codex_app_server_protocol::WorktreeLifecycleStatus;
+use codex_app_server_protocol::WorktreeSessionMode;
 use codex_protocol::ThreadId;
 
 const BACKGROUND_AGENT_CREATE_HINT: &str = "Start one with /agent start <prompt>.";
@@ -45,22 +47,101 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         prompt: String,
+        worktree_id: Option<String>,
     ) {
-        let cwd = Some(self.config.cwd.to_string_lossy().to_string());
+        let (cwd, workspace_roots, worktree_hint, attach_worktree_id) =
+            if let Some(worktree_id) = worktree_id {
+                let Some((resolved_worktree_id, response)) = self
+                    .read_selected_worktree(
+                        app_server,
+                        Some(worktree_id),
+                        /*base_repo_path*/ None,
+                        "start-agent",
+                    )
+                    .await
+                else {
+                    return;
+                };
+                let Some(worktree) = response.worktree else {
+                    self.chat_widget.add_info_message(
+                        "No matching worktree".to_string(),
+                        Some(format!("Could not find worktree {resolved_worktree_id}.")),
+                    );
+                    return;
+                };
+                let disabled_reason = if !response.policy.enabled {
+                    Some("managed worktrees are disabled in config".to_string())
+                } else if response.policy.sub_sessions == WorktreeSessionMode::Off {
+                    Some("sub-session worktrees are disabled in config".to_string())
+                } else if worktree.lifecycle_status != WorktreeLifecycleStatus::Active {
+                    Some("only active worktrees can start background agents".to_string())
+                } else {
+                    None
+                };
+                if let Some(reason) = disabled_reason {
+                    self.chat_widget.add_error_message(format!(
+                        "Cannot start background agent in worktree: {reason}"
+                    ));
+                    return;
+                }
+                let worktree_path = worktree.worktree_path.clone();
+                let short_worktree_id = worktree.worktree_id.chars().take(8).collect::<String>();
+                (
+                    Some(worktree_path.clone()),
+                    Some(vec![worktree_path]),
+                    Some(short_worktree_id),
+                    Some(worktree.worktree_id),
+                )
+            } else {
+                (
+                    Some(self.config.cwd.to_string_lossy().to_string()),
+                    None,
+                    None,
+                    None,
+                )
+            };
         let parent_thread_id = self.active_thread_id;
         let auth_profile_ref = self.config.selected_auth_profile.clone();
         match app_server
-            .agent_start(prompt, cwd, parent_thread_id, auth_profile_ref)
+            .agent_start(
+                prompt,
+                cwd,
+                workspace_roots,
+                parent_thread_id,
+                auth_profile_ref,
+            )
             .await
         {
             Ok(response) => {
                 let agent_id = response.agent.agent_id.clone();
+                if let Some(worktree_id) = attach_worktree_id
+                    && let Err(err) = app_server
+                        .worktree_attach(
+                            worktree_id,
+                            /*thread_id*/ None,
+                            Some(agent_id.clone()),
+                        )
+                        .await
+                {
+                    let stop_result = app_server.agent_stop(agent_id.clone()).await;
+                    let rollback_suffix = match stop_result {
+                        Ok(_) => " Agent stop was requested.".to_string(),
+                        Err(stop_err) => format!(" Agent stop failed: {stop_err}"),
+                    };
+                    self.chat_widget.add_error_message(format!(
+                        "Background agent worktree assignment failed: {err}.{rollback_suffix}"
+                    ));
+                    return;
+                }
                 self.chat_widget
                     .show_background_agent_summary(vec![response.agent]);
+                let worktree_prefix = worktree_hint
+                    .map(|worktree_id| format!("Started in worktree {worktree_id}. "))
+                    .unwrap_or_default();
                 self.chat_widget.add_info_message(
                     "Background agent started".to_string(),
                     Some(format!(
-                        "Use /agent attach {} to open its session or replay its events.",
+                        "{worktree_prefix}Use /agent attach {} to open its session or replay its events.",
                         short_background_agent_id(&agent_id)
                     )),
                 );

@@ -71,6 +71,18 @@ where
     Ok(())
 }
 
+pub(crate) fn run_git_for_output<I, S>(
+    dir: &Path,
+    args: I,
+    env: Option<&[(OsString, OsString)]>,
+) -> Result<GitRun, GitToolingError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_git_raw(dir, args, env)
+}
+
 pub(crate) fn run_git_for_stdout<I, S>(
     dir: &Path,
     args: I,
@@ -90,6 +102,29 @@ where
 }
 
 fn run_git<I, S>(
+    dir: &Path,
+    args: I,
+    env: Option<&[(OsString, OsString)]>,
+) -> Result<GitRun, GitToolingError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let run = run_git_raw(dir, args, env)?;
+    if !run.output.status.success() {
+        let stderr = String::from_utf8_lossy(&run.output.stderr)
+            .trim()
+            .to_string();
+        return Err(GitToolingError::GitCommand {
+            command: run.command,
+            status: run.output.status,
+            stderr,
+        });
+    }
+    Ok(run)
+}
+
+fn run_git_raw<I, S>(
     dir: &Path,
     args: I,
     env: Option<&[(OsString, OsString)]>,
@@ -119,14 +154,6 @@ where
     }
     command.args(&args_vec);
     let output = command.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(GitToolingError::GitCommand {
-            command: command_string,
-            status: output.status,
-            stderr,
-        });
-    }
     Ok(GitRun {
         command: command_string,
         output,
@@ -145,7 +172,7 @@ fn build_command_string(args: &[OsString]) -> String {
     format!("git {joined}")
 }
 
-struct GitRun {
-    command: String,
-    output: std::process::Output,
+pub(crate) struct GitRun {
+    pub(crate) command: String,
+    pub(crate) output: std::process::Output,
 }

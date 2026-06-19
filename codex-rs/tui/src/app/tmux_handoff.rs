@@ -1,6 +1,7 @@
 use super::App;
 use super::rollout_path_is_resumable;
 use crate::AppServerTarget;
+use crate::tmux_handoff::TmuxHandoffDestination;
 use crate::tmux_handoff::TmuxHandoffLaunchOptions;
 use crate::tmux_handoff::TmuxHandoffSummary;
 use codex_app_server_client::RemoteAppServerEndpoint;
@@ -9,23 +10,31 @@ use codex_app_server_protocol::ConfigLayerSource;
 impl App {
     pub(super) fn prepare_tmux_handoff_from_slash(
         &mut self,
-        name: Option<String>,
+        destination: TmuxHandoffDestination,
         replace_existing: bool,
     ) -> Result<TmuxHandoffSummary, String> {
-        self.prepare_tmux_handoff(name, replace_existing, TmuxHandoffRunningTurnPolicy::Reject)
+        self.prepare_tmux_handoff(
+            destination,
+            replace_existing,
+            TmuxHandoffRunningTurnPolicy::Reject,
+        )
     }
 
     pub(super) fn prepare_tmux_handoff_from_tool(
         &mut self,
-        name: Option<String>,
+        destination: TmuxHandoffDestination,
         replace_existing: bool,
     ) -> Result<TmuxHandoffSummary, String> {
-        self.prepare_tmux_handoff(name, replace_existing, TmuxHandoffRunningTurnPolicy::Allow)
+        self.prepare_tmux_handoff(
+            destination,
+            replace_existing,
+            TmuxHandoffRunningTurnPolicy::Allow,
+        )
     }
 
     fn prepare_tmux_handoff(
         &mut self,
-        name: Option<String>,
+        destination: TmuxHandoffDestination,
         replace_existing: bool,
         running_turn_policy: TmuxHandoffRunningTurnPolicy,
     ) -> Result<TmuxHandoffSummary, String> {
@@ -50,7 +59,7 @@ impl App {
         let plan = crate::tmux_handoff::build_tmux_handoff_plan(
             &self.config,
             thread_id,
-            name,
+            destination,
             replace_existing,
             self.chat_widget.current_model(),
             &self.tmux_handoff_launch_options()?,

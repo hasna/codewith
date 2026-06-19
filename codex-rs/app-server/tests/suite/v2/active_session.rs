@@ -9,6 +9,7 @@ use codex_app_server_protocol::ActiveSessionPeerKind;
 use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
@@ -135,7 +136,8 @@ async fn active_session_send_delivers_to_loaded_thread() -> Result<()> {
 
     let send_id = mcp
         .send_active_session_send_request(ActiveSessionSendParams {
-            target_thread_id: target_thread_id_input,
+            target_thread_id: Some(target_thread_id_input),
+            target_peer_id: None,
             message: "hello active peer".to_string(),
             sender_thread_id: Some(sender_thread_id_input),
             sender_label: Some("integration test".to_string()),
@@ -150,10 +152,41 @@ async fn active_session_send_delivers_to_loaded_thread() -> Result<()> {
     let response = to_response::<ActiveSessionSendResponse>(resp)?;
 
     assert_eq!(response.status, ActiveSessionSendStatus::Delivered);
-    assert_eq!(response.target_thread_id, target_thread_id);
+    assert_eq!(response.target_peer_id, target_thread_id);
+    assert_eq!(response.target_thread_id, Some(target_thread_id));
     assert_eq!(response.sender_thread_id, Some(sender_thread_id));
     assert_eq!(response.reason, None);
     assert!(!response.message_id.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_session_send_accepts_target_peer_id() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let target_thread_id = start_thread(&mut mcp).await?;
+    let send_response = send_active_session_message(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id: None,
+            target_peer_id: Some(target_thread_id.to_ascii_uppercase()),
+            message: "hello active peer".to_string(),
+            sender_thread_id: None,
+            sender_label: None,
+            delivery: Some(ActiveSessionMessageDelivery::QueueOnly),
+        },
+    )
+    .await?;
+
+    assert_eq!(send_response.status, ActiveSessionSendStatus::Delivered);
+    assert_eq!(send_response.target_peer_id, target_thread_id);
+    assert_eq!(send_response.target_thread_id, Some(target_thread_id));
 
     Ok(())
 }
@@ -183,7 +216,8 @@ async fn active_session_send_queue_only_reaches_target_next_turn_mailbox() -> Re
     let send_response = send_active_session_message(
         &mut mcp,
         ActiveSessionSendParams {
-            target_thread_id: target_thread_id.clone(),
+            target_thread_id: Some(target_thread_id.clone()),
+            target_peer_id: None,
             message: "queued delivery evidence".to_string(),
             sender_thread_id: Some(sender_thread_id.clone()),
             sender_label: Some("queue-only test".to_string()),
@@ -234,8 +268,8 @@ async fn active_session_send_queue_only_reaches_target_next_turn_mailbox() -> Re
             recipient: codex_protocol::AgentPath::root(),
             other_recipients: Vec::new(),
             content: format!(
-                "Active session message {} from queue-only test:\n\nqueued delivery evidence",
-                send_response.message_id
+                "Active session message {} from unverified app-server client claiming {} with label \"queue-only test\":\n\nqueued delivery evidence",
+                send_response.message_id, sender_thread_id
             ),
             encrypted_content: None,
             trigger_turn: false,
@@ -264,7 +298,8 @@ async fn active_session_send_trigger_turn_wakes_target_mailbox() -> Result<()> {
     let send_response = send_active_session_message(
         &mut mcp,
         ActiveSessionSendParams {
-            target_thread_id,
+            target_thread_id: Some(target_thread_id),
+            target_peer_id: None,
             message: "wake delivery evidence".to_string(),
             sender_thread_id: None,
             sender_label: Some("trigger-turn test".to_string()),
@@ -287,12 +322,74 @@ async fn active_session_send_trigger_turn_wakes_target_mailbox() -> Result<()> {
             recipient: codex_protocol::AgentPath::root(),
             other_recipients: Vec::new(),
             content: format!(
-                "Active session message {} from trigger-turn test:\n\nwake delivery evidence",
+                "Active session message {} from unverified app-server client \"trigger-turn test\":\n\nwake delivery evidence",
                 send_response.message_id
             ),
             encrypted_content: None,
             trigger_turn: true,
         }]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_session_send_rejects_oversized_message() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let target_thread_id = start_thread(&mut mcp).await?;
+    let err = send_active_session_message_error(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id: Some(target_thread_id),
+            target_peer_id: None,
+            message: "x".repeat(4 * 1024 + 1),
+            sender_thread_id: None,
+            sender_label: None,
+            delivery: Some(ActiveSessionMessageDelivery::QueueOnly),
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        "activeSession/send message must not exceed 4096 bytes"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_session_send_rejects_oversized_sender_label() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let target_thread_id = start_thread(&mut mcp).await?;
+    let err = send_active_session_message_error(
+        &mut mcp,
+        ActiveSessionSendParams {
+            target_thread_id: Some(target_thread_id),
+            target_peer_id: None,
+            message: "hello active peer".to_string(),
+            sender_thread_id: None,
+            sender_label: Some("x".repeat(257)),
+            delivery: Some(ActiveSessionMessageDelivery::QueueOnly),
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        "activeSession/send senderLabel must not exceed 256 bytes"
     );
 
     Ok(())
@@ -310,7 +407,8 @@ async fn active_session_send_rejects_unloaded_target_without_resuming() -> Resul
     let missing_thread_id = "00000000-0000-4000-8000-000000000001".to_string();
     let send_id = mcp
         .send_active_session_send_request(ActiveSessionSendParams {
-            target_thread_id: missing_thread_id.clone(),
+            target_thread_id: Some(missing_thread_id.clone()),
+            target_peer_id: None,
             message: "hello inactive peer".to_string(),
             sender_thread_id: None,
             sender_label: None,
@@ -325,7 +423,8 @@ async fn active_session_send_rejects_unloaded_target_without_resuming() -> Resul
     let response = to_response::<ActiveSessionSendResponse>(resp)?;
 
     assert_eq!(response.status, ActiveSessionSendStatus::NotLoaded);
-    assert_eq!(response.target_thread_id, missing_thread_id);
+    assert_eq!(response.target_peer_id, missing_thread_id.clone());
+    assert_eq!(response.target_thread_id, Some(missing_thread_id));
     assert_eq!(response.sender_thread_id, None);
     assert_eq!(
         response.reason,
@@ -356,7 +455,8 @@ async fn active_session_send_returns_not_loaded_for_offline_thread_without_resum
     let send_response = send_active_session_message(
         &mut mcp,
         ActiveSessionSendParams {
-            target_thread_id: offline_thread_id.clone(),
+            target_thread_id: Some(offline_thread_id.clone()),
+            target_peer_id: None,
             message: "hello offline peer".to_string(),
             sender_thread_id: None,
             sender_label: None,
@@ -366,7 +466,8 @@ async fn active_session_send_returns_not_loaded_for_offline_thread_without_resum
     .await?;
 
     assert_eq!(send_response.status, ActiveSessionSendStatus::NotLoaded);
-    assert_eq!(send_response.target_thread_id, offline_thread_id);
+    assert_eq!(send_response.target_peer_id, offline_thread_id.clone());
+    assert_eq!(send_response.target_thread_id, Some(offline_thread_id));
     assert_eq!(send_response.sender_thread_id, None);
     assert_eq!(
         send_response.reason,
@@ -441,6 +542,19 @@ async fn send_active_session_message(
     )
     .await??;
     to_response::<ActiveSessionSendResponse>(resp)
+}
+
+async fn send_active_session_message_error(
+    mcp: &mut McpProcess,
+    params: ActiveSessionSendParams,
+) -> Result<JSONRPCError> {
+    let send_id = mcp.send_active_session_send_request(params).await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(send_id)),
+    )
+    .await??;
+    Ok(err)
 }
 
 fn inter_agent_messages_in_request(body: &Value) -> Vec<InterAgentCommunication> {

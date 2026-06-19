@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_and_zai_metadata_preserve_native_search_support() {
+    fn provider_metadata_preserves_native_search_support_by_model() {
         assert!(
             metadata_for_local_fallback(Some("qwen"), "qwen3.5-flash")
                 .expect("qwen metadata should exist")
@@ -477,6 +477,21 @@ mod tests {
         assert!(
             metadata_for_local_fallback(Some("zai"), "glm-5.2")
                 .expect("zai metadata should exist")
+                .supports_search_tool
+        );
+        assert!(
+            metadata_for_local_fallback(Some("xai"), "grok-4.3")
+                .expect("grok metadata should exist")
+                .supports_search_tool
+        );
+        assert!(
+            !metadata_for_local_fallback(Some("xai"), "grok-build-0.1")
+                .expect("grok build metadata should exist")
+                .supports_search_tool
+        );
+        assert!(
+            !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro-ultraspeed")
+                .expect("xiaomi metadata should exist")
                 .supports_search_tool
         );
     }

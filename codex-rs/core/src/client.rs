@@ -853,6 +853,19 @@ impl ModelClient {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
         let mut tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        if !model_info.supports_search_tool {
+            tools.retain(|tool| {
+                !matches!(
+                    tool.get("type").and_then(serde_json::Value::as_str),
+                    Some(
+                        "web_search"
+                            | "web_search_20250305"
+                            | "web_search_20260209"
+                            | "openrouter:web_search"
+                    )
+                )
+            });
+        }
         if provider.is_nvidia_endpoint() || provider.is_openrouter_endpoint() {
             tools.retain(|tool| {
                 !matches!(

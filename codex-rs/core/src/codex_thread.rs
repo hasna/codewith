@@ -22,6 +22,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -176,6 +177,26 @@ impl CodexThread {
         self.codex.submit(op).await
     }
 
+    /// Delivers local inter-agent communication directly into this thread.
+    ///
+    /// This is for in-process bridge paths that have already resolved the target
+    /// thread and need delivery to be processed before reporting success.
+    pub async fn deliver_inter_agent_communication(
+        &self,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
+        if !self.is_running() {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        crate::session::handle_inter_agent_communication(
+            &self.codex.session,
+            uuid::Uuid::now_v7().to_string(),
+            communication,
+        )
+        .await;
+        Ok(())
+    }
+
     /// Generate a lightweight, out-of-band recap of the current session.
     pub async fn generate_session_recap(&self, prompt: Option<String>) -> CodexResult<String> {
         crate::session_recap::generate_session_recap(self, prompt).await
@@ -302,6 +323,12 @@ impl CodexThread {
         items: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
         self.codex.session.try_start_turn_if_idle(items).await
+    }
+
+    /// Starts a regular turn when trigger-turn mailbox work is pending and the
+    /// thread is idle.
+    pub async fn maybe_start_turn_for_pending_work(&self) -> bool {
+        self.codex.session.maybe_start_turn_for_pending_work().await
     }
 
     pub async fn set_app_server_client_info(

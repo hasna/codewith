@@ -51,11 +51,13 @@ pub struct GoalSetRequest<'a> {
     pub objective: GoalObjectiveUpdate<'a>,
     pub status: Option<ThreadGoalStatus>,
     pub token_budget: GoalTokenBudgetUpdate,
+    pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
 }
 
 #[derive(Clone, Debug)]
 pub struct GoalSetOutcome {
     pub goal: ThreadGoal,
+    pub plan_update: Option<codex_state::ThreadGoalPlanAdvanceOutcome>,
     state_goal: codex_state::ThreadGoal,
     previous_goal: Option<PreviousGoalSnapshot>,
 }
@@ -68,6 +70,26 @@ impl GoalSetOutcome {
                 .await
         {
             tracing::warn!("failed to apply external goal status runtime effects: {err}");
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GoalPlanActivateOutcome {
+    pub goal: ThreadGoal,
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    state_goal: codex_state::ThreadGoal,
+    previous_goal: Option<PreviousGoalSnapshot>,
+}
+
+impl GoalPlanActivateOutcome {
+    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
+        if let Some(runtime) = goal_service.runtime_for_thread(self.goal.thread_id)
+            && let Err(err) = runtime
+                .apply_external_goal_set(self.state_goal.clone(), self.previous_goal.clone())
+                .await
+        {
+            tracing::warn!("failed to apply external goal plan activation runtime effects: {err}");
         }
     }
 }
@@ -105,6 +127,7 @@ impl GoalService {
             objective,
             status,
             token_budget,
+            auto_execute,
         } = request;
         let status = status.map(state_status_from_protocol);
         let objective = match objective {
@@ -229,8 +252,21 @@ impl GoalService {
         if objective.is_some() {
             fill_empty_thread_preview_if_possible(state_db, thread_id, &goal).await;
         }
+        let plan_update = if runtime.is_none() {
+            sync_external_goal_without_runtime(
+                state_db,
+                thread_id,
+                &goal,
+                previous_goal.as_ref(),
+                auto_execute,
+            )
+            .await?
+        } else {
+            None
+        };
         Ok(GoalSetOutcome {
             goal: protocol_goal_from_state(goal.clone()),
+            plan_update,
             state_goal: goal,
             previous_goal,
         })
@@ -259,6 +295,13 @@ impl GoalService {
             tracing::warn!("failed to prepare external goal mutation: {err}");
         }
 
+        let existing_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
         let cleared = state_db
             .thread_goals()
             .delete_thread_goal(thread_id)
@@ -270,6 +313,19 @@ impl GoalService {
         drop(runtime);
 
         if cleared
+            && let Some(existing_goal) = existing_goal.as_ref()
+            && let Err(err) = crate::pending_interaction::clear_goal_status_waits(
+                state_db,
+                thread_id,
+                existing_goal.goal_id.as_str(),
+                "goal cleared",
+            )
+            .await
+        {
+            tracing::warn!("failed to clear pending goal interactions after clear: {err}");
+        }
+
+        if cleared
             && let Some(runtime) = self.runtime_for_thread(thread_id)
             && let Err(err) = runtime.apply_external_goal_clear().await
         {
@@ -277,6 +333,83 @@ impl GoalService {
         }
 
         Ok(cleared)
+    }
+
+    pub async fn activate_thread_goal_plan_node(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        node_id: &str,
+    ) -> Result<GoalPlanActivateOutcome, GoalServiceError> {
+        let node_id = node_id.trim();
+        if node_id.is_empty() {
+            return Err(GoalServiceError::InvalidRequest(
+                "goal plan node id must not be empty".to_string(),
+            ));
+        }
+
+        let runtime = self.runtime_for_thread(thread_id);
+        let _goal_state_permit = match runtime.as_ref() {
+            Some(runtime) => Some(
+                runtime
+                    .goal_state_permit()
+                    .await
+                    .map_err(GoalServiceError::Internal)?,
+            ),
+            None => None,
+        };
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal plan activation: {err}");
+        }
+
+        let existing_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        if existing_goal.as_ref().is_some_and(|goal| {
+            !matches!(
+                goal.status,
+                codex_state::ThreadGoalStatus::Complete
+                    | codex_state::ThreadGoalStatus::BudgetLimited
+                    | codex_state::ThreadGoalStatus::Cancelled
+            )
+        }) {
+            return Err(GoalServiceError::InvalidRequest(
+                "cannot activate a goal plan node while the current goal is still active or stopped resumably"
+                    .to_string(),
+            ));
+        }
+
+        let previous_goal = existing_goal.as_ref().map(PreviousGoalSnapshot::from);
+        let outcome = state_db
+            .thread_goals()
+            .activate_thread_goal_plan_node(thread_id, node_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to activate goal plan node: {err}"))
+            })?
+            .ok_or_else(|| {
+                GoalServiceError::InvalidRequest(
+                    "cannot activate goal plan node because it is not ready".to_string(),
+                )
+            })?;
+        let state_goal = outcome.activated_goal.ok_or_else(|| {
+            GoalServiceError::Internal(
+                "goal plan activation completed without an activated goal".to_string(),
+            )
+        })?;
+        fill_empty_thread_preview_if_possible(state_db, thread_id, &state_goal).await;
+        Ok(GoalPlanActivateOutcome {
+            goal: protocol_goal_from_state(state_goal.clone()),
+            plan: outcome.snapshot,
+            state_goal,
+            previous_goal,
+        })
     }
 
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
@@ -309,4 +442,75 @@ impl GoalService {
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<GoalRuntimeHandle>>> {
         self.runtimes.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+async fn sync_external_goal_without_runtime(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    goal: &codex_state::ThreadGoal,
+    previous_goal: Option<&PreviousGoalSnapshot>,
+    auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+) -> Result<Option<codex_state::ThreadGoalPlanAdvanceOutcome>, GoalServiceError> {
+    if matches!(
+        goal.status,
+        codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::Complete
+    ) && let Some(previous_goal) = previous_goal
+        && matches!(
+            previous_goal.status,
+            codex_state::ThreadGoalStatus::Blocked | codex_state::ThreadGoalStatus::UsageLimited
+        )
+        && let Err(err) = crate::pending_interaction::clear_goal_status_waits(
+            state_db,
+            thread_id,
+            previous_goal.goal_id.as_str(),
+            "goal resumed",
+        )
+        .await
+    {
+        tracing::warn!("failed to clear pending goal interactions without runtime: {err}");
+    }
+
+    if matches!(
+        goal.status,
+        codex_state::ThreadGoalStatus::Blocked | codex_state::ThreadGoalStatus::UsageLimited
+    ) && previous_goal.is_none_or(|previous_goal| previous_goal.status != goal.status)
+    {
+        let reason = match goal.status {
+            codex_state::ThreadGoalStatus::Blocked => "external-goal-blocked",
+            codex_state::ThreadGoalStatus::UsageLimited => "external-goal-usage-limit",
+            codex_state::ThreadGoalStatus::Active
+            | codex_state::ThreadGoalStatus::Paused
+            | codex_state::ThreadGoalStatus::BudgetLimited
+            | codex_state::ThreadGoalStatus::Complete
+            | codex_state::ThreadGoalStatus::Cancelled => unreachable!("status matched above"),
+        };
+        if let Err(err) = crate::pending_interaction::record_goal_status_wait(
+            state_db, thread_id, goal, /*turn_id*/ None, reason,
+        )
+        .await
+        {
+            tracing::warn!("failed to record pending goal interaction without runtime: {err}");
+        }
+    }
+
+    let plan_update = if goal.status == codex_state::ThreadGoalStatus::Complete {
+        state_db
+            .thread_goals()
+            .complete_goal_plan_node_and_maybe_advance(thread_id, goal, auto_execute)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to advance goal plan: {err}"))
+            })?
+    } else {
+        state_db
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(thread_id, goal)
+            .await
+            .map_err(|err| GoalServiceError::Internal(format!("failed to sync goal plan: {err}")))?
+            .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
+                snapshot,
+                activated_goal: None,
+            })
+    };
+    Ok(plan_update)
 }

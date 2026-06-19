@@ -1,7 +1,7 @@
 use super::*;
 use crate::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 
-pub(super) async fn append_background_agent_event_in_tx(
+pub(in crate::runtime) async fn append_background_agent_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
     event_type: &str,

@@ -2,6 +2,7 @@ use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
+use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadSettings;
@@ -58,6 +59,11 @@ pub(crate) enum ThreadListenerCommand {
     EmitThreadGoalUpdated {
         turn_id: Option<String>,
         goal: ThreadGoal,
+    },
+    // EmitThreadGoalPlanUpdated is used to order durable goal-plan updates with running-thread resume responses.
+    EmitThreadGoalPlanUpdated {
+        turn_id: Option<String>,
+        plan: ThreadGoalPlan,
     },
     // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
     EmitThreadGoalCleared,

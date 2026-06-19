@@ -9,6 +9,7 @@ use std::process::Command;
 use crate::legacy_core::config::Config;
 
 const MAX_TMUX_SESSION_NAME_CHARS: usize = 80;
+const MAX_TMUX_WINDOW_NAME_CHARS: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +22,7 @@ pub enum TmuxHandoffAttachMode {
 pub struct TmuxHandoffExit {
     pub session_name: String,
     pub window_name: String,
+    pub target: String,
     pub attach_mode: TmuxHandoffAttachMode,
 }
 
@@ -28,8 +30,26 @@ pub struct TmuxHandoffExit {
 pub(crate) struct TmuxHandoffSummary {
     pub(crate) session_name: String,
     pub(crate) window_name: String,
+    pub(crate) attach_target: String,
     pub(crate) handoff_command: String,
     pub(crate) attach_mode: TmuxHandoffAttachMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TmuxHandoffDestination {
+    NewSession {
+        name: Option<String>,
+    },
+    ExistingSession {
+        session_name: String,
+        window_name: Option<String>,
+    },
+}
+
+impl Default for TmuxHandoffDestination {
+    fn default() -> Self {
+        Self::NewSession { name: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +60,7 @@ pub(crate) struct TmuxHandoffPlan {
     pub(crate) command: Vec<String>,
     pub(crate) shell_command: String,
     pub(crate) replace_existing: bool,
+    target: TmuxHandoffPlanTarget,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -53,19 +74,48 @@ pub(crate) struct TmuxHandoffLaunchOptions {
     pub(crate) bypass_hook_trust: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TmuxHandoffPlanTarget {
+    NewSession,
+    ExistingSession,
+}
+
 pub(crate) fn build_tmux_handoff_plan(
     config: &Config,
     thread_id: ThreadId,
-    name: Option<String>,
+    destination: TmuxHandoffDestination,
     replace_existing: bool,
     current_model: &str,
     launch_options: &TmuxHandoffLaunchOptions,
 ) -> Result<TmuxHandoffPlan, String> {
-    let session_name = match name {
-        Some(name) => normalize_tmux_name(&name)?,
-        None => default_tmux_name_for_cwd(&config.cwd),
+    let (target, session_name, window_name) = match destination {
+        TmuxHandoffDestination::NewSession { name } => {
+            let session_name = match name {
+                Some(name) => normalize_tmux_name(&name)?,
+                None => default_tmux_name_for_cwd(&config.cwd),
+            };
+            (
+                TmuxHandoffPlanTarget::NewSession,
+                session_name.clone(),
+                session_name,
+            )
+        }
+        TmuxHandoffDestination::ExistingSession {
+            session_name,
+            window_name,
+        } => {
+            let session_name = validate_existing_tmux_session_name(&session_name)?;
+            let window_name = match window_name {
+                Some(window_name) => normalize_tmux_window_name(&window_name)?,
+                None => default_tmux_name_for_cwd(&config.cwd),
+            };
+            (
+                TmuxHandoffPlanTarget::ExistingSession,
+                session_name,
+                window_name,
+            )
+        }
     };
-    let window_name = session_name.clone();
     let cwd = config.cwd.to_path_buf();
     let mut command = vec![
         codewith_program(config),
@@ -151,6 +201,7 @@ pub(crate) fn build_tmux_handoff_plan(
         command,
         shell_command,
         replace_existing,
+        target,
     })
 }
 
@@ -158,7 +209,8 @@ pub(crate) fn create_tmux_handoff_session(
     plan: &TmuxHandoffPlan,
 ) -> Result<TmuxHandoffSummary, String> {
     let attach_mode = current_attach_mode();
-    if attach_mode == TmuxHandoffAttachMode::SwitchClient
+    if plan.target == TmuxHandoffPlanTarget::NewSession
+        && attach_mode == TmuxHandoffAttachMode::SwitchClient
         && current_tmux_session_name()?.as_deref() == Some(plan.session_name.as_str())
     {
         return Err(format!(
@@ -167,47 +219,97 @@ pub(crate) fn create_tmux_handoff_session(
         ));
     }
     ensure_tmux_available()?;
-    if tmux_session_exists(&plan.session_name)? {
-        if plan.replace_existing {
-            kill_tmux_session(&plan.session_name)?;
-        } else {
-            return Err(format!(
-                "tmux session `{}` already exists. Omit `--no-replace` to replace it.",
-                plan.session_name
-            ));
-        }
-    }
+    let attach_target = match plan.target {
+        TmuxHandoffPlanTarget::NewSession => {
+            if tmux_session_exists(&plan.session_name)? {
+                if plan.replace_existing {
+                    kill_tmux_session(&plan.session_name)?;
+                } else {
+                    return Err(format!(
+                        "tmux session `{}` already exists. Omit `--no-replace` to replace it.",
+                        plan.session_name
+                    ));
+                }
+            }
 
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", &plan.session_name])
-        .args(["-n", &plan.window_name])
-        .args(["-c", &plan.cwd.display().to_string()])
-        .arg("--")
-        .arg(&plan.shell_command)
-        .status()
-        .map_err(|err| format!("failed to start tmux: {err}"))?;
-    if !status.success() {
-        return Err(format!(
-            "tmux failed to create session `{}`",
-            plan.session_name
-        ));
-    }
+            let status = Command::new("tmux")
+                .args(["new-session", "-d", "-s", &plan.session_name])
+                .args(["-n", &plan.window_name])
+                .args(["-c", &plan.cwd.display().to_string()])
+                .arg("--")
+                .arg(&plan.shell_command)
+                .status()
+                .map_err(|err| format!("failed to start tmux: {err}"))?;
+            if !status.success() {
+                return Err(format!(
+                    "tmux failed to create session `{}`",
+                    plan.session_name
+                ));
+            }
+            exact_tmux_target(&plan.session_name)
+        }
+        TmuxHandoffPlanTarget::ExistingSession => {
+            if !tmux_session_exists(&plan.session_name)? {
+                return Err(format!(
+                    "tmux session `{}` does not exist. Omit `--session` to create a new tmux session automatically.",
+                    plan.session_name
+                ));
+            }
+            let target = exact_tmux_target(&plan.session_name);
+            let output = Command::new("tmux")
+                .args(["new-window", "-d", "-P", "-F", "#{window_id}"])
+                .args(["-t", target.as_str()])
+                .args(["-n", &plan.window_name])
+                .args(["-c", &plan.cwd.display().to_string()])
+                .arg("--")
+                .arg(&plan.shell_command)
+                .output()
+                .map_err(|err| {
+                    format!(
+                        "failed to create tmux window `{}` in session `{}`: {err}",
+                        plan.window_name, plan.session_name
+                    )
+                })?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                if stderr.is_empty() {
+                    return Err(format!(
+                        "tmux failed to create window `{}` in session `{}`",
+                        plan.window_name, plan.session_name
+                    ));
+                }
+                return Err(format!(
+                    "tmux failed to create window `{}` in session `{}`: {stderr}",
+                    plan.window_name, plan.session_name
+                ));
+            }
+            let window_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if window_id.is_empty() {
+                return Err(format!(
+                    "tmux did not return a target for window `{}` in session `{}`",
+                    plan.window_name, plan.session_name
+                ));
+            }
+            exact_tmux_window_target(&plan.session_name, &window_id)
+        }
+    };
 
     Ok(TmuxHandoffSummary {
         session_name: plan.session_name.clone(),
         window_name: plan.window_name.clone(),
-        handoff_command: handoff_command(attach_mode, &plan.session_name),
+        handoff_command: handoff_command(attach_mode, &attach_target),
+        attach_target,
         attach_mode,
     })
 }
 
-pub(crate) fn handoff_command(mode: TmuxHandoffAttachMode, session_name: &str) -> String {
+pub(crate) fn handoff_command(mode: TmuxHandoffAttachMode, target: &str) -> String {
     let command = match mode {
         TmuxHandoffAttachMode::Attach => "attach-session",
         TmuxHandoffAttachMode::SwitchClient => "switch-client",
     };
-    let target = exact_tmux_target(session_name);
-    shlex::try_join(["tmux", command, "-t", target.as_str()])
+    shlex::try_join(["tmux", command, "-t", target])
         .unwrap_or_else(|_| format!("tmux {command} -t {target}"))
 }
 
@@ -216,6 +318,7 @@ impl TmuxHandoffSummary {
         TmuxHandoffExit {
             session_name: self.session_name.clone(),
             window_name: self.window_name.clone(),
+            target: self.attach_target.clone(),
             attach_mode: self.attach_mode,
         }
     }
@@ -223,6 +326,10 @@ impl TmuxHandoffSummary {
 
 pub(crate) fn exact_tmux_target(session_name: &str) -> String {
     format!("={session_name}")
+}
+
+fn exact_tmux_window_target(session_name: &str, window_id: &str) -> String {
+    format!("{}:{window_id}", exact_tmux_target(session_name))
 }
 
 fn codewith_program(config: &Config) -> String {
@@ -283,6 +390,38 @@ fn normalize_tmux_name(raw: &str) -> Result<String, String> {
         return Err("tmux session name cannot be empty.".to_string());
     }
     Ok(normalized)
+}
+
+fn normalize_tmux_window_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("tmux window name cannot be empty.".to_string());
+    }
+    let normalized = name
+        .chars()
+        .map(|ch| if ch.is_control() { '-' } else { ch })
+        .take(MAX_TMUX_WINDOW_NAME_CHARS)
+        .collect::<String>();
+    if normalized.is_empty() {
+        return Err("tmux window name cannot be empty.".to_string());
+    }
+    Ok(normalized)
+}
+
+fn validate_existing_tmux_session_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("tmux session name cannot be empty.".to_string());
+    }
+    if name
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, ':' | '='))
+    {
+        return Err(
+            "tmux session name cannot contain control characters, `:`, or `=`.".to_string(),
+        );
+    }
+    Ok(name.to_string())
 }
 
 fn current_attach_mode() -> TmuxHandoffAttachMode {
@@ -400,7 +539,9 @@ mod tests {
         let plan = build_tmux_handoff_plan(
             &config,
             thread_id,
-            Some("named session".to_string()),
+            TmuxHandoffDestination::NewSession {
+                name: Some("named session".to_string()),
+            },
             /*replace_existing*/ true,
             "gpt-test",
             &TmuxHandoffLaunchOptions::default(),
@@ -449,7 +590,7 @@ mod tests {
         let plan = build_tmux_handoff_plan(
             &config,
             thread_id,
-            None,
+            TmuxHandoffDestination::default(),
             /*replace_existing*/ true,
             "gpt-test",
             &launch_options,
@@ -487,15 +628,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn plan_targets_existing_session_with_new_window() {
+        let config = test_config(test_path_buf("/home/user/open-codewith").abs()).await;
+        let thread_id =
+            ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("thread id");
+        let plan = build_tmux_handoff_plan(
+            &config,
+            thread_id,
+            TmuxHandoffDestination::ExistingSession {
+                session_name: "dev session".to_string(),
+                window_name: Some("Codewith window".to_string()),
+            },
+            /*replace_existing*/ false,
+            "gpt-test",
+            &TmuxHandoffLaunchOptions::default(),
+        )
+        .expect("handoff plan");
+
+        assert_eq!(plan.target, TmuxHandoffPlanTarget::ExistingSession);
+        assert_eq!(plan.session_name, "dev session");
+        assert_eq!(plan.window_name, "Codewith window");
+        assert!(!plan.replace_existing);
+    }
+
     #[test]
     fn handoff_command_targets_exact_session_name() {
         assert_eq!(
-            handoff_command(TmuxHandoffAttachMode::Attach, "named-session"),
+            handoff_command(
+                TmuxHandoffAttachMode::Attach,
+                &exact_tmux_target("named-session")
+            ),
             "tmux attach-session -t '=named-session'"
         );
         assert_eq!(
-            handoff_command(TmuxHandoffAttachMode::SwitchClient, "named-session"),
-            "tmux switch-client -t '=named-session'"
+            handoff_command(
+                TmuxHandoffAttachMode::SwitchClient,
+                &exact_tmux_window_target("named-session", "@42"),
+            ),
+            "tmux switch-client -t '=named-session:@42'"
         );
     }
 }

@@ -1,0 +1,539 @@
+schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_dental_lead_saas_launch"
+display_name: "Dental Lead SaaS Launch"
+source_prompt: "build me a saas that collects leads to dentists and sells them to these"
+status: "draft"
+fixture:
+  purpose: "sample_only"
+  executable: false
+  data: "synthetic_only"
+  generated_at: null
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "openai"
+  model: "gpt-5.4"
+  reasoning: "high"
+  service_tier: "priority"
+  approval_policy: "on-request"
+  permission_profile: "workspace-write"
+limits:
+  max_parallel_steps: 4
+  max_agents: 8
+  max_worktrees: 4
+  max_runtime_seconds: 604800
+  max_step_runtime_seconds: 21600
+  max_tokens: 2500000
+  max_tool_calls: 2000
+approvals:
+  required_before:
+    - "external_service_signup"
+    - "paid_ads_launch"
+    - "production_deploy"
+    - "email_or_sms_sending"
+    - "handling_real_patient_data"
+domain_invariants:
+  lead_record_required_fields:
+    - "lead_source"
+    - "consent_status"
+    - "contact_preference"
+    - "requested_service"
+    - "location"
+    - "provider_preference"
+    - "urgency"
+    - "handoff_target"
+  human_approval_required_before:
+    - "outbound_contact"
+    - "selling_or_transferring_lead"
+    - "storing_health_adjacent_notes"
+  pii_handling:
+    classification: "health_adjacent_pii"
+    retention: "minimize_and_expire"
+    logging: "redact_contact_details"
+  negative_cases:
+    - id: "missing_consent"
+      expected_outcome: "block_sale_and_request_user_intervention"
+    - id: "emergency_or_urgent_dental_issue"
+      expected_outcome: "show_emergency_guidance_and_block_marketplace_sale"
+    - id: "duplicate_lead"
+      expected_outcome: "deduplicate_before_billing"
+    - id: "incomplete_contact_info"
+      expected_outcome: "request_correction_before_handoff"
+    - id: "unsupported_location_or_service"
+      expected_outcome: "do_not_sell_and_collect_waitlist_signal"
+agents:
+  - id: "architect"
+    display_name: "Architect-Archimedes"
+    role: "Own the technical architecture, system boundaries, and implementation sequencing."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "market_research"
+    display_name: "Researcher-Aristotle"
+    role: "Research dental lead markets, buyer personas, compliance constraints, and acquisition channels."
+    model:
+      model_gateway: "openrouter"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "medium"
+  - id: "builder"
+    display_name: "Builder-Vitruvius"
+    role: "Implement the SaaS application in isolated branches and produce evidence."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "qa"
+    display_name: "Verifier-Euclid"
+    role: "Run deterministic tests, inspect artifacts, and block unverified completion."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "security_adversary"
+    display_name: "Adversary-Hypatia"
+    role: "Attack tenant isolation, consent, data handling, auth, and payment assumptions."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "business_adversary"
+    display_name: "Adversary-Cicero"
+    role: "Challenge buyer value, pricing, go-to-market, claims, and operational readiness."
+    model:
+      model_gateway: "openrouter"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "medium"
+steps:
+  - id: "scope_constraints"
+    title: "Clarify offer, constraints, and non-negotiables"
+    agent: "architect"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on: []
+    outputs:
+      - "product_scope.md"
+      - "risk_register.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "scope_has_risks"
+          type: "artifact_contains"
+          artifact: "risk_register.md"
+          must_contain:
+            - "HIPAA"
+            - "TCPA"
+            - "lead consent"
+            - "refund policy"
+            - "health-adjacent PII"
+  - id: "market_and_compliance_research"
+    title: "Research dentist lead demand, acquisition channels, and compliance"
+    agent: "market_research"
+    model:
+      model_gateway: "openrouter"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "medium"
+    parallel_group: "discovery"
+    depends_on:
+      - "scope_constraints"
+    outputs:
+      - "market_research.md"
+      - "compliance_notes.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "research_sources_present"
+          type: "artifact_contains"
+          artifact: "market_research.md"
+          must_contain:
+            - "source"
+            - "dentist"
+            - "lead"
+            - "unsupported location"
+  - id: "technical_architecture"
+    title: "Design multi-tenant SaaS architecture and data model"
+    agent: "architect"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    parallel_group: "discovery"
+    depends_on:
+      - "scope_constraints"
+    outputs:
+      - "architecture.md"
+      - "data_model.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "architecture_has_tenant_boundary"
+          type: "artifact_contains"
+          artifact: "architecture.md"
+          must_contain:
+            - "tenant"
+            - "lead"
+            - "billing"
+            - "audit"
+            - "PII"
+  - id: "ux_and_funnel_plan"
+    title: "Design lead capture, dentist dashboard, and admin workflows"
+    agent: "architect"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    parallel_group: "discovery"
+    depends_on:
+      - "scope_constraints"
+    outputs:
+      - "ux_flows.md"
+      - "funnel_copy.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "ux_includes_both_sides"
+          type: "artifact_contains"
+          artifact: "ux_flows.md"
+          must_contain:
+            - "patient"
+            - "dentist"
+            - "admin"
+            - "consent"
+  - id: "adversarial_discovery_review"
+    title: "Attack the research, compliance, and architecture assumptions"
+    agent: "security_adversary"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    parallel_group: "adversarial_review"
+    depends_on:
+      - "market_and_compliance_research"
+      - "technical_architecture"
+      - "ux_and_funnel_plan"
+    outputs:
+      - "adversarial_discovery_review.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "review_has_blockers"
+          type: "artifact_contains"
+          artifact: "adversarial_discovery_review.md"
+          must_contain:
+            - "blocker"
+            - "security"
+            - "consent"
+            - "emergency"
+  - id: "business_adversarial_review"
+    title: "Challenge go-to-market, pricing, and buyer value"
+    agent: "business_adversary"
+    model:
+      model_gateway: "openrouter"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "medium"
+    parallel_group: "adversarial_review"
+    depends_on:
+      - "market_and_compliance_research"
+      - "ux_and_funnel_plan"
+    outputs:
+      - "business_adversarial_review.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "business_review_has_economics"
+          type: "artifact_contains"
+          artifact: "business_adversarial_review.md"
+          must_contain:
+            - "CAC"
+            - "LTV"
+            - "price"
+  - id: "implementation_plan"
+    title: "Resolve review findings and produce build plan"
+    agent: "architect"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on:
+      - "adversarial_discovery_review"
+      - "business_adversarial_review"
+    outputs:
+      - "implementation_plan.md"
+      - "acceptance_criteria.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "plan_has_test_strategy"
+          type: "artifact_contains"
+          artifact: "implementation_plan.md"
+          must_contain:
+            - "test"
+            - "tenant"
+            - "payment"
+            - "lead"
+            - "negative cases"
+  - id: "build_foundation"
+    title: "Build auth, tenants, lead data model, and dentist accounts"
+    agent: "builder"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    depends_on:
+      - "implementation_plan"
+    outputs:
+      - "pull_request_foundation"
+      - "test_report_foundation.json"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "foundation_unit_tests"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 1200
+          output_limit_bytes: 20000
+          commands:
+            - "npm test -- --runInBand"
+            - "npm run typecheck"
+        - id: "foundation_no_uncommitted_untracked"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 120
+          output_limit_bytes: 4000
+          commands:
+            - "git status --short"
+          expected_stdout: ""
+  - id: "build_lead_capture"
+    title: "Build consumer lead capture funnel and consent capture"
+    agent: "builder"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "implementation"
+    depends_on:
+      - "build_foundation"
+    outputs:
+      - "pull_request_lead_capture"
+      - "test_report_lead_capture.json"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "lead_capture_tests"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 1200
+          output_limit_bytes: 20000
+          commands:
+            - "npm run test:lead-capture"
+            - "npm run test:lead-negative-cases"
+            - "npm run test:a11y"
+  - id: "build_dentist_marketplace"
+    title: "Build dentist dashboard, lead purchase flow, and billing ledger"
+    agent: "builder"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "implementation"
+    depends_on:
+      - "build_foundation"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.5"
+      reasoning: "high"
+      service_tier: "priority"
+    outputs:
+      - "pull_request_dentist_marketplace"
+      - "test_report_billing.json"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "marketplace_tests"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 1500
+          output_limit_bytes: 25000
+          commands:
+            - "npm run test:billing"
+            - "npm run test:tenant-isolation"
+            - "npm run test:lead-deduplication"
+  - id: "build_admin_and_operations"
+    title: "Build admin review tools, dispute handling, and audit logs"
+    agent: "builder"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "implementation"
+    depends_on:
+      - "build_foundation"
+    outputs:
+      - "pull_request_admin_ops"
+      - "test_report_admin.json"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "admin_tests"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 1200
+          output_limit_bytes: 20000
+          commands:
+            - "npm run test:admin"
+            - "npm run lint"
+  - id: "merge_and_reconcile"
+    title: "Merge parallel branches and resolve conflicts"
+    agent: "architect"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    depends_on:
+      - "build_lead_capture"
+      - "build_dentist_marketplace"
+      - "build_admin_and_operations"
+    outputs:
+      - "release_candidate_branch"
+      - "merge_report.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "full_test_suite"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "workspace-write"
+          network: "disabled"
+          timeout_seconds: 2400
+          output_limit_bytes: 30000
+          commands:
+            - "npm run typecheck"
+            - "npm run lint"
+            - "npm test"
+            - "npm run build"
+  - id: "security_and_business_final_review"
+    title: "Run final adversarial security, compliance, and business review"
+    agent: "security_adversary"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    parallel_group: "final_review"
+    depends_on:
+      - "merge_and_reconcile"
+    outputs:
+      - "security_final_review.md"
+      - "business_final_review.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "final_reviews_have_findings"
+          type: "artifact_contains"
+          artifact: "security_final_review.md"
+          must_contain:
+            - "tenant"
+            - "consent"
+            - "payment"
+            - "residual risk"
+  - id: "launch_gate"
+    title: "Prepare launch evidence and request explicit approval"
+    agent: "qa"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on:
+      - "security_and_business_final_review"
+    approval_gate: "production_deploy"
+    outputs:
+      - "launch_evidence.md"
+      - "go_no_go.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "launch_evidence_complete"
+          type: "artifact_contains"
+          artifact: "launch_evidence.md"
+          must_contain:
+            - "tests passed"
+            - "known risks"
+            - "rollback"
+            - "approval required"
+loops:
+  - id: "continuous_quality_gate"
+    title: "Re-run quality checks until launch evidence is accepted"
+    schedule:
+      type: "interval"
+      amount: 5
+      unit: "minutes"
+    timezone: "UTC"
+    trigger_step: "merge_and_reconcile"
+    stop_condition:
+      type: "step_succeeded"
+      step: "launch_gate"
+    max_iterations: 144
+    expires_after_seconds: 86400
+monitors:
+  - id: "ci_signal_observer"
+    title: "Observe existing CI monitor output as workflow status"
+    source: "existing_thread_monitor"
+    monitor_ref: null
+    trigger_step: "build_foundation"
+    stop_condition:
+      type: "workflow_complete"
+    max_events_per_tick: 10
+artifacts:
+  retention: "preserve_evidence"
+  required:
+    - "product_scope.md"
+    - "market_research.md"
+    - "architecture.md"
+    - "implementation_plan.md"
+    - "launch_evidence.md"
+cleanup:
+  on_cancel:
+    - "stop_child_agents"
+    - "cancel_pending_verifiers"
+    - "release_clean_worktrees"
+    - "preserve_dirty_worktrees_with_tombstones"
+  on_complete:
+    - "archive_events"
+    - "preserve_evidence_artifacts"
+    - "release_clean_worktrees"

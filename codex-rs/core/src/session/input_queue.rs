@@ -117,6 +117,25 @@ impl InputQueue {
         turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
     }
 
+    pub(crate) async fn defer_mailbox_delivery_for_active_turn(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) {
+        let turn_state = {
+            let active = active_turn.lock().await;
+            active
+                .as_ref()
+                .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        };
+        let Some(turn_state) = turn_state else {
+            return;
+        };
+        turn_state
+            .lock()
+            .await
+            .set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
+    }
+
     pub(crate) async fn accept_mailbox_delivery_for_current_turn(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
@@ -145,9 +164,12 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let has_trigger_turn_mail = self.has_trigger_turn_mailbox_items().await;
         let mut turn_state = turn_state.lock().await;
         turn_state.pending_input.items.extend(input);
-        turn_state.accept_mailbox_delivery_for_current_turn();
+        if !has_trigger_turn_mail {
+            turn_state.accept_mailbox_delivery_for_current_turn();
+        }
     }
 
     pub(crate) async fn extend_pending_input_for_turn_state(

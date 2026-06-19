@@ -140,6 +140,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             last_auth_profile_auto_switch_trigger: None,
             pending_auth_profile_auto_switch_trigger: None,
+            usage_self_heal: UsageSelfHealState::default(),
             add_credits_nudge_email_in_flight: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
             stream_controller: None,
@@ -231,6 +232,7 @@ impl ChatWidget {
             status_line_git_summary_lookup_complete: false,
             current_goal_status_indicator: None,
             current_goal_status: None,
+            current_goal_plan: None,
             external_editor_state: ExternalEditorState::Closed,
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_display: None,
@@ -260,6 +262,7 @@ impl ChatWidget {
         widget.sync_personality_command_enabled();
         widget.sync_plugins_command_enabled();
         widget.sync_goal_command_enabled();
+        widget.sync_workflow_command_enabled();
         widget.sync_scheduled_tasks_command_enabled();
         widget.sync_mentions_v2_enabled();
         widget

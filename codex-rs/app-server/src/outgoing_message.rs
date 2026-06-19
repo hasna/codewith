@@ -382,7 +382,7 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) {
+    pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) -> bool {
         let entry = self.take_request_callback(&id).await;
 
         match entry {
@@ -397,9 +397,11 @@ impl OutgoingMessageSender {
                 if let Err(err) = entry.callback.send(Ok(result)) {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
+                true
             }
             None => {
                 warn!("could not find callback for {id:?}");
+                false
             }
         }
     }

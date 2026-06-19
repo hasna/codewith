@@ -197,6 +197,8 @@ pub enum Feature {
     Goals,
     /// Enable local scheduled prompts for loaded or resumable threads.
     ScheduledTasks,
+    /// Enable local durable mailbox dispatch into live Codewith sessions.
+    MailboxDispatcher,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
     ToolCallMcpElicitation,
     /// Prompt Codewith Apps connector auth failures through MCP URL elicitations.
@@ -215,6 +217,8 @@ pub enum Feature {
     RemoteCompactionV2,
     /// Enable workspace dependency support.
     WorkspaceDependencies,
+    /// Enable first-class workflow planning and validation tools.
+    Workflows,
 
     // Removed
     /// Removed compatibility flag retained as a no-op so old configs can
@@ -1165,6 +1169,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::MailboxDispatcher,
+        key: "mailbox_dispatcher",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
         stage: Stage::Removed,
@@ -1271,6 +1281,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "workspace_dependencies",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::Workflows,
+        key: "workflows",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
 ];
 

@@ -7,10 +7,9 @@ expression: "render_bottom_popup(&chat, 100)"
   Select a recurring prompt to manage
 
   Search loops
-› active  every 5 minutes    active | every 5 minutes | next not scheduled | tz UTC
-  paused  every 5 minutes    id sch_paused | next not scheduled | prompt check whether CI is green
-                             and write the next action | failure streak 2 failures
-  expired  every 5 minutes   id sch_expired | next not scheduled | prompt check whether CI is
-                             green and write the next action
+› active · every 5 minutes   id sch_active · next not scheduled · prompt check whether CI is green
+                             and write the next action · tz UTC · Press Enter to manage.
+  paused · every 5 minutes
+  expired · every 5 minutes
 
   Press enter to confirm or esc to go back

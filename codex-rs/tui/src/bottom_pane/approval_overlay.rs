@@ -19,6 +19,7 @@ use crate::app_command::AppCommand;
 #[cfg(test)]
 use crate::app_command::AppCommand as Op;
 use crate::app_event::AppEvent;
+use crate::app_event::PermissionProfileSelection;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::CancellationEvent;
@@ -435,20 +436,14 @@ impl ApprovalOverlay {
                 /*personality*/ None,
             ),
         });
-        self.app_event_tx
-            .send(AppEvent::UpdateAskForApprovalPolicy(approval));
-        self.app_event_tx
-            .send(AppEvent::UpdateActivePermissionProfile(
-                active_permission_profile,
-            ));
-        self.app_event_tx
-            .send(AppEvent::UpdateApprovalsReviewer(ApprovalsReviewer::User));
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_info_event(
-                "Permissions updated to Full Access".to_string(),
-                /*hint*/ None,
-            ),
-        )));
+        self.app_event_tx.send(AppEvent::SelectPermissionProfile(
+            PermissionProfileSelection {
+                profile_id: active_permission_profile.id,
+                approval_policy: Some(approval),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                display_label: full_access.label.to_string(),
+            },
+        ));
     }
 
     fn approve_queued_requests_after_full_access(&mut self, thread_id: ThreadId) {
@@ -1345,28 +1340,6 @@ mod tests {
             .collect()
     }
 
-    fn rendered_history_events(events: &[AppEvent]) -> String {
-        events
-            .iter()
-            .filter_map(|event| match event {
-                AppEvent::InsertHistoryCell(cell) => Some(
-                    cell.display_lines(/*width*/ 100)
-                        .iter()
-                        .map(|line| {
-                            line.spans
-                                .iter()
-                                .map(|span| span.content.as_ref())
-                                .collect::<String>()
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     fn normalize_snapshot_paths(rendered: String) -> String {
         [
             (absolute_path("/tmp/readme.txt"), "/tmp/readme.txt"),
@@ -1934,14 +1907,18 @@ mod tests {
             }),
             "expected command approval after full-access override, got {events:?}"
         );
-        let rendered_history = rendered_history_events(&events);
         assert!(
-            rendered_history.contains("Permissions updated to Full Access"),
-            "expected full-access history message, got {rendered_history:?}"
-        );
-        assert!(
-            !rendered_history.contains("this time"),
-            "full-access shortcut should not render a one-time approval message, got {rendered_history:?}"
+            events.iter().any(|event| matches!(
+                event,
+                AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                    profile_id,
+                    approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                    approvals_reviewer: Some(codex_config::types::ApprovalsReviewer::User),
+                    display_label,
+                }) if profile_id == codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                    && display_label == "Full Access"
+            )),
+            "expected full-access selection event, got {events:?}"
         );
     }
 
@@ -1989,10 +1966,18 @@ mod tests {
             }),
             "expected full-access shortcut to grant the pending permissions request, got {events:?}"
         );
-        let rendered_history = rendered_history_events(&events);
         assert!(
-            rendered_history.contains("Permissions updated to Full Access"),
-            "expected full-access history message, got {rendered_history:?}"
+            events.iter().any(|event| matches!(
+                event,
+                AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+                    profile_id,
+                    approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                    approvals_reviewer: Some(codex_config::types::ApprovalsReviewer::User),
+                    display_label,
+                }) if profile_id == codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                    && display_label == "Full Access"
+            )),
+            "expected full-access selection event, got {events:?}"
         );
     }
 

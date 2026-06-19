@@ -16,11 +16,11 @@ const CODEWITH_LINK_EMERALD_RGB: (u8, u8, u8) = (4, 120, 87);
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
 pub fn user_message_style() -> Style {
-    user_message_style_for(default_bg())
+    user_message_style_for(adaptive_default_bg())
 }
 
 pub fn proposed_plan_style() -> Style {
-    proposed_plan_style_for(default_bg())
+    proposed_plan_style_for(adaptive_default_bg())
 }
 
 /// Returns a low-contrast rule style for separators within markdown tables.
@@ -46,6 +46,52 @@ pub(crate) fn accent_rgb() -> (u8, u8, u8) {
 /// Returns the shared Codewith accent style for link-like text.
 pub(crate) fn accent_link_style() -> Style {
     Style::default().fg(accent_link_color()).underlined()
+}
+
+fn adaptive_default_bg() -> Option<(u8, u8, u8)> {
+    default_bg()
+        .or_else(terminal_theme_bg_hint)
+        .or_else(crate::render::highlight::current_theme_background_rgb)
+}
+
+fn terminal_theme_bg_hint() -> Option<(u8, u8, u8)> {
+    terminal_theme_bg_hint_from_vars(
+        std::env::var("TERM_THEME").ok().as_deref(),
+        std::env::var("VSCODE_THEME").ok().as_deref(),
+        std::env::var("ANSI_LIGHT").ok().as_deref(),
+        std::env::var("COLORFGBG").ok().as_deref(),
+    )
+}
+
+fn terminal_theme_bg_hint_from_vars(
+    term_theme: Option<&str>,
+    vscode_theme: Option<&str>,
+    ansi_light: Option<&str>,
+    colorfgbg: Option<&str>,
+) -> Option<(u8, u8, u8)> {
+    if ansi_light.is_some_and(|value| matches!(value, "1" | "true" | "TRUE" | "yes" | "YES")) {
+        return Some((255, 255, 255));
+    }
+
+    for value in [term_theme, vscode_theme].into_iter().flatten() {
+        let value = value.to_ascii_lowercase();
+        if value.contains("light") {
+            return Some((255, 255, 255));
+        }
+        if value.contains("dark") {
+            return Some((0, 0, 0));
+        }
+    }
+
+    let bg_index = colorfgbg?
+        .rsplit(';')
+        .next()
+        .and_then(|value| value.trim().parse::<u8>().ok())?;
+    match bg_index {
+        0..=6 | 8 => Some((0, 0, 0)),
+        7 | 9..=15 => Some((255, 255, 255)),
+        _ => None,
+    }
 }
 
 /// Returns the style for a user-authored message using the provided terminal background.
@@ -167,6 +213,38 @@ mod tests {
             rgb_color(CODEWITH_LINK_EMERALD_RGB)
         );
         assert_eq!(accent_link_style(), expected);
+    }
+
+    #[test]
+    fn terminal_theme_bg_hint_uses_explicit_light_markers() {
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(None, None, Some("1"), None),
+            Some((255, 255, 255))
+        );
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(Some("light"), None, None, None),
+            Some((255, 255, 255))
+        );
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(None, Some("Light Modern"), None, None),
+            Some((255, 255, 255))
+        );
+    }
+
+    #[test]
+    fn terminal_theme_bg_hint_uses_dark_markers_and_colorfgbg() {
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(Some("dark"), None, None, None),
+            Some((0, 0, 0))
+        );
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(None, None, None, Some("15;0")),
+            Some((0, 0, 0))
+        );
+        assert_eq!(
+            terminal_theme_bg_hint_from_vars(None, None, None, Some("0;15")),
+            Some((255, 255, 255))
+        );
     }
 
     #[test]

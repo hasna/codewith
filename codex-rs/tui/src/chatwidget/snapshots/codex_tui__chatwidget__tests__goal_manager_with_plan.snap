@@ -3,15 +3,13 @@ source: tui/src/chatwidget/tests/goal_menu.rs
 expression: "render_bottom_popup(&chat, 110)"
 ---
   Goals
-  2 planned goals
+  2 planned · 1 in progress
 
   Search goals
-› Current: Keep improving the bare goal command until it feels calm and u… Press Enter to edit the current
-                                                                           goal.
-  Plan plan_goa                                                            active | ai-directed | 2 goals
-  discover: Map existing goal persistence and UI surfaces (current)        active | deps none | 12500
-                                                                           tokens, 90s | budget unlimited
-  ship: Implement durable dependent goal execution                         pending | deps discover | 12500
-                                                                           tokens, 90s | budget unlimited
+› Current: Keep improving the bare goal command until it feels calm and u… 12.5K/80K tokens · time 1m
+  Cancel current goal                                                      Keep improving the bare goal
+                                                                           command until it feels calm and
+                                                                           useful.
+  Plan: Map existing goal persistence and UI surfaces · active · 2 goals, 1 current · time 3m
 
   Press enter to confirm or esc to go back

@@ -1,0 +1,710 @@
+use super::*;
+use crate::active_session_bridge::ActiveChannelDeliveryMode;
+use crate::active_session_bridge::ActiveChannelDeliveryOutcome;
+use crate::active_session_bridge::ActiveChannelEndpoint;
+use crate::active_session_bridge::ActiveChannelEndpointKind;
+use crate::active_session_bridge::ActiveChannelEnvelope;
+use crate::active_session_bridge::ActiveChannelRouter;
+use crate::active_session_bridge::active_channel_communication;
+use crate::active_session_registry::ActivePeerDirectory;
+use crate::active_session_registry::ActivePeerFreshness;
+use crate::active_session_registry::ActivePeerLookupError;
+use crate::active_session_registry::LastSeenAt;
+use crate::request_processors::thread_lifecycle::ListenerTaskContext;
+
+const MAILBOX_DISPATCH_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
+const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
+const MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK: usize = 16;
+const MAILBOX_DISPATCH_LEASE_OWNER: &str = "app-server-local-mailbox-dispatcher";
+const MAX_MAILBOX_DISPATCH_ERROR_CHARS: usize = 1_000;
+const MAILBOX_PENDING_WORK_WAKE_ATTEMPTS: usize = 40;
+const MAILBOX_PENDING_WORK_WAKE_INTERVAL: Duration = Duration::from_millis(50);
+
+#[derive(Clone)]
+pub(crate) struct ThreadMailboxDispatcherRuntime {
+    active_peer_directory: ActivePeerDirectory,
+    active_channel_router: ActiveChannelRouter,
+    auth_manager: Arc<AuthManager>,
+    thread_manager: Arc<ThreadManager>,
+    outgoing: Arc<OutgoingMessageSender>,
+    config: Arc<Config>,
+    config_manager: ConfigManager,
+    thread_state_manager: ThreadStateManager,
+    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    thread_watch_manager: ThreadWatchManager,
+    thread_list_state_permit: Arc<Semaphore>,
+    skills_watcher: Arc<SkillsWatcher>,
+    state_db: Option<StateDbHandle>,
+    cancel_token: CancellationToken,
+    tasks: TaskTracker,
+}
+
+impl ThreadMailboxDispatcherRuntime {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        auth_manager: Arc<AuthManager>,
+        thread_manager: Arc<ThreadManager>,
+        outgoing: Arc<OutgoingMessageSender>,
+        config: Arc<Config>,
+        config_manager: ConfigManager,
+        thread_state_manager: ThreadStateManager,
+        pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+        thread_watch_manager: ThreadWatchManager,
+        thread_list_state_permit: Arc<Semaphore>,
+        skills_watcher: Arc<SkillsWatcher>,
+        state_db: Option<StateDbHandle>,
+    ) -> Self {
+        Self {
+            active_peer_directory: ActivePeerDirectory::new(
+                Arc::clone(&thread_manager),
+                Arc::clone(&pending_thread_unloads),
+            ),
+            active_channel_router: ActiveChannelRouter::new(
+                Arc::clone(&thread_manager),
+                Arc::clone(&pending_thread_unloads),
+            ),
+            auth_manager,
+            thread_manager,
+            outgoing,
+            config,
+            config_manager,
+            thread_state_manager,
+            pending_thread_unloads,
+            thread_watch_manager,
+            thread_list_state_permit,
+            skills_watcher,
+            state_db,
+            cancel_token: CancellationToken::new(),
+            tasks: TaskTracker::new(),
+        }
+    }
+
+    pub(crate) fn start(&self) {
+        if self.state_db.is_none() {
+            return;
+        }
+        let runtime = self.clone();
+        self.tasks.spawn(async move {
+            runtime.run().await;
+        });
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.cancel_token.cancel();
+    }
+
+    pub(crate) async fn drain_background_tasks(&self) {
+        self.shutdown();
+        self.tasks.close();
+        if tokio::time::timeout(Duration::from_secs(10), self.tasks.wait())
+            .await
+            .is_err()
+        {
+            warn!(
+                "timed out waiting for thread mailbox dispatcher runtime to shut down; proceeding"
+            );
+        }
+    }
+
+    async fn run(self) {
+        let mut interval = tokio::time::interval(MAILBOX_DISPATCH_POLL_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => break,
+                _ = interval.tick() => self.tick().await,
+            }
+        }
+    }
+
+    async fn tick(&self) {
+        if !self.config.features.enabled(Feature::MailboxDispatcher) {
+            return;
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        for _ in 0..MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK {
+            let claim = match state_db
+                .mailbox_messages()
+                .claim_next_due_message(codex_state::MailboxDispatchClaimParams {
+                    lease_owner: MAILBOX_DISPATCH_LEASE_OWNER.to_string(),
+                    lease_duration: MAILBOX_DISPATCH_LEASE_DURATION,
+                    now: Utc::now(),
+                })
+                .await
+            {
+                Ok(Some(claim)) => claim,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("failed to claim due mailbox message: {err}");
+                    break;
+                }
+            };
+            self.dispatch_claim(state_db, claim).await;
+        }
+    }
+
+    async fn dispatch_claim(&self, state_db: &StateDbHandle, claim: codex_state::MailboxClaim) {
+        let result = self.deliver_claim(&claim).await;
+        match result {
+            MailboxDispatchResult::Delivered { receipt } => {
+                if let Err(err) = state_db
+                    .mailbox_messages()
+                    .ack_message(codex_state::MailboxAckParams {
+                        message_id: claim.message.message_id.clone(),
+                        attempt_id: claim.attempt.attempt_id.clone(),
+                        lease_id: claim.attempt.lease_id.clone(),
+                        receipt_payload_json: Some(receipt),
+                        now: Utc::now(),
+                    })
+                    .await
+                {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "failed to ack delivered mailbox message: {err}"
+                    );
+                }
+            }
+            MailboxDispatchResult::Retry { error, retry_at } => {
+                let retry_at = retry_at.unwrap_or_else(|| {
+                    Utc::now() + ChronoDuration::seconds(MAILBOX_DISPATCH_RETRY_DELAY_SECONDS)
+                });
+                if let Err(err) = state_db
+                    .mailbox_messages()
+                    .fail_message(codex_state::MailboxFailParams {
+                        message_id: claim.message.message_id.clone(),
+                        attempt_id: claim.attempt.attempt_id.clone(),
+                        lease_id: claim.attempt.lease_id.clone(),
+                        error,
+                        disposition: codex_state::MailboxFailDisposition::Retry {
+                            next_attempt_at: retry_at,
+                        },
+                        now: Utc::now(),
+                    })
+                    .await
+                {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "failed to requeue mailbox message after dispatch miss: {err}"
+                    );
+                }
+            }
+            MailboxDispatchResult::Terminal { error } => {
+                if let Err(err) = state_db
+                    .mailbox_messages()
+                    .fail_message(codex_state::MailboxFailParams {
+                        message_id: claim.message.message_id.clone(),
+                        attempt_id: claim.attempt.attempt_id.clone(),
+                        lease_id: claim.attempt.lease_id.clone(),
+                        error,
+                        disposition: codex_state::MailboxFailDisposition::Terminal,
+                        now: Utc::now(),
+                    })
+                    .await
+                {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "failed to mark mailbox message terminal after dispatch miss: {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    async fn deliver_claim(&self, claim: &codex_state::MailboxClaim) -> MailboxDispatchResult {
+        let policy = mailbox_local_delivery_policy(&claim.message);
+        let freshness = dispatcher_freshness_now();
+        let registry = match self.active_peer_directory.snapshot(freshness.now).await {
+            Ok(registry) => registry,
+            Err(err) => {
+                return MailboxDispatchResult::retry(format!(
+                    "failed to read active session directory: {err}"
+                ));
+            }
+        };
+        let target_peer_id = claim.message.target_thread_id.to_string();
+        let (registry, target_peer) = match registry.get_active(target_peer_id.as_str(), freshness)
+        {
+            Ok(peer) => (registry, peer),
+            Err(err) => match policy {
+                MailboxLocalDeliveryPolicy::LiveOnly => return mailbox_target_not_loaded(err),
+                MailboxLocalDeliveryPolicy::ResumeAndTrigger => {
+                    if let Err(err) = self
+                        .resume_mailbox_target(claim.message.target_thread_id)
+                        .await
+                    {
+                        return err.into_dispatch_result();
+                    }
+                    let registry = match self.active_peer_directory.snapshot(freshness.now).await {
+                        Ok(registry) => registry,
+                        Err(err) => {
+                            return MailboxDispatchResult::retry(format!(
+                                "failed to read active session directory after resume: {err}"
+                            ));
+                        }
+                    };
+                    let target_peer = match registry.get_active(target_peer_id.as_str(), freshness)
+                    {
+                        Ok(peer) => peer,
+                        Err(err) => return mailbox_target_not_loaded(err),
+                    };
+                    (registry, target_peer)
+                }
+            },
+        };
+        let sender_peer = claim
+            .message
+            .sender_thread_id
+            .map(|thread_id| thread_id.to_string())
+            .and_then(|peer_id| registry.get_active(peer_id.as_str(), freshness).ok());
+        let delivery = mailbox_delivery_mode(claim.message.kind, policy);
+        let envelope = mailbox_active_channel_envelope(
+            &claim.message,
+            sender_peer.as_ref(),
+            &target_peer,
+            delivery,
+        );
+        let communication = active_channel_communication(&envelope);
+        let delivery_outcome = self
+            .active_channel_router
+            .deliver(&envelope, &target_peer, communication)
+            .await;
+        match delivery_outcome {
+            Ok(ActiveChannelDeliveryOutcome::Delivered { .. }) => {
+                if delivery.trigger_turn() {
+                    self.spawn_pending_work_wake(target_peer.thread_id);
+                }
+                MailboxDispatchResult::Delivered {
+                    receipt: serde_json::json!({
+                        "delivery": "live",
+                        "recipientPeerId": target_peer.peer_id,
+                        "recipientThreadId": target_peer.thread_id.to_string(),
+                        "deliveryMode": mailbox_delivery_mode_name(delivery),
+                    }),
+                }
+            }
+            Ok(ActiveChannelDeliveryOutcome::NotLoaded { .. }) => MailboxDispatchResult::retry(
+                "target thread became unloaded during mailbox dispatch",
+            ),
+            Ok(ActiveChannelDeliveryOutcome::Unsupported { .. }) => MailboxDispatchResult::retry(
+                "target peer is active but does not support local mailbox dispatch",
+            ),
+            Err(err) => MailboxDispatchResult::retry(format!("mailbox dispatch failed: {err}")),
+        }
+    }
+
+    fn spawn_pending_work_wake(&self, thread_id: ThreadId) {
+        let thread_manager = Arc::clone(&self.thread_manager);
+        let cancel_token = self.cancel_token.clone();
+        self.tasks.spawn(async move {
+            for _ in 0..MAILBOX_PENDING_WORK_WAKE_ATTEMPTS {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => return,
+                    _ = tokio::time::sleep(MAILBOX_PENDING_WORK_WAKE_INTERVAL) => {}
+                }
+                match thread_manager.get_thread(thread_id).await {
+                    Ok(thread) => {
+                        if thread.maybe_start_turn_for_pending_work().await {
+                            return;
+                        }
+                    }
+                    Err(CodexErr::ThreadNotFound(_)) => return,
+                    Err(err) => {
+                        warn!("failed to wake mailbox pending work for thread {thread_id}: {err}");
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    async fn resume_mailbox_target(&self, thread_id: ThreadId) -> Result<(), MailboxResumeError> {
+        match self.thread_manager.get_thread(thread_id).await {
+            Ok(thread) => return self.ensure_mailbox_listener(thread_id, thread).await,
+            Err(CodexErr::ThreadNotFound(_)) => {}
+            Err(err) => {
+                return Err(MailboxResumeError::Failed(format!(
+                    "failed to inspect loaded mailbox target: {err}"
+                )));
+            }
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return Err(MailboxResumeError::Failed(
+                "sqlite state db unavailable for mailbox resume".to_string(),
+            ));
+        };
+        let rollout_path = codex_rollout::find_thread_path_by_id_str(
+            &self.config.codex_home,
+            &thread_id.to_string(),
+            Some(state_db),
+        )
+        .await
+        .map_err(|err| {
+            MailboxResumeError::Failed(format!("failed to resolve mailbox resume target: {err}"))
+        })?
+        .ok_or_else(|| {
+            MailboxResumeError::NotResolvable(format!(
+                "mailbox target thread is not resumable: {thread_id}"
+            ))
+        })?;
+        let initial_history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .map_err(|err| {
+                MailboxResumeError::Failed(format!(
+                    "failed to load rollout {} for mailbox resume: {err}",
+                    rollout_path.display()
+                ))
+            })?;
+        let history_cwd = initial_history.session_cwd();
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+        apply_persisted_mailbox_resume_metadata(
+            state_db,
+            thread_id,
+            &initial_history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+        let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
+            &self.auth_manager,
+            &self.config,
+            typesafe_overrides.auth_profile.clone(),
+        )
+        .await;
+        if let Some(profile) = broker_decision.selected_profile.as_ref() {
+            tracing::debug!(
+                thread_id = %thread_id,
+                auth_profile = %profile,
+                reason = ?broker_decision.reason,
+                "usage profile broker selected auth profile for mailbox resume"
+            );
+            typesafe_overrides.auth_profile = Some(Some(profile.clone()));
+        } else if let Some(retry_at) = broker_decision.retry_at
+            && let Some(retry_at) = broker_retry_at_datetime(&self.config, retry_at)
+        {
+            tracing::debug!(
+                thread_id = %thread_id,
+                retry_at = %retry_at.to_rfc3339(),
+                reason = ?broker_decision.reason,
+                "usage profile broker deferred mailbox resume"
+            );
+            return Err(MailboxResumeError::UsageProfileWait {
+                retry_at,
+                error: format!(
+                    "all eligible auth profiles are exhausted; retrying mailbox resume after {}",
+                    retry_at.to_rfc3339()
+                ),
+            });
+        }
+        let config = self
+            .config_manager
+            .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
+            .await
+            .map_err(|err| {
+                MailboxResumeError::Failed(format!(
+                    "failed to load config for mailbox resume: {err}"
+                ))
+            })?;
+        let thread = self
+            .thread_manager
+            .resume_thread_with_history(
+                config,
+                initial_history,
+                Arc::clone(&self.auth_manager),
+                /*parent_trace*/ None,
+            )
+            .await
+            .map(|new_thread| new_thread.thread)
+            .map_err(|err| {
+                MailboxResumeError::Failed(format!("failed to resume mailbox target: {err}"))
+            })?;
+        self.ensure_mailbox_listener(thread_id, thread).await
+    }
+
+    async fn ensure_mailbox_listener(
+        &self,
+        thread_id: ThreadId,
+        thread: Arc<CodexThread>,
+    ) -> Result<(), MailboxResumeError> {
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let context = ListenerTaskContext {
+            thread_manager: Arc::clone(&self.thread_manager),
+            thread_state_manager: self.thread_state_manager.clone(),
+            outgoing: Arc::clone(&self.outgoing),
+            pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
+            thread_watch_manager: self.thread_watch_manager.clone(),
+            thread_list_state_permit: Arc::clone(&self.thread_list_state_permit),
+            fallback_model_provider: self.config.model_provider_id.clone(),
+            codex_home: self.config.codex_home.to_path_buf(),
+            skills_watcher: Arc::clone(&self.skills_watcher),
+        };
+        super::thread_lifecycle::ensure_listener_task_running(
+            context,
+            thread_id,
+            thread,
+            thread_state,
+        )
+        .await
+        .map_err(|err| MailboxResumeError::Failed(err.message))
+    }
+}
+
+enum MailboxDispatchResult {
+    Delivered {
+        receipt: serde_json::Value,
+    },
+    Retry {
+        error: String,
+        retry_at: Option<DateTime<Utc>>,
+    },
+    Terminal {
+        error: String,
+    },
+}
+
+impl MailboxDispatchResult {
+    fn retry(error: impl Into<String>) -> Self {
+        Self::Retry {
+            error: truncate_mailbox_dispatch_error(error.into()),
+            retry_at: None,
+        }
+    }
+
+    fn retry_at(error: impl Into<String>, retry_at: DateTime<Utc>) -> Self {
+        Self::Retry {
+            error: truncate_mailbox_dispatch_error(error.into()),
+            retry_at: Some(retry_at),
+        }
+    }
+
+    fn terminal(error: impl Into<String>) -> Self {
+        Self::Terminal {
+            error: truncate_mailbox_dispatch_error(error.into()),
+        }
+    }
+}
+
+enum MailboxResumeError {
+    NotResolvable(String),
+    Failed(String),
+    UsageProfileWait {
+        retry_at: DateTime<Utc>,
+        error: String,
+    },
+}
+
+impl MailboxResumeError {
+    fn into_dispatch_result(self) -> MailboxDispatchResult {
+        match self {
+            Self::NotResolvable(error) => MailboxDispatchResult::terminal(error),
+            Self::Failed(error) => MailboxDispatchResult::retry(error),
+            Self::UsageProfileWait { retry_at, error } => {
+                MailboxDispatchResult::retry_at(error, retry_at)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MailboxLocalDeliveryPolicy {
+    LiveOnly,
+    ResumeAndTrigger,
+}
+
+fn dispatcher_freshness_now() -> ActivePeerFreshness {
+    let now = LastSeenAt::from_unix_seconds(time::OffsetDateTime::now_utc().unix_timestamp());
+    ActivePeerFreshness::new(now, Duration::from_secs(0))
+}
+
+fn mailbox_target_not_loaded(error: ActivePeerLookupError) -> MailboxDispatchResult {
+    match error {
+        ActivePeerLookupError::Unknown { .. } => MailboxDispatchResult::retry(
+            "target thread is not currently loaded for mailbox dispatch",
+        ),
+        ActivePeerLookupError::Inactive { .. } => {
+            MailboxDispatchResult::retry("target thread is inactive for mailbox dispatch")
+        }
+    }
+}
+
+fn mailbox_delivery_mode(
+    kind: codex_state::MailboxMessageKind,
+    policy: MailboxLocalDeliveryPolicy,
+) -> ActiveChannelDeliveryMode {
+    match policy {
+        MailboxLocalDeliveryPolicy::ResumeAndTrigger => ActiveChannelDeliveryMode::TriggerTurn,
+        MailboxLocalDeliveryPolicy::LiveOnly => match kind {
+            codex_state::MailboxMessageKind::UserInstruction
+            | codex_state::MailboxMessageKind::UserReply => ActiveChannelDeliveryMode::TriggerTurn,
+            codex_state::MailboxMessageKind::Control => ActiveChannelDeliveryMode::QueueOnly,
+        },
+    }
+}
+
+fn mailbox_local_delivery_policy(
+    message: &codex_state::MailboxMessage,
+) -> MailboxLocalDeliveryPolicy {
+    let payload = &message.payload_json;
+    let mode = payload
+        .get("delivery")
+        .or_else(|| payload.get("deliveryMode"))
+        .or_else(|| payload.get("localDelivery"))
+        .or_else(|| payload.pointer("/dispatch/mode"))
+        .and_then(serde_json::Value::as_str);
+    match mode {
+        Some("resumeAndTrigger" | "resume_and_trigger") => {
+            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+        }
+        _ => MailboxLocalDeliveryPolicy::LiveOnly,
+    }
+}
+
+fn mailbox_delivery_mode_name(mode: ActiveChannelDeliveryMode) -> &'static str {
+    match mode {
+        ActiveChannelDeliveryMode::QueueOnly => "queue_only",
+        ActiveChannelDeliveryMode::TriggerTurn => "trigger_turn",
+    }
+}
+
+fn mailbox_active_channel_envelope(
+    message: &codex_state::MailboxMessage,
+    sender_peer: Option<&crate::active_session_registry::ActivePeer>,
+    target_peer: &crate::active_session_registry::ActivePeer,
+    delivery: ActiveChannelDeliveryMode,
+) -> ActiveChannelEnvelope {
+    let sender = durable_mailbox_sender_endpoint();
+    let claimed_sender = sender_peer.map(ActiveChannelEndpoint::from_peer);
+    ActiveChannelEnvelope::new(
+        message.message_id.clone(),
+        sender,
+        claimed_sender,
+        ActiveChannelEndpoint::from_peer(target_peer),
+        format!(
+            "Durable mailbox message {} from {}:\n\n{}",
+            message.message_id,
+            mailbox_sender_descriptor(message),
+            mailbox_message_text(&message.payload_json)
+        ),
+        delivery,
+    )
+}
+
+fn durable_mailbox_sender_endpoint() -> ActiveChannelEndpoint {
+    ActiveChannelEndpoint {
+        id: "durable-mailbox".to_string(),
+        kind: ActiveChannelEndpointKind::BridgeAdapter,
+        label: Some("durable mailbox".to_string()),
+        agent_path: None,
+    }
+}
+
+fn mailbox_sender_descriptor(message: &codex_state::MailboxMessage) -> String {
+    match (&message.sender_thread_id, &message.sender_label) {
+        (Some(sender_thread_id), Some(sender_label)) => {
+            format!("{sender_thread_id} with label {sender_label:?}")
+        }
+        (Some(sender_thread_id), None) => sender_thread_id.to_string(),
+        (None, Some(sender_label)) => format!("external sender {sender_label:?}"),
+        (None, None) => "external sender".to_string(),
+    }
+}
+
+fn mailbox_message_text(payload: &serde_json::Value) -> String {
+    if let Some(text) = payload.as_str() {
+        return text.to_string();
+    }
+    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
+        return text.to_string();
+    }
+    serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string())
+}
+
+fn truncate_mailbox_dispatch_error(error: String) -> String {
+    if error.chars().count() <= MAX_MAILBOX_DISPATCH_ERROR_CHARS {
+        return error;
+    }
+    error
+        .chars()
+        .take(MAX_MAILBOX_DISPATCH_ERROR_CHARS.saturating_sub(3))
+        .chain("...".chars())
+        .collect()
+}
+
+fn broker_retry_at_datetime(config: &Config, retry_at: i64) -> Option<DateTime<Utc>> {
+    let retry_at = DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0)?;
+    let buffer_secs = i64::try_from(config.usage_self_heal.reset_retry_buffer_secs).ok()?;
+    let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
+    (retry_at > Utc::now()).then_some(retry_at)
+}
+
+async fn apply_persisted_mailbox_resume_metadata(
+    state_db: &StateDbHandle,
+    thread_id: ThreadId,
+    initial_history: &InitialHistory,
+    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
+    typesafe_overrides: &mut ConfigOverrides,
+) {
+    super::thread_processor::merge_persisted_auth_profile_from_history(
+        typesafe_overrides,
+        initial_history,
+    );
+
+    let persisted_metadata = match state_db.get_thread(thread_id).await {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => return,
+        Err(err) => {
+            warn!("failed to read persisted metadata for mailbox resume thread {thread_id}: {err}");
+            return;
+        }
+    };
+    typesafe_overrides.model = persisted_metadata.model;
+    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider);
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
+        request_overrides.get_or_insert_with(HashMap::new).insert(
+            "model_reasoning_effort".to_string(),
+            serde_json::Value::String(reasoning_effort.to_string()),
+        );
+    }
+    if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
+    {
+        typesafe_overrides.approval_policy = Some(approval_policy);
+    }
+}
+
+fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protocol::AskForApproval> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_value(serde_json::Value::String(trimmed.to_string())).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn usage_profile_wait_resume_error_preserves_retry_at_for_dispatch() {
+        let retry_at = Utc::now() + ChronoDuration::seconds(90);
+        let dispatch_result = MailboxResumeError::UsageProfileWait {
+            retry_at,
+            error: "all eligible auth profiles are exhausted".to_string(),
+        }
+        .into_dispatch_result();
+
+        match dispatch_result {
+            MailboxDispatchResult::Retry {
+                error,
+                retry_at: Some(actual_retry_at),
+            } => {
+                assert_eq!(error, "all eligible auth profiles are exhausted");
+                assert_eq!(actual_retry_at, retry_at);
+            }
+            _ => panic!("expected retry with retry_at"),
+        }
+    }
+}

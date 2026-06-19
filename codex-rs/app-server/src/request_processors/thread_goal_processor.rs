@@ -62,6 +62,16 @@ impl ThreadGoalRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_goal_plan_activate_node(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanActivateNodeParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_plan_activate_node_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
     pub(crate) async fn thread_goal_clear(
         &self,
         request_id: ConnectionRequestId,
@@ -139,6 +149,7 @@ impl ThreadGoalRequestProcessor {
                         Some(token_budget) => GoalTokenBudgetUpdate::Set(token_budget),
                         None => GoalTokenBudgetUpdate::Keep,
                     },
+                    auto_execute: goal_auto_execute_from_config(&self.config),
                 },
             )
             .await
@@ -152,6 +163,19 @@ impl ThreadGoalRequestProcessor {
             .await;
         self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
             .await;
+        if let Some(plan_update) = outcome.plan_update.clone() {
+            let plan = api_thread_goal_plan_from_state(plan_update.snapshot);
+            self.emit_thread_goal_plan_updated_ordered(thread_id, plan, None)
+                .await;
+            if let Some(activated_goal) = plan_update.activated_goal {
+                self.emit_thread_goal_updated_ordered(
+                    thread_id,
+                    api_thread_goal_from_state(activated_goal),
+                    None,
+                )
+                .await;
+            }
+        }
         outcome.apply_runtime_effects(&self.goal_service).await;
         Ok(())
     }
@@ -246,6 +270,49 @@ impl ThreadGoalRequestProcessor {
             self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx)
                 .await;
         }
+        Ok(())
+    }
+
+    async fn thread_goal_plan_activate_node_inner(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanActivateNodeParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        self.reconcile_thread_goal_rollout(thread_id, &state_db)
+            .await?;
+
+        let listener_command_tx = {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let outcome = self
+            .goal_service
+            .activate_thread_goal_plan_node(&state_db, thread_id, params.node_id.as_str())
+            .await
+            .map_err(goal_service_error)?;
+        let goal = ThreadGoal::from(outcome.goal.clone());
+        let plan = api_thread_goal_plan_from_state(outcome.plan.clone());
+        self.outgoing
+            .send_response(
+                request_id,
+                ThreadGoalPlanActivateNodeResponse {
+                    goal: goal.clone(),
+                    plan: plan.clone(),
+                },
+            )
+            .await;
+        self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
+            .await;
+        self.emit_thread_goal_plan_updated_ordered(thread_id, plan, listener_command_tx)
+            .await;
+        outcome.apply_runtime_effects(&self.goal_service).await;
         Ok(())
     }
 
@@ -397,11 +464,41 @@ impl ThreadGoalRequestProcessor {
             ))
             .await;
     }
+
+    async fn emit_thread_goal_plan_updated_ordered(
+        &self,
+        thread_id: ThreadId,
+        plan: ThreadGoalPlan,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        if let Some(listener_command_tx) = listener_command_tx {
+            let command = crate::thread_state::ThreadListenerCommand::EmitThreadGoalPlanUpdated {
+                turn_id: None,
+                plan: plan.clone(),
+            };
+            if listener_command_tx.send(command).is_ok() {
+                return;
+            }
+            warn!(
+                "failed to enqueue thread goal plan update for {thread_id}: listener command channel is closed"
+            );
+        }
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                ThreadGoalPlanUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    plan,
+                },
+            ))
+            .await;
+    }
 }
 
 pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadGoal {
     ThreadGoal {
         thread_id: goal.thread_id.to_string(),
+        goal_id: goal.goal_id,
         objective: goal.objective,
         status: api_thread_goal_status_from_state(goal.status),
         token_budget: goal.token_budget,
@@ -412,27 +509,61 @@ pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> Threa
     }
 }
 
-fn api_thread_goal_plan_from_state(
+fn goal_auto_execute_from_config(config: &Config) -> codex_state::ThreadGoalPlanAutoExecute {
+    match config.goals.auto_execute {
+        codex_core::config::GoalAutoExecuteMode::Off => codex_state::ThreadGoalPlanAutoExecute::Off,
+        codex_core::config::GoalAutoExecuteMode::ReadyOnly => {
+            codex_state::ThreadGoalPlanAutoExecute::ReadyOnly
+        }
+        codex_core::config::GoalAutoExecuteMode::AiDirected => {
+            codex_state::ThreadGoalPlanAutoExecute::AiDirected
+        }
+    }
+}
+
+pub(super) fn api_thread_goal_plan_from_state(
     snapshot: codex_state::ThreadGoalPlanSnapshot,
 ) -> ThreadGoalPlan {
+    let summary = snapshot.usage_summary();
+    let ready_node_ids = snapshot
+        .ready_node_ids()
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     ThreadGoalPlan {
         plan_id: snapshot.plan.plan_id,
         thread_id: snapshot.plan.thread_id.to_string(),
         status: api_thread_goal_plan_status_from_state(snapshot.plan.status),
         auto_execute: api_thread_goal_plan_auto_execute_from_state(snapshot.plan.auto_execute),
         max_tokens: snapshot.plan.max_tokens,
+        total_tokens_used: summary.total_tokens_used,
+        total_time_used_seconds: summary.total_time_used_seconds,
+        remaining_tokens: summary.remaining_tokens,
+        node_count: summary.node_count,
+        completed_node_count: summary.completed_node_count,
+        ready_node_count: summary.ready_node_count,
+        active_node_count: summary.active_node_count,
+        pending_node_count: summary.pending_node_count,
+        paused_node_count: summary.paused_node_count,
+        blocked_node_count: summary.blocked_node_count,
+        usage_limited_node_count: summary.usage_limited_node_count,
+        budget_limited_node_count: summary.budget_limited_node_count,
+        cancelled_node_count: summary.cancelled_node_count,
         created_at: snapshot.plan.created_at.timestamp(),
         updated_at: snapshot.plan.updated_at.timestamp(),
         nodes: snapshot
             .nodes
             .into_iter()
-            .map(api_thread_goal_plan_node_from_state)
+            .map(|node| {
+                let ready = ready_node_ids.contains(&node.node_id);
+                api_thread_goal_plan_node_from_state(node, ready)
+            })
             .collect(),
     }
 }
 
 fn api_thread_goal_plan_node_from_state(
     node: codex_state::ThreadGoalPlanNode,
+    ready: bool,
 ) -> ThreadGoalPlanNode {
     ThreadGoalPlanNode {
         node_id: node.node_id,
@@ -443,6 +574,7 @@ fn api_thread_goal_plan_node_from_state(
         priority: node.priority,
         objective: node.objective,
         status: api_thread_goal_plan_node_status_from_state(node.status),
+        ready,
         token_budget: node.token_budget,
         tokens_used: node.tokens_used,
         time_used_seconds: node.time_used_seconds,
@@ -461,6 +593,7 @@ fn api_thread_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> T
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+        codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
 }
 
@@ -473,6 +606,7 @@ fn api_thread_goal_plan_status_from_state(
         codex_state::ThreadGoalPlanStatus::Blocked => ThreadGoalPlanStatus::Blocked,
         codex_state::ThreadGoalPlanStatus::BudgetLimited => ThreadGoalPlanStatus::BudgetLimited,
         codex_state::ThreadGoalPlanStatus::Complete => ThreadGoalPlanStatus::Complete,
+        codex_state::ThreadGoalPlanStatus::Cancelled => ThreadGoalPlanStatus::Cancelled,
     }
 }
 
@@ -501,6 +635,7 @@ fn api_thread_goal_plan_node_status_from_state(
             ThreadGoalPlanNodeStatus::BudgetLimited
         }
         codex_state::ThreadGoalPlanNodeStatus::Complete => ThreadGoalPlanNodeStatus::Complete,
+        codex_state::ThreadGoalPlanNodeStatus::Cancelled => ThreadGoalPlanNodeStatus::Cancelled,
     }
 }
 

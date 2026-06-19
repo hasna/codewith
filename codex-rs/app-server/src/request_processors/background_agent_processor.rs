@@ -38,6 +38,20 @@ use codex_app_server_protocol::AgentStatusSnapshot;
 use codex_app_server_protocol::AgentStopParams;
 use codex_app_server_protocol::AgentStopResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::Worktree;
+use codex_app_server_protocol::WorktreeAttachParams;
+use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
+use codex_app_server_protocol::WorktreeDetachParams;
+use codex_app_server_protocol::WorktreeDetachResponse;
+use codex_app_server_protocol::WorktreeLifecycleStatus;
+use codex_app_server_protocol::WorktreeListParams;
+use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeMode;
+use codex_app_server_protocol::WorktreeOwnerKind;
+use codex_app_server_protocol::WorktreePolicy;
+use codex_app_server_protocol::WorktreeReadParams;
+use codex_app_server_protocol::WorktreeReadResponse;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
@@ -58,8 +72,13 @@ use codex_background_agent::LifecycleAction;
 use codex_background_agent::LifecycleEffect;
 use codex_background_agent::PendingInteractionLedger;
 use codex_background_agent::lifecycle_effect_for;
+use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
+use codex_state::ManagedWorktreeAssignmentTarget;
+use codex_state::ManagedWorktreeAttachParams;
+use codex_state::ManagedWorktreeDetachParams;
 use serde_json::json;
+use std::path::Path;
 use uuid::Uuid;
 
 const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
@@ -796,6 +815,134 @@ impl BackgroundAgentRequestProcessor {
         })
     }
 
+    pub(super) async fn worktree_list_inner(
+        &self,
+        params: WorktreeListParams,
+        policy: WorktreePolicy,
+    ) -> Result<WorktreeListResponse, JSONRPCErrorError> {
+        let state_db = self.state_db()?;
+        let limit = params
+            .limit
+            .unwrap_or(codex_state::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT);
+        let include_deleted = params.include_deleted.unwrap_or(false);
+        let base_repo_path = params
+            .base_repo_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+        if let Some(base_repo_path) = base_repo_path.as_ref()
+            && !base_repo_path.is_absolute()
+        {
+            return Err(invalid_params(
+                "worktree/list baseRepoPath must be absolute",
+            ));
+        }
+        let page = state_db
+            .managed_worktrees()
+            .list_managed_worktrees_page(
+                base_repo_path.as_deref(),
+                include_deleted,
+                params.cursor.as_deref(),
+                limit,
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to list worktrees: {err}")))?;
+        let mut data = Vec::with_capacity(page.data.len());
+        for worktree in page.data {
+            data.push(api_worktree_from_state(state_db.as_ref(), worktree).await?);
+        }
+        Ok(WorktreeListResponse {
+            data,
+            next_cursor: page.next_cursor,
+            policy,
+        })
+    }
+
+    pub(super) async fn worktree_read_inner(
+        &self,
+        params: WorktreeReadParams,
+        base_repo_path: Option<&Path>,
+        policy: WorktreePolicy,
+    ) -> Result<WorktreeReadResponse, JSONRPCErrorError> {
+        let state_db = self.state_db()?;
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let worktree = match worktree {
+            Some(worktree) => {
+                if base_repo_path.is_some_and(|base_repo_path| {
+                    worktree.base_repo_path.as_path() != base_repo_path
+                }) {
+                    None
+                } else {
+                    Some(api_worktree_from_state(state_db.as_ref(), worktree).await?)
+                }
+            }
+            None => None,
+        };
+        Ok(WorktreeReadResponse { worktree, policy })
+    }
+
+    pub(super) async fn worktree_attach_inner(
+        &self,
+        params: WorktreeAttachParams,
+    ) -> Result<WorktreeAttachResponse, JSONRPCErrorError> {
+        let state_db = self.state_db()?;
+        let target =
+            worktree_assignment_target("worktree/attach", params.thread_id, params.agent_run_id)?;
+        if let ManagedWorktreeAssignmentTarget::AgentRun(agent_run_id) = &target {
+            let run = self
+                .load_agent_run(state_db.as_ref(), agent_run_id.as_str())
+                .await?
+                .ok_or_else(|| {
+                    invalid_params(format!(
+                        "worktree/attach agentRunId `{agent_run_id}` does not exist"
+                    ))
+                })?;
+            if is_terminal_agent_status(run.status) {
+                return Err(invalid_params(format!(
+                    "worktree/attach agentRunId `{agent_run_id}` is terminal"
+                )));
+            }
+        }
+        let worktree = state_db
+            .managed_worktrees()
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: params.worktree_id,
+                target,
+            })
+            .await
+            .map_err(|err| invalid_params(format!("failed to attach worktree: {err}")))?;
+        Ok(WorktreeAttachResponse {
+            worktree: api_worktree_from_state(state_db.as_ref(), worktree).await?,
+        })
+    }
+
+    pub(super) async fn worktree_detach_inner(
+        &self,
+        params: WorktreeDetachParams,
+    ) -> Result<WorktreeDetachResponse, JSONRPCErrorError> {
+        let state_db = self.state_db()?;
+        let target =
+            worktree_assignment_target("worktree/detach", params.thread_id, params.agent_run_id)?;
+        let worktree = state_db
+            .managed_worktrees()
+            .detach_managed_worktree(ManagedWorktreeDetachParams {
+                worktree_id: params.worktree_id,
+                target,
+            })
+            .await
+            .map_err(|err| invalid_params(format!("failed to detach worktree: {err}")))?;
+        let worktree = match worktree {
+            Some(worktree) => Some(api_worktree_from_state(state_db.as_ref(), worktree).await?),
+            None => None,
+        };
+        Ok(WorktreeDetachResponse { worktree })
+    }
+
     pub(super) fn state_db(&self) -> Result<StateDbHandle, JSONRPCErrorError> {
         self.state_db
             .clone()
@@ -811,6 +958,26 @@ impl BackgroundAgentRequestProcessor {
             .get_run(agent_id)
             .await
             .map_err(|err| internal_error(format!("failed to load background agent: {err}")))
+    }
+}
+
+fn worktree_assignment_target(
+    method: &str,
+    thread_id: Option<String>,
+    agent_run_id: Option<String>,
+) -> Result<ManagedWorktreeAssignmentTarget, JSONRPCErrorError> {
+    match (thread_id, agent_run_id) {
+        (Some(thread_id), None) => Ok(ManagedWorktreeAssignmentTarget::Thread(
+            ThreadId::from_string(thread_id.as_str())
+                .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?,
+        )),
+        (None, Some(agent_run_id)) => Ok(ManagedWorktreeAssignmentTarget::AgentRun(agent_run_id)),
+        (Some(_), Some(_)) => Err(invalid_params(format!(
+            "{method} accepts only one of threadId or agentRunId"
+        ))),
+        (None, None) => Err(invalid_params(format!(
+            "{method} requires one of threadId or agentRunId"
+        ))),
     }
 }
 
@@ -1285,6 +1452,90 @@ fn api_agent_pending_interaction_from_state(
         delivered_at: value.delivered_at.map(|timestamp| timestamp.timestamp()),
         responded_at: value.responded_at.map(|timestamp| timestamp.timestamp()),
         updated_at: value.updated_at.timestamp(),
+    }
+}
+
+async fn api_worktree_from_state(
+    state_db: &codex_state::StateRuntime,
+    value: codex_state::ManagedWorktree,
+) -> Result<Worktree, JSONRPCErrorError> {
+    let agent = match value.owner_agent_run_id.as_deref() {
+        Some(agent_run_id) => state_db
+            .get_run(agent_run_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to load worktree agent: {err}")))?
+            .map(api_agent_run_from_state),
+        None => None,
+    };
+    Ok(Worktree {
+        worktree_id: value.worktree_id,
+        agent_id: value.owner_agent_run_id.clone(),
+        identity: value.identity,
+        mode: api_worktree_mode(value.mode),
+        lifecycle_status: api_worktree_lifecycle_status(value.lifecycle_status),
+        base_repo_path: value.base_repo_path.display().to_string(),
+        worktree_path: value.worktree_path.display().to_string(),
+        branch: value.branch,
+        base_sha: value.base_sha,
+        head_sha: value.head_sha,
+        status_snapshot: value.status_snapshot_json,
+        dirty: value.dirty,
+        cleanup_policy: api_worktree_cleanup_policy(value.cleanup_policy),
+        cleanup_after: value.cleanup_after.map(|timestamp| timestamp.timestamp()),
+        force_delete_requested: value.force_delete_requested,
+        owner_kind: api_worktree_owner_kind(value.owner_kind),
+        owner_thread_id: value.owner_thread_id.map(|thread_id| thread_id.to_string()),
+        owner_agent_run_id: value.owner_agent_run_id,
+        created_at: value.created_at.timestamp(),
+        updated_at: value.updated_at.timestamp(),
+        released_at: value.released_at.map(|timestamp| timestamp.timestamp()),
+        deleted_at: value.deleted_at.map(|timestamp| timestamp.timestamp()),
+        agent,
+    })
+}
+
+fn api_worktree_mode(mode: codex_state::ManagedWorktreeMode) -> WorktreeMode {
+    match mode {
+        codex_state::ManagedWorktreeMode::IsolatedWorktree => WorktreeMode::IsolatedWorktree,
+        codex_state::ManagedWorktreeMode::SharedRepository => WorktreeMode::SharedRepository,
+    }
+}
+
+fn api_worktree_lifecycle_status(
+    lifecycle_status: codex_state::ManagedWorktreeLifecycleStatus,
+) -> WorktreeLifecycleStatus {
+    match lifecycle_status {
+        codex_state::ManagedWorktreeLifecycleStatus::Active => WorktreeLifecycleStatus::Active,
+        codex_state::ManagedWorktreeLifecycleStatus::CleanupPending => {
+            WorktreeLifecycleStatus::CleanupPending
+        }
+        codex_state::ManagedWorktreeLifecycleStatus::Released => WorktreeLifecycleStatus::Released,
+        codex_state::ManagedWorktreeLifecycleStatus::Deleted => WorktreeLifecycleStatus::Deleted,
+    }
+}
+
+fn api_worktree_cleanup_policy(
+    cleanup_policy: codex_state::ManagedWorktreeCleanupPolicy,
+) -> WorktreeCleanupPolicy {
+    match cleanup_policy {
+        codex_state::ManagedWorktreeCleanupPolicy::Retain => WorktreeCleanupPolicy::Retain,
+        codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean => {
+            WorktreeCleanupPolicy::DeleteIfClean
+        }
+        codex_state::ManagedWorktreeCleanupPolicy::ForceDelete => {
+            WorktreeCleanupPolicy::ForceDelete
+        }
+    }
+}
+
+fn api_worktree_owner_kind(owner_kind: codex_state::ManagedWorktreeOwnerKind) -> WorktreeOwnerKind {
+    match owner_kind {
+        codex_state::ManagedWorktreeOwnerKind::Manual => WorktreeOwnerKind::Manual,
+        codex_state::ManagedWorktreeOwnerKind::MainSession => WorktreeOwnerKind::MainSession,
+        codex_state::ManagedWorktreeOwnerKind::SubSession => WorktreeOwnerKind::SubSession,
+        codex_state::ManagedWorktreeOwnerKind::BackgroundAgent => {
+            WorktreeOwnerKind::BackgroundAgent
+        }
     }
 }
 

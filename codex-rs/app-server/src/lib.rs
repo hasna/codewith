@@ -93,6 +93,7 @@ mod fuzzy_file_search;
 pub mod in_process;
 mod mcp_refresh;
 mod message_processor;
+mod mission_control_tools;
 mod models;
 mod outgoing_message;
 mod request_processors;

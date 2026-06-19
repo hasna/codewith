@@ -26,7 +26,11 @@ use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadPendingInteraction;
+use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
+use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_file_search::FileMatch;
@@ -49,7 +53,6 @@ use codex_login::AuthProfileSubscriptionProvider;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
-use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_realtime_webrtc::RealtimeWebrtcEvent;
 use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
@@ -292,9 +295,9 @@ pub(crate) enum AppEvent {
     /// Archive the current active main thread and exit after it succeeds.
     ArchiveCurrentThread,
 
-    /// Create a tmux session for the current thread and exit into it.
+    /// Move the current thread into tmux and exit into it.
     OpenInTmux {
-        name: Option<String>,
+        destination: crate::tmux_handoff::TmuxHandoffDestination,
         replace_existing: bool,
     },
 
@@ -361,6 +364,33 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
+    /// Open the orchestration overview across local sessions and projects.
+    OpenMissionControlOverview,
+
+    /// Open the answer prompt for a pending mission-control interaction.
+    OpenMissionControlInteractionAnswer {
+        interaction: ThreadPendingInteraction,
+    },
+
+    /// Respond to a pending mission-control interaction and refresh the overview.
+    RespondMissionControlInteraction {
+        interaction_id: String,
+        thread_id: Option<String>,
+        terminal_status: ThreadPendingInteractionTerminalStatus,
+        response: ThreadPendingInteractionResponsePayload,
+    },
+
+    /// Open the current thread workflow metadata summary.
+    OpenThreadWorkflowManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open details for one durable thread goal plan.
+    OpenThreadGoalPlanDetail {
+        thread_id: ThreadId,
+        plan: ThreadGoalPlan,
+    },
+
     /// Open an editor for the current thread goal objective.
     OpenThreadGoalEditor {
         thread_id: Option<ThreadId>,
@@ -382,6 +412,12 @@ pub(crate) enum AppEvent {
     /// Clear the current thread goal.
     ClearThreadGoal {
         thread_id: ThreadId,
+    },
+
+    /// Activate one ready durable goal-plan node.
+    ActivateThreadGoalPlanNode {
+        thread_id: ThreadId,
+        node_id: String,
     },
 
     /// Open the current thread loop schedule summary.
@@ -625,6 +661,7 @@ pub(crate) enum AppEvent {
     /// Start a durable background agent.
     StartBackgroundAgent {
         prompt: String,
+        worktree_id: Option<String>,
     },
 
     /// Start an external-agent run in a forked child thread.
@@ -668,12 +705,33 @@ pub(crate) enum AppEvent {
     /// Show durable background-agent daemon diagnostics.
     ShowBackgroundAgentDiagnostics,
 
+    /// Open the Codewith-managed worktree manager.
+    OpenWorktreeManager,
+
+    /// Open actions for one Codewith-managed worktree.
+    OpenWorktreeActions {
+        worktree_id: String,
+        base_repo_path: Option<String>,
+    },
+
+    /// Show the latest state for one Codewith-managed worktree.
+    ReadWorktree {
+        worktree_id: Option<String>,
+        base_repo_path: Option<String>,
+    },
+
+    /// Retarget the current session to one Codewith-managed worktree.
+    UseWorktree {
+        worktree_id: String,
+        base_repo_path: Option<String>,
+    },
+
     /// List loaded sessions that can receive active messages.
     ListActiveSessions,
 
     /// Send a message to a loaded active session.
     SendActiveSessionMessage {
-        target_thread_id: String,
+        target_peer_id: String,
         message: String,
         wake: bool,
     },
@@ -689,6 +747,11 @@ pub(crate) enum AppEvent {
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
         result: Result<Vec<RateLimitSnapshot>, String>,
+    },
+
+    /// Timer fired for a scheduled usage self-heal retry.
+    UsageSelfHealRetry {
+        retry_id: u64,
     },
 
     /// Result of refreshing MiniMax Token Plan usage.
@@ -1270,20 +1333,8 @@ pub(crate) enum AppEvent {
         profile_selection: Option<PermissionProfileSelection>,
     },
 
-    /// Update the Windows sandbox feature mode without changing approval presets.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-
-    /// Update the current approval policy in the running app and widget.
-    UpdateAskForApprovalPolicy(AskForApproval),
-
-    /// Update the current built-in active permission profile in the running app and widget.
-    UpdateActivePermissionProfile(ActivePermissionProfile),
-
     /// Select a named permission profile, optionally applying built-in mode settings too.
     SelectPermissionProfile(PermissionProfileSelection),
-
-    /// Update the current approvals reviewer in the running app and widget.
-    UpdateApprovalsReviewer(ApprovalsReviewer),
 
     /// Update feature flags and persist them to the top-level config.
     UpdateFeatureFlags {

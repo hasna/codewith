@@ -43,6 +43,13 @@ pub enum SlashCommand {
     Recap,
     Plan,
     Goal,
+    #[strum(
+        to_string = "mission-control",
+        serialize = "mission",
+        serialize = "missions"
+    )]
+    MissionControl,
+    Workflow,
     Loop,
     Schedule,
     Monitor,
@@ -60,6 +67,7 @@ pub enum SlashCommand {
         serialize = "bg-agent"
     )]
     BackgroundAgent,
+    Worktree,
     ExternalAgent,
     Side,
     Btw,
@@ -148,6 +156,8 @@ impl SlashCommand {
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::MissionControl => "show orchestration sessions and projects",
+            SlashCommand::Workflow => "prepare YAML workflow drafts and show saved spec metadata",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
@@ -155,6 +165,7 @@ impl SlashCommand {
             SlashCommand::Agent => "manage durable background agents",
             SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::BackgroundAgent => "manage durable background agents",
+            SlashCommand::Worktree => "manage Codewith-managed worktrees",
             SlashCommand::ExternalAgent => "stage an external coding-agent task",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -192,11 +203,13 @@ impl SlashCommand {
                 | SlashCommand::Rename
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Workflow
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
+                | SlashCommand::Worktree
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -250,6 +263,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Workflow
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -270,10 +284,12 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::MissionControl
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::BackgroundAgent
+            | SlashCommand::Worktree
             | SlashCommand::Session
             | SlashCommand::Mcp
             | SlashCommand::Apps
@@ -392,16 +408,35 @@ mod tests {
     #[test]
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
+        assert!(!SlashCommand::Workflow.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
+        assert!(SlashCommand::MissionControl.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn mission_control_command_uses_kebab_case_and_aliases() {
+        assert_eq!(SlashCommand::MissionControl.command(), "mission-control");
+        assert_eq!(
+            SlashCommand::from_str("mission"),
+            Ok(SlashCommand::MissionControl)
+        );
+        assert_eq!(
+            SlashCommand::from_str("missions"),
+            Ok(SlashCommand::MissionControl)
+        );
+        assert_eq!(
+            SlashCommand::MissionControl.description(),
+            "show orchestration sessions and projects"
+        );
     }
 
     #[test]
@@ -485,5 +520,16 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn workflow_command_is_singular_and_accepts_args() {
+        assert_eq!(SlashCommand::Workflow.command(), "workflow");
+        assert_eq!(
+            SlashCommand::Workflow.description(),
+            "prepare YAML workflow drafts and show saved spec metadata"
+        );
+        assert!(SlashCommand::Workflow.supports_inline_args());
+        assert!(!SlashCommand::Workflow.available_during_task());
     }
 }

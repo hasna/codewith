@@ -438,9 +438,18 @@ fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
     // Enforce single-line name: allow at most desc_col - 2 cells for name,
     // reserving two spaces before the description column.
     let name_prefix_width = Line::from(row.name_prefix_spans.clone()).width();
+    let disabled_suffix = row.disabled_reason.is_some().then_some(" (disabled)");
+    let disabled_suffix_width = disabled_suffix
+        .map(UnicodeWidthStr::width)
+        .unwrap_or_default();
     let name_limit = combined_description
         .as_ref()
-        .map(|_| desc_col.saturating_sub(2).saturating_sub(name_prefix_width))
+        .map(|_| {
+            desc_col
+                .saturating_sub(2)
+                .saturating_sub(name_prefix_width)
+                .saturating_sub(disabled_suffix_width)
+        })
         .unwrap_or(usize::MAX);
 
     let mut name_spans: Vec<Span> = Vec::with_capacity(row.name.len());
@@ -484,8 +493,8 @@ fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
         name_spans.push("…".into());
     }
 
-    if row.disabled_reason.is_some() {
-        name_spans.push(" (disabled)".dim());
+    if let Some(disabled_suffix) = disabled_suffix {
+        name_spans.push(disabled_suffix.dim());
     }
 
     let this_name_width = name_prefix_width + Line::from(name_spans.clone()).width();

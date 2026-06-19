@@ -26,6 +26,13 @@ pub enum GitToolingError {
     NonRelativePath { path: PathBuf },
     #[error("path {path:?} escapes the repository root")]
     PathEscapesRepository { path: PathBuf },
+    #[error("path {worktree_path:?} is not a linked worktree of repository {base_repo_path:?}")]
+    WorktreeNotLinked {
+        base_repo_path: PathBuf,
+        worktree_path: PathBuf,
+    },
+    #[error("refusing to remove the main worktree {path:?}")]
+    MainWorktreeRemovalRefused { path: PathBuf },
     #[error("failed to process path inside worktree")]
     PathPrefix(#[from] std::path::StripPrefixError),
     #[error(transparent)]

@@ -50,6 +50,7 @@ use codex_app_server_protocol::RawResponseItemCompletedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
+use codex_app_server_protocol::ThreadGoalPlanUpdatedNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
@@ -113,6 +114,8 @@ use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestU
 use codex_sandboxing::policy_transforms::intersect_permission_profiles;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -120,6 +123,8 @@ use std::time::UNIX_EPOCH;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::error;
+use tracing::warn;
+use uuid::Uuid;
 
 enum CommandExecutionApprovalPresentation {
     Network(V2NetworkApprovalContext),
@@ -131,6 +136,128 @@ struct CommandExecutionCompletionItem {
     command: String,
     cwd: AbsolutePathBuf,
     command_actions: Vec<V2ParsedCommand>,
+}
+
+struct PendingInteractionCreateInput {
+    thread_id: ThreadId,
+    kind: codex_state::PendingInteractionKind,
+    turn_id: Option<String>,
+    worker_request_id: Option<String>,
+    server_request_id: RequestId,
+    request_payload_json: Value,
+    request_payload_preview: String,
+    request_redactions: Vec<String>,
+    no_client_policy: String,
+}
+
+const MAX_PENDING_INTERACTION_PREVIEW_CHARS: usize = 240;
+
+async fn create_thread_pending_interaction(
+    conversation: &CodexThread,
+    input: PendingInteractionCreateInput,
+) -> Option<String> {
+    let state_db = conversation.state_db()?;
+    let server_request_id_json = match serde_json::to_value(input.server_request_id) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            warn!("failed to serialize pending interaction server request id: {err}");
+            None
+        }
+    };
+    let interaction_id = Uuid::now_v7().to_string();
+    let result = state_db
+        .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+            interaction_id: interaction_id.clone(),
+            thread_id: input.thread_id,
+            source_kind: codex_state::PendingInteractionSourceKind::Thread,
+            source_id: None,
+            turn_id: input.turn_id,
+            worker_request_id: input.worker_request_id,
+            server_request_id_json,
+            kind: input.kind,
+            request_payload_json: input.request_payload_json,
+            request_payload_preview: truncate_pending_interaction_preview(
+                input.request_payload_preview.as_str(),
+            ),
+            request_redactions_json: json!(input.request_redactions),
+            no_client_policy: input.no_client_policy,
+            timeout_at: None,
+        })
+        .await;
+    if let Err(err) = result {
+        warn!("failed to create pending interaction: {err}");
+        return None;
+    }
+    if let Err(err) = state_db
+        .mark_thread_pending_interaction_delivered(interaction_id.as_str())
+        .await
+    {
+        warn!("failed to mark pending interaction delivered: {err}");
+    }
+    Some(interaction_id)
+}
+
+async fn terminalize_thread_pending_interaction(
+    conversation: &CodexThread,
+    interaction_id: Option<String>,
+    response_payload_json: Value,
+    response_payload_preview: String,
+    response_redactions: Vec<String>,
+    terminal_status: codex_state::PendingInteractionStatus,
+) {
+    let Some(interaction_id) = interaction_id else {
+        return;
+    };
+    let Some(state_db) = conversation.state_db() else {
+        return;
+    };
+    if let Err(err) = state_db
+        .respond_thread_pending_interaction(&codex_state::PendingInteractionRespondParams {
+            interaction_id,
+            response_payload_json,
+            response_payload_preview: truncate_pending_interaction_preview(
+                response_payload_preview.as_str(),
+            ),
+            response_redactions_json: json!(response_redactions),
+            terminal_status,
+        })
+        .await
+    {
+        warn!("failed to terminalize pending interaction: {err}");
+    }
+}
+
+fn truncate_pending_interaction_preview(preview: &str) -> String {
+    preview
+        .chars()
+        .take(MAX_PENDING_INTERACTION_PREVIEW_CHARS)
+        .collect()
+}
+
+fn terminal_status_for_review_decision(
+    decision: &ReviewDecision,
+) -> codex_state::PendingInteractionStatus {
+    match decision {
+        &ReviewDecision::Approved
+        | &ReviewDecision::ApprovedForSession
+        | &ReviewDecision::ApprovedExecpolicyAmendment { .. }
+        | &ReviewDecision::NetworkPolicyAmendment { .. } => {
+            codex_state::PendingInteractionStatus::Responded
+        }
+        &ReviewDecision::Denied => codex_state::PendingInteractionStatus::Denied,
+        &ReviewDecision::Abort => codex_state::PendingInteractionStatus::Cancelled,
+        &ReviewDecision::TimedOut => codex_state::PendingInteractionStatus::Expired,
+    }
+}
+
+fn terminal_status_for_mcp_action(
+    action: McpServerElicitationAction,
+) -> codex_state::PendingInteractionStatus {
+    match action {
+        McpServerElicitationAction::Accept => codex_state::PendingInteractionStatus::Responded,
+        McpServerElicitationAction::Decline => codex_state::PendingInteractionStatus::Denied,
+        McpServerElicitationAction::Cancel => codex_state::PendingInteractionStatus::Cancelled,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -529,6 +656,37 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ServerRequestPayload::FileChangeRequestApproval(params),
             )
             .await;
+            let changed_paths = event
+                .changes
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::FileChangeApproval,
+                    turn_id: Some(event.turn_id.clone()),
+                    worker_request_id: Some(item_id.clone()),
+                    server_request_id: pending_request_id.clone(),
+                    request_payload_json: json!({
+                        "type": "fileChangeApproval",
+                        "itemId": item_id.clone(),
+                        "filePaths": changed_paths,
+                        "fileChangeCount": event.changes.len(),
+                        "reason": event.reason.clone(),
+                        "grantRoot": event.grant_root.as_ref().map(|path| path.display().to_string()),
+                        "patchRedacted": true,
+                    }),
+                    request_payload_preview: format!(
+                        "file change approval for {} file(s)",
+                        event.changes.len()
+                    ),
+                    request_redactions: vec!["fileChanges".to_string()],
+                    no_client_policy: "deny".to_string(),
+                },
+            )
+            .await;
             tokio::spawn(async move {
                 on_file_change_request_approval_response(
                     item_id,
@@ -537,6 +695,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     conversation,
                     thread_state.clone(),
                     permission_guard,
+                    pending_interaction_id,
                 )
                 .await;
             });
@@ -550,6 +709,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .into_iter()
                 .map(CommandExecutionApprovalDecision::from)
                 .collect::<Vec<_>>();
+            let available_decisions_for_ledger = available_decisions.clone();
             let ExecApprovalRequestEvent {
                 call_id,
                 approval_id,
@@ -565,6 +725,16 @@ pub(crate) async fn apply_bespoke_event_handling(
                 parsed_cmd,
                 ..
             } = ev;
+            let command_arg_count = command.len();
+            let request_cwd = cwd.clone();
+            let network_approval_requested = network_approval_context.is_some();
+            let has_execpolicy_amendment = proposed_execpolicy_amendment.is_some();
+            let network_policy_amendment_count = proposed_network_policy_amendments
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or_default();
+            let has_additional_permissions = additional_permissions.is_some();
+            let reason_for_ledger = reason.clone();
             let command_actions = parsed_cmd
                 .iter()
                 .cloned()
@@ -647,6 +817,38 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ServerRequestPayload::CommandExecutionRequestApproval(params),
             )
             .await;
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::CommandApproval,
+                    turn_id: Some(turn_id.clone()),
+                    worker_request_id: Some(approval_id.clone().unwrap_or_else(|| call_id.clone())),
+                    server_request_id: pending_request_id.clone(),
+                    request_payload_json: json!({
+                        "type": "commandApproval",
+                        "itemId": call_id.clone(),
+                        "approvalId": approval_id.clone(),
+                        "reason": reason_for_ledger,
+                        "cwd": request_cwd.display().to_string(),
+                        "commandArgCount": command_arg_count,
+                        "commandRedacted": true,
+                        "networkApproval": network_approval_requested,
+                        "hasExecpolicyAmendment": has_execpolicy_amendment,
+                        "networkPolicyAmendmentCount": network_policy_amendment_count,
+                        "hasAdditionalPermissions": has_additional_permissions,
+                        "availableDecisions": available_decisions_for_ledger,
+                    }),
+                    request_payload_preview: if network_approval_requested {
+                        "network approval request".to_string()
+                    } else {
+                        "command approval request".to_string()
+                    },
+                    request_redactions: vec!["command".to_string()],
+                    no_client_policy: "deny".to_string(),
+                },
+            )
+            .await;
             tokio::spawn(async move {
                 on_command_execution_request_approval_response(
                     event_turn_id,
@@ -660,6 +862,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     outgoing,
                     thread_state.clone(),
                     permission_guard,
+                    pending_interaction_id,
                 )
                 .await;
             });
@@ -668,7 +871,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             let user_input_guard = thread_watch_manager
                 .note_user_input_requested(&conversation_id.to_string())
                 .await;
-            let questions = request
+            let questions: Vec<ToolRequestUserInputQuestion> = request
                 .questions
                 .into_iter()
                 .map(|question| ToolRequestUserInputQuestion {
@@ -688,6 +891,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                     }),
                 })
                 .collect();
+            let request_call_id = request.call_id.clone();
+            let questions_for_ledger = questions.clone();
+            let question_count = questions_for_ledger.len();
+            let secret_question_count = questions_for_ledger
+                .iter()
+                .filter(|question| question.is_secret)
+                .count();
             let request_turn_id = request.turn_id.clone();
             let params = ToolRequestUserInputParams {
                 thread_id: conversation_id.to_string(),
@@ -702,6 +912,27 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ServerRequestPayload::ToolRequestUserInput(params),
             )
             .await;
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::UserInput,
+                    turn_id: Some(request_turn_id.clone()),
+                    worker_request_id: Some(request_call_id.clone()),
+                    server_request_id: pending_request_id.clone(),
+                    request_payload_json: json!({
+                        "type": "requestUserInput",
+                        "itemId": request_call_id,
+                        "questionCount": question_count,
+                        "secretQuestionCount": secret_question_count,
+                        "questions": questions_for_ledger,
+                    }),
+                    request_payload_preview: format!("{question_count} user input question(s)"),
+                    request_redactions: Vec::new(),
+                    no_client_policy: "cancel".to_string(),
+                },
+            )
+            .await;
             tokio::spawn(async move {
                 on_request_user_input_response(
                     event_turn_id,
@@ -710,6 +941,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     conversation,
                     thread_state,
                     user_input_guard,
+                    pending_interaction_id,
                 )
                 .await;
             });
@@ -750,6 +982,11 @@ pub(crate) async fn apply_bespoke_event_handling(
                     return;
                 }
             };
+            let request_kind = match &request_body {
+                codex_app_server_protocol::McpServerElicitationRequest::Form { .. } => "form",
+                codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => "url",
+            };
+            let mcp_request_id = request.id.clone();
             let request_turn_id = turn_id.clone();
             let params = McpServerElicitationRequestParams {
                 thread_id: conversation_id.to_string(),
@@ -764,17 +1001,41 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ServerRequestPayload::McpServerElicitationRequest(params),
             )
             .await;
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::McpElicitation,
+                    turn_id: request_turn_id.clone(),
+                    worker_request_id: Some(mcp_request_id.to_string()),
+                    server_request_id: pending_request_id.clone(),
+                    request_payload_json: json!({
+                        "type": "mcpElicitation",
+                        "serverName": request.server_name.clone(),
+                        "requestId": mcp_request_id.to_string(),
+                        "requestKind": request_kind,
+                        "requestRedacted": true,
+                    }),
+                    request_payload_preview: format!(
+                        "MCP elicitation from {}",
+                        request.server_name
+                    ),
+                    request_redactions: vec!["requestPayload".to_string()],
+                    no_client_policy: "cancel".to_string(),
+                },
+            )
+            .await;
+            let pending_response = PendingMcpElicitationResponse {
+                server_name: request.server_name,
+                request_id: request.id,
+                pending_request_id,
+                receiver: rx,
+                permission_guard,
+                pending_interaction_id,
+            };
             tokio::spawn(async move {
-                on_mcp_server_elicitation_response(
-                    request.server_name,
-                    request.id,
-                    pending_request_id,
-                    rx,
-                    conversation,
-                    thread_state,
-                    permission_guard,
-                )
-                .await;
+                on_mcp_server_elicitation_response(pending_response, conversation, thread_state)
+                    .await;
             });
         }
         EventMsg::RequestPermissions(request) => {
@@ -782,14 +1043,22 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .note_permission_requested(&conversation_id.to_string())
                 .await;
             let requested_permissions = request.permissions.clone();
+            let requested_permissions_for_ledger =
+                codex_app_server_protocol::RequestPermissionProfile::from(
+                    requested_permissions.clone(),
+                );
+            let request_call_id = request.call_id.clone();
+            let request_turn_id = request.turn_id.clone();
+            let request_environment_id = request.environment_id.clone();
+            let request_reason = request.reason.clone();
             let request_cwd = match request.cwd.clone() {
                 Some(cwd) => cwd,
                 None => conversation.config_snapshot().await.cwd,
             };
             let params = PermissionsRequestApprovalParams {
                 thread_id: conversation_id.to_string(),
-                turn_id: request.turn_id.clone(),
-                item_id: request.call_id.clone(),
+                turn_id: request_turn_id.clone(),
+                item_id: request_call_id.clone(),
                 environment_id: request.environment_id.clone(),
                 started_at_ms: request.started_at_ms,
                 cwd: request_cwd.clone(),
@@ -803,6 +1072,28 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ServerRequestPayload::PermissionsRequestApproval(params),
             )
             .await;
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::PermissionGrant,
+                    turn_id: Some(request_turn_id),
+                    worker_request_id: Some(request_call_id.clone()),
+                    server_request_id: pending_request_id.clone(),
+                    request_payload_json: json!({
+                        "type": "permissionGrant",
+                        "itemId": request_call_id,
+                        "environmentId": request_environment_id,
+                        "cwd": request_cwd.display().to_string(),
+                        "reason": request_reason,
+                        "permissions": requested_permissions_for_ledger,
+                    }),
+                    request_payload_preview: "permission grant request".to_string(),
+                    request_redactions: Vec::new(),
+                    no_client_policy: "deny".to_string(),
+                },
+            )
+            .await;
             let pending_response = PendingRequestPermissionsResponse {
                 call_id: request.call_id,
                 requested_permissions,
@@ -811,6 +1102,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 outgoing,
                 receiver: rx,
                 request_permissions_guard: permission_guard,
+                pending_interaction_id,
             };
             tokio::spawn(async move {
                 on_request_permissions_response(pending_response, conversation, thread_state).await;
@@ -822,6 +1114,22 @@ pub(crate) async fn apply_bespoke_event_handling(
             let namespace = request.namespace;
             let tool = request.tool;
             let arguments = request.arguments;
+            let namespace_for_ledger = namespace.clone();
+            let tool_for_ledger = tool.clone();
+            let argument_shape = match &arguments {
+                Value::Object(map) => json!({
+                    "kind": "object",
+                    "keyCount": map.len(),
+                }),
+                Value::Array(items) => json!({
+                    "kind": "array",
+                    "itemCount": items.len(),
+                }),
+                Value::String(_) => json!({ "kind": "string" }),
+                Value::Number(_) => json!({ "kind": "number" }),
+                Value::Bool(_) => json!({ "kind": "boolean" }),
+                Value::Null => json!({ "kind": "null" }),
+            };
             let item = ThreadItem::DynamicToolCall {
                 id: call_id.clone(),
                 namespace: namespace.clone(),
@@ -849,15 +1157,43 @@ pub(crate) async fn apply_bespoke_event_handling(
                 tool: tool.clone(),
                 arguments: arguments.clone(),
             };
-            let (_pending_request_id, rx) = send_request_for_turn(
+            let (pending_request_id, rx) = send_request_for_turn(
                 &outgoing,
                 &thread_state,
                 &turn_id,
                 ServerRequestPayload::DynamicToolCall(params),
             )
             .await;
+            let pending_interaction_id = create_thread_pending_interaction(
+                &conversation,
+                PendingInteractionCreateInput {
+                    thread_id: conversation_id,
+                    kind: codex_state::PendingInteractionKind::DynamicTool,
+                    turn_id: Some(turn_id.clone()),
+                    worker_request_id: Some(call_id.clone()),
+                    server_request_id: pending_request_id,
+                    request_payload_json: json!({
+                        "type": "dynamicTool",
+                        "callId": call_id.clone(),
+                        "namespace": namespace_for_ledger,
+                        "tool": tool_for_ledger,
+                        "argumentShape": argument_shape,
+                        "argumentsRedacted": true,
+                    }),
+                    request_payload_preview: format!("dynamic tool call: {tool}"),
+                    request_redactions: vec!["arguments".to_string()],
+                    no_client_policy: "cancel".to_string(),
+                },
+            )
+            .await;
             tokio::spawn(async move {
-                crate::dynamic_tools::on_call_response(call_id, rx, conversation).await;
+                crate::dynamic_tools::on_call_response(
+                    call_id,
+                    rx,
+                    conversation,
+                    pending_interaction_id,
+                )
+                .await;
             });
         }
         EventMsg::McpToolCallBegin(_) | EventMsg::McpToolCallEnd(_) => {
@@ -1236,6 +1572,18 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_global_server_notification(ServerNotification::ThreadGoalUpdated(
+                    notification,
+                ))
+                .await;
+        }
+        EventMsg::ThreadGoalPlanUpdated(thread_goal_plan_event) => {
+            let notification = ThreadGoalPlanUpdatedNotification {
+                thread_id: thread_goal_plan_event.thread_id.to_string(),
+                turn_id: thread_goal_plan_event.turn_id,
+                plan: thread_goal_plan_event.plan.clone().into(),
+            };
+            outgoing
+                .send_global_server_notification(ServerNotification::ThreadGoalPlanUpdated(
                     notification,
                 ))
                 .await;
@@ -1686,15 +2034,43 @@ async fn on_request_user_input_response(
     conversation: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
     user_input_guard: ThreadWatchActiveGuard,
+    pending_interaction_id: Option<String>,
 ) {
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(user_input_guard);
     let value = match response {
         Ok(Ok(value)) => value,
-        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
+        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => {
+            terminalize_thread_pending_interaction(
+                conversation.as_ref(),
+                pending_interaction_id.clone(),
+                json!({
+                    "type": "requestUserInput",
+                    "reason": "client is no longer waiting",
+                }),
+                "user input request is no longer waiting".to_string(),
+                Vec::new(),
+                codex_state::PendingInteractionStatus::NoLongerWaiting,
+            )
+            .await;
+            return;
+        }
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
+            terminalize_thread_pending_interaction(
+                conversation.as_ref(),
+                pending_interaction_id.clone(),
+                json!({
+                    "type": "requestUserInput",
+                    "answerCount": 0,
+                    "error": "client error",
+                }),
+                "user input request cancelled".to_string(),
+                vec!["responsePayload".to_string()],
+                codex_state::PendingInteractionStatus::Cancelled,
+            )
+            .await;
             let empty = CoreRequestUserInputResponse {
                 answers: HashMap::new(),
             };
@@ -1711,6 +2087,19 @@ async fn on_request_user_input_response(
         }
         Err(err) => {
             error!("request failed: {err:?}");
+            terminalize_thread_pending_interaction(
+                conversation.as_ref(),
+                pending_interaction_id.clone(),
+                json!({
+                    "type": "requestUserInput",
+                    "answerCount": 0,
+                    "error": "receiver closed",
+                }),
+                "user input request cancelled".to_string(),
+                vec!["responsePayload".to_string()],
+                codex_state::PendingInteractionStatus::Cancelled,
+            )
+            .await;
             let empty = CoreRequestUserInputResponse {
                 answers: HashMap::new(),
             };
@@ -1734,6 +2123,20 @@ async fn on_request_user_input_response(
                 answers: HashMap::new(),
             }
         });
+    let answer_count = response.answers.len();
+    terminalize_thread_pending_interaction(
+        conversation.as_ref(),
+        pending_interaction_id,
+        json!({
+            "type": "requestUserInput",
+            "answerCount": answer_count,
+            "answersRedacted": true,
+        }),
+        format!("{answer_count} user input answer(s)"),
+        vec!["responsePayload".to_string()],
+        codex_state::PendingInteractionStatus::Responded,
+    )
+    .await;
     let response = CoreRequestUserInputResponse {
         answers: response
             .answers
@@ -1760,19 +2163,53 @@ async fn on_request_user_input_response(
     }
 }
 
-async fn on_mcp_server_elicitation_response(
+struct PendingMcpElicitationResponse {
     server_name: String,
     request_id: codex_protocol::mcp::RequestId,
     pending_request_id: RequestId,
     receiver: oneshot::Receiver<ClientRequestResult>,
+    permission_guard: ThreadWatchActiveGuard,
+    pending_interaction_id: Option<String>,
+}
+
+async fn on_mcp_server_elicitation_response(
+    pending_response: PendingMcpElicitationResponse,
     conversation: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
-    permission_guard: ThreadWatchActiveGuard,
 ) {
+    let PendingMcpElicitationResponse {
+        server_name,
+        request_id,
+        pending_request_id,
+        receiver,
+        permission_guard,
+        pending_interaction_id,
+    } = pending_response;
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
+    let no_longer_waiting =
+        matches!(&response, Ok(Err(err)) if is_turn_transition_server_request_error(err));
     let response = mcp_server_elicitation_response_from_client_result(response);
+    let terminal_status = if no_longer_waiting {
+        codex_state::PendingInteractionStatus::NoLongerWaiting
+    } else {
+        terminal_status_for_mcp_action(response.action)
+    };
+    terminalize_thread_pending_interaction(
+        conversation.as_ref(),
+        pending_interaction_id,
+        json!({
+            "type": "mcpElicitation",
+            "action": response.action,
+            "contentRedacted": response.content.is_some(),
+            "metaRedacted": response.meta.is_some(),
+        }),
+        format!("MCP elicitation: {:?}", response.action),
+        vec!["responsePayload".to_string()],
+        terminal_status,
+    )
+    .await;
 
     if let Err(err) = conversation
         .submit(Op::ResolveElicitation {
@@ -1840,6 +2277,7 @@ async fn on_request_permissions_response(
         outgoing,
         receiver,
         request_permissions_guard,
+        pending_interaction_id,
     } = pending_response;
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id.clone()).await;
@@ -1849,8 +2287,41 @@ async fn on_request_permissions_response(
         response,
         request_cwd.as_path(),
     ) else {
+        terminalize_thread_pending_interaction(
+            conversation.as_ref(),
+            pending_interaction_id,
+            json!({
+                "type": "permissionGrant",
+                "reason": "client is no longer waiting",
+            }),
+            "permission request is no longer waiting".to_string(),
+            Vec::new(),
+            codex_state::PendingInteractionStatus::NoLongerWaiting,
+        )
+        .await;
         return;
     };
+    let granted_permissions =
+        codex_app_server_protocol::RequestPermissionProfile::from(response.permissions.clone());
+    let terminal_status = if response.permissions.is_empty() {
+        codex_state::PendingInteractionStatus::Denied
+    } else {
+        codex_state::PendingInteractionStatus::Responded
+    };
+    terminalize_thread_pending_interaction(
+        conversation.as_ref(),
+        pending_interaction_id,
+        json!({
+            "type": "permissionGrant",
+            "permissions": granted_permissions,
+            "scope": codex_app_server_protocol::PermissionGrantScope::from(response.scope),
+            "strictAutoReview": response.strict_auto_review,
+        }),
+        "permission grant response".to_string(),
+        Vec::new(),
+        terminal_status,
+    )
+    .await;
     outgoing.track_effective_permissions_approval_response(pending_request_id, response.clone());
 
     if let Err(err) = conversation
@@ -1872,6 +2343,7 @@ struct PendingRequestPermissionsResponse {
     outgoing: ThreadScopedOutgoingMessageSender,
     receiver: oneshot::Receiver<ClientRequestResult>,
     request_permissions_guard: ThreadWatchActiveGuard,
+    pending_interaction_id: Option<String>,
 }
 
 fn request_permissions_response_from_client_result(
@@ -1975,6 +2447,7 @@ async fn on_file_change_request_approval_response(
     codex: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
+    pending_interaction_id: Option<String>,
 ) {
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
@@ -1991,7 +2464,21 @@ async fn on_file_change_request_approval_response(
 
             map_file_change_approval_decision(response.decision)
         }
-        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
+        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => {
+            terminalize_thread_pending_interaction(
+                codex.as_ref(),
+                pending_interaction_id.clone(),
+                json!({
+                    "type": "fileChangeApproval",
+                    "reason": "client is no longer waiting",
+                }),
+                "file change approval is no longer waiting".to_string(),
+                Vec::new(),
+                codex_state::PendingInteractionStatus::NoLongerWaiting,
+            )
+            .await;
+            return;
+        }
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
             ReviewDecision::Denied
@@ -2001,6 +2488,18 @@ async fn on_file_change_request_approval_response(
             ReviewDecision::Denied
         }
     };
+    terminalize_thread_pending_interaction(
+        codex.as_ref(),
+        pending_interaction_id,
+        json!({
+            "type": "fileChangeApproval",
+            "decision": decision.to_opaque_string(),
+        }),
+        format!("file change approval: {}", decision.to_opaque_string()),
+        Vec::new(),
+        terminal_status_for_review_decision(&decision),
+    )
+    .await;
 
     if let Err(err) = codex
         .submit(Op::PatchApproval {
@@ -2026,6 +2525,7 @@ async fn on_command_execution_request_approval_response(
     outgoing: ThreadScopedOutgoingMessageSender,
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
+    pending_interaction_id: Option<String>,
 ) {
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
@@ -2080,7 +2580,21 @@ async fn on_command_execution_request_approval_response(
             };
             (decision, completion_status)
         }
-        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
+        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => {
+            terminalize_thread_pending_interaction(
+                conversation.as_ref(),
+                pending_interaction_id.clone(),
+                json!({
+                    "type": "commandApproval",
+                    "reason": "client is no longer waiting",
+                }),
+                "command approval is no longer waiting".to_string(),
+                Vec::new(),
+                codex_state::PendingInteractionStatus::NoLongerWaiting,
+            )
+            .await;
+            return;
+        }
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
             (ReviewDecision::Denied, Some(CommandExecutionStatus::Failed))
@@ -2125,6 +2639,19 @@ async fn on_command_execution_request_approval_response(
         )
         .await;
     }
+
+    terminalize_thread_pending_interaction(
+        conversation.as_ref(),
+        pending_interaction_id,
+        json!({
+            "type": "commandApproval",
+            "decision": decision.to_opaque_string(),
+        }),
+        format!("command approval: {}", decision.to_opaque_string()),
+        Vec::new(),
+        terminal_status_for_review_decision(&decision),
+    )
+    .await;
 
     if let Err(err) = conversation
         .submit(Op::ExecApproval {

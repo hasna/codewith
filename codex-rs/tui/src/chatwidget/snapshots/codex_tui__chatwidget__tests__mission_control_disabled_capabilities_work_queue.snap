@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Durable mailbox off  Waiting 0  Usage/profile waits 0  Unsupported controls retry/cancel
+
+  Sessions (0)  Projects (0)  Questions (0)  [Work Queue (0)]  Goal Chains (0)
+
+  Search sessions, projects, questions, queues, and goal chains
+› Durable mailbox unavailable  This app-server cannot expose queued mailbox instructions from
+                               mission control
+  No queue targets found       Local session registry unavailable
+
+  Press enter to confirm or esc to go back

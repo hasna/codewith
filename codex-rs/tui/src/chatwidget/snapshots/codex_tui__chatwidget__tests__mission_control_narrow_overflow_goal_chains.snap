@@ -1,0 +1,42 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+expression: "render_bottom_popup(&chat, 60)"
+---
+  Plans 1  Ready 1  Active 1  Blocked 0  Usage/budget 0
+
+  Sessions (1)  Projects (1)  Questions (1)
+  Work Queue (1)  [Goal Chains (1)]
+
+  Search sessions, projects, questions, queues, and goal c
+› Mission Control With A Very Long Ope… Thread 33333333 |
+                                        plan plan-
+                                        33333333-3333-
+                                        4333-8333-
+                                        333333333333-
+                                        responsive-
+                                        overflow-
+                                        validation |
+                                        super-long-
+                                        project-name-
+                                        without-natural-
+                                        breaks-
+                                        abcdefghijklmnopqr
+                                        stuvwxyz | 1
+                                        active | 0 blocked
+                                        | 0 usage-limited
+                                        | 0 budget-limited
+                                        | 123K / 250K
+                                        tokens
+    #1 responsive-overflow.… (disabled) active | not ready
+                                        | plan active |
+                                        auto ready-only
+                                        (disabled: Only
+                                        ready goal-chain
+                                        nodes can be
+                                        activated from
+                                        mission control)
+    #1 ready-node-after-ov...           pending | ready |
+                                        plan active | auto
+                                        ready-only
+
+  Press enter to confirm or esc to go back

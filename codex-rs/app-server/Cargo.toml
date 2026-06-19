@@ -61,6 +61,8 @@ codex-known-provider-models = { workspace = true }
 codex-image-generation-extension = { workspace = true }
 codex-memories-extension = { workspace = true }
 codex-web-search-extension = { workspace = true }
+codex-workflows = { workspace = true }
+codex-workflows-extension = { workspace = true }
 codex-memories-write = { workspace = true }
 codex-mcp = { workspace = true }
 codex-model-provider = { workspace = true }

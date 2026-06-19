@@ -4,7 +4,7 @@ assertion_line: 138
 expression: "render_bottom_popup(&chat, 100)"
 ---
   Schedule sch_paused
-  paused | once | next 2023-11-14 22:18 | tz UTC | failure streak 2 failures
+  paused · once · next 2023-11-14 22:18 · tz UTC · failure streak 2 failures
 
 › 1. Run now                 Queue this prompt immediately
   2. Edit prompt             Change the prompt used on future runs

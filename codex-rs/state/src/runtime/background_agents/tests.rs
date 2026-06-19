@@ -954,6 +954,37 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
             .await?,
         Some(lease)
     );
+    let active_assignment: (i64,) = sqlx::query_as(
+        r#"
+SELECT COUNT(*)
+FROM managed_worktree_assignments
+WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
+        "#,
+    )
+    .bind("lease-1")
+    .bind("run-1")
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(active_assignment, (1,));
+    assert!(
+        runtime
+            .managed_worktrees()
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: "lease-1".to_string(),
+                target: ManagedWorktreeAssignmentTarget::AgentRun("run-2".to_string()),
+            })
+            .await
+            .expect_err("background worktree owner should reject another agent")
+            .to_string()
+            .contains("cannot be assigned to agent run run-2")
+    );
+    runtime
+        .managed_worktrees()
+        .attach_managed_worktree(ManagedWorktreeAttachParams {
+            worktree_id: "lease-1".to_string(),
+            target: ManagedWorktreeAssignmentTarget::AgentRun("run-1".to_string()),
+        })
+        .await?;
 
     assert!(
         runtime
@@ -978,6 +1009,28 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
     assert!(retained.released_at.is_some());
     assert_eq!(retained.deleted_at, None);
     assert_eq!(retained.force_delete_requested, false);
+    let managed_retained = runtime
+        .managed_worktrees()
+        .get_managed_worktree("lease-1")
+        .await?
+        .expect("managed worktree should exist");
+    assert_eq!(
+        managed_retained.lifecycle_status,
+        crate::ManagedWorktreeLifecycleStatus::CleanupPending
+    );
+    assert!(managed_retained.dirty);
+    assert_eq!(managed_retained.deleted_at, None);
+    let active_assignment_after_release: (i64,) = sqlx::query_as(
+        r#"
+SELECT COUNT(*)
+FROM managed_worktree_assignments
+WHERE worktree_id = ? AND detached_at_ms IS NULL
+        "#,
+    )
+    .bind("lease-1")
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(active_assignment_after_release, (0,));
 
     let tombstone: (String, i64) = sqlx::query_as(
         "SELECT reason, dirty_worktree FROM background_agent_cleanup_tombstones WHERE run_id = ?",
@@ -985,7 +1038,7 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
     .bind("run-1")
     .fetch_one(runtime.pool.as_ref())
     .await?;
-    assert_eq!(tombstone, ("dirty worktree retained".to_string(), 1));
+    assert_eq!(tombstone, ("worktree cleanup pending".to_string(), 1));
 
     let forced = runtime
         .release_background_agent_worktree_lease(
@@ -995,7 +1048,40 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
         .await?
         .expect("lease should exist");
     assert!(forced.force_delete_requested);
-    assert!(forced.deleted_at.is_some());
+    assert_eq!(forced.deleted_at, None);
+    let managed_forced = runtime
+        .managed_worktrees()
+        .get_managed_worktree("lease-1")
+        .await?
+        .expect("managed worktree should exist");
+    assert_eq!(
+        managed_forced.lifecycle_status,
+        crate::ManagedWorktreeLifecycleStatus::CleanupPending
+    );
+    assert!(managed_forced.force_delete_requested);
+    assert_eq!(managed_forced.deleted_at, None);
+    assert_eq!(
+        runtime
+            .managed_worktrees()
+            .list_cleanup_candidates(chrono::Utc::now(), /*limit*/ 10)
+            .await?,
+        vec![managed_forced]
+    );
+
+    let deleted = runtime
+        .mark_managed_worktree_cleanup_succeeded("lease-1")
+        .await?
+        .expect("cleanup success should mark the worktree deleted");
+    assert_eq!(
+        deleted.lifecycle_status,
+        crate::ManagedWorktreeLifecycleStatus::Deleted
+    );
+    assert!(deleted.deleted_at.is_some());
+    let deleted_lease = runtime
+        .get_background_agent_worktree_lease("lease-1")
+        .await?
+        .expect("lease should remain readable after cleanup");
+    assert!(deleted_lease.deleted_at.is_some());
     Ok(())
 }
 
@@ -1133,6 +1219,43 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             BackgroundAgentWorkspaceCleanup::DeleteIfClean,
         )
         .await?;
+    let still_protected = runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-2".to_string(),
+            run_id: "run-2".to_string(),
+            identity: "bg-run-2".to_string(),
+            mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
+            base_repo_path: "/repo".to_string(),
+            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            branch: Some("codewith/bg-run-2".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({
+                "branch": "main",
+                "dirty": false,
+                "untracked": [],
+            }),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await
+        .expect_err("released isolated worktree path should stay protected until cleanup succeeds");
+    assert!(
+        still_protected
+            .to_string()
+            .contains("isolated worktree path /repo/.git/worktrees/bg-run-1 is already leased")
+    );
+
+    let cleanup_candidate = runtime
+        .managed_worktrees()
+        .list_cleanup_candidates(chrono::Utc::now(), /*limit*/ 10)
+        .await?;
+    assert_eq!(cleanup_candidate.len(), 1);
+    assert_eq!(cleanup_candidate[0].worktree_id, "lease-1");
+
+    runtime
+        .mark_managed_worktree_cleanup_succeeded("lease-1")
+        .await?
+        .expect("cleanup success should mark the isolated path deleted");
     let lease = runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
             id: "lease-2".to_string(),

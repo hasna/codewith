@@ -4,7 +4,7 @@ assertion_line: 102
 expression: "render_bottom_popup(&chat, 100)"
 ---
   Loop sch_paused
-  paused | every 5 minutes | next not scheduled | tz UTC | failure streak 2 failures
+  paused · every 5 minutes · next not scheduled · tz UTC · failure streak 2 failures
 
 › 1. Run now                 Queue this prompt immediately
   2. Edit prompt             Change the prompt used on future runs

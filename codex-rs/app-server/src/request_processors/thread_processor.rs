@@ -171,7 +171,7 @@ fn merge_persisted_resume_metadata(
     }
 }
 
-fn merge_persisted_auth_profile_from_history(
+pub(super) fn merge_persisted_auth_profile_from_history(
     typesafe_overrides: &mut ConfigOverrides,
     thread_history: &InitialHistory,
 ) {
@@ -180,7 +180,14 @@ fn merge_persisted_auth_profile_from_history(
     }
 }
 
-fn normalize_thread_list_cwd_filters(
+pub(super) fn normalize_thread_list_cwd_filters(
+    cwd: Option<ThreadListCwdFilter>,
+) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
+    normalize_cwd_filters_for_method("thread/list", cwd)
+}
+
+pub(super) fn normalize_cwd_filters_for_method(
+    method: &'static str,
     cwd: Option<ThreadListCwdFilter>,
 ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
     let Some(cwd) = cwd else {
@@ -195,9 +202,7 @@ fn normalize_thread_list_cwd_filters(
     for cwd in cwds {
         let cwd = AbsolutePathBuf::relative_to_current_dir(cwd.as_str())
             .map(AbsolutePathBuf::into_path_buf)
-            .map_err(|err| {
-                invalid_params(format!("invalid thread/list cwd filter `{cwd}`: {err}"))
-            })?;
+            .map_err(|err| invalid_params(format!("invalid {method} cwd filter `{cwd}`: {err}")))?;
         normalized_cwds.push(cwd);
     }
 
@@ -3893,7 +3898,7 @@ fn unsupported_thread_store_operation(operation: &'static str) -> JSONRPCErrorEr
     method_not_found(format!("{operation} is not supported yet"))
 }
 
-fn thread_store_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
+pub(super) fn thread_store_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
     match err {
         ThreadStoreError::InvalidRequest { message } => invalid_request(message),
         ThreadStoreError::Unsupported { operation } => {

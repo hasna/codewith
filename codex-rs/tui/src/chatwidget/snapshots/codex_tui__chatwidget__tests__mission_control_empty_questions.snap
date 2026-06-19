@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Waiting 0  Answerable 0
+
+  Sessions (0)  Projects (0)  [Questions (0)]  Work Queue (0)  Goal Chains (0)
+
+  Search sessions, projects, questions, queues, and goal chains
+› No pending questions  No local pending interactions need an answer
+
+  Press enter to confirm or esc to go back

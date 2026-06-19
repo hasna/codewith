@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/worktree_display.rs
+assertion_line: 152
+expression: combined
+---
+  cleanup-pending 018f-act isolated 2026-06-18 12:46:40
+  mode isolated  dirty true  cleanup delete-if-clean  updated 2026-06-18 12:46:40
+  owner agent agent-ac waitingOnUser  force delete false
+  base /tmp/project
+  path /tmp/project/.codewith/worktrees/018f-actions-worktree
+  branch codewith/018f-actions-worktree
+  head head-sha-1234567890
+  base sha base-sha-1234567890
+  cleanup after 2026-06-18 12:46:40
+  released 2026-06-18 12:48:20
+  snapshot review

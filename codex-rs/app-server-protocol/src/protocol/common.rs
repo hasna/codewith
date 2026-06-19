@@ -94,6 +94,7 @@ pub enum ClientRequestSerializationScope {
     Global(&'static str),
     GlobalSharedRead(&'static str),
     Agent { agent_id: String },
+    ActivePeer { peer_id: String },
     Thread { thread_id: String },
     ThreadPath { path: PathBuf },
     CommandExecProcess { process_id: String },
@@ -118,27 +119,33 @@ macro_rules! serialization_scope_expr {
             agent_id: $actual_params.$field.clone(),
         })
     };
+    ($actual_params:ident, active_session_target($params:ident . $peer_field:ident, $params2:ident . $thread_field:ident)) => {
+        active_session_target_serialization_scope(
+            $actual_params.$peer_field.as_deref(),
+            $actual_params.$thread_field.as_deref(),
+        )
+    };
     ($actual_params:ident, thread_id($params:ident . $field:ident)) => {
-        Some(ClientRequestSerializationScope::Thread {
-            thread_id: $actual_params.$field.clone(),
-        })
+        thread_id_serialization_scope(&$actual_params.$field)
     };
     ($actual_params:ident, optional_thread_id($params:ident . $field:ident)) => {
         $actual_params
             .$field
-            .clone()
-            .map(|thread_id| ClientRequestSerializationScope::Thread { thread_id })
+            .as_ref()
+            .map(|thread_id| ClientRequestSerializationScope::Thread {
+                thread_id: canonical_thread_id_for_serialization(thread_id),
+            })
     };
     ($actual_params:ident, thread_or_path($params:ident . $thread_field:ident, $params2:ident . $path_field:ident)) => {
         if !$actual_params.$thread_field.is_empty() {
             Some(ClientRequestSerializationScope::Thread {
-                thread_id: $actual_params.$thread_field.clone(),
+                thread_id: canonical_thread_id_for_serialization(&$actual_params.$thread_field),
             })
         } else if let Some(path) = $actual_params.$path_field.clone() {
             Some(ClientRequestSerializationScope::ThreadPath { path })
         } else {
             Some(ClientRequestSerializationScope::Thread {
-                thread_id: $actual_params.$thread_field.clone(),
+                thread_id: canonical_thread_id_for_serialization(&$actual_params.$thread_field),
             })
         }
     };
@@ -173,6 +180,63 @@ macro_rules! serialization_scope_expr {
             server_name: $actual_params.$field.clone(),
         })
     };
+}
+
+fn canonical_thread_id_for_serialization(thread_id: &str) -> String {
+    codex_protocol::ThreadId::from_string(thread_id)
+        .map(|thread_id| thread_id.to_string())
+        .unwrap_or_else(|_| thread_id.to_string())
+}
+
+trait ThreadIdSerializationSource {
+    fn serialization_scope(&self) -> Option<ClientRequestSerializationScope>;
+}
+
+impl ThreadIdSerializationSource for String {
+    fn serialization_scope(&self) -> Option<ClientRequestSerializationScope> {
+        Some(ClientRequestSerializationScope::Thread {
+            thread_id: canonical_thread_id_for_serialization(self),
+        })
+    }
+}
+
+impl ThreadIdSerializationSource for Option<String> {
+    fn serialization_scope(&self) -> Option<ClientRequestSerializationScope> {
+        self.as_ref()
+            .map(ThreadIdSerializationSource::serialization_scope)?
+    }
+}
+
+fn thread_id_serialization_scope(
+    thread_id: &impl ThreadIdSerializationSource,
+) -> Option<ClientRequestSerializationScope> {
+    thread_id.serialization_scope()
+}
+
+fn active_session_target_serialization_scope(
+    target_peer_id: Option<&str>,
+    target_thread_id: Option<&str>,
+) -> Option<ClientRequestSerializationScope> {
+    if let Some(peer_id) = target_peer_id.filter(|peer_id| !peer_id.is_empty()) {
+        let canonical_peer_id = canonical_thread_id_for_serialization(peer_id);
+        if canonical_peer_id != peer_id {
+            return Some(ClientRequestSerializationScope::Thread {
+                thread_id: canonical_peer_id,
+            });
+        }
+        if codex_protocol::ThreadId::from_string(peer_id).is_ok() {
+            return Some(ClientRequestSerializationScope::Thread {
+                thread_id: peer_id.to_string(),
+            });
+        }
+        return Some(ClientRequestSerializationScope::ActivePeer {
+            peer_id: peer_id.to_string(),
+        });
+    }
+
+    target_thread_id.map(|thread_id| ClientRequestSerializationScope::Thread {
+        thread_id: canonical_thread_id_for_serialization(thread_id),
+    })
 }
 
 /// Generates an `enum ClientRequest` where each variant is a request that the
@@ -531,6 +595,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalListResponse,
     },
+    ThreadGoalPlanActivateNode => "thread/goalPlan/activateNode" {
+        params: v2::ThreadGoalPlanActivateNodeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanActivateNodeResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -606,6 +675,122 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMonitorDeleteResponse,
     },
+    #[experimental("thread/workflow/create")]
+    ThreadWorkflowCreate => "thread/workflow/create" {
+        params: v2::ThreadWorkflowCreateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowCreateResponse,
+    },
+    #[experimental("thread/workflow/get")]
+    ThreadWorkflowGet => "thread/workflow/get" {
+        params: v2::ThreadWorkflowGetParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowGetResponse,
+    },
+    #[experimental("thread/workflow/list")]
+    ThreadWorkflowList => "thread/workflow/list" {
+        params: v2::ThreadWorkflowListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowListResponse,
+    },
+    #[experimental("thread/mailbox/enqueue")]
+    ThreadMailboxEnqueue => "thread/mailbox/enqueue" {
+        params: v2::ThreadMailboxEnqueueParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxEnqueueResponse,
+    },
+    #[experimental("thread/mailbox/list")]
+    ThreadMailboxList => "thread/mailbox/list" {
+        params: v2::ThreadMailboxListParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxListResponse,
+    },
+    #[experimental("thread/mailbox/read")]
+    ThreadMailboxRead => "thread/mailbox/read" {
+        params: v2::ThreadMailboxReadParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxReadResponse,
+    },
+    #[experimental("thread/mailbox/claim")]
+    ThreadMailboxClaim => "thread/mailbox/claim" {
+        params: v2::ThreadMailboxClaimParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxClaimResponse,
+    },
+    #[experimental("thread/mailbox/ack")]
+    ThreadMailboxAck => "thread/mailbox/ack" {
+        params: v2::ThreadMailboxAckParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxAckResponse,
+    },
+    #[experimental("thread/mailbox/fail")]
+    ThreadMailboxFail => "thread/mailbox/fail" {
+        params: v2::ThreadMailboxFailParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxFailResponse,
+    },
+    #[experimental("thread/mailbox/receipts/list")]
+    ThreadMailboxReceiptsList => "thread/mailbox/receipts/list" {
+        params: v2::ThreadMailboxReceiptsListParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::ThreadMailboxReceiptsListResponse,
+    },
+    #[experimental("thread/pendingInteraction/list")]
+    ThreadPendingInteractionList => "thread/pendingInteraction/list" {
+        params: v2::ThreadPendingInteractionListParams,
+        serialization: optional_thread_id(params.thread_id),
+        response: v2::ThreadPendingInteractionListResponse,
+    },
+    #[experimental("thread/pendingInteraction/read")]
+    ThreadPendingInteractionRead => "thread/pendingInteraction/read" {
+        params: v2::ThreadPendingInteractionReadParams,
+        serialization: optional_thread_id(params.thread_id),
+        response: v2::ThreadPendingInteractionReadResponse,
+    },
+    #[experimental("thread/pendingInteraction/respond")]
+    ThreadPendingInteractionRespond => "thread/pendingInteraction/respond" {
+        params: v2::ThreadPendingInteractionRespondParams,
+        serialization: optional_thread_id(params.thread_id),
+        response: v2::ThreadPendingInteractionRespondResponse,
+    },
+    MissionControlOverview => "missionControl/overview" {
+        params: v2::MissionControlOverviewParams,
+        serialization: global("mission_control"),
+        response: v2::MissionControlOverviewResponse,
+    },
+    MissionControlEnqueueInstruction => "missionControl/enqueueInstruction" {
+        params: v2::MissionControlEnqueueInstructionParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::MissionControlEnqueueInstructionResponse,
+    },
+    MissionControlMailboxReceipts => "missionControl/mailboxReceipts" {
+        params: v2::MissionControlMailboxReceiptsParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::MissionControlMailboxReceiptsResponse,
+    },
+    MissionControlRespondInteraction => "missionControl/respondInteraction" {
+        params: v2::MissionControlRespondInteractionParams,
+        serialization: optional_thread_id(params.thread_id),
+        response: v2::MissionControlRespondInteractionResponse,
+    },
+    #[experimental("remoteDispatch/negotiate")]
+    RemoteDispatchNegotiate => "remoteDispatch/negotiate" {
+        params: v2::RemoteDispatchNegotiateParams,
+        serialization: global_shared_read("remote-dispatch"),
+        response: v2::RemoteDispatchNegotiateResponse,
+    },
+    #[experimental("remoteDispatch/submit")]
+    RemoteDispatchSubmit => "remoteDispatch/submit" {
+        params: v2::RemoteDispatchSubmitParams,
+        serialization: global("remote-dispatch"),
+        response: v2::RemoteDispatchSubmitResponse,
+    },
+    #[experimental("remoteDispatch/receipt/read")]
+    RemoteDispatchReceiptRead => "remoteDispatch/receipt/read" {
+        params: v2::RemoteDispatchReceiptReadParams,
+        serialization: global_shared_read("remote-dispatch"),
+        response: v2::RemoteDispatchReceiptReadResponse,
+    },
     #[experimental("agent/start")]
     AgentStart => "agent/start" {
         params: v2::AgentStartParams,
@@ -665,6 +850,62 @@ client_request_definitions! {
         params: v2::AgentDaemonDiagnosticsParams,
         serialization: global("agent"),
         response: v2::AgentDaemonDiagnosticsResponse,
+    },
+    WorktreeList => "worktree/list" {
+        params: v2::WorktreeListParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeListResponse,
+    },
+    WorktreeRead => "worktree/read" {
+        params: v2::WorktreeReadParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeReadResponse,
+    },
+    WorktreeAttach => "worktree/attach" {
+        params: v2::WorktreeAttachParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeAttachResponse,
+    },
+    WorktreeDetach => "worktree/detach" {
+        params: v2::WorktreeDetachParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeDetachResponse,
+    },
+    #[experimental("machineRegistry/list")]
+    MachineRegistryList => "machineRegistry/list" {
+        params: v2::MachineRegistryListParams,
+        serialization: global_shared_read("machine-registry"),
+        response: v2::MachineRegistryListResponse,
+    },
+    #[experimental("machineRegistry/read")]
+    MachineRegistryRead => "machineRegistry/read" {
+        params: v2::MachineRegistryReadParams,
+        serialization: global_shared_read("machine-registry"),
+        response: v2::MachineRegistryReadResponse,
+    },
+    #[experimental("machineRegistry/upsert")]
+    MachineRegistryUpsert => "machineRegistry/upsert" {
+        params: v2::MachineRegistryUpsertParams,
+        serialization: global("machine-registry"),
+        response: v2::MachineRegistryUpsertResponse,
+    },
+    #[experimental("machineRegistry/disable")]
+    MachineRegistryDisable => "machineRegistry/disable" {
+        params: v2::MachineRegistryDisableParams,
+        serialization: global("machine-registry"),
+        response: v2::MachineRegistryDisableResponse,
+    },
+    #[experimental("machineRegistry/updateTrust")]
+    MachineRegistryUpdateTrust => "machineRegistry/updateTrust" {
+        params: v2::MachineRegistryUpdateTrustParams,
+        serialization: global("machine-registry"),
+        response: v2::MachineRegistryUpdateTrustResponse,
+    },
+    #[experimental("machineRegistry/forget")]
+    MachineRegistryForget => "machineRegistry/forget" {
+        params: v2::MachineRegistryForgetParams,
+        serialization: global("machine-registry"),
+        response: v2::MachineRegistryForgetResponse,
     },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
@@ -754,6 +995,12 @@ client_request_definitions! {
         serialization: None,
         response: v2::ThreadLoadedListResponse,
     },
+    #[experimental("localSession/list")]
+    LocalSessionList => "localSession/list" {
+        params: v2::LocalSessionListParams,
+        serialization: None,
+        response: v2::LocalSessionListResponse,
+    },
     ActiveSessionList => "activeSession/list" {
         params: v2::ActiveSessionListParams,
         serialization: None,
@@ -761,7 +1008,7 @@ client_request_definitions! {
     },
     ActiveSessionSend => "activeSession/send" {
         params: v2::ActiveSessionSendParams,
-        serialization: thread_id(params.target_thread_id),
+        serialization: active_session_target(params.target_peer_id, params.target_thread_id),
         response: v2::ActiveSessionSendResponse,
     },
     ThreadRead => "thread/read" {
@@ -1706,6 +1953,7 @@ server_notification_definitions! {
     SkillsChanged => "skills/changed" (v2::SkillsChangedNotification),
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
+    ThreadGoalPlanUpdated => "thread/goalPlan/updated" (v2::ThreadGoalPlanUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     ThreadScheduleUpdated => "thread/schedule/updated" (v2::ThreadScheduleUpdatedNotification),
     ThreadScheduleDeleted => "thread/schedule/deleted" (v2::ThreadScheduleDeletedNotification),
@@ -2126,6 +2374,267 @@ mod tests {
             environment_add.serialization_scope(),
             Some(ClientRequestSerializationScope::Global("environment"))
         );
+    }
+
+    #[test]
+    fn active_session_send_serialization_scope_normalizes_thread_ids() {
+        let thread_id = ThreadId::new().to_string();
+        let upper_thread_id = thread_id.to_ascii_uppercase();
+
+        let legacy_thread_target = ClientRequest::ActiveSessionSend {
+            request_id: request_id(),
+            params: v2::ActiveSessionSendParams {
+                target_thread_id: Some(upper_thread_id.clone()),
+                target_peer_id: None,
+                message: "hello".to_string(),
+                sender_thread_id: None,
+                sender_label: None,
+                delivery: Some(v2::ActiveSessionMessageDelivery::QueueOnly),
+            },
+        };
+        assert_eq!(
+            legacy_thread_target.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: thread_id.clone()
+            })
+        );
+
+        let peer_thread_target = ClientRequest::ActiveSessionSend {
+            request_id: request_id(),
+            params: v2::ActiveSessionSendParams {
+                target_thread_id: None,
+                target_peer_id: Some(upper_thread_id),
+                message: "hello".to_string(),
+                sender_thread_id: None,
+                sender_label: None,
+                delivery: Some(v2::ActiveSessionMessageDelivery::QueueOnly),
+            },
+        };
+        assert_eq!(
+            peer_thread_target.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread { thread_id })
+        );
+
+        let bridge_peer_target = ClientRequest::ActiveSessionSend {
+            request_id: request_id(),
+            params: v2::ActiveSessionSendParams {
+                target_thread_id: None,
+                target_peer_id: Some("claude:session-1".to_string()),
+                message: "hello".to_string(),
+                sender_thread_id: None,
+                sender_label: None,
+                delivery: Some(v2::ActiveSessionMessageDelivery::QueueOnly),
+            },
+        };
+        assert_eq!(
+            bridge_peer_target.serialization_scope(),
+            Some(ClientRequestSerializationScope::ActivePeer {
+                peer_id: "claude:session-1".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn active_session_wire_contract_keeps_peer_and_message_ids_explicit() -> Result<()> {
+        let target_thread_id = ThreadId::new().to_string();
+        let sender_thread_id = ThreadId::new().to_string();
+        let cwd = absolute_path("workspace");
+        let cwd_string = absolute_path_string("workspace");
+
+        let list_response = v2::ActiveSessionListResponse {
+            data: vec![v2::ActiveSessionPeer {
+                peer_id: "bridge:session-1".to_string(),
+                kind: v2::ActiveSessionPeerKind::BridgeAdapter,
+                thread_id: target_thread_id.clone(),
+                session_id: "sess-live-1".to_string(),
+                cwd,
+                display_name: Some("remote review".to_string()),
+                agent_path: Some("/review".to_string()),
+                capabilities: vec![
+                    v2::ActiveSessionCapability::ReceiveMessage,
+                    v2::ActiveSessionCapability::QueueMessage,
+                    v2::ActiveSessionCapability::TriggerTurn,
+                    v2::ActiveSessionCapability::ClaudeChannelBridge,
+                ],
+                last_seen_at: 1_781_790_000,
+            }],
+            next_cursor: Some("bridge:session-1".to_string()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(list_response)?,
+            json!({
+                "data": [{
+                    "peerId": "bridge:session-1",
+                    "kind": "bridgeAdapter",
+                    "threadId": target_thread_id,
+                    "sessionId": "sess-live-1",
+                    "cwd": cwd_string,
+                    "displayName": "remote review",
+                    "agentPath": "/review",
+                    "capabilities": [
+                        "receiveMessage",
+                        "queueMessage",
+                        "triggerTurn",
+                        "claudeChannelBridge"
+                    ],
+                    "lastSeenAt": 1781790000
+                }],
+                "nextCursor": "bridge:session-1"
+            })
+        );
+
+        let send_params = v2::ActiveSessionSendParams {
+            target_thread_id: None,
+            target_peer_id: Some("bridge:session-1".to_string()),
+            message: "Please inspect retry handling.".to_string(),
+            sender_thread_id: Some(sender_thread_id.clone()),
+            sender_label: Some("coordinator".to_string()),
+            delivery: Some(v2::ActiveSessionMessageDelivery::TriggerTurn),
+        };
+
+        assert_eq!(
+            serde_json::to_value(send_params)?,
+            json!({
+                "targetThreadId": null,
+                "targetPeerId": "bridge:session-1",
+                "message": "Please inspect retry handling.",
+                "senderThreadId": sender_thread_id,
+                "senderLabel": "coordinator",
+                "delivery": "triggerTurn"
+            })
+        );
+
+        let send_response = v2::ActiveSessionSendResponse {
+            status: v2::ActiveSessionSendStatus::Delivered,
+            message_id: "msg-active-1".to_string(),
+            target_peer_id: "bridge:session-1".to_string(),
+            target_thread_id: Some(target_thread_id.clone()),
+            sender_thread_id: Some(sender_thread_id.clone()),
+            reason: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(send_response)?,
+            json!({
+                "status": "delivered",
+                "messageId": "msg-active-1",
+                "targetPeerId": "bridge:session-1",
+                "targetThreadId": target_thread_id,
+                "senderThreadId": sender_thread_id,
+                "reason": null
+            })
+        );
+
+        let legacy_list_response: v2::ActiveSessionListResponse = serde_json::from_value(json!({
+            "data": [{
+                "threadId": target_thread_id,
+                "cwd": cwd_string,
+                "displayName": "local session",
+                "agentPath": null,
+                "lastSeenAt": 1781790000
+            }],
+            "nextCursor": null
+        }))?;
+        assert_eq!(legacy_list_response.data[0].peer_id, "");
+        assert_eq!(
+            legacy_list_response.data[0].kind,
+            v2::ActiveSessionPeerKind::CodewithSession
+        );
+        assert_eq!(legacy_list_response.data[0].session_id, "");
+        assert_eq!(legacy_list_response.data[0].capabilities, Vec::new());
+
+        let legacy_send_response: v2::ActiveSessionSendResponse = serde_json::from_value(json!({
+            "status": "delivered",
+            "messageId": "msg-active-1",
+            "targetThreadId": null,
+            "senderThreadId": null,
+            "reason": null
+        }))?;
+        assert_eq!(legacy_send_response.target_peer_id, "");
+
+        Ok(())
+    }
+
+    #[test]
+    fn local_session_wire_contract_separates_durable_and_live_identity() -> Result<()> {
+        let thread_id = ThreadId::new().to_string();
+        let peer_id = thread_id.clone();
+        let cwd = absolute_path("workspace");
+        let cwd_string = absolute_path_string("workspace");
+
+        let response = v2::LocalSessionListResponse {
+            data: vec![v2::LocalSession {
+                thread_id: thread_id.clone(),
+                runtime_session_id: Some("sess-live-1".to_string()),
+                peer: Some(v2::LocalSessionPeer {
+                    peer_id: thread_id.clone(),
+                    kind: v2::ActiveSessionPeerKind::CodewithSession,
+                    capabilities: vec![
+                        v2::ActiveSessionCapability::ReceiveMessage,
+                        v2::ActiveSessionCapability::QueueMessage,
+                    ],
+                    last_seen_at: 1_781_790_000,
+                }),
+                status: v2::LocalSessionStatus::Active,
+                active_flags: vec![v2::ThreadActiveFlag::WaitingOnUserInput],
+                cwd,
+                display_name: Some("coordinator".to_string()),
+                agent_path: None,
+                model_provider: "openai".to_string(),
+                model: Some("gpt-5.2".to_string()),
+                source: v2::SessionSource::Cli,
+                thread_source: Some(v2::ThreadSource::User),
+                created_at: 1_781_700_000,
+                updated_at: 1_781_790_000,
+                path: None,
+                git_info: Some(v2::LocalSessionGitInfo {
+                    sha: Some("abc123".to_string()),
+                    branch: Some("main".to_string()),
+                }),
+                redactions: vec![
+                    v2::LocalSessionRedaction::GitOriginUrl,
+                    v2::LocalSessionRedaction::ProcessDetails,
+                ],
+            }],
+            next_cursor: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(response)?,
+            json!({
+                "data": [{
+                    "threadId": thread_id,
+                    "runtimeSessionId": "sess-live-1",
+                    "peer": {
+                        "peerId": peer_id,
+                        "kind": "codewithSession",
+                        "capabilities": ["receiveMessage", "queueMessage"],
+                        "lastSeenAt": 1781790000
+                    },
+                    "status": "active",
+                    "activeFlags": ["waitingOnUserInput"],
+                    "cwd": cwd_string,
+                    "displayName": "coordinator",
+                    "agentPath": null,
+                    "modelProvider": "openai",
+                    "model": "gpt-5.2",
+                    "source": "cli",
+                    "threadSource": "user",
+                    "createdAt": 1781700000,
+                    "updatedAt": 1781790000,
+                    "path": null,
+                    "gitInfo": {
+                        "sha": "abc123",
+                        "branch": "main"
+                    },
+                    "redactions": ["gitOriginUrl", "processDetails"]
+                }],
+                "nextCursor": null
+            })
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -3417,6 +3926,45 @@ mod tests {
     }
 
     #[test]
+    fn local_session_list_is_marked_experimental() {
+        let request = ClientRequest::LocalSessionList {
+            request_id: RequestId::Integer(1),
+            params: v2::LocalSessionListParams::default(),
+        };
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
+        assert_eq!(reason, Some("localSession/list"));
+    }
+
+    #[test]
+    fn mission_control_methods_are_not_marked_experimental() {
+        for method in [
+            "missionControl/overview",
+            "missionControl/enqueueInstruction",
+            "missionControl/mailboxReceipts",
+            "missionControl/respondInteraction",
+        ] {
+            assert!(
+                !EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should not be experimental"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_dispatch_methods_are_marked_experimental() {
+        for method in [
+            "remoteDispatch/negotiate",
+            "remoteDispatch/submit",
+            "remoteDispatch/receipt/read",
+        ] {
+            assert!(
+                EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should be experimental"
+            );
+        }
+    }
+
+    #[test]
     fn agent_methods_are_marked_experimental() {
         for method in [
             "agent/start",
@@ -3429,6 +3977,23 @@ mod tests {
             "agent/events/list",
             "agent/pendingInteraction/respond",
             "agent/daemon/diagnostics",
+        ] {
+            assert!(
+                EXPERIMENTAL_CLIENT_METHODS.contains(&method),
+                "{method} should be experimental"
+            );
+        }
+    }
+
+    #[test]
+    fn machine_registry_methods_are_marked_experimental() {
+        for method in [
+            "machineRegistry/list",
+            "machineRegistry/read",
+            "machineRegistry/upsert",
+            "machineRegistry/disable",
+            "machineRegistry/updateTrust",
+            "machineRegistry/forget",
         ] {
             assert!(
                 EXPERIMENTAL_CLIENT_METHODS.contains(&method),
@@ -3518,8 +4083,15 @@ mod tests {
                 limit: None,
             },
         };
-        let clear_request = ClientRequest::ThreadGoalClear {
+        let activate_node_request = ClientRequest::ThreadGoalPlanActivateNode {
             request_id: RequestId::Integer(4),
+            params: v2::ThreadGoalPlanActivateNodeParams {
+                thread_id: "thr_123".to_string(),
+                node_id: "node_123".to_string(),
+            },
+        };
+        let clear_request = ClientRequest::ThreadGoalClear {
+            request_id: RequestId::Integer(5),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
             },
@@ -3538,7 +4110,103 @@ mod tests {
             None
         );
         assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&activate_node_request),
+            None
+        );
+        assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&clear_request),
+            None
+        );
+    }
+
+    #[test]
+    fn thread_workflow_methods_are_marked_experimental() {
+        let create_request = ClientRequest::ThreadWorkflowCreate {
+            request_id: RequestId::Integer(1),
+            params: v2::ThreadWorkflowCreateParams {
+                thread_id: "thr_123".to_string(),
+                yaml: "schema_version: workflow.codex.codewith/v0".to_string(),
+            },
+        };
+        let get_request = ClientRequest::ThreadWorkflowGet {
+            request_id: RequestId::Integer(2),
+            params: v2::ThreadWorkflowGetParams {
+                thread_id: "thr_123".to_string(),
+                workflow_record_id: "workflow_123".to_string(),
+            },
+        };
+        let list_request = ClientRequest::ThreadWorkflowList {
+            request_id: RequestId::Integer(3),
+            params: v2::ThreadWorkflowListParams {
+                thread_id: "thr_123".to_string(),
+                cursor: None,
+                limit: None,
+            },
+        };
+
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&create_request),
+            Some("thread/workflow/create")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&get_request),
+            Some("thread/workflow/get")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
+            Some("thread/workflow/list")
+        );
+    }
+
+    #[test]
+    fn worktree_methods_are_not_marked_experimental() {
+        let list_request = ClientRequest::WorktreeList {
+            request_id: RequestId::Integer(1),
+            params: v2::WorktreeListParams {
+                base_repo_path: None,
+                include_deleted: None,
+                cursor: None,
+                limit: None,
+            },
+        };
+        let read_request = ClientRequest::WorktreeRead {
+            request_id: RequestId::Integer(2),
+            params: v2::WorktreeReadParams {
+                worktree_id: "wt_123".to_string(),
+                base_repo_path: None,
+            },
+        };
+        let attach_request = ClientRequest::WorktreeAttach {
+            request_id: RequestId::Integer(3),
+            params: v2::WorktreeAttachParams {
+                worktree_id: "wt_123".to_string(),
+                thread_id: Some("thr_123".to_string()),
+                agent_run_id: None,
+            },
+        };
+        let detach_request = ClientRequest::WorktreeDetach {
+            request_id: RequestId::Integer(4),
+            params: v2::WorktreeDetachParams {
+                worktree_id: "wt_123".to_string(),
+                thread_id: Some("thr_123".to_string()),
+                agent_run_id: None,
+            },
+        };
+
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&read_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&attach_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&detach_request),
             None
         );
     }
@@ -3707,6 +4375,7 @@ mod tests {
     fn thread_goal_notifications_are_not_marked_experimental() {
         let goal = v2::ThreadGoal {
             thread_id: "thr_123".to_string(),
+            goal_id: "goal_123".to_string(),
             objective: "ship goal mode".to_string(),
             status: v2::ThreadGoalStatus::Active,
             token_budget: Some(10_000),

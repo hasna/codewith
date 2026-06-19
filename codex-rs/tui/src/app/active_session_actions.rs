@@ -1,6 +1,7 @@
 use super::App;
 use crate::app_server_session::AppServerSession;
 use crate::status::format_directory_display;
+use codex_app_server_protocol::ActiveSessionCapability;
 use codex_app_server_protocol::ActiveSessionListParams;
 use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionPeer;
@@ -9,7 +10,7 @@ use codex_app_server_protocol::ActiveSessionSendStatus;
 use codex_protocol::ThreadId;
 
 const ACTIVE_SESSION_SEND_HINT: &str =
-    "Use /agent send <thread-id> <message> or /agent send --wake <thread-id> <message>.";
+    "Use /agent send <peer-id> <message> or /agent send --wake <peer-id> <message>.";
 const ACTIVE_SESSION_ACTIVE_ONLY_HINT: &str =
     "Only loaded sessions can receive messages; no offline delivery is attempted.";
 
@@ -50,14 +51,14 @@ impl App {
     pub(super) async fn send_active_session_message(
         &mut self,
         app_server: &mut AppServerSession,
-        target_thread_id: String,
+        target_peer_id: String,
         message: String,
         wake: bool,
     ) {
         let sender_thread_id = self
             .active_thread_id
             .or_else(|| self.chat_widget.thread_id());
-        if is_current_thread_target(sender_thread_id, target_thread_id.as_str()) {
+        if is_current_thread_target(sender_thread_id, target_peer_id.as_str()) {
             self.chat_widget.add_error_message(
                 "Cannot send an active-session message to the current thread.".to_string(),
             );
@@ -69,12 +70,7 @@ impl App {
             ActiveSessionMessageDelivery::QueueOnly
         };
         match app_server
-            .active_session_send(
-                target_thread_id.clone(),
-                message,
-                sender_thread_id,
-                delivery,
-            )
+            .active_session_send(target_peer_id.clone(), message, sender_thread_id, delivery)
             .await
         {
             Ok(response) => match response.status {
@@ -89,7 +85,7 @@ impl App {
                         Some(format!(
                             "{} to {}. {delivery_hint}",
                             short_id(&response.message_id),
-                            short_id(&response.target_thread_id)
+                            short_id(response_target_display_id(&response))
                         )),
                     );
                 }
@@ -101,6 +97,14 @@ impl App {
                         "Active session unavailable".to_string(),
                         Some(format!("{reason}\n{ACTIVE_SESSION_ACTIVE_ONLY_HINT}")),
                     );
+                }
+                ActiveSessionSendStatus::Unsupported => {
+                    let reason = response.reason.unwrap_or_else(|| {
+                        "Target active-session peer is not supported by this app-server."
+                            .to_string()
+                    });
+                    self.chat_widget
+                        .add_info_message("Active session unsupported".to_string(), Some(reason));
                 }
             },
             Err(err) => self
@@ -121,13 +125,15 @@ fn format_active_session_peer(peer: &ActiveSessionPeer, active_thread_id: Option
         .as_deref()
         .or(peer.agent_path.as_deref())
         .unwrap_or("session");
+    let capabilities = active_session_capabilities(&peer.capabilities);
     let cwd = format_directory_display(peer.cwd.as_path(), /*max_width*/ None);
     format!(
-        "{}  {}{}  {}  {}",
-        peer.thread_id,
+        "{}  {}{}  {}  caps: {}  {}",
+        peer.peer_id,
         active_session_kind(peer.kind),
         marker,
         label,
+        capabilities,
         cwd
     )
 }
@@ -140,12 +146,40 @@ fn active_session_kind(kind: ActiveSessionPeerKind) -> &'static str {
     }
 }
 
+fn active_session_capabilities(capabilities: &[ActiveSessionCapability]) -> String {
+    if capabilities.is_empty() {
+        return "none".to_string();
+    }
+    capabilities
+        .iter()
+        .map(|capability| match capability {
+            ActiveSessionCapability::ReceiveMessage => "receive",
+            ActiveSessionCapability::QueueMessage => "queue",
+            ActiveSessionCapability::TriggerTurn => "wake",
+            ActiveSessionCapability::ClaudeChannelBridge => "claude_bridge",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-fn is_current_thread_target(current_thread_id: Option<ThreadId>, target_thread_id: &str) -> bool {
-    let Ok(target_thread_id) = ThreadId::from_string(target_thread_id) else {
+fn response_target_display_id(
+    response: &codex_app_server_protocol::ActiveSessionSendResponse,
+) -> &str {
+    response
+        .target_thread_id
+        .as_deref()
+        .unwrap_or(response.target_peer_id.as_str())
+}
+
+pub(super) fn is_current_thread_target(
+    current_thread_id: Option<ThreadId>,
+    target_peer_id: &str,
+) -> bool {
+    let Ok(target_thread_id) = ThreadId::from_string(target_peer_id) else {
         return false;
     };
     current_thread_id == Some(target_thread_id)
@@ -167,7 +201,11 @@ mod tests {
                 .expect("absolute cwd"),
             display_name: Some("reviewer".to_string()),
             agent_path: Some("/root/reviewer".to_string()),
-            capabilities: Vec::new(),
+            capabilities: vec![
+                ActiveSessionCapability::ReceiveMessage,
+                ActiveSessionCapability::QueueMessage,
+                ActiveSessionCapability::TriggerTurn,
+            ],
             last_seen_at: 1_781_512_883,
         };
 

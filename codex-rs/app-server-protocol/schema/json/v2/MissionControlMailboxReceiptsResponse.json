@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadMailboxMessageStatus": {
+      "enum": [
+        "queued",
+        "claimed",
+        "acknowledged",
+        "failed",
+        "poisoned",
+        "expired",
+        "canceled"
+      ],
+      "type": "string"
+    },
+    "ThreadMailboxReceipt": {
+      "properties": {
+        "attemptId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/definitions/ThreadMailboxReceiptKind"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "payload": true,
+        "receiptId": {
+          "type": "string"
+        },
+        "statusAfter": {
+          "$ref": "#/definitions/ThreadMailboxMessageStatus"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "kind",
+        "messageId",
+        "receiptId",
+        "statusAfter",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadMailboxReceiptKind": {
+      "enum": [
+        "enqueued",
+        "claimed",
+        "acknowledged",
+        "failed",
+        "poisoned",
+        "canceled",
+        "expired",
+        "leaseExpired"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/definitions/ThreadMailboxReceipt"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "MissionControlMailboxReceiptsResponse",
+  "type": "object"
+}

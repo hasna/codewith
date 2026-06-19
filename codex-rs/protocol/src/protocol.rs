@@ -1250,6 +1250,9 @@ pub enum EventMsg {
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
 
+    /// Updated durable goal plan metadata for the thread.
+    ThreadGoalPlanUpdated(ThreadGoalPlanUpdatedEvent),
+
     /// Updated user-facing name for the thread.
     ThreadNameUpdated(ThreadNameUpdatedEvent),
 
@@ -3722,6 +3725,7 @@ pub enum ThreadGoalStatus {
     UsageLimited,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 pub const MAX_THREAD_GOAL_OBJECTIVE_CHARS: usize = 4_000;
@@ -3738,11 +3742,12 @@ pub fn validate_thread_goal_objective(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "protocol/")]
 pub struct ThreadGoal {
     pub thread_id: ThreadId,
+    pub goal_id: String,
     pub objective: String,
     pub status: ThreadGoalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3754,6 +3759,49 @@ pub struct ThreadGoal {
     pub updated_at: i64,
 }
 
+impl<'de> Deserialize<'de> for ThreadGoal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            thread_id: ThreadId,
+            #[serde(default)]
+            goal_id: Option<String>,
+            objective: String,
+            status: ThreadGoalStatus,
+            #[serde(default)]
+            token_budget: Option<i64>,
+            tokens_used: i64,
+            time_used_seconds: i64,
+            created_at: i64,
+            updated_at: i64,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            thread_id: wire.thread_id,
+            goal_id: wire
+                .goal_id
+                .filter(|goal_id| !goal_id.trim().is_empty())
+                .unwrap_or_else(|| legacy_thread_goal_id(wire.thread_id)),
+            objective: wire.objective,
+            status: wire.status,
+            token_budget: wire.token_budget,
+            tokens_used: wire.tokens_used,
+            time_used_seconds: wire.time_used_seconds,
+            created_at: wire.created_at,
+            updated_at: wire.updated_at,
+        })
+    }
+}
+
+fn legacy_thread_goal_id(thread_id: ThreadId) -> String {
+    format!("legacy-{thread_id}")
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "protocol/")]
@@ -3763,6 +3811,109 @@ pub struct ThreadGoalUpdatedEvent {
     #[ts(optional)]
     pub turn_id: Option<String>,
     pub goal: ThreadGoal,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub enum ThreadGoalPlanStatus {
+    Active,
+    Paused,
+    Blocked,
+    BudgetLimited,
+    Complete,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub enum ThreadGoalPlanAutoExecute {
+    Off,
+    ReadyOnly,
+    AiDirected,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub enum ThreadGoalPlanNodeStatus {
+    Pending,
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadGoalPlanNode {
+    pub node_id: String,
+    pub plan_id: String,
+    pub thread_id: ThreadId,
+    pub key: String,
+    pub sequence: i64,
+    pub priority: i64,
+    pub objective: String,
+    pub status: ThreadGoalPlanNodeStatus,
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub token_budget: Option<i64>,
+    pub tokens_used: i64,
+    pub time_used_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub projected_goal_id: Option<String>,
+    pub depends_on: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadGoalPlan {
+    pub plan_id: String,
+    pub thread_id: ThreadId,
+    pub status: ThreadGoalPlanStatus,
+    pub auto_execute: ThreadGoalPlanAutoExecute,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_tokens: Option<i64>,
+    pub total_tokens_used: i64,
+    pub total_time_used_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remaining_tokens: Option<i64>,
+    pub node_count: i64,
+    pub completed_node_count: i64,
+    pub ready_node_count: i64,
+    pub active_node_count: i64,
+    pub pending_node_count: i64,
+    pub paused_node_count: i64,
+    pub blocked_node_count: i64,
+    pub usage_limited_node_count: i64,
+    pub budget_limited_node_count: i64,
+    pub cancelled_node_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub nodes: Vec<ThreadGoalPlanNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadGoalPlanUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub turn_id: Option<String>,
+    pub plan: ThreadGoalPlan,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -4438,6 +4589,36 @@ mod tests {
                 mcp_elicitations: true,
             }
         );
+    }
+
+    #[test]
+    fn legacy_thread_goal_rollout_without_goal_id_deserializes() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000123")
+            .expect("test thread id should parse");
+        let line = serde_json::from_value::<RolloutLine>(json!({
+            "timestamp": "2026-01-02T03:04:05Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_goal_updated",
+                "threadId": thread_id.to_string(),
+                "goal": {
+                    "threadId": thread_id.to_string(),
+                    "objective": "ship legacy goal history",
+                    "status": "active",
+                    "tokensUsed": 0,
+                    "timeUsedSeconds": 0,
+                    "createdAt": 1,
+                    "updatedAt": 1
+                }
+            }
+        }))
+        .expect("legacy rollout line should deserialize");
+
+        let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(event)) = line.item else {
+            panic!("expected thread goal updated event");
+        };
+        assert_eq!(event.goal.goal_id, format!("legacy-{thread_id}"));
+        assert_eq!(event.goal.objective, "ship legacy goal history");
     }
 
     #[test]

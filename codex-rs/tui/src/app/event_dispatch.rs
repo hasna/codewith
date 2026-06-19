@@ -208,9 +208,9 @@ impl App {
                 return Ok(self.archive_current_thread(app_server).await);
             }
             AppEvent::OpenInTmux {
-                name,
+                destination,
                 replace_existing,
-            } => match self.prepare_tmux_handoff_from_slash(name, replace_existing) {
+            } => match self.prepare_tmux_handoff_from_slash(destination, replace_existing) {
                 Ok(_) => {
                     self.show_shutdown_feedback(tui)?;
                     return Ok(self
@@ -909,6 +909,35 @@ impl App {
             AppEvent::OpenThreadGoalMenu { thread_id } => {
                 self.open_thread_goal_menu(app_server, thread_id).await;
             }
+            AppEvent::OpenMissionControlOverview => {
+                self.open_mission_control_overview(app_server).await;
+            }
+            AppEvent::OpenMissionControlInteractionAnswer { interaction } => {
+                self.chat_widget
+                    .show_mission_control_answer_prompt(interaction);
+            }
+            AppEvent::RespondMissionControlInteraction {
+                interaction_id,
+                thread_id,
+                terminal_status,
+                response,
+            } => {
+                self.respond_mission_control_interaction(
+                    app_server,
+                    interaction_id,
+                    thread_id,
+                    terminal_status,
+                    response,
+                )
+                .await;
+            }
+            AppEvent::OpenThreadWorkflowManager { thread_id } => {
+                self.open_thread_workflow_manager(app_server, thread_id)
+                    .await;
+            }
+            AppEvent::OpenThreadGoalPlanDetail { thread_id, plan } => {
+                self.chat_widget.show_goal_plan_detail(thread_id, plan);
+            }
             AppEvent::OpenThreadGoalEditor { thread_id } => {
                 self.open_thread_goal_editor(app_server, thread_id).await;
             }
@@ -926,6 +955,10 @@ impl App {
             }
             AppEvent::ClearThreadGoal { thread_id } => {
                 self.clear_thread_goal(app_server, thread_id).await;
+            }
+            AppEvent::ActivateThreadGoalPlanNode { thread_id, node_id } => {
+                self.activate_thread_goal_plan_node(app_server, thread_id, node_id)
+                    .await;
             }
             AppEvent::OpenThreadLoopManager { thread_id } => {
                 self.open_thread_loop_manager(app_server, thread_id).await;
@@ -1126,8 +1159,12 @@ impl App {
                 self.open_background_agent_actions(app_server, agent_id)
                     .await;
             }
-            AppEvent::StartBackgroundAgent { prompt } => {
-                self.start_background_agent(app_server, prompt).await;
+            AppEvent::StartBackgroundAgent {
+                prompt,
+                worktree_id,
+            } => {
+                self.start_background_agent(app_server, prompt, worktree_id)
+                    .await;
             }
             AppEvent::StartExternalAgentChildThread {
                 runtime_id,
@@ -1167,15 +1204,39 @@ impl App {
             AppEvent::ShowBackgroundAgentDiagnostics => {
                 self.show_background_agent_diagnostics(app_server).await;
             }
+            AppEvent::OpenWorktreeManager => {
+                self.open_worktree_manager(app_server).await;
+            }
+            AppEvent::OpenWorktreeActions {
+                worktree_id,
+                base_repo_path,
+            } => {
+                self.open_worktree_actions(app_server, worktree_id, base_repo_path)
+                    .await;
+            }
+            AppEvent::ReadWorktree {
+                worktree_id,
+                base_repo_path,
+            } => {
+                self.read_worktree(app_server, worktree_id, base_repo_path)
+                    .await;
+            }
+            AppEvent::UseWorktree {
+                worktree_id,
+                base_repo_path,
+            } => {
+                self.use_worktree(app_server, worktree_id, base_repo_path)
+                    .await;
+            }
             AppEvent::ListActiveSessions => {
                 self.list_active_sessions(app_server).await;
             }
             AppEvent::SendActiveSessionMessage {
-                target_thread_id,
+                target_peer_id,
                 message,
                 wake,
             } => {
-                self.send_active_session_message(app_server, target_thread_id, message, wake)
+                self.send_active_session_message(app_server, target_peer_id, message, wake)
                     .await;
             }
             AppEvent::PrefillComposer { text } => {
@@ -1212,6 +1273,11 @@ impl App {
                 result,
             } => {
                 self.apply_minimax_usage_loaded(origin, auth_profile, result);
+            }
+            AppEvent::UsageSelfHealRetry { retry_id } => {
+                if self.chat_widget.on_usage_self_heal_retry(retry_id) {
+                    tui.frame_requester().schedule_frame();
+                }
             }
             AppEvent::ConnectorsLoaded { result, is_final } => {
                 self.chat_widget.on_connectors_loaded(result, is_final);
@@ -1857,7 +1923,10 @@ impl App {
                                         /*personality*/ None,
                                     ),
                                 ));
-                                if self.apply_permission_profile_selection(selection).await {
+                                if self
+                                    .apply_permission_profile_selection(app_server, selection)
+                                    .await
+                                {
                                     self.chat_widget.submit_initial_user_message_if_pending();
                                 }
                                 self.chat_widget.add_plain_history_lines(vec![
@@ -1886,13 +1955,18 @@ impl App {
                                         /*personality*/ None,
                                     ),
                                 ));
-                                self.app_event_tx.send(AppEvent::UpdateAskForApprovalPolicy(
-                                    AskForApproval::from(preset.approval),
-                                ));
-                                self.app_event_tx
-                                    .send(AppEvent::UpdateActivePermissionProfile(
-                                        preset.active_permission_profile.clone(),
-                                    ));
+                                let selection = PermissionProfileSelection {
+                                    profile_id: preset.active_permission_profile.id.clone(),
+                                    approval_policy: Some(AskForApproval::from(preset.approval)),
+                                    approvals_reviewer: Some(self.config.approvals_reviewer),
+                                    display_label: preset.label.to_string(),
+                                };
+                                if !self
+                                    .apply_permission_profile_selection(app_server, selection)
+                                    .await
+                                {
+                                    return Ok(AppRunControl::Continue);
+                                }
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
@@ -2116,123 +2190,12 @@ impl App {
             AppEvent::RestartRealtimeAudioDevice { kind } => {
                 self.chat_widget.restart_realtime_audio_device(kind);
             }
-            AppEvent::UpdateAskForApprovalPolicy(policy) => {
-                let mut config = self.config.clone();
-                if !self.try_set_approval_policy_on_config(
-                    &mut config,
-                    policy,
-                    "Failed to set approval policy",
-                    "failed to set approval policy on app config",
-                ) {
-                    return Ok(AppRunControl::Continue);
-                }
-                self.config = config;
-                let approval_policy =
-                    AskForApproval::from(self.config.permissions.approval_policy.value());
-                self.runtime_approval_policy_override = Some(approval_policy);
-                self.chat_widget.set_approval_policy(approval_policy);
-                self.sync_active_thread_permission_settings_to_cached_session()
-                    .await;
-            }
-            AppEvent::UpdateActivePermissionProfile(active_permission_profile) => {
-                let mut config = self.config.clone();
-                let Some(permission_profile) = self
-                    .try_set_builtin_active_permission_profile_on_config(
-                        &mut config,
-                        active_permission_profile.clone(),
-                        "Failed to set permission profile",
-                        "failed to set active permission profile on app config",
-                    )
-                else {
-                    return Ok(AppRunControl::Continue);
-                };
-                #[cfg(target_os = "windows")]
-                let permission_profile_is_managed_restricted =
-                    managed_filesystem_sandbox_is_restricted(&permission_profile);
-                let permission_profile_for_chat = permission_profile.clone();
-
-                self.config = config;
-                if let Err(err) = self
-                    .chat_widget
-                    .set_permission_profile_from_session_snapshot(
-                        PermissionProfileSnapshot::active(
-                            permission_profile_for_chat,
-                            active_permission_profile,
-                        ),
-                    )
-                {
-                    tracing::warn!(%err, "failed to set permission profile on chat config");
-                    self.chat_widget
-                        .add_error_message(format!("Failed to set permission profile: {err}"));
-                    return Ok(AppRunControl::Continue);
-                }
-                self.runtime_permission_profile_override =
-                    Some(RuntimePermissionProfileOverride::from_config(&self.config));
-                self.sync_active_thread_permission_settings_to_cached_session()
-                    .await;
-                self.persist_current_auth_profile_permission_settings();
-                self.chat_widget.submit_initial_user_message_if_pending();
-
-                // If a managed filesystem sandbox is active, run the Windows
-                // world-writable scan.
-                #[cfg(target_os = "windows")]
-                {
-                    // One-shot suppression if the user just confirmed continue.
-                    if self.windows_sandbox.skip_world_writable_scan_once {
-                        self.windows_sandbox.skip_world_writable_scan_once = false;
-                        return Ok(AppRunControl::Continue);
-                    }
-
-                    let should_check = WindowsSandboxLevel::from_config(&self.config)
-                        != WindowsSandboxLevel::Disabled
-                        && permission_profile_is_managed_restricted
-                        && !self.chat_widget.world_writable_warning_hidden();
-                    if should_check {
-                        let cwd = self.config.cwd.clone();
-                        let workspace_roots = self.config.effective_workspace_roots();
-                        let env_map: std::collections::HashMap<String, String> =
-                            std::env::vars().collect();
-                        let tx = self.app_event_tx.clone();
-                        let logs_base_dir = self.config.codex_home.clone();
-                        let permission_profile =
-                            self.config.permissions.effective_permission_profile();
-                        Self::spawn_world_writable_scan(
-                            cwd,
-                            workspace_roots,
-                            env_map,
-                            logs_base_dir,
-                            permission_profile,
-                            tx,
-                        );
-                    }
-                }
-            }
             AppEvent::SelectPermissionProfile(selection) => {
-                if self.apply_permission_profile_selection(selection).await {
-                    self.chat_widget.submit_initial_user_message_if_pending();
-                }
-            }
-            AppEvent::UpdateApprovalsReviewer(policy) => {
-                self.config.approvals_reviewer = policy;
-                self.chat_widget.set_approvals_reviewer(policy);
-                self.sync_active_thread_permission_settings_to_cached_session()
-                    .await;
-                self.persist_current_auth_profile_permission_settings();
-                if let Err(err) = crate::config_update::write_config_batch(
-                    app_server.request_handle(),
-                    vec![crate::config_update::replace_config_value(
-                        "approvals_reviewer",
-                        serde_json::json!(policy.to_string()),
-                    )],
-                )
-                .await
+                if self
+                    .apply_permission_profile_selection(app_server, selection)
+                    .await
                 {
-                    tracing::error!(
-                        error = %err,
-                        "failed to persist approvals reviewer update"
-                    );
-                    self.chat_widget
-                        .add_error_message(format!("Failed to save approvals reviewer: {err}"));
+                    self.chat_widget.submit_initial_user_message_if_pending();
                 }
             }
             AppEvent::UpdateFeatureFlags { updates } => {

@@ -21,6 +21,9 @@ pub(crate) enum RequestSerializationQueueKey {
     Agent {
         agent_id: String,
     },
+    ActivePeer {
+        peer_id: String,
+    },
     Thread {
         thread_id: String,
     },
@@ -67,6 +70,10 @@ impl RequestSerializationQueueKey {
             }
             ClientRequestSerializationScope::Agent { agent_id } => (
                 Self::Agent { agent_id },
+                RequestSerializationAccess::Exclusive,
+            ),
+            ClientRequestSerializationScope::ActivePeer { peer_id } => (
+                Self::ActivePeer { peer_id },
                 RequestSerializationAccess::Exclusive,
             ),
             ClientRequestSerializationScope::Thread { thread_id } => (

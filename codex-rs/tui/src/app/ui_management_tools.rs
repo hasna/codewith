@@ -2,8 +2,16 @@
 
 use super::App;
 use crate::app_server_session::AppServerSession;
+use codex_app_server_protocol::ActiveSessionCapability;
+use codex_app_server_protocol::ActiveSessionListParams;
+use codex_app_server_protocol::ActiveSessionMessageDelivery;
+use codex_app_server_protocol::ActiveSessionPeer;
+use codex_app_server_protocol::ActiveSessionPeerKind;
+use codex_app_server_protocol::ActiveSessionSendResponse;
+use codex_app_server_protocol::ActiveSessionSendStatus;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_config::types::McpServerTransportConfig;
+use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -22,6 +30,16 @@ pub(super) struct McpArgs {
 pub(super) struct BackgroundAgentsArgs {
     pub(super) action: String,
     pub(super) agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ActiveSessionsArgs {
+    pub(super) action: String,
+    pub(super) cursor: Option<String>,
+    pub(super) limit: Option<u32>,
+    pub(super) target_peer_id: Option<String>,
+    pub(super) message: Option<String>,
+    pub(super) wake: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +193,72 @@ impl App {
                 action,
                 "open, list, read, or logs; agent mutations require the interactive /agent UI",
             )),
+        }
+    }
+
+    pub(super) async fn handle_active_sessions_tool(
+        &mut self,
+        app_server: &mut AppServerSession,
+        args: ActiveSessionsArgs,
+    ) -> Result<JsonValue, String> {
+        match args.action.as_str() {
+            "list" => {
+                let current_thread_id = self.current_tool_thread_id()?;
+                let response = app_server
+                    .active_session_list(ActiveSessionListParams {
+                        cursor: args.cursor,
+                        limit: args.limit,
+                    })
+                    .await
+                    .map_err(|err| format!("failed to list active sessions: {err}"))?;
+                let peers = response
+                    .data
+                    .into_iter()
+                    .map(|peer| active_session_peer_tool_json(peer, current_thread_id))
+                    .collect::<Vec<_>>();
+                Ok(json!({
+                    "peers": peers,
+                    "next_cursor": response.next_cursor,
+                    "current_thread_id": current_thread_id.to_string(),
+                    "active_only": "Only loaded sessions can receive messages; no offline delivery is attempted.",
+                    "send_usage": "Call action=send with target_peer_id from this list and message. Set wake=true only when the target should process it immediately.",
+                }))
+            }
+            "send" => {
+                let current_thread_id = self.current_tool_thread_id()?;
+                let target_peer_id =
+                    required_string(args.target_peer_id, "action=send requires target_peer_id")?;
+                if super::active_session_actions::is_current_thread_target(
+                    Some(current_thread_id),
+                    target_peer_id.as_str(),
+                ) {
+                    return Err(
+                        "cannot send an active-session message to the current thread".to_string(),
+                    );
+                }
+                let message = required_message(args.message, "action=send requires message")?;
+                let wake = args.wake.unwrap_or(false);
+                let delivery = if wake {
+                    ActiveSessionMessageDelivery::TriggerTurn
+                } else {
+                    ActiveSessionMessageDelivery::QueueOnly
+                };
+                let response = app_server
+                    .active_session_send(
+                        target_peer_id.clone(),
+                        message,
+                        Some(current_thread_id),
+                        delivery,
+                    )
+                    .await
+                    .map_err(|err| format!("failed to send active session message: {err}"))?;
+                Ok(active_session_send_tool_json(
+                    response,
+                    target_peer_id,
+                    wake,
+                ))
+            }
+            action => Err(unknown_action_with_expected(action, "list or send")),
         }
     }
 
@@ -348,6 +432,7 @@ impl App {
                 "background_terminals": true,
                 "mcp": true,
                 "background_agents": true,
+                "active_sessions": true,
                 "schedules": true,
                 "monitors": true,
                 "session_control": true,
@@ -419,6 +504,74 @@ fn required_string(value: Option<String>, message: &'static str) -> Result<Strin
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| message.to_string())
+}
+
+fn required_message(value: Option<String>, message: &'static str) -> Result<String, String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| message.to_string())
+}
+
+fn active_session_peer_tool_json(
+    peer: ActiveSessionPeer,
+    current_thread_id: ThreadId,
+) -> JsonValue {
+    let current_thread_id = current_thread_id.to_string();
+    let current = peer.thread_id == current_thread_id;
+    json!({
+        "peer_id": peer.peer_id,
+        "kind": active_session_kind(peer.kind),
+        "current": current,
+        "thread_id": peer.thread_id,
+        "session_id": peer.session_id,
+        "cwd": peer.cwd.as_path().display().to_string(),
+        "display_name": peer.display_name,
+        "agent_path": peer.agent_path,
+        "capabilities": peer
+            .capabilities
+            .into_iter()
+            .map(active_session_capability)
+            .collect::<Vec<_>>(),
+        "last_seen_at": peer.last_seen_at,
+    })
+}
+
+fn active_session_kind(kind: ActiveSessionPeerKind) -> &'static str {
+    match kind {
+        ActiveSessionPeerKind::CodewithSession => "session",
+        ActiveSessionPeerKind::SpawnedAgent => "agent",
+        ActiveSessionPeerKind::BridgeAdapter => "bridge",
+    }
+}
+
+fn active_session_capability(capability: ActiveSessionCapability) -> &'static str {
+    match capability {
+        ActiveSessionCapability::ReceiveMessage => "receive",
+        ActiveSessionCapability::QueueMessage => "queue",
+        ActiveSessionCapability::TriggerTurn => "wake",
+        ActiveSessionCapability::ClaudeChannelBridge => "claude_bridge",
+    }
+}
+
+fn active_session_send_tool_json(
+    response: ActiveSessionSendResponse,
+    target_peer_id: String,
+    wake: bool,
+) -> JsonValue {
+    let status = response.status;
+    json!({
+        "status": status,
+        "delivered": status == ActiveSessionSendStatus::Delivered,
+        "message_id": response.message_id,
+        "target_peer_id": target_peer_id,
+        "resolved_target_peer_id": response.target_peer_id,
+        "target_thread_id": response.target_thread_id,
+        "sender_thread_id": response.sender_thread_id,
+        "reason": response.reason,
+        "delivery": if wake { "triggerTurn" } else { "queueOnly" },
+        "response": response,
+        "active_only": "Delivered means the message was enqueued on the live target session; it does not mean the target has drained or persisted it.",
+    })
 }
 
 fn interactive_user_confirmation_required(action: &str) -> String {
@@ -581,5 +734,55 @@ mod tests {
         assert_eq!(output[0]["recent_output_available"], true);
         assert_eq!(output[0]["recent_output_chunk_count"], 1);
         assert!(!output[0].to_string().contains("TOKEN=secret"));
+    }
+
+    #[test]
+    fn active_session_peer_tool_json_marks_current_and_names_capabilities() {
+        let thread_id =
+            ThreadId::from_string("019eca00-0000-7000-8000-000000000001").expect("thread id");
+        let peer = ActiveSessionPeer {
+            peer_id: thread_id.to_string(),
+            kind: ActiveSessionPeerKind::SpawnedAgent,
+            thread_id: thread_id.to_string(),
+            session_id: "session-1".to_string(),
+            cwd: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+                "/workspace/open-codewith",
+            )
+            .expect("absolute cwd"),
+            display_name: Some("reviewer".to_string()),
+            agent_path: Some("/root/reviewer".to_string()),
+            capabilities: vec![
+                ActiveSessionCapability::ReceiveMessage,
+                ActiveSessionCapability::QueueMessage,
+                ActiveSessionCapability::TriggerTurn,
+            ],
+            last_seen_at: 1_781_512_883,
+        };
+
+        let output = active_session_peer_tool_json(peer, thread_id);
+
+        assert_eq!(output["peer_id"], thread_id.to_string());
+        assert_eq!(output["kind"], "agent");
+        assert_eq!(output["current"], true);
+        assert_eq!(output["capabilities"], json!(["receive", "queue", "wake"]));
+    }
+
+    #[test]
+    fn active_session_send_tool_json_exposes_delivery_status() {
+        let response = ActiveSessionSendResponse {
+            status: ActiveSessionSendStatus::NotLoaded,
+            message_id: "019eca00-0000-7000-8000-000000000002".to_string(),
+            target_peer_id: "peer-1".to_string(),
+            target_thread_id: None,
+            sender_thread_id: Some("019eca00-0000-7000-8000-000000000001".to_string()),
+            reason: Some("target is not loaded".to_string()),
+        };
+
+        let output = active_session_send_tool_json(response, "peer-1".to_string(), true);
+
+        assert_eq!(output["status"], json!("notLoaded"));
+        assert_eq!(output["delivered"], json!(false));
+        assert_eq!(output["delivery"], json!("triggerTurn"));
+        assert_eq!(output["reason"], json!("target is not loaded"));
     }
 }

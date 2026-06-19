@@ -218,6 +218,47 @@ pub struct AuthProfileAutoSwitchToml {
 
     /// Switch when the weekly Codewith window reaches 100%.
     pub on_weekly_limit: Option<bool>,
+
+    /// Strategy used to choose the next profile.
+    pub strategy: Option<AuthProfileAutoSwitchStrategyToml>,
+
+    /// Seconds between background usage heartbeat checks.
+    pub heartbeat_interval_secs: Option<u64>,
+
+    /// Maximum age in seconds for usage data to guide profile selection.
+    pub heartbeat_freshness_secs: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthProfileAutoSwitchStrategyToml {
+    /// Prefer the profile with the most remaining enabled Codewith limit.
+    #[default]
+    HighestAvailable,
+    /// Preserve configured order and rotate to the next available profile.
+    Ordered,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct UsageSelfHealToml {
+    /// Enables automatic retry for recoverable usage and transient availability errors.
+    pub enabled: Option<bool>,
+
+    /// Maximum automatic retry attempts per failing turn.
+    pub max_retries: Option<u64>,
+
+    /// Initial retry delay in seconds for transient errors or usage errors without reset metadata.
+    pub initial_backoff_secs: Option<u64>,
+
+    /// Maximum retry delay in seconds for exponential backoff.
+    pub max_backoff_secs: Option<u64>,
+
+    /// Extra seconds to wait after a usage-limit reset timestamp before retrying.
+    pub reset_retry_buffer_secs: Option<u64>,
+
+    /// Longest reset-based delay, in seconds, that Codewith will schedule automatically.
+    pub max_reset_retry_delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]

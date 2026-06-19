@@ -1,0 +1,256 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadGoalPlan": {
+      "properties": {
+        "activeNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "autoExecute": {
+          "$ref": "#/definitions/ThreadGoalPlanAutoExecute"
+        },
+        "blockedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "budgetLimitedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cancelledNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/definitions/ThreadGoalPlanNode"
+          },
+          "type": "array"
+        },
+        "pausedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pendingNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "readyNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "remainingTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadGoalPlanStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "totalTimeUsedSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalTokensUsed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "usageLimitedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activeNodeCount",
+        "autoExecute",
+        "blockedNodeCount",
+        "budgetLimitedNodeCount",
+        "cancelledNodeCount",
+        "completedNodeCount",
+        "createdAt",
+        "nodeCount",
+        "nodes",
+        "pausedNodeCount",
+        "pendingNodeCount",
+        "planId",
+        "readyNodeCount",
+        "status",
+        "threadId",
+        "totalTimeUsedSeconds",
+        "totalTokensUsed",
+        "updatedAt",
+        "usageLimitedNodeCount"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalPlanAutoExecute": {
+      "enum": [
+        "off",
+        "readyOnly",
+        "aiDirected"
+      ],
+      "type": "string"
+    },
+    "ThreadGoalPlanNode": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "priority": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "projectedGoalId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadGoalPlanNodeStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timeUsedSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "dependsOn",
+        "key",
+        "nodeId",
+        "objective",
+        "planId",
+        "priority",
+        "ready",
+        "sequence",
+        "status",
+        "threadId",
+        "timeUsedSeconds",
+        "tokensUsed",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalPlanNodeStatus": {
+      "enum": [
+        "pending",
+        "active",
+        "paused",
+        "blocked",
+        "usageLimited",
+        "budgetLimited",
+        "complete",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ThreadGoalPlanStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "blocked",
+        "budgetLimited",
+        "complete",
+        "cancelled"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "plan": {
+      "$ref": "#/definitions/ThreadGoalPlan"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "plan",
+    "threadId"
+  ],
+  "title": "ThreadGoalPlanUpdatedNotification",
+  "type": "object"
+}

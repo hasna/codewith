@@ -32,6 +32,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadGoalClearResponse;
 use codex_app_server_protocol::ThreadGoalListResponse;
+use codex_app_server_protocol::ThreadGoalPlanActivateNodeResponse;
 use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
 use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
@@ -1586,11 +1587,360 @@ async fn thread_goal_list_returns_goal_plans() -> Result<()> {
     assert_eq!(None, list.goal);
     assert_eq!(None, list.next_cursor);
     assert_eq!(1, list.goal_plans.len());
+    let plan = &list.goal_plans[0];
+    assert_eq!(0, plan.total_tokens_used);
+    assert_eq!(0, plan.total_time_used_seconds);
+    assert_eq!(None, plan.remaining_tokens);
+    assert_eq!(1, plan.node_count);
+    assert_eq!(0, plan.completed_node_count);
+    assert_eq!(0, plan.active_node_count);
+    assert_eq!(1, plan.pending_node_count);
     let node = &list.goal_plans[0].nodes[0];
     assert_eq!("investigate", node.key);
     assert_eq!("Investigate app-server goal plans", node.objective);
     assert_eq!(ThreadGoalPlanNodeStatus::Pending, node.status);
     assert_eq!(None, node.token_budget);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_goal_plan_activate_node_rpc_updates_goal_plan_and_notifications() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace("personality = true\n", "personality = true\ngoals = true\n"),
+    )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "materialize this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    mcp.clear_message_buffer();
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_id = ThreadId::from_string(&thread.id)?;
+    let create_outcome = state_db
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_tokens: Some(500),
+            nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
+                key: "investigate".to_string(),
+                objective: "Investigate app-server explicit activation".to_string(),
+                priority: 9,
+                token_budget: Some(100),
+                depends_on: Vec::new(),
+            }],
+        })
+        .await?;
+    let node_id = create_outcome.snapshot.nodes[0].node_id.clone();
+
+    let missing_id = mcp
+        .send_raw_request(
+            "thread/goalPlan/activateNode",
+            Some(json!({
+                "threadId": thread.id,
+                "nodeId": "missing-node",
+            })),
+        )
+        .await?;
+    let missing_err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(missing_id)),
+    )
+    .await??;
+    assert!(
+        missing_err
+            .error
+            .message
+            .contains("cannot activate goal plan node because it is not ready"),
+        "unexpected error: {missing_err:?}"
+    );
+
+    let activate_id = mcp
+        .send_raw_request(
+            "thread/goalPlan/activateNode",
+            Some(json!({
+                "threadId": thread.id,
+                "nodeId": node_id,
+            })),
+        )
+        .await?;
+    let activate_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(activate_id)),
+    )
+    .await??;
+    let activated: ThreadGoalPlanActivateNodeResponse = to_response(activate_resp)?;
+
+    assert_eq!(
+        "Investigate app-server explicit activation",
+        activated.goal.objective
+    );
+    assert_eq!(ThreadGoalStatus::Active, activated.goal.status);
+    assert_eq!(Some(100), activated.goal.token_budget);
+    assert_eq!(ThreadGoalPlanStatus::Active, activated.plan.status);
+    assert_eq!(ThreadGoalPlanAutoExecute::Off, activated.plan.auto_execute);
+    assert_eq!(1, activated.plan.active_node_count);
+    assert_eq!(0, activated.plan.pending_node_count);
+    let activated_node = &activated.plan.nodes[0];
+    assert_eq!(ThreadGoalPlanNodeStatus::Active, activated_node.status);
+    assert_eq!(
+        Some(activated.goal.goal_id.as_str()),
+        activated_node.projected_goal_id.as_deref()
+    );
+
+    let goal_note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+    let goal_note: ServerNotification = goal_note.try_into()?;
+    let ServerNotification::ThreadGoalUpdated(goal_note) = goal_note else {
+        anyhow::bail!("expected thread goal update notification");
+    };
+    assert_eq!(activated.goal, goal_note.goal);
+
+    let plan_note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goalPlan/updated"),
+    )
+    .await??;
+    let plan_note: ServerNotification = plan_note.try_into()?;
+    let ServerNotification::ThreadGoalPlanUpdated(plan_note) = plan_note else {
+        anyhow::bail!("expected thread goal plan update notification");
+    };
+    assert_eq!(activated.plan, plan_note.plan);
+
+    let list_id = mcp
+        .send_raw_request(
+            "thread/goal/list",
+            Some(json!({
+                "threadId": thread.id,
+            })),
+        )
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list: ThreadGoalListResponse = to_response(list_resp)?;
+    assert_eq!(Some(activated.goal), list.goal);
+    assert_eq!(vec![activated.plan], list.goal_plans);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_goal_set_complete_advances_ready_goal_plan_node_and_notifies() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace(
+            "personality = true\n\n[model_providers.mock_provider]",
+            "personality = true\ngoals = true\n\n[goals]\nauto_execute = \"ready-only\"\n\n[model_providers.mock_provider]",
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "materialize this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_id = ThreadId::from_string(&thread.id)?;
+    let create_outcome = state_db
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "first".to_string(),
+                    objective: "Finish app-server external goal".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                },
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "second".to_string(),
+                    objective: "Continue app-server external goal".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: vec!["first".to_string()],
+                },
+            ],
+        })
+        .await?;
+    let first_goal = create_outcome
+        .activated_goal
+        .expect("first ready node should activate");
+    mcp.clear_message_buffer();
+
+    let complete_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.id,
+                "status": "complete",
+            })),
+        )
+        .await?;
+    let complete_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(complete_id)),
+    )
+    .await??;
+    let completed: ThreadGoalSetResponse = to_response(complete_resp)?;
+    assert_eq!(first_goal.goal_id, completed.goal.goal_id);
+    assert_eq!(ThreadGoalStatus::Complete, completed.goal.status);
+
+    let completed_goal_note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+    let completed_goal_note: ServerNotification = completed_goal_note.try_into()?;
+    let ServerNotification::ThreadGoalUpdated(completed_goal_note) = completed_goal_note else {
+        anyhow::bail!("expected completed goal update notification");
+    };
+    assert_eq!(ThreadGoalStatus::Complete, completed_goal_note.goal.status);
+
+    let plan_note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goalPlan/updated"),
+    )
+    .await??;
+    let plan_note: ServerNotification = plan_note.try_into()?;
+    let ServerNotification::ThreadGoalPlanUpdated(plan_note) = plan_note else {
+        anyhow::bail!("expected thread goal plan update notification");
+    };
+    assert_eq!(
+        vec![
+            ThreadGoalPlanNodeStatus::Complete,
+            ThreadGoalPlanNodeStatus::Active,
+        ],
+        plan_note
+            .plan
+            .nodes
+            .iter()
+            .map(|node| node.status)
+            .collect::<Vec<_>>()
+    );
+
+    let activated_goal_note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+    let activated_goal_note: ServerNotification = activated_goal_note.try_into()?;
+    let ServerNotification::ThreadGoalUpdated(activated_goal_note) = activated_goal_note else {
+        anyhow::bail!("expected activated goal update notification");
+    };
+    assert_eq!(
+        "Continue app-server external goal",
+        activated_goal_note.goal.objective
+    );
+    assert_eq!(ThreadGoalStatus::Active, activated_goal_note.goal.status);
+
+    let list_id = mcp
+        .send_raw_request(
+            "thread/goal/list",
+            Some(json!({
+                "threadId": thread.id,
+            })),
+        )
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list: ThreadGoalListResponse = to_response(list_resp)?;
+    let goal = list.goal.expect("activated goal should be listed");
+    assert_eq!("Continue app-server external goal", goal.objective);
+    assert_eq!(ThreadGoalStatus::Active, goal.status);
+    assert_eq!(vec![plan_note.plan], list.goal_plans);
 
     Ok(())
 }
@@ -1697,6 +2047,13 @@ async fn thread_goal_list_returns_active_goal_and_plan_projection() -> Result<()
     assert_eq!(plan.status, ThreadGoalPlanStatus::Active);
     assert_eq!(plan.auto_execute, ThreadGoalPlanAutoExecute::AiDirected);
     assert_eq!(plan.max_tokens, Some(250));
+    assert_eq!(plan.total_tokens_used, 0);
+    assert_eq!(plan.total_time_used_seconds, 0);
+    assert_eq!(plan.remaining_tokens, Some(250));
+    assert_eq!(plan.node_count, 1);
+    assert_eq!(plan.completed_node_count, 0);
+    assert_eq!(plan.active_node_count, 1);
+    assert_eq!(plan.pending_node_count, 0);
     assert_eq!(1, plan.nodes.len());
 
     let node = &plan.nodes[0];

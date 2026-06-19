@@ -6,6 +6,7 @@ mod permissions_instructions;
 mod realtime;
 mod review_exit;
 mod review_request;
+mod workflows;
 
 pub use agents::HIERARCHICAL_AGENTS_MESSAGE;
 pub use apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
@@ -25,3 +26,5 @@ pub use review_request::ResolvedReviewRequest;
 pub use review_request::resolve_review_request;
 pub use review_request::review_prompt;
 pub use review_request::user_facing_hint;
+pub use workflows::DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML;
+pub use workflows::WORKFLOW_YAML_SYSTEM_PROMPT;

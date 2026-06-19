@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "dryRun": {
+      "type": "boolean"
+    },
+    "expiresAt": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "idempotencyKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "maxAttempts": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "priority": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "resume": {
+      "type": "boolean"
+    },
+    "senderLabel": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "senderThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetThreadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message",
+    "targetThreadId"
+  ],
+  "title": "MissionControlEnqueueInstructionParams",
+  "type": "object"
+}

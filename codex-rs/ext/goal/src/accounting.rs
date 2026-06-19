@@ -443,6 +443,7 @@ fn should_clear_active_goal(
         ThreadGoalStatus::Paused
         | ThreadGoalStatus::Blocked
         | ThreadGoalStatus::UsageLimited
-        | ThreadGoalStatus::Complete => true,
+        | ThreadGoalStatus::Complete
+        | ThreadGoalStatus::Cancelled => true,
     }
 }

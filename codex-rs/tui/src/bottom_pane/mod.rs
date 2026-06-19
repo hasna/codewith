@@ -434,6 +434,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_workflow_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_workflow_command_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub fn set_scheduled_tasks_command_enabled(&mut self, enabled: bool) {
         self.composer.set_scheduled_tasks_command_enabled(enabled);
         self.request_redraw();

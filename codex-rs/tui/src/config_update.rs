@@ -5,6 +5,7 @@
 //! to the local `config.toml` directly.
 
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigEdit;
@@ -16,6 +17,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_config::loader::project_trust_key;
+use codex_config::types::ApprovalsReviewer;
 use codex_features::should_clear_user_config_feature_toggle;
 use codex_model_provider_info::model_gateway_for_provider;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -134,6 +136,32 @@ pub(crate) fn build_service_tier_selection_edits(
         },
     );
     vec![service_tier_edit]
+}
+
+pub(crate) fn build_permission_profile_selection_edits(
+    profile_id: &str,
+    approval_policy: Option<AskForApproval>,
+    approvals_reviewer: Option<ApprovalsReviewer>,
+) -> Vec<ConfigEdit> {
+    let mut edits = vec![replace_config_value(
+        "default_permissions",
+        serde_json::json!(profile_id),
+    )];
+
+    if let Some(approval_policy) = approval_policy {
+        edits.push(replace_config_value(
+            "approval_policy",
+            serde_json::json!(approval_policy.to_core().to_string()),
+        ));
+    }
+    if let Some(approvals_reviewer) = approvals_reviewer {
+        edits.push(replace_config_value(
+            "approvals_reviewer",
+            serde_json::json!(approvals_reviewer.to_string()),
+        ));
+    }
+
+    edits
 }
 
 #[cfg(target_os = "windows")]

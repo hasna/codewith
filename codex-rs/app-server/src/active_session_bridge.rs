@@ -1,5 +1,14 @@
 use crate::active_session_registry::ActivePeer;
 use crate::active_session_registry::ActivePeerKind;
+use crate::active_session_registry::ActivePeerOwner;
+use codex_core::ThreadManager;
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
+use codex_protocol::protocol::InterAgentCommunication;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActiveChannelEndpoint {
@@ -50,6 +59,7 @@ impl ActiveChannelDeliveryMode {
 pub(crate) struct ActiveChannelEnvelope {
     pub(crate) message_id: String,
     pub(crate) sender: ActiveChannelEndpoint,
+    pub(crate) claimed_sender: Option<ActiveChannelEndpoint>,
     pub(crate) recipient: ActiveChannelEndpoint,
     pub(crate) content: String,
     pub(crate) delivery: ActiveChannelDeliveryMode,
@@ -59,6 +69,7 @@ impl ActiveChannelEnvelope {
     pub(crate) fn new(
         message_id: String,
         sender: ActiveChannelEndpoint,
+        claimed_sender: Option<ActiveChannelEndpoint>,
         recipient: ActiveChannelEndpoint,
         content: String,
         delivery: ActiveChannelDeliveryMode,
@@ -66,6 +77,7 @@ impl ActiveChannelEnvelope {
         Self {
             message_id,
             sender,
+            claimed_sender,
             recipient,
             content,
             delivery,
@@ -92,6 +104,104 @@ pub(crate) enum ActiveChannelAdapterError {
     Failed { message: String },
 }
 
+#[derive(Clone)]
+pub(crate) struct ActiveChannelRouter {
+    thread_manager: Arc<ThreadManager>,
+    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+}
+
+impl ActiveChannelRouter {
+    pub(crate) fn new(
+        thread_manager: Arc<ThreadManager>,
+        pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    ) -> Self {
+        Self {
+            thread_manager,
+            pending_thread_unloads,
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active-session delivery must be serialized against pending unloads through get_thread and direct delivery"
+    )]
+    pub(crate) async fn deliver(
+        &self,
+        envelope: &ActiveChannelEnvelope,
+        recipient: &ActivePeer,
+        communication: InterAgentCommunication,
+    ) -> Result<ActiveChannelDeliveryOutcome, ActiveChannelAdapterError> {
+        match &recipient.owner {
+            ActivePeerOwner::LocalThread { thread_id } => {
+                let pending_thread_unloads = self.pending_thread_unloads.lock().await;
+                if pending_thread_unloads.contains(thread_id) {
+                    return Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                        recipient_id: recipient.peer_id.clone(),
+                    });
+                }
+                let target_thread = match self.thread_manager.get_thread(*thread_id).await {
+                    Ok(thread) => thread,
+                    Err(CodexErr::ThreadNotFound(_)) => {
+                        return Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                            recipient_id: recipient.peer_id.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        return Err(ActiveChannelAdapterError::Failed {
+                            message: format!("failed to resolve local active peer: {err}"),
+                        });
+                    }
+                };
+                match target_thread
+                    .deliver_inter_agent_communication(communication)
+                    .await
+                {
+                    Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
+                        message_id: envelope.message_id.clone(),
+                    }),
+                    Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
+                        Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                            recipient_id: recipient.peer_id.clone(),
+                        })
+                    }
+                    Err(err) => Err(ActiveChannelAdapterError::Failed {
+                        message: format!("failed to deliver active session message: {err}"),
+                    }),
+                }
+            }
+            ActivePeerOwner::BridgeAdapter { .. } => {
+                Ok(ActiveChannelDeliveryOutcome::Unsupported {
+                    recipient_id: recipient.peer_id.clone(),
+                })
+            }
+        }
+    }
+}
+
+pub(crate) fn active_channel_communication(
+    envelope: &ActiveChannelEnvelope,
+) -> InterAgentCommunication {
+    let author = envelope
+        .sender
+        .agent_path
+        .as_deref()
+        .and_then(|path| AgentPath::try_from(path).ok())
+        .unwrap_or_else(AgentPath::root);
+    let recipient = envelope
+        .recipient
+        .agent_path
+        .as_deref()
+        .and_then(|path| AgentPath::try_from(path).ok())
+        .unwrap_or_else(AgentPath::root);
+    InterAgentCommunication::new(
+        author,
+        recipient,
+        Vec::new(),
+        envelope.content.clone(),
+        envelope.delivery.trigger_turn(),
+    )
+}
+
 /// Sends native active-channel envelopes through one live bridge transport.
 ///
 /// Implementations should only deliver to endpoints they can prove are active in their own
@@ -111,6 +221,7 @@ fn active_channel_endpoint_kind(kind: ActivePeerKind) -> ActiveChannelEndpointKi
     match kind {
         ActivePeerKind::CodewithSession => ActiveChannelEndpointKind::CodewithSession,
         ActivePeerKind::SpawnedAgent => ActiveChannelEndpointKind::CodewithSpawnedAgent,
+        ActivePeerKind::BridgeAdapter => ActiveChannelEndpointKind::BridgeAdapter,
     }
 }
 
@@ -142,6 +253,7 @@ mod tests {
                 label: Some("Codewith".to_string()),
                 agent_path: Some("/root".to_string()),
             },
+            None,
             ActiveChannelEndpoint {
                 id: "claude:session-1".to_string(),
                 kind: ActiveChannelEndpointKind::ClaudeCodeSession,
@@ -187,6 +299,14 @@ mod tests {
             }
             .to_string(),
             "active channel recipient is unsupported: claude:session-1"
+        );
+    }
+
+    #[test]
+    fn bridge_peer_kind_maps_to_bridge_endpoint_kind() {
+        assert_eq!(
+            active_channel_endpoint_kind(ActivePeerKind::BridgeAdapter),
+            ActiveChannelEndpointKind::BridgeAdapter
         );
     }
 }

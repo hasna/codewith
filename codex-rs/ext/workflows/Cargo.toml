@@ -1,0 +1,28 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-workflows-extension"
+version.workspace = true
+
+[lib]
+doctest = false
+name = "codex_workflows_extension"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-tools = { workspace = true }
+codex-workflows = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+codex-prompts = { workspace = true }
+codex-protocol = { workspace = true }
+codex-utils-output-truncation = { workspace = true }
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

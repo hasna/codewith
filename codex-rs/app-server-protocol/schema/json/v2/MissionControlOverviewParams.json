@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LocalSessionStatus": {
+      "enum": [
+        "active",
+        "idle",
+        "systemError",
+        "closing",
+        "loadedWithoutActivePeer",
+        "notLoaded"
+      ],
+      "type": "string"
+    },
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "ThreadListCwdFilter": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "ThreadPendingInteractionStatus": {
+      "enum": [
+        "pending",
+        "delivered",
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "noLongerWaiting"
+      ],
+      "type": "string"
+    },
+    "ThreadSortKey": {
+      "enum": [
+        "created_at",
+        "updated_at"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadListCwdFilter"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "includeGoalPlans": {
+      "type": "boolean"
+    },
+    "limit": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pendingInteractionCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pendingInteractionLimit": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pendingInteractionStatuses": {
+      "items": {
+        "$ref": "#/definitions/ThreadPendingInteractionStatus"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "searchTerm": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sessionStatuses": {
+      "items": {
+        "$ref": "#/definitions/LocalSessionStatus"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "sortDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SortDirection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sortKey": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadSortKey"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "useStateDbOnly": {
+      "type": "boolean"
+    }
+  },
+  "title": "MissionControlOverviewParams",
+  "type": "object"
+}

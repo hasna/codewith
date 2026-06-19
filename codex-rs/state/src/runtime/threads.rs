@@ -901,6 +901,9 @@ ON CONFLICT(id) DO UPDATE SET
         self.thread_monitors
             .delete_thread_monitors_for_thread(thread_id)
             .await?;
+        self.managed_worktrees
+            .detach_thread_assignments_for_thread(thread_id)
+            .await?;
         let result = sqlx::query("DELETE FROM threads WHERE id = ?")
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
@@ -1104,6 +1107,12 @@ mod tests {
     use super::*;
     use crate::Anchor;
     use crate::DirectionalThreadSpawnEdgeStatus;
+    use crate::ManagedWorktreeAssignmentTarget;
+    use crate::ManagedWorktreeAttachParams;
+    use crate::ManagedWorktreeCleanupPolicy;
+    use crate::ManagedWorktreeCreateParams;
+    use crate::ManagedWorktreeMode;
+    use crate::ManagedWorktreeOwnerKind;
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_protocol::protocol::EventMsg;
@@ -2049,5 +2058,64 @@ INSERT INTO thread_spawn_edges (
                 future_child_thread_id,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_detaches_managed_worktree_assignment() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000920").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread should insert");
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(ManagedWorktreeCreateParams {
+                worktree_id: Some("thread-delete-worktree".to_string()),
+                identity: Some("thread-delete-worktree".to_string()),
+                mode: ManagedWorktreeMode::SharedRepository,
+                base_repo_path: codex_home.join("repo"),
+                worktree_path: codex_home.join("repo"),
+                branch: Some("main".to_string()),
+                base_sha: None,
+                head_sha: Some("abc123".to_string()),
+                status_snapshot_json: serde_json::json!({"dirty": false}),
+                dirty: false,
+                cleanup_policy: ManagedWorktreeCleanupPolicy::Retain,
+                owner_kind: ManagedWorktreeOwnerKind::MainSession,
+                owner_thread_id: Some(thread_id),
+                owner_agent_run_id: None,
+                cleanup_after: None,
+            })
+            .await
+            .expect("managed worktree should create");
+        runtime
+            .managed_worktrees()
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: "thread-delete-worktree".to_string(),
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await
+            .expect("managed worktree should attach");
+
+        let deleted = runtime
+            .delete_thread(thread_id)
+            .await
+            .expect("delete thread should not violate worktree assignment constraints");
+
+        assert_eq!(1, deleted);
+        let active_assignment_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktree_assignments WHERE worktree_id = ? AND detached_at_ms IS NULL",
+        )
+        .bind("thread-delete-worktree")
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("assignment count should query");
+        assert_eq!(0, active_assignment_count);
     }
 }

@@ -206,6 +206,7 @@ UPDATE thread_goals
 SET
     objective = COALESCE(?, objective),
     status = CASE
+        WHEN status IN (?, ?) AND ? != status THEN status
         WHEN status = ? AND ? IN (?, ?) THEN status
         WHEN ? = 'active' AND ? IS NOT NULL AND tokens_used >= ? THEN ?
         ELSE ?
@@ -217,6 +218,9 @@ WHERE thread_id = ?
             "#,
                 )
                 .bind(objective)
+                .bind(crate::ThreadGoalStatus::Complete.as_str())
+                .bind(crate::ThreadGoalStatus::Cancelled.as_str())
+                .bind(status.as_str())
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(status.as_str())
                 .bind(crate::ThreadGoalStatus::Paused.as_str())
@@ -241,6 +245,7 @@ UPDATE thread_goals
 SET
     objective = COALESCE(?, objective),
     status = CASE
+        WHEN status IN (?, ?) AND ? != status THEN status
         WHEN status = ? AND ? IN (?, ?) THEN status
         WHEN ? = 'active' AND token_budget IS NOT NULL AND tokens_used >= token_budget THEN ?
         ELSE ?
@@ -251,6 +256,9 @@ WHERE thread_id = ?
             "#,
                 )
                 .bind(objective)
+                .bind(crate::ThreadGoalStatus::Complete.as_str())
+                .bind(crate::ThreadGoalStatus::Cancelled.as_str())
+                .bind(status.as_str())
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(status.as_str())
                 .bind(crate::ThreadGoalStatus::Paused.as_str())

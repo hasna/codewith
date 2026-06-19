@@ -68,6 +68,7 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
         result,
         json!({
             "goal": {
+                "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
                 "status": "active",
@@ -79,6 +80,7 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
             },
             "remainingTokens": 123,
             "completionBudgetReport": serde_json::Value::Null,
+            "goalPlanCompletionReport": serde_json::Value::Null,
         })
     );
 
@@ -161,6 +163,71 @@ async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Res
         "investigate"
     );
     assert_eq!(result["remainingTokens"], serde_json::Value::Null);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            enabled: true,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_auto_goals_per_plan: 24,
+            max_tokens_per_goal_plan: None,
+        },
+    )
+    .await?;
+    let tools = harness.tools();
+    let long_objective = "audit model-visible output ".repeat(80);
+    let goals = (0..20)
+        .map(|index| {
+            json!({
+                "key": format!("node-{index}"),
+                "objective": format!("{long_objective}{index}")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-large-goal-plan",
+        json!({
+            "goals": goals,
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let nodes = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+
+    assert_eq!(nodes.len(), 16);
+    assert_eq!(result["goalPlans"][0]["nodeCount"], 20);
+    assert_eq!(result["goalPlans"][0]["nodesOmittedCount"], 4);
+    assert!(nodes[0]["objective"].as_str().unwrap_or_default().len() < long_objective.len());
+    assert_eq!(nodes[0]["objectiveTruncated"], true);
+
+    let plan_events = harness.sink.goal_plan_events();
+    assert_eq!(1, plan_events.len());
+    assert_eq!(
+        "call-create-large-goal-plan-goal-plan",
+        plan_events[0].event_id
+    );
+    assert_eq!(Some("turn-1".to_string()), plan_events[0].turn_id);
+    assert_eq!(20, plan_events[0].node_count);
+    assert_eq!(16, plan_events[0].node_objectives.len());
+    assert!(
+        plan_events[0]
+            .node_objectives
+            .iter()
+            .all(|objective| objective.len() < long_objective.len())
+    );
     Ok(())
 }
 
@@ -275,6 +342,173 @@ async fn activate_goal_plan_node_allows_explicit_activation_when_auto_off() -> a
 }
 
 #[tokio::test]
+async fn update_goal_uses_current_auto_execute_config_after_mid_turn_change() -> anyhow::Result<()>
+{
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let initial_config = GoalExtensionConfig {
+        enabled: true,
+        auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+        max_auto_goals_per_plan: 12,
+        max_tokens_per_goal_plan: None,
+    };
+    let harness =
+        GoalExtensionHarness::new_with_config(runtime.clone(), thread_id, initial_config.clone())
+            .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "first",
+                    "objective": "Run first while automation is disabled"
+                },
+                {
+                    "key": "second",
+                    "objective": "Run second after config is enabled",
+                    "depends_on": ["first"]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"], serde_json::Value::Null);
+    assert_eq!(result["goalPlans"][0]["autoExecute"], "off");
+    let first_node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("first node id should be returned"))?;
+
+    let activate_tool = tool_by_name(&tools, "activate_goal_plan_node");
+    activate_tool
+        .handle(tool_call(
+            "activate_goal_plan_node",
+            "call-activate-first-node",
+            json!({ "node_id": first_node_id }),
+        ))
+        .await?;
+
+    let enabled_config = GoalExtensionConfig {
+        auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+        ..initial_config.clone()
+    };
+    harness.change_config(&initial_config, &enabled_config);
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-first-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Run second after config is enabled"
+    );
+    assert_eq!(result["goalPlans"][0]["autoExecute"], "ready_only");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "complete");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "active");
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("second goal should be active"))?;
+    assert_eq!("Run second after config is enabled", goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_goal_can_complete_auto_activated_next_goal_in_same_turn() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime.clone(),
+        thread_id,
+        GoalExtensionConfig {
+            enabled: true,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_auto_goals_per_plan: 12,
+            max_tokens_per_goal_plan: None,
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "first",
+                        "objective": "Complete first chained goal"
+                    },
+                    {
+                        "key": "second",
+                        "objective": "Complete second chained goal",
+                        "depends_on": ["first"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    update_tool
+        .handle(tool_call(
+            "update_goal",
+            "call-complete-first-goal",
+            json!({ "status": "complete" }),
+        ))
+        .await?;
+    let second_complete = tool_call(
+        "update_goal",
+        "call-complete-second-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(second_complete.clone()).await?;
+    let result = output.code_mode_result(&second_complete.payload);
+
+    assert_eq!(result["goal"]["objective"], "Complete second chained goal");
+    assert_eq!(result["goal"]["status"], "complete");
+    assert_eq!(result["goalPlans"][0]["status"], "complete");
+    assert_eq!(
+        vec!["complete", "complete"],
+        result["goalPlans"][0]["nodes"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
+            .iter()
+            .map(|node| node["status"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+    let plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Complete,
+        plan.plan.status
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_rejects_invalid_node_keys() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -344,6 +578,39 @@ async fn installed_create_goal_tool_describes_default_task_use() -> anyhow::Resu
             .description
             .contains("Skip it for simple requests")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_goal_tools_require_adversarial_verification_before_completion()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    for tool_name in [
+        "create_goal",
+        "create_goal_plan",
+        "activate_goal_plan_node",
+        "update_goal",
+        "resume_goal",
+    ] {
+        let ToolSpec::Function(tool) = tool_by_name(&tools, tool_name).spec() else {
+            panic!("{tool_name} should be a function tool");
+        };
+
+        assert!(
+            tool.description
+                .contains("Adversarial verification is required")
+        );
+        assert!(
+            tool.description
+                .contains("use at least one adversarial agent")
+        );
+        assert!(tool.description.contains("even if the user did not ask"));
+        assert!(tool.description.contains("adversarial self-review"));
+    }
     Ok(())
 }
 
@@ -810,6 +1077,20 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(23, goal.tokens_used);
     assert_eq!(codex_state::ThreadGoalStatus::UsageLimited, goal.status);
+    let pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::UsageLimit,
+    )
+    .await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].source_kind,
+        codex_state::PendingInteractionSourceKind::Goal
+    );
+    assert_eq!(pending[0].source_id.as_deref(), Some(goal.goal_id.as_str()));
+    assert_eq!(pending[0].turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(pending[0].request_payload_json["reason"], "usage-limit");
     assert_eq!(
         vec![
             CapturedGoalEvent {
@@ -1126,6 +1407,7 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
         result,
         json!({
             "goal": {
+                "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
                 "status": "blocked",
@@ -1136,6 +1418,7 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
             },
             "remainingTokens": serde_json::Value::Null,
             "completionBudgetReport": serde_json::Value::Null,
+            "goalPlanCompletionReport": serde_json::Value::Null,
         })
     );
 
@@ -1146,6 +1429,23 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(23, goal.tokens_used);
     assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    let pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::Blocked,
+    )
+    .await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].source_kind,
+        codex_state::PendingInteractionSourceKind::Goal
+    );
+    assert_eq!(pending[0].source_id.as_deref(), Some(goal.goal_id.as_str()));
+    assert_eq!(pending[0].turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(
+        pending[0].request_payload_json["reason"],
+        "update-goal-blocked"
+    );
 
     assert_eq!(
         vec![
@@ -1194,6 +1494,7 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
         result,
         json!({
             "goal": {
+                "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
                 "status": "active",
@@ -1205,6 +1506,7 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
             },
             "remainingTokens": 100,
             "completionBudgetReport": serde_json::Value::Null,
+            "goalPlanCompletionReport": serde_json::Value::Null,
         })
     );
     assert_eq!(
@@ -1474,6 +1776,7 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
                 objective: GoalObjectiveUpdate::Set("new objective"),
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
             },
         )
         .await?;
@@ -1499,6 +1802,385 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(30, goal.tokens_used);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_service_external_complete_advances_ready_plan_node_without_live_thread()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let api = GoalService::new();
+
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "first".to_string(),
+                    objective: "Finish first external goal".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                },
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "second".to_string(),
+                    objective: "Continue with second external goal".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: vec!["first".to_string()],
+                },
+            ],
+        })
+        .await?;
+    assert_eq!(
+        Some("Finish first external goal"),
+        created
+            .activated_goal
+            .as_ref()
+            .map(|goal| goal.objective.as_str())
+    );
+
+    let outcome = api
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Keep,
+                status: Some(ThreadGoalStatus::Complete),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            },
+        )
+        .await?;
+    assert_eq!(
+        Some("Continue with second external goal"),
+        outcome
+            .plan_update
+            .as_ref()
+            .and_then(|update| update.activated_goal.as_ref())
+            .map(|goal| goal.objective.as_str())
+    );
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("second goal should be active"))?;
+    assert_eq!("Continue with second external goal", goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    let plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(
+        vec![
+            codex_state::ThreadGoalPlanNodeStatus::Complete,
+            codex_state::ThreadGoalPlanNodeStatus::Active,
+        ],
+        plan.nodes
+            .iter()
+            .map(|node| node.status)
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thread()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let api = GoalService::new();
+
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
+                key: "blocked".to_string(),
+                objective: "Wait for coordinator input".to_string(),
+                priority: 0,
+                token_budget: None,
+                depends_on: Vec::new(),
+            }],
+        })
+        .await?;
+    let active_goal = created
+        .activated_goal
+        .ok_or_else(|| anyhow::anyhow!("goal should activate"))?;
+
+    api.set_thread_goal(
+        runtime.as_ref(),
+        GoalSetRequest {
+            thread_id,
+            objective: GoalObjectiveUpdate::Keep,
+            status: Some(ThreadGoalStatus::Blocked),
+            token_budget: GoalTokenBudgetUpdate::Keep,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+        },
+    )
+    .await?;
+    let blocked_plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Blocked,
+        blocked_plan.plan.status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Blocked,
+        blocked_plan.nodes[0].status
+    );
+    let pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::Blocked,
+    )
+    .await?;
+    assert_eq!(1, pending.len());
+    assert_eq!(
+        Some(active_goal.goal_id.as_str()),
+        pending[0].source_id.as_deref()
+    );
+
+    let outcome = api
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Keep,
+                status: Some(ThreadGoalStatus::Active),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            },
+        )
+        .await?;
+    assert_eq!(
+        Some(codex_state::ThreadGoalPlanStatus::Active),
+        outcome
+            .plan_update
+            .as_ref()
+            .map(|update| update.snapshot.plan.status)
+    );
+    assert_eq!(
+        Some(codex_state::ThreadGoalPlanNodeStatus::Active),
+        outcome
+            .plan_update
+            .as_ref()
+            .and_then(|update| update.snapshot.nodes.first())
+            .map(|node| node.status)
+    );
+    assert_eq!(
+        Vec::<codex_state::PendingInteraction>::new(),
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_service_external_wait_statuses_record_and_clear_pending_interactions()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Set("wait for coordinator"),
+                status: None,
+                token_budget: GoalTokenBudgetUpdate::Keep,
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            },
+        )
+        .await?
+        .apply_runtime_effects(&harness.goal_service)
+        .await;
+
+    for (status, kind, reason) in [
+        (
+            ThreadGoalStatus::Blocked,
+            codex_state::PendingInteractionKind::Blocked,
+            "external-goal-blocked",
+        ),
+        (
+            ThreadGoalStatus::UsageLimited,
+            codex_state::PendingInteractionKind::UsageLimit,
+            "external-goal-usage-limit",
+        ),
+    ] {
+        harness
+            .goal_service
+            .set_thread_goal(
+                runtime.as_ref(),
+                GoalSetRequest {
+                    thread_id,
+                    objective: GoalObjectiveUpdate::Keep,
+                    status: Some(status),
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+                },
+            )
+            .await?
+            .apply_runtime_effects(&harness.goal_service)
+            .await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        let pending = pending_interactions_for_kind(runtime.as_ref(), thread_id, kind).await?;
+        assert_eq!(1, pending.len());
+        assert_eq!(Some(goal.goal_id.as_str()), pending[0].source_id.as_deref());
+        assert_eq!(
+            serde_json::Value::String(reason.to_string()),
+            pending[0].request_payload_json["reason"]
+        );
+
+        harness
+            .goal_service
+            .set_thread_goal(
+                runtime.as_ref(),
+                GoalSetRequest {
+                    thread_id,
+                    objective: GoalObjectiveUpdate::Keep,
+                    status: Some(ThreadGoalStatus::Active),
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+                },
+            )
+            .await?
+            .apply_runtime_effects(&harness.goal_service)
+            .await;
+        assert_eq!(
+            Vec::<codex_state::PendingInteraction>::new(),
+            pending_interactions_for_kind(runtime.as_ref(), thread_id, kind).await?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_service_clear_thread_goal_clears_pending_interactions_without_live_thread()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let api = GoalService::new();
+
+    api.set_thread_goal(
+        runtime.as_ref(),
+        GoalSetRequest {
+            thread_id,
+            objective: GoalObjectiveUpdate::Set("wait for external unblock"),
+            status: Some(ThreadGoalStatus::Blocked),
+            token_budget: GoalTokenBudgetUpdate::Keep,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+        },
+    )
+    .await?;
+    assert_eq!(
+        1,
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+        .len()
+    );
+
+    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert_eq!(
+        Vec::<codex_state::PendingInteraction>::new(),
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_clear_existing_goal_clears_pending_interactions() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Set("blocked goal to replace"),
+                status: Some(ThreadGoalStatus::Blocked),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            },
+        )
+        .await?
+        .apply_runtime_effects(&harness.goal_service)
+        .await;
+    assert_eq!(
+        1,
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+        .len()
+    );
+
+    let tools = harness.tools();
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-replace-goal",
+            json!({
+                "objective": "replacement goal",
+                "clear_existing_goal": true,
+            }),
+        ))
+        .await?;
+
+    assert_eq!(
+        Vec::<codex_state::PendingInteraction>::new(),
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+    );
     Ok(())
 }
 
@@ -1603,6 +2285,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
                 objective: GoalObjectiveUpdate::Set(" ship goal API ownership "),
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
+                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
             },
         )
         .await?;
@@ -1695,7 +2378,7 @@ fn test_goal_extension_config() -> GoalExtensionConfig {
 }
 
 struct GoalExtensionHarness {
-    registry: codex_extension_api::ExtensionRegistry<()>,
+    registry: codex_extension_api::ExtensionRegistry<GoalExtensionConfig>,
     session_store: ExtensionData,
     thread_store: ExtensionData,
     goal_service: Arc<GoalService>,
@@ -1716,7 +2399,8 @@ impl GoalExtensionHarness {
         config: GoalExtensionConfig,
     ) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
-        let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
+        let mut builder =
+            ExtensionRegistryBuilder::<GoalExtensionConfig>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
         install_with_backend(
             &mut builder,
@@ -1724,7 +2408,7 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            move |_| config.clone(),
+            |config: &GoalExtensionConfig| config.clone(),
         );
         let registry = builder.build();
         let session_store = ExtensionData::new("session-1");
@@ -1733,7 +2417,7 @@ impl GoalExtensionHarness {
         for contributor in registry.thread_lifecycle_contributors() {
             contributor
                 .on_thread_start(ThreadStartInput {
-                    config: &(),
+                    config: &config,
                     session_source: &session_source,
                     persistent_thread_state_available: true,
                     session_store: &session_store,
@@ -1756,6 +2440,21 @@ impl GoalExtensionHarness {
             .iter()
             .flat_map(|contributor| contributor.tools(&self.session_store, &self.thread_store))
             .collect()
+    }
+
+    fn change_config(
+        &self,
+        previous_config: &GoalExtensionConfig,
+        new_config: &GoalExtensionConfig,
+    ) {
+        for contributor in self.registry.config_contributors() {
+            contributor.on_config_changed(
+                &self.session_store,
+                &self.thread_store,
+                previous_config,
+                new_config,
+            );
+        }
     }
 
     async fn start_turn(&self, turn_id: &str, usage: &TokenUsage) {
@@ -1906,6 +2605,23 @@ async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
     codex_state::StateRuntime::init(tempdir.keep(), "test-provider".to_string()).await
 }
 
+async fn pending_interactions_for_kind(
+    runtime: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    kind: codex_state::PendingInteractionKind,
+) -> anyhow::Result<Vec<codex_state::PendingInteraction>> {
+    Ok(runtime
+        .list_thread_pending_interactions(codex_state::PendingInteractionListParams {
+            thread_id: Some(thread_id),
+            statuses: vec![codex_state::PendingInteractionStatus::Pending],
+            kinds: vec![kind],
+            cursor: None,
+            limit: 10,
+        })
+        .await?
+        .data)
+}
+
 fn test_thread_id() -> anyhow::Result<ThreadId> {
     ThreadId::from_string("11111111-1111-4111-8111-111111111111").map_err(anyhow::Error::msg)
 }
@@ -1946,6 +2662,26 @@ impl RecordingEventSink {
             .collect()
     }
 
+    fn goal_plan_events(&self) -> Vec<CapturedGoalPlanEvent> {
+        self.events()
+            .iter()
+            .filter_map(|event| match &event.msg {
+                EventMsg::ThreadGoalPlanUpdated(updated) => Some(CapturedGoalPlanEvent {
+                    event_id: event.id.clone(),
+                    turn_id: updated.turn_id.clone(),
+                    node_count: updated.plan.node_count,
+                    node_objectives: updated
+                        .plan
+                        .nodes
+                        .iter()
+                        .map(|node| node.objective.clone())
+                        .collect(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn clear(&self) {
         self.events().clear();
     }
@@ -1967,6 +2703,14 @@ struct CapturedGoalEvent {
     turn_id: Option<String>,
     status: ThreadGoalStatus,
     tokens_used: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedGoalPlanEvent {
+    event_id: String,
+    turn_id: Option<String>,
+    node_count: i64,
+    node_objectives: Vec<String>,
 }
 
 fn default_collaboration_mode() -> CollaborationMode {
@@ -2004,5 +2748,6 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+        codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
 }

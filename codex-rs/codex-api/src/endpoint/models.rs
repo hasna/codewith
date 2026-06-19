@@ -884,6 +884,7 @@ mod tests {
         assert_eq!(model.max_context_window, Some(1_048_576));
         assert_eq!(model.experimental_supported_tools, vec!["tools"]);
         assert!(!model.supports_parallel_tool_calls);
+        assert!(!model.supports_search_tool);
         assert!(!model.supports_reasoning_summaries);
     }
 

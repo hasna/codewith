@@ -13,4 +13,4 @@ Budget:
 
 The system has marked the goal as budget_limited, so do not start new substantive work for this goal. Wrap up this turn soon: summarize useful progress, identify remaining work or blockers, and leave the user with a clear next step.
 
-Do not call update_goal unless the goal is actually complete.
+Do not call update_goal unless the goal is actually complete and adversarial verification has already been reconciled. If adversarial verification did not happen before the budget was reached, state that completion remains unverified instead of starting new substantive work or marking the goal complete.

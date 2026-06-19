@@ -2,6 +2,7 @@ use super::*;
 use crate::model::ThreadGoalPlanNodeRow;
 use crate::model::ThreadGoalPlanRow;
 use codex_protocol::protocol::validate_thread_goal_objective;
+use sqlx::QueryBuilder;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -9,8 +10,8 @@ use uuid::Uuid;
 pub const DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT: u32 = 20;
 pub const MAX_THREAD_GOAL_PLAN_LIST_LIMIT: u32 = 50;
 
-const MAX_GOAL_PLAN_NODES: usize = 64;
-const MAX_GOAL_PLAN_NODE_KEY_LEN: usize = 64;
+const MAX_GOAL_PLAN_NODES: usize = 128;
+const MAX_GOAL_PLAN_NODE_KEY_LEN: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadGoalPlanNodeCreateParams {
@@ -47,108 +48,15 @@ impl GoalStore {
         params: ThreadGoalPlanCreateParams,
     ) -> anyhow::Result<ThreadGoalPlanAdvanceOutcome> {
         validate_plan_create_params(&params)?;
-        let plan_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            r#"
-INSERT INTO thread_goal_plans (
-    plan_id,
-    thread_id,
-    status,
-    auto_execute,
-    max_tokens,
-    created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&plan_id)
-        .bind(params.thread_id.to_string())
-        .bind(crate::ThreadGoalPlanStatus::Active.as_str())
-        .bind(params.auto_execute.as_str())
-        .bind(params.max_tokens)
-        .bind(now_ms)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await?;
-
-        let mut node_ids_by_key = HashMap::new();
-        for (sequence, node) in params.nodes.iter().enumerate() {
-            let node_id = Uuid::new_v4().to_string();
-            node_ids_by_key.insert(node.key.clone(), node_id.clone());
-            sqlx::query(
-                r#"
-INSERT INTO thread_goal_plan_nodes (
-    node_id,
-    plan_id,
-    thread_id,
-    key,
-    sequence,
-    priority,
-    objective,
-    status,
-    token_budget,
-    created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                "#,
-            )
-            .bind(&node_id)
-            .bind(&plan_id)
-            .bind(params.thread_id.to_string())
-            .bind(&node.key)
-            .bind(i64::try_from(sequence)?)
-            .bind(node.priority)
-            .bind(&node.objective)
-            .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
-            .bind(node.token_budget)
-            .bind(now_ms)
-            .bind(now_ms)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        for node in &params.nodes {
-            let node_id = node_ids_by_key
-                .get(&node.key)
-                .ok_or_else(|| anyhow::anyhow!("missing inserted goal node key {}", node.key))?;
-            for dependency_key in &node.depends_on {
-                let dependency_id = node_ids_by_key.get(dependency_key).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "goal node {} depends on unknown goal node {dependency_key}",
-                        node.key
-                    )
-                })?;
-                sqlx::query(
-                    r#"
-INSERT INTO thread_goal_plan_dependencies (node_id, depends_on_node_id)
-VALUES (?, ?)
-                    "#,
-                )
-                .bind(node_id)
-                .bind(dependency_id)
-                .execute(&mut *tx)
-                .await?;
-            }
-        }
-
-        let activated_goal = activate_next_ready_node_in_tx(
-            &mut tx,
-            params.thread_id,
-            &plan_id,
-            params.auto_execute,
-            now_ms,
-        )
-        .await?;
-        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, &plan_id).await?;
+        let outcome = insert_thread_goal_plan_in_tx(&mut tx, params, now_ms).await?;
         tx.commit().await?;
-        Ok(ThreadGoalPlanAdvanceOutcome {
-            snapshot,
-            activated_goal,
-        })
+        Ok(outcome)
     }
+}
 
+impl GoalStore {
     pub async fn list_thread_goal_plans(
         &self,
         thread_id: ThreadId,
@@ -193,12 +101,21 @@ OFFSET ?
         .fetch_all(self.pool.as_ref())
         .await?;
         let has_more = plan_rows.len() > limit as usize;
-        let mut snapshots = Vec::with_capacity(plan_rows.len());
-        for row in plan_rows.into_iter().take(limit as usize) {
-            let plan = thread_goal_plan_from_row(&row)?;
-            let nodes = self
-                .list_thread_goal_plan_nodes(thread_id, &plan.plan_id)
-                .await?;
+        let plans = plan_rows
+            .into_iter()
+            .take(limit as usize)
+            .map(|row| thread_goal_plan_from_row(&row))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let plan_ids = plans
+            .iter()
+            .map(|plan| plan.plan_id.clone())
+            .collect::<Vec<_>>();
+        let mut nodes_by_plan_id = self
+            .list_thread_goal_plan_nodes_for_plans(thread_id, &plan_ids)
+            .await?;
+        let mut snapshots = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let nodes = nodes_by_plan_id.remove(&plan.plan_id).unwrap_or_default();
             snapshots.push(crate::ThreadGoalPlanSnapshot { plan, nodes });
         }
         let next_cursor = has_more.then(|| offset.saturating_add(limit).to_string());
@@ -208,12 +125,16 @@ OFFSET ?
         })
     }
 
-    async fn list_thread_goal_plan_nodes(
+    async fn list_thread_goal_plan_nodes_for_plans(
         &self,
         thread_id: ThreadId,
-        plan_id: &str,
-    ) -> anyhow::Result<Vec<crate::ThreadGoalPlanNode>> {
-        let rows = sqlx::query(
+        plan_ids: &[String],
+    ) -> anyhow::Result<HashMap<String, Vec<crate::ThreadGoalPlanNode>>> {
+        if plan_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut node_query = QueryBuilder::<Sqlite>::new(
             r#"
 SELECT
     node_id,
@@ -231,24 +152,38 @@ SELECT
     created_at_ms,
     updated_at_ms
 FROM thread_goal_plan_nodes
-WHERE thread_id = ?
-  AND plan_id = ?
-ORDER BY sequence, node_id
+WHERE thread_id =
             "#,
-        )
-        .bind(thread_id.to_string())
-        .bind(plan_id)
-        .fetch_all(self.pool.as_ref())
-        .await?;
-        let mut nodes = Vec::with_capacity(rows.len());
-        for row in rows {
-            let row = ThreadGoalPlanNodeRow::try_from_row(&row)?;
-            let depends_on = node_dependency_keys(self.pool.as_ref(), row.node_id.as_str()).await?;
-            nodes.push(crate::ThreadGoalPlanNode::from_row_with_dependencies(
-                row, depends_on,
-            )?);
+        );
+        node_query.push_bind(thread_id.to_string());
+        node_query.push(" AND plan_id IN (");
+        let mut separated = node_query.separated(", ");
+        for plan_id in plan_ids {
+            separated.push_bind(plan_id);
         }
-        Ok(nodes)
+        separated.push_unseparated(") ORDER BY plan_id, sequence, node_id");
+        let rows = node_query.build().fetch_all(self.pool.as_ref()).await?;
+
+        let node_rows = rows
+            .iter()
+            .map(ThreadGoalPlanNodeRow::try_from_row)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let node_ids = node_rows
+            .iter()
+            .map(|row| row.node_id.clone())
+            .collect::<Vec<_>>();
+        let mut dependency_keys_by_node_id =
+            node_dependency_keys_for_nodes(&self.pool, &node_ids).await?;
+        let mut nodes_by_plan_id: HashMap<String, Vec<crate::ThreadGoalPlanNode>> = HashMap::new();
+        for row in node_rows {
+            let depends_on = dependency_keys_by_node_id
+                .remove(row.node_id.as_str())
+                .unwrap_or_default();
+            let plan_id = row.plan_id.clone();
+            let node = crate::ThreadGoalPlanNode::from_row_with_dependencies(row, depends_on)?;
+            nodes_by_plan_id.entry(plan_id).or_default().push(node);
+        }
+        Ok(nodes_by_plan_id)
     }
 
     pub async fn delete_thread_goal_plans_for_thread(
@@ -341,6 +276,19 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND projected_goal_id = ?
+  AND status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited')
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goal_plans plan
+      WHERE plan.plan_id = thread_goal_plan_nodes.plan_id
+        AND plan.status IN ('active', 'paused', 'blocked', 'budget_limited')
+  )
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goals current_goal
+      WHERE current_goal.thread_id = thread_goal_plan_nodes.thread_id
+        AND current_goal.goal_id = thread_goal_plan_nodes.projected_goal_id
+  )
 RETURNING plan_id
             "#,
         )
@@ -380,6 +328,7 @@ WHERE plan_id = ?
         &self,
         thread_id: ThreadId,
         goal: &crate::ThreadGoal,
+        effective_auto_execute: crate::ThreadGoalPlanAutoExecute,
     ) -> anyhow::Result<Option<ThreadGoalPlanAdvanceOutcome>> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
@@ -393,6 +342,20 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND projected_goal_id = ?
+  AND status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited')
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goal_plans plan
+      WHERE plan.plan_id = thread_goal_plan_nodes.plan_id
+        AND plan.status IN ('active', 'paused', 'blocked', 'budget_limited')
+  )
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goals current_goal
+      WHERE current_goal.thread_id = thread_goal_plan_nodes.thread_id
+        AND current_goal.goal_id = thread_goal_plan_nodes.projected_goal_id
+        AND current_goal.status = 'complete'
+  )
 RETURNING plan_id
             "#,
         )
@@ -410,6 +373,20 @@ RETURNING plan_id
         };
         let plan_id: String = row.try_get("plan_id")?;
         let plan = get_thread_goal_plan_in_tx(&mut tx, &plan_id).await?;
+        if plan.auto_execute != effective_auto_execute {
+            sqlx::query(
+                r#"
+UPDATE thread_goal_plans
+SET auto_execute = ?, updated_at_ms = ?
+WHERE plan_id = ?
+                "#,
+            )
+            .bind(effective_auto_execute.as_str())
+            .bind(now_ms)
+            .bind(&plan_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let total_tokens = total_plan_tokens_in_tx(&mut tx, &plan_id).await?;
         let hit_plan_budget = plan
             .max_tokens
@@ -474,8 +451,14 @@ WHERE plan_id = ?
             .await?;
             None
         } else {
-            activate_next_ready_node_in_tx(&mut tx, thread_id, &plan_id, plan.auto_execute, now_ms)
-                .await?
+            activate_next_ready_node_in_tx(
+                &mut tx,
+                thread_id,
+                &plan_id,
+                effective_auto_execute,
+                now_ms,
+            )
+            .await?
         };
         let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, &plan_id).await?;
         tx.commit().await?;
@@ -531,6 +514,106 @@ async fn activate_next_ready_node_in_tx(
         .map(Some)
 }
 
+pub(super) async fn insert_thread_goal_plan_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    params: ThreadGoalPlanCreateParams,
+    now_ms: i64,
+) -> anyhow::Result<ThreadGoalPlanAdvanceOutcome> {
+    validate_plan_create_params(&params)?;
+    let plan_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    max_tokens,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&plan_id)
+    .bind(params.thread_id.to_string())
+    .bind(crate::ThreadGoalPlanStatus::Active.as_str())
+    .bind(params.auto_execute.as_str())
+    .bind(params.max_tokens)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut **tx)
+    .await?;
+
+    let mut node_ids_by_key = HashMap::new();
+    for (sequence, node) in params.nodes.iter().enumerate() {
+        let node_id = Uuid::new_v4().to_string();
+        node_ids_by_key.insert(node.key.clone(), node_id.clone());
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    status,
+    token_budget,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&node_id)
+        .bind(&plan_id)
+        .bind(params.thread_id.to_string())
+        .bind(&node.key)
+        .bind(i64::try_from(sequence)?)
+        .bind(node.priority)
+        .bind(&node.objective)
+        .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
+        .bind(node.token_budget)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    for node in &params.nodes {
+        let node_id = node_ids_by_key
+            .get(&node.key)
+            .ok_or_else(|| anyhow::anyhow!("missing inserted goal node key {}", node.key))?;
+        for dependency_key in &node.depends_on {
+            let dependency_id = node_ids_by_key.get(dependency_key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "goal node {} depends on unknown goal node {dependency_key}",
+                    node.key
+                )
+            })?;
+            sqlx::query(
+                r#"
+INSERT INTO thread_goal_plan_dependencies (node_id, depends_on_node_id)
+VALUES (?, ?)
+                "#,
+            )
+            .bind(node_id)
+            .bind(dependency_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+
+    let activated_goal =
+        activate_next_ready_node_in_tx(tx, params.thread_id, &plan_id, params.auto_execute, now_ms)
+            .await?;
+    let snapshot = snapshot_thread_goal_plan_in_tx(tx, &plan_id).await?;
+    Ok(ThreadGoalPlanAdvanceOutcome {
+        snapshot,
+        activated_goal,
+    })
+}
+
 async fn activate_node_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     thread_id: ThreadId,
@@ -550,6 +633,22 @@ WHERE thread_id = ?
     .await?;
     if active_count > 0 {
         anyhow::bail!("cannot activate goal plan node while another plan node is active");
+    }
+    let current_goal_status: Option<String> = sqlx::query_scalar(
+        r#"
+SELECT status
+FROM thread_goals
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(status) = current_goal_status.as_deref() {
+        let status = crate::ThreadGoalStatus::try_from(status)?;
+        if !status.is_terminal() {
+            anyhow::bail!("cannot activate goal plan node while thread has a non-terminal goal");
+        }
     }
     let row = sqlx::query(
         r#"
@@ -581,10 +680,25 @@ WHERE node_id = ?
     .ok_or_else(|| anyhow::anyhow!("goal plan node is not ready to activate"))?;
     let node = ThreadGoalPlanNodeRow::try_from_row(&row)?;
     let projected_goal_id = Uuid::new_v4().to_string();
+    let plan = get_thread_goal_plan_in_tx(tx, &node.plan_id).await?;
+    let remaining_plan_tokens = if let Some(max_tokens) = plan.max_tokens {
+        let total_tokens = total_plan_tokens_in_tx(tx, &node.plan_id).await?;
+        Some(max_tokens.saturating_sub(total_tokens).max(0))
+    } else {
+        None
+    };
+    let effective_token_budget = match (node.token_budget, remaining_plan_tokens) {
+        (Some(node_budget), Some(remaining_plan_tokens)) => {
+            Some(node_budget.min(remaining_plan_tokens))
+        }
+        (Some(node_budget), None) => Some(node_budget),
+        (None, Some(remaining_plan_tokens)) => Some(remaining_plan_tokens),
+        (None, None) => None,
+    };
     let status = status_after_budget_limit(
         crate::ThreadGoalStatus::Active,
         /*tokens_used*/ 0,
-        node.token_budget,
+        effective_token_budget,
     );
     let goal_row = sqlx::query(
         r#"
@@ -624,29 +738,36 @@ RETURNING
     .bind(&projected_goal_id)
     .bind(&node.objective)
     .bind(status.as_str())
-    .bind(node.token_budget)
+    .bind(effective_token_budget)
     .bind(now_ms)
     .bind(now_ms)
     .fetch_one(&mut **tx)
     .await?;
-    sqlx::query(
+    let updated_node_count = sqlx::query(
         r#"
 UPDATE thread_goal_plan_nodes
 SET
     status = ?,
+    token_budget = ?,
     projected_goal_id = ?,
     tokens_used = 0,
     time_used_seconds = 0,
     updated_at_ms = ?
 WHERE node_id = ?
+  AND status = 'pending'
         "#,
     )
     .bind(crate::ThreadGoalPlanNodeStatus::from(status).as_str())
+    .bind(effective_token_budget)
     .bind(&projected_goal_id)
     .bind(now_ms)
     .bind(node_id)
     .execute(&mut **tx)
-    .await?;
+    .await?
+    .rows_affected();
+    if updated_node_count != 1 {
+        anyhow::bail!("goal plan node changed before activation could be recorded");
+    }
     thread_goal_from_row(&goal_row)
 }
 
@@ -775,7 +896,7 @@ WHERE plan_id = ?
     thread_goal_plan_from_row(&row)
 }
 
-async fn snapshot_thread_goal_plan_in_tx(
+pub(super) async fn snapshot_thread_goal_plan_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     plan_id: &str,
 ) -> anyhow::Result<crate::ThreadGoalPlanSnapshot> {
@@ -816,25 +937,6 @@ ORDER BY sequence, node_id
     Ok(crate::ThreadGoalPlanSnapshot { plan, nodes })
 }
 
-async fn node_dependency_keys(executor: &SqlitePool, node_id: &str) -> anyhow::Result<Vec<String>> {
-    let rows = sqlx::query(
-        r#"
-SELECT dependency_node.key
-FROM thread_goal_plan_dependencies dependency
-JOIN thread_goal_plan_nodes dependency_node
-  ON dependency_node.node_id = dependency.depends_on_node_id
-WHERE dependency.node_id = ?
-ORDER BY dependency_node.sequence, dependency_node.key
-        "#,
-    )
-    .bind(node_id)
-    .fetch_all(executor)
-    .await?;
-    rows.into_iter()
-        .map(|row| row.try_get("key").map_err(anyhow::Error::from))
-        .collect()
-}
-
 async fn node_dependency_keys_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     node_id: &str,
@@ -855,6 +957,46 @@ ORDER BY dependency_node.sequence, dependency_node.key
     rows.into_iter()
         .map(|row| row.try_get("key").map_err(anyhow::Error::from))
         .collect()
+}
+
+async fn node_dependency_keys_for_nodes(
+    executor: &SqlitePool,
+    node_ids: &[String],
+) -> anyhow::Result<HashMap<String, Vec<String>>> {
+    if node_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+SELECT
+    dependency.node_id,
+    dependency_node.key
+FROM thread_goal_plan_dependencies dependency
+JOIN thread_goal_plan_nodes dependency_node
+  ON dependency_node.node_id = dependency.depends_on_node_id
+WHERE dependency.node_id IN (
+        "#,
+    );
+    let mut separated = query.separated(", ");
+    for node_id in node_ids {
+        separated.push_bind(node_id);
+    }
+    separated.push_unseparated(
+        ") ORDER BY dependency.node_id, dependency_node.sequence, dependency_node.key",
+    );
+
+    let rows = query.build().fetch_all(executor).await?;
+    let mut dependencies_by_node_id: HashMap<String, Vec<String>> = HashMap::new();
+    for row in rows {
+        let node_id: String = row.try_get("node_id")?;
+        let key: String = row.try_get("key")?;
+        dependencies_by_node_id
+            .entry(node_id)
+            .or_default()
+            .push(key);
+    }
+    Ok(dependencies_by_node_id)
 }
 
 fn thread_goal_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<crate::ThreadGoal> {
@@ -892,6 +1034,7 @@ fn plan_status_after_goal_status(
             Some(crate::ThreadGoalPlanStatus::Blocked)
         }
         crate::ThreadGoalStatus::BudgetLimited => Some(crate::ThreadGoalPlanStatus::BudgetLimited),
+        crate::ThreadGoalStatus::Cancelled => Some(crate::ThreadGoalPlanStatus::Cancelled),
     }
 }
 
@@ -1104,7 +1247,11 @@ mod tests {
             .expect("goal should exist");
         let advanced = runtime
             .thread_goals()
-            .complete_goal_plan_node_and_maybe_advance(thread_id, &completed)
+            .complete_goal_plan_node_and_maybe_advance(
+                thread_id,
+                &completed,
+                crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+            )
             .await
             .expect("goal plan should advance")
             .expect("goal plan outcome should exist");
@@ -1322,7 +1469,11 @@ mod tests {
             .expect("goal should exist");
         let outcome = runtime
             .thread_goals()
-            .complete_goal_plan_node_and_maybe_advance(thread_id, &completed)
+            .complete_goal_plan_node_and_maybe_advance(
+                thread_id,
+                &completed,
+                crate::ThreadGoalPlanAutoExecute::AiDirected,
+            )
             .await
             .expect("goal plan should update")
             .expect("goal plan outcome should exist");
@@ -1331,6 +1482,12 @@ mod tests {
             crate::ThreadGoalPlanStatus::BudgetLimited,
             outcome.snapshot.plan.status
         );
+        let summary = outcome.snapshot.usage_summary();
+        assert_eq!(1, summary.total_tokens_used);
+        assert_eq!(Some(0), summary.remaining_tokens);
+        assert_eq!(2, summary.node_count);
+        assert_eq!(1, summary.completed_node_count);
+        assert_eq!(1, summary.budget_limited_node_count);
         assert_eq!(None, outcome.activated_goal);
         assert_eq!(
             vec![
@@ -1339,6 +1496,165 @@ mod tests {
             ],
             outcome
                 .snapshot
+                .nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_budget_limit_applies_to_active_projected_goal() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: Some(10),
+                nodes: vec![ThreadGoalPlanNodeCreateParams {
+                    key: "active".to_string(),
+                    objective: "Spend more than the remaining plan budget.".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                }],
+            })
+            .await
+            .expect("goal plan should be created");
+        let active_goal = created.activated_goal.expect("goal should activate");
+        assert_eq!(Some(10), active_goal.token_budget);
+
+        let outcome = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 7,
+                /*token_delta*/ 12,
+                GoalAccountingMode::ActiveOnly,
+                Some(active_goal.goal_id.as_str()),
+            )
+            .await
+            .expect("usage should be accounted");
+        let GoalAccountingOutcome::Updated(goal) = outcome else {
+            panic!("goal usage should update");
+        };
+        assert_eq!(crate::ThreadGoalStatus::BudgetLimited, goal.status);
+
+        let snapshot = runtime
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(thread_id, &goal)
+            .await
+            .expect("goal plan should sync")
+            .expect("goal plan snapshot should exist");
+        assert_eq!(
+            crate::ThreadGoalPlanStatus::BudgetLimited,
+            snapshot.plan.status
+        );
+        assert_eq!(
+            crate::ThreadGoalPlanNodeStatus::BudgetLimited,
+            snapshot.nodes[0].status
+        );
+        let summary = snapshot.usage_summary();
+        assert_eq!(12, summary.total_tokens_used);
+        assert_eq!(7, summary.total_time_used_seconds);
+        assert_eq!(Some(0), summary.remaining_tokens);
+    }
+
+    #[tokio::test]
+    async fn cancelled_active_projected_goal_marks_plan_cancelled() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+                max_tokens: None,
+                nodes: vec![ThreadGoalPlanNodeCreateParams {
+                    key: "active".to_string(),
+                    objective: "Cancel the active projected goal.".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                }],
+            })
+            .await
+            .expect("goal plan should be created");
+        let active_goal = created.activated_goal.expect("goal should activate");
+        let active_goal_id = active_goal.goal_id.clone();
+
+        let cancelled_goal = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    status: Some(crate::ThreadGoalStatus::Cancelled),
+                    token_budget: None,
+                    expected_goal_id: Some(active_goal_id.clone()),
+                },
+            )
+            .await
+            .expect("goal should update")
+            .expect("goal should exist");
+        let snapshot = runtime
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(thread_id, &cancelled_goal)
+            .await
+            .expect("goal plan should sync")
+            .expect("goal plan snapshot should exist");
+
+        assert_eq!(crate::ThreadGoalPlanStatus::Cancelled, snapshot.plan.status);
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Cancelled],
+            snapshot
+                .nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(1, snapshot.usage_summary().cancelled_node_count);
+
+        let still_cancelled_goal = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    status: Some(crate::ThreadGoalStatus::Active),
+                    token_budget: None,
+                    expected_goal_id: Some(active_goal_id),
+                },
+            )
+            .await
+            .expect("goal update should not fail")
+            .expect("goal should exist");
+        assert_eq!(
+            crate::ThreadGoalStatus::Cancelled,
+            still_cancelled_goal.status
+        );
+        assert!(
+            runtime
+                .thread_goals()
+                .sync_goal_plan_node_for_goal(thread_id, &still_cancelled_goal)
+                .await
+                .expect("sync should not fail")
+                .is_none()
+        );
+        let snapshots = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("plan should list");
+        assert_eq!(
+            crate::ThreadGoalPlanStatus::Cancelled,
+            snapshots[0].plan.status
+        );
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Cancelled],
+            snapshots[0]
                 .nodes
                 .iter()
                 .map(|node| node.status)
@@ -1412,6 +1728,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_projected_completion_does_not_advance_blocked_plan() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+                max_tokens: None,
+                nodes: vec![
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "first".to_string(),
+                        objective: "Run the first projected goal.".to_string(),
+                        priority: 0,
+                        token_budget: None,
+                        depends_on: Vec::new(),
+                    },
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "second".to_string(),
+                        objective: "Run the dependent projected goal.".to_string(),
+                        priority: 0,
+                        token_budget: None,
+                        depends_on: vec!["first".to_string()],
+                    },
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+        let first_goal = created.activated_goal.expect("first goal should activate");
+
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "Manual replacement goal.",
+                crate::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("manual replacement should block projected node");
+        let stale_completed = crate::ThreadGoal {
+            status: crate::ThreadGoalStatus::Complete,
+            ..first_goal
+        };
+        let outcome = runtime
+            .thread_goals()
+            .complete_goal_plan_node_and_maybe_advance(
+                thread_id,
+                &stale_completed,
+                crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+            )
+            .await
+            .expect("stale completion should be a no-op");
+
+        assert_eq!(None, outcome);
+        let plans = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list");
+        assert_eq!(1, plans.len());
+        assert_eq!(crate::ThreadGoalPlanStatus::Blocked, plans[0].plan.status);
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Blocked,
+                crate::ThreadGoalPlanNodeStatus::Pending,
+            ],
+            plans[0]
+                .nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn activation_rolls_back_when_current_goal_is_non_terminal() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "Manual active goal.",
+                crate::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("manual goal should create");
+
+        let err = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+                max_tokens: None,
+                nodes: vec![ThreadGoalPlanNodeCreateParams {
+                    key: "ready".to_string(),
+                    objective: "This goal must not overwrite the manual goal.".to_string(),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                }],
+            })
+            .await
+            .expect_err("activation should refuse to overwrite manual goal");
+
+        assert!(
+            err.to_string()
+                .contains("cannot activate goal plan node while thread has a non-terminal goal")
+        );
+        assert_eq!(
+            Vec::<crate::ThreadGoalPlanSnapshot>::new(),
+            runtime
+                .thread_goals()
+                .list_thread_goal_plans(thread_id)
+                .await
+                .expect("rolled back plan should not list")
+        );
+    }
+
+    #[tokio::test]
     async fn goal_plan_rejects_too_many_nodes() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
@@ -1436,10 +1874,10 @@ mod tests {
             .await
             .expect_err("oversized goal plan should be rejected");
 
-        assert!(
-            err.to_string()
-                .contains("goal plan contains 65 goals but the maximum is 64")
-        );
+        assert!(err.to_string().contains(&format!(
+            "goal plan contains {} goals but the maximum is {MAX_GOAL_PLAN_NODES}",
+            MAX_GOAL_PLAN_NODES + 1
+        )));
     }
 
     #[tokio::test]

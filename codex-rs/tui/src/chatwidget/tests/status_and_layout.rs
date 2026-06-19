@@ -1359,6 +1359,112 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
 }
 
 #[tokio::test]
+async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("backup".to_string()),
+        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+    );
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("backup"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ordered_auto_switch_strategy_preserves_configured_order() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.strategy =
+        crate::legacy_core::config::AuthProfileAutoSwitchStrategy::Ordered;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("backup".to_string()),
+        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+    );
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn auto_switch_skips_known_exhausted_profile_for_unknown_candidate() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(100, 300, 123)],
+    );
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("backup"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn cached_exhausted_limit_auto_switches_before_next_prompt_after_being_enabled() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");
@@ -1473,6 +1579,99 @@ async fn stopped_usage_limited_turn_auto_switches_before_next_prompt_after_being
         chat.queued_user_message_texts(),
         vec!["continue after usage limit"]
     );
+}
+
+#[tokio::test]
+async fn usage_limit_self_heal_retries_failed_turn_after_reset() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    configure_test_session(&mut chat);
+    chat.config.usage_self_heal.max_retries = 2;
+    chat.config.usage_self_heal.reset_retry_buffer_secs = 0;
+    chat.config.usage_self_heal.max_reset_retry_delay_secs = 2 * 60 * 60;
+
+    chat.submit_user_message(UserMessage::from("retry me after reset"));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "retry me after reset".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected initial user turn, got {other:?}"),
+    }
+
+    chat.on_task_started();
+    let reset_at = chrono::Utc::now().timestamp() + 60 * 60;
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, reset_at,
+    )));
+    chat.on_rate_limit_error(
+        RateLimitErrorKind::UsageLimit,
+        "Usage limit reached.".to_string(),
+    );
+
+    let retry_id = chat
+        .pending_usage_self_heal_retry_id()
+        .expect("usage self-heal retry should be scheduled");
+    assert!(chat.queued_user_message_texts().is_empty());
+
+    assert!(chat.on_usage_self_heal_retry(retry_id));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "retry me after reset".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected retried user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn usage_self_heal_does_not_retry_when_auth_profile_switch_is_pending() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.submit_user_message(UserMessage::from("switch instead of retry"));
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { .. } => {}
+        other => panic!("expected initial user turn, got {other:?}"),
+    }
+
+    chat.on_task_started();
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100,
+        /*window_duration_mins*/ 300,
+        chrono::Utc::now().timestamp() + 60 * 60,
+    )));
+    let mut saw_switch = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::SwitchAuthProfile { .. }) {
+            saw_switch = true;
+            break;
+        }
+    }
+    assert!(saw_switch, "expected auth profile switch event");
+
+    chat.on_rate_limit_error(
+        RateLimitErrorKind::UsageLimit,
+        "Usage limit reached.".to_string(),
+    );
+
+    assert_eq!(chat.pending_usage_self_heal_retry_id(), None);
 }
 
 #[tokio::test]
@@ -3348,6 +3547,7 @@ fn test_thread_goal(
 ) -> codex_app_server_protocol::ThreadGoal {
     codex_app_server_protocol::ThreadGoal {
         thread_id: "thread-1".to_string(),
+        goal_id: "goal-1".to_string(),
         objective: "Keep improving the benchmark".to_string(),
         status,
         token_budget,

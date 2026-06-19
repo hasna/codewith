@@ -152,7 +152,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
 
 use super::chat_composer_history::ChatComposerHistory;
@@ -377,6 +376,7 @@ pub(crate) struct ChatComposer {
     service_tier_commands: Vec<ServiceTierCommand>,
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
+    workflow_command_enabled: bool,
     scheduled_tasks_command_enabled: bool,
     personality_command_enabled: bool,
     realtime_conversation_enabled: bool,
@@ -446,6 +446,7 @@ impl ChatComposer {
             plugins_command_enabled: self.plugins_command_enabled,
             service_tier_commands_enabled: self.service_tier_commands_enabled,
             goal_command_enabled: self.goal_command_enabled,
+            workflow_command_enabled: self.workflow_command_enabled,
             scheduled_tasks_command_enabled: self.scheduled_tasks_command_enabled,
             personality_command_enabled: self.personality_command_enabled,
             realtime_conversation_enabled: self.realtime_conversation_enabled,
@@ -547,6 +548,7 @@ impl ChatComposer {
             service_tier_commands: Vec::new(),
             mentions_v2_enabled: false,
             goal_command_enabled: false,
+            workflow_command_enabled: false,
             scheduled_tasks_command_enabled: false,
             personality_command_enabled: false,
             realtime_conversation_enabled: false,
@@ -652,6 +654,10 @@ impl ChatComposer {
 
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
         self.goal_command_enabled = enabled;
+    }
+
+    pub fn set_workflow_command_enabled(&mut self, enabled: bool) {
+        self.workflow_command_enabled = enabled;
     }
 
     pub fn set_scheduled_tasks_command_enabled(&mut self, enabled: bool) {
@@ -4460,12 +4466,12 @@ impl ChatComposer {
         if !textarea_rect.is_empty() {
             let prompt = if self.draft.input_enabled {
                 if self.draft.is_bash_mode {
-                    Span::from("!").light_red().bold()
+                    Span::styled("!", style.fg(Color::LightRed).add_modifier(Modifier::BOLD))
                 } else {
-                    "›".bold()
+                    Span::styled("›", style.add_modifier(Modifier::BOLD))
                 }
             } else {
-                "›".dim()
+                Span::styled("›", style.add_modifier(Modifier::DIM))
             };
             buf.set_span(
                 textarea_rect.x - LIVE_PREFIX_COLS,
@@ -4479,34 +4485,29 @@ impl ChatComposer {
         let textarea_is_empty = self.draft.textarea.text().is_empty() && !self.draft.is_bash_mode;
         if self.draft.input_enabled {
             if let Some(mask_char) = mask_char {
-                self.draft
-                    .textarea
-                    .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
+                self.draft.textarea.render_ref_masked_styled(
+                    textarea_rect,
+                    buf,
+                    &mut state,
+                    style,
+                    mask_char,
+                );
             } else {
                 let mut highlights = self.plugin_at_mention_highlights();
                 let search_highlight_style =
-                    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+                    style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
                 highlights.extend(
                     self.history_search_highlight_ranges()
                         .into_iter()
                         .map(|range| (range, search_highlight_style)),
                 );
-                if highlights.is_empty() {
-                    StatefulWidgetRef::render_ref(
-                        &(&self.draft.textarea),
-                        textarea_rect,
-                        buf,
-                        &mut state,
-                    );
-                } else {
-                    self.draft.textarea.render_ref_styled_with_highlights(
-                        textarea_rect,
-                        buf,
-                        &mut state,
-                        Style::default(),
-                        &highlights,
-                    );
-                }
+                self.draft.textarea.render_ref_styled_with_highlights(
+                    textarea_rect,
+                    buf,
+                    &mut state,
+                    style,
+                    &highlights,
+                );
             }
         }
         if !self.draft.input_enabled || textarea_is_empty {
@@ -4520,7 +4521,7 @@ impl ChatComposer {
                     .to_string()
             };
             if !textarea_rect.is_empty() {
-                let placeholder = Span::from(text).dim();
+                let placeholder = Span::styled(text, style.add_modifier(Modifier::DIM));
                 Line::from(vec![placeholder])
                     .render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
             }

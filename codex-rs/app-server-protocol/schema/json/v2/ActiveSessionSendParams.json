@@ -24,24 +24,36 @@
       "type": "string"
     },
     "senderLabel": {
+      "description": "Claimed sender label for attribution only.",
       "type": [
         "string",
         "null"
       ]
     },
     "senderThreadId": {
+      "description": "Claimed sender thread for attribution only. activeSession/send does not treat this as authentication or authorization.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetPeerId": {
+      "description": "Active peer routing key from activeSession/list.",
       "type": [
         "string",
         "null"
       ]
     },
     "targetThreadId": {
-      "type": "string"
+      "description": "Legacy local Codewith-thread target. target_peer_id is preferred for peers returned by activeSession/list.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
-    "message",
-    "targetThreadId"
+    "message"
   ],
   "title": "ActiveSessionSendParams",
   "type": "object"

@@ -177,6 +177,7 @@ impl<'a> SlashInput<'a> {
                 plugins_command_enabled: self.command_flags.plugins_command_enabled,
                 service_tier_commands_enabled: self.command_flags.service_tier_commands_enabled,
                 goal_command_enabled: self.command_flags.goal_command_enabled,
+                workflow_command_enabled: self.command_flags.workflow_command_enabled,
                 scheduled_tasks_command_enabled: self.command_flags.scheduled_tasks_command_enabled,
                 personality_command_enabled: self.command_flags.personality_command_enabled,
                 realtime_conversation_enabled: self.command_flags.realtime_conversation_enabled,

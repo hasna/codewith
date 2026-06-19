@@ -15,6 +15,11 @@ use super::loop_slash::LoopSlashCommand;
 use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
+use super::workflow_slash::WORKFLOW_USAGE;
+use super::workflow_slash::WORKFLOW_USAGE_HINT;
+use super::workflow_slash::WorkflowSlashCommand;
+use super::workflow_slash::parse_workflow_slash_args;
+use super::workflow_slash::workflow_generation_prompt;
 use super::*;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::app_event::ThreadGoalSetMode;
@@ -25,6 +30,7 @@ use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::external_agents::external_agent_picker_params;
 use crate::goal_display::GOAL_USAGE;
+use crate::tmux_handoff::TmuxHandoffDestination;
 use chrono::Utc;
 use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
@@ -71,21 +77,44 @@ enum MonitorManageCommand {
 #[derive(Debug, PartialEq, Eq)]
 enum BackgroundAgentSlashCommand {
     List,
-    Start { prompt: String },
-    Read { agent_id: Option<String> },
-    Logs { agent_id: Option<String> },
-    Attach { agent_id: Option<String> },
-    Detach { agent_id: Option<String> },
-    Stop { agent_id: Option<String> },
-    Delete { agent_id: Option<String> },
+    Start {
+        prompt: String,
+        worktree_id: Option<String>,
+    },
+    Read {
+        agent_id: Option<String>,
+    },
+    Logs {
+        agent_id: Option<String>,
+    },
+    Attach {
+        agent_id: Option<String>,
+    },
+    Detach {
+        agent_id: Option<String>,
+    },
+    Stop {
+        agent_id: Option<String>,
+    },
+    Delete {
+        agent_id: Option<String>,
+    },
     Diagnostics,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WorktreeSlashCommand {
+    List,
+    Read { worktree_id: Option<String> },
+    Actions { worktree_id: String },
+    Use { worktree_id: String },
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum ActiveSessionSlashCommand {
     List,
     Send {
-        target_thread_id: String,
+        target_peer_id: String,
         message: String,
         wake: bool,
     },
@@ -99,7 +128,7 @@ struct MonitorSlashParseError {
 
 #[derive(Debug, PartialEq, Eq)]
 struct TmuxSlashCommand {
-    name: Option<String>,
+    destination: TmuxHandoffDestination,
     replace_existing: bool,
 }
 
@@ -116,14 +145,16 @@ const MONITOR_USAGE: &str =
     "Usage: /monitor <request> | /monitor [list|read|stop|restart|delete] [id]";
 const MONITOR_USAGE_HINT: &str =
     "Examples: /monitor watch CI, /monitor list, /monitor read mon-123";
-const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <thread-id> <message>|list|diagnostics|start <prompt>|read|attach|detach|stop|delete] [id]";
-const BACKGROUND_AGENT_USAGE_HINT: &str =
-    "Examples: /agent peers, /agent send <thread-id> hello, /agent start fix the flaky test";
-const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <thread-id> <message>";
+const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <peer-id> <message>|list|diagnostics|start [--worktree <id>] <prompt>|read|attach|detach|stop|delete] [id]";
+const BACKGROUND_AGENT_USAGE_HINT: &str = "Examples: /agent peers, /agent send <peer-id> hello, /agent start fix the flaky test, /agent start --worktree wt-123 fix tests";
+const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <peer-id> <message>";
+const WORKTREE_USAGE: &str = "Usage: /worktree [list|read|actions|use] [id]";
+const WORKTREE_USAGE_HINT: &str =
+    "Examples: /worktree, /worktree read <id>, /worktree actions <id>, /worktree use <id>";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const EXTERNAL_AGENT_USAGE: &str =
     "Usage: /external-agent [inline|--inline] [plan|propose] [cursor|grok-build|claude] [task]";
-const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name]";
+const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name] | /tmux --session <session> [--window <window>]";
 
 #[derive(Debug, PartialEq, Eq)]
 enum ExternalAgentSlashCommand<'a> {
@@ -231,14 +262,52 @@ fn resolve_visible_external_agent_runtime(
 
 fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
     let Some(parts) = shlex::split(input) else {
-        return Err(format!("{TMUX_USAGE}. Check quotes in the session name."));
+        return Err(format!("{TMUX_USAGE}. Check quotes in the tmux names."));
     };
     let mut replace_existing = true;
+    let mut session_name: Option<String> = None;
+    let mut window_name: Option<String> = None;
     let mut name_parts = Vec::new();
-    for part in parts {
+
+    let mut parts = parts.into_iter();
+    while let Some(part) = parts.next() {
         match part.as_str() {
             "--replace" | "-r" => replace_existing = true,
             "--no-replace" => replace_existing = false,
+            "--session" | "-s" => {
+                let Some(value) = parts.next() else {
+                    return Err(format!("Missing value for `{part}`. {TMUX_USAGE}"));
+                };
+                if session_name.replace(value).is_some() {
+                    return Err(format!("Duplicate /tmux session target. {TMUX_USAGE}"));
+                }
+            }
+            option if option.starts_with("--session=") => {
+                let value = option
+                    .strip_prefix("--session=")
+                    .expect("prefix checked")
+                    .to_string();
+                if session_name.replace(value).is_some() {
+                    return Err(format!("Duplicate /tmux session target. {TMUX_USAGE}"));
+                }
+            }
+            "--window" | "-w" => {
+                let Some(value) = parts.next() else {
+                    return Err(format!("Missing value for `{part}`. {TMUX_USAGE}"));
+                };
+                if window_name.replace(value).is_some() {
+                    return Err(format!("Duplicate /tmux window target. {TMUX_USAGE}"));
+                }
+            }
+            option if option.starts_with("--window=") => {
+                let value = option
+                    .strip_prefix("--window=")
+                    .expect("prefix checked")
+                    .to_string();
+                if window_name.replace(value).is_some() {
+                    return Err(format!("Duplicate /tmux window target. {TMUX_USAGE}"));
+                }
+            }
             "--help" | "-h" => return Err(TMUX_USAGE.to_string()),
             option if option.starts_with('-') => {
                 return Err(format!("Unknown /tmux option `{option}`. {TMUX_USAGE}"));
@@ -246,9 +315,26 @@ fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
             _ => name_parts.push(part),
         }
     }
-    let name = (!name_parts.is_empty()).then(|| name_parts.join(" "));
+    let destination = if let Some(session_name) = session_name {
+        if !name_parts.is_empty() {
+            return Err(format!(
+                "Do not combine `--session` with a positional session name. {TMUX_USAGE}"
+            ));
+        }
+        TmuxHandoffDestination::ExistingSession {
+            session_name,
+            window_name,
+        }
+    } else {
+        if window_name.is_some() {
+            return Err(format!("`--window` requires `--session`. {TMUX_USAGE}"));
+        }
+        TmuxHandoffDestination::NewSession {
+            name: (!name_parts.is_empty()).then(|| name_parts.join(" ")),
+        }
+    };
     Ok(TmuxSlashCommand {
-        name,
+        destination,
         replace_existing,
     })
 }
@@ -264,13 +350,16 @@ impl ChatWidget {
         if matches!(
             cmd,
             SlashCommand::Goal
+                | SlashCommand::MissionControl
                 | SlashCommand::Loop
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
+                | SlashCommand::Workflow
                 | SlashCommand::Session
                 | SlashCommand::MultiAgents
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
+                | SlashCommand::Worktree
                 | SlashCommand::ExternalAgent
         ) {
             self.bottom_pane.drain_pending_submission_state();
@@ -612,7 +701,7 @@ impl ChatWidget {
             }
             SlashCommand::Tmux => {
                 self.app_event_tx.send(AppEvent::OpenInTmux {
-                    name: None,
+                    destination: TmuxHandoffDestination::default(),
                     replace_existing: true,
                 });
             }
@@ -707,6 +796,29 @@ impl ChatWidget {
                         Some(GOAL_USAGE_HINT.to_string()),
                     );
                 }
+            }
+            SlashCommand::MissionControl => {
+                self.app_event_tx.send(AppEvent::OpenMissionControlOverview);
+                self.append_message_history_entry("/mission-control".to_string());
+            }
+            SlashCommand::Workflow => {
+                if !self.config.features.enabled(Feature::Workflows) {
+                    return;
+                }
+                if let Some(thread_id) = self.thread_id {
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadWorkflowManager { thread_id });
+                    self.append_message_history_entry("/workflow".to_string());
+                } else {
+                    self.add_info_message(
+                        WORKFLOW_USAGE.to_string(),
+                        Some(WORKFLOW_USAGE_HINT.to_string()),
+                    );
+                }
+            }
+            SlashCommand::Worktree => {
+                self.app_event_tx.send(AppEvent::OpenWorktreeManager);
+                self.append_message_history_entry("/worktree".to_string());
             }
             SlashCommand::Loop => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
@@ -1190,6 +1302,9 @@ impl ChatWidget {
                 }
                 let control_command = match trimmed.to_ascii_lowercase().as_str() {
                     "clear" => Some(GoalControlCommand::Clear),
+                    "cancel" | "cancelled" | "canceled" => Some(GoalControlCommand::SetStatus(
+                        AppThreadGoalStatus::Cancelled,
+                    )),
                     "edit" => {
                         self.app_event_tx.send(AppEvent::OpenThreadGoalEditor {
                             thread_id: self.thread_id,
@@ -1275,6 +1390,102 @@ impl ChatWidget {
                     mode: ThreadGoalSetMode::ConfirmIfExists,
                 });
                 self.append_message_history_entry(format!("/goal {trimmed}"));
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
+            }
+            SlashCommand::Workflow if !trimmed.is_empty() => {
+                if !self.config.features.enabled(Feature::Workflows) {
+                    return;
+                }
+                match parse_workflow_slash_args(trimmed) {
+                    Ok(WorkflowSlashCommand::List) => {
+                        let Some(thread_id) = self.thread_id else {
+                            self.add_info_message(
+                                WORKFLOW_USAGE.to_string(),
+                                Some(
+                                    "The session must start before you can list saved workflows."
+                                        .to_string(),
+                                ),
+                            );
+                            if source == SlashCommandDispatchSource::Live {
+                                self.bottom_pane.drain_pending_submission_state();
+                            }
+                            return;
+                        };
+                        self.app_event_tx
+                            .send(AppEvent::OpenThreadWorkflowManager { thread_id });
+                        self.append_message_history_entry(format!("/workflow {trimmed}"));
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                    }
+                    Ok(WorkflowSlashCommand::Draft { request }) => {
+                        let workflow_prompt = workflow_generation_prompt(request);
+                        self.app_event_tx.send(AppEvent::PrefillComposer {
+                            text: workflow_prompt,
+                        });
+                        self.add_info_message(
+                            "Workflow draft prompt prepared.".to_string(),
+                            Some(
+                                "Review the YAML-only prompt in the composer, then submit it when ready."
+                                    .to_string(),
+                            ),
+                        );
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                    }
+                    Err(message) => {
+                        self.add_error_message(message);
+                        self.add_info_message(
+                            WORKFLOW_USAGE.to_string(),
+                            Some(WORKFLOW_USAGE_HINT.to_string()),
+                        );
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                    }
+                }
+            }
+            SlashCommand::Worktree if !trimmed.is_empty() => {
+                let command = match parse_worktree_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(WORKTREE_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                match command {
+                    WorktreeSlashCommand::List => {
+                        self.app_event_tx.send(AppEvent::OpenWorktreeManager);
+                    }
+                    WorktreeSlashCommand::Read { worktree_id } => {
+                        self.app_event_tx.send(AppEvent::ReadWorktree {
+                            worktree_id,
+                            base_repo_path: None,
+                        });
+                    }
+                    WorktreeSlashCommand::Actions { worktree_id } => {
+                        self.app_event_tx.send(AppEvent::OpenWorktreeActions {
+                            worktree_id,
+                            base_repo_path: None,
+                        });
+                    }
+                    WorktreeSlashCommand::Use { worktree_id } => {
+                        self.app_event_tx.send(AppEvent::UseWorktree {
+                            worktree_id,
+                            base_repo_path: None,
+                        });
+                    }
+                }
+                self.append_message_history_entry(format!("/worktree {trimmed}"));
                 if source == SlashCommandDispatchSource::Live {
                     self.bottom_pane.drain_pending_submission_state();
                 }
@@ -1431,7 +1642,7 @@ impl ChatWidget {
             SlashCommand::Tmux if !trimmed.is_empty() => match parse_tmux_slash_args(trimmed) {
                 Ok(command) => {
                     self.app_event_tx.send(AppEvent::OpenInTmux {
-                        name: command.name,
+                        destination: command.destination,
                         replace_existing: command.replace_existing,
                     });
                 }
@@ -1739,9 +1950,14 @@ impl ChatWidget {
             BackgroundAgentSlashCommand::List => {
                 self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
             }
-            BackgroundAgentSlashCommand::Start { prompt } => {
-                self.app_event_tx
-                    .send(AppEvent::StartBackgroundAgent { prompt });
+            BackgroundAgentSlashCommand::Start {
+                prompt,
+                worktree_id,
+            } => {
+                self.app_event_tx.send(AppEvent::StartBackgroundAgent {
+                    prompt,
+                    worktree_id,
+                });
             }
             BackgroundAgentSlashCommand::Read { agent_id } => {
                 self.app_event_tx
@@ -1789,12 +2005,12 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ListActiveSessions);
             }
             ActiveSessionSlashCommand::Send {
-                target_thread_id,
+                target_peer_id,
                 message,
                 wake,
             } => {
                 self.app_event_tx.send(AppEvent::SendActiveSessionMessage {
-                    target_thread_id,
+                    target_peer_id,
                     message,
                     wake,
                 });
@@ -1929,6 +2145,7 @@ impl ChatWidget {
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
+            workflow_command_enabled: self.config.features.enabled(Feature::Workflows),
             scheduled_tasks_command_enabled: self.config.features.enabled(Feature::ScheduledTasks),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
@@ -1983,10 +2200,13 @@ impl ChatWidget {
             | SlashCommand::Personality
             | SlashCommand::Plan
             | SlashCommand::Goal
+            | SlashCommand::MissionControl
+            | SlashCommand::Workflow
             | SlashCommand::Loop
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::Session
+            | SlashCommand::Worktree
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -2163,17 +2383,7 @@ fn parse_background_agent_slash_args(
                 ))
             }
         }
-        "start" | "run" | "spawn" => {
-            if rest.is_empty() {
-                Err(background_agent_usage_error(
-                    "Usage: /background-agent start <prompt>",
-                ))
-            } else {
-                Ok(BackgroundAgentSlashCommand::Start {
-                    prompt: rest.to_string(),
-                })
-            }
-        }
+        "start" | "run" | "spawn" => parse_background_agent_start_args(rest),
         "read" | "show" => Ok(BackgroundAgentSlashCommand::Read {
             agent_id: parse_optional_background_agent_id(
                 rest,
@@ -2212,6 +2422,89 @@ fn parse_background_agent_slash_args(
         }),
         _ => Err(background_agent_usage_error(BACKGROUND_AGENT_USAGE)),
     }
+}
+
+fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(WorktreeSlashCommand::List);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "list" | "ls" => {
+            if rest.is_empty() {
+                Ok(WorktreeSlashCommand::List)
+            } else {
+                Err(worktree_usage_error("Usage: /worktree list"))
+            }
+        }
+        "read" | "show" => Ok(WorktreeSlashCommand::Read {
+            worktree_id: parse_optional_worktree_id(rest, "Usage: /worktree read [id]")?,
+        }),
+        "actions" | "manage" => Ok(WorktreeSlashCommand::Actions {
+            worktree_id: parse_required_worktree_id(rest, "Usage: /worktree actions <id>")?,
+        }),
+        "use" | "switch" => Ok(WorktreeSlashCommand::Use {
+            worktree_id: parse_required_worktree_id(rest, "Usage: /worktree use <id>")?,
+        }),
+        _ => Err(worktree_usage_error(WORKTREE_USAGE)),
+    }
+}
+
+fn parse_background_agent_start_args(
+    input: &str,
+) -> Result<BackgroundAgentSlashCommand, MonitorSlashParseError> {
+    let mut remaining = input.trim();
+    let mut worktree_id = None;
+
+    if let Some(after_equals) = remaining.strip_prefix("--worktree=") {
+        let value_end = after_equals
+            .find(char::is_whitespace)
+            .unwrap_or(after_equals.len());
+        let value = &after_equals[..value_end];
+        if value.is_empty() {
+            return Err(background_agent_usage_error(
+                "Usage: /background-agent start [--worktree <id>] <prompt>",
+            ));
+        }
+        worktree_id = Some(value.to_string());
+        remaining = after_equals[value_end..].trim_start();
+    } else if let Some(after_flag) = remaining.strip_prefix("--worktree") {
+        if !after_flag.is_empty() && !after_flag.starts_with(char::is_whitespace) {
+            // Preserve unknown dash-leading prompt text for backwards compatibility.
+        } else {
+            let after_flag = after_flag.trim_start();
+            let value_end = after_flag
+                .find(char::is_whitespace)
+                .unwrap_or(after_flag.len());
+            let value = &after_flag[..value_end];
+            if value.is_empty() || value.starts_with('-') {
+                return Err(background_agent_usage_error(
+                    "Usage: /background-agent start [--worktree <id>] <prompt>",
+                ));
+            }
+            worktree_id = Some(value.to_string());
+            remaining = after_flag[value_end..].trim_start();
+        }
+    }
+
+    if let Some(after_terminator) = remaining.strip_prefix("--")
+        && (after_terminator.is_empty() || after_terminator.starts_with(char::is_whitespace))
+    {
+        remaining = after_terminator.trim_start();
+    }
+
+    let prompt = remaining.trim();
+    if prompt.trim().is_empty() {
+        return Err(background_agent_usage_error(
+            "Usage: /background-agent start [--worktree <id>] <prompt>",
+        ));
+    }
+    Ok(BackgroundAgentSlashCommand::Start {
+        prompt: prompt.to_string(),
+        worktree_id,
+    })
 }
 
 fn parse_active_session_slash_args(
@@ -2261,13 +2554,13 @@ fn parse_active_session_send_args(
     if parts.len().saturating_sub(index) < 2 {
         return Err(active_session_usage_error(ACTIVE_SESSION_SEND_USAGE));
     }
-    let target_thread_id = parts[index].clone();
+    let target_peer_id = parts[index].clone();
     let message = parts[index + 1..].join(" ");
     if message.trim().is_empty() {
         return Err(active_session_usage_error(ACTIVE_SESSION_SEND_USAGE));
     }
     Ok(ActiveSessionSlashCommand::Send {
-        target_thread_id,
+        target_peer_id,
         message,
         wake,
     })
@@ -2290,6 +2583,30 @@ fn parse_optional_background_agent_id(
     Ok(Some(agent_id.to_string()))
 }
 
+fn parse_optional_worktree_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<Option<String>, MonitorSlashParseError> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    parse_required_worktree_id(rest, usage).map(Some)
+}
+
+fn parse_required_worktree_id(
+    rest: &str,
+    usage: &'static str,
+) -> Result<String, MonitorSlashParseError> {
+    let mut parts = rest.split_whitespace();
+    let Some(worktree_id) = parts.next() else {
+        return Err(worktree_usage_error(usage));
+    };
+    if parts.next().is_some() {
+        return Err(worktree_usage_error(usage));
+    }
+    Ok(worktree_id.to_string())
+}
+
 fn active_session_usage_error(usage: &'static str) -> MonitorSlashParseError {
     MonitorSlashParseError {
         message: usage.to_string(),
@@ -2301,6 +2618,13 @@ fn background_agent_usage_error(usage: &'static str) -> MonitorSlashParseError {
     MonitorSlashParseError {
         message: usage.to_string(),
         hint: Some(BACKGROUND_AGENT_USAGE_HINT.to_string()),
+    }
+}
+
+fn worktree_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(WORKTREE_USAGE_HINT.to_string()),
     }
 }
 fn loop_create_request_to_api(
@@ -2392,10 +2716,15 @@ fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
 
 #[cfg(test)]
 mod external_agent_arg_tests {
+    use super::BackgroundAgentSlashCommand;
     use super::ExternalAgentSlashCommand;
     use super::TmuxSlashCommand;
+    use super::WorktreeSlashCommand;
+    use super::parse_background_agent_slash_args;
     use super::parse_external_agent_args;
     use super::parse_tmux_slash_args;
+    use super::parse_worktree_slash_args;
+    use crate::tmux_handoff::TmuxHandoffDestination;
     use codex_app_server_protocol::ThreadExternalAgentMode;
 
     #[test]
@@ -2457,24 +2786,160 @@ mod external_agent_arg_tests {
         assert_eq!(
             parse_tmux_slash_args("worktree").expect("tmux args"),
             TmuxSlashCommand {
-                name: Some("worktree".to_string()),
+                destination: TmuxHandoffDestination::NewSession {
+                    name: Some("worktree".to_string()),
+                },
                 replace_existing: true,
             }
         );
         assert_eq!(
             parse_tmux_slash_args("--no-replace \"named session\"").expect("tmux args"),
             TmuxSlashCommand {
-                name: Some("named session".to_string()),
+                destination: TmuxHandoffDestination::NewSession {
+                    name: Some("named session".to_string()),
+                },
                 replace_existing: false,
             }
         );
         assert_eq!(
             parse_tmux_slash_args("-r named session").expect("tmux args"),
             TmuxSlashCommand {
-                name: Some("named session".to_string()),
+                destination: TmuxHandoffDestination::NewSession {
+                    name: Some("named session".to_string()),
+                },
+                replace_existing: true,
+            }
+        );
+        assert_eq!(
+            parse_tmux_slash_args("--session dev --window \"Codewith main\"").expect("tmux args"),
+            TmuxSlashCommand {
+                destination: TmuxHandoffDestination::ExistingSession {
+                    session_name: "dev".to_string(),
+                    window_name: Some("Codewith main".to_string()),
+                },
+                replace_existing: true,
+            }
+        );
+        assert_eq!(
+            parse_tmux_slash_args("--session=dev").expect("tmux args"),
+            TmuxSlashCommand {
+                destination: TmuxHandoffDestination::ExistingSession {
+                    session_name: "dev".to_string(),
+                    window_name: None,
+                },
                 replace_existing: true,
             }
         );
         assert!(parse_tmux_slash_args("--bad").is_err());
+        assert!(parse_tmux_slash_args("--window codewith").is_err());
+        assert!(parse_tmux_slash_args("--session dev stray-name").is_err());
+    }
+
+    #[test]
+    fn parses_worktree_manager_commands() {
+        assert_eq!(
+            parse_worktree_slash_args("").expect("empty worktree args"),
+            WorktreeSlashCommand::List
+        );
+        assert_eq!(
+            parse_worktree_slash_args("list").expect("list args"),
+            WorktreeSlashCommand::List
+        );
+        assert_eq!(
+            parse_worktree_slash_args("read").expect("read args"),
+            WorktreeSlashCommand::Read { worktree_id: None }
+        );
+        assert_eq!(
+            parse_worktree_slash_args("show wt-123").expect("show args"),
+            WorktreeSlashCommand::Read {
+                worktree_id: Some("wt-123".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_worktree_slash_args("manage wt-456").expect("manage args"),
+            WorktreeSlashCommand::Actions {
+                worktree_id: "wt-456".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_worktree_slash_args("use wt-789").expect("use args"),
+            WorktreeSlashCommand::Use {
+                worktree_id: "wt-789".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_worktree_manager_commands() {
+        assert!(parse_worktree_slash_args("list extra").is_err());
+        assert!(parse_worktree_slash_args("actions").is_err());
+        assert!(parse_worktree_slash_args("use").is_err());
+        assert!(parse_worktree_slash_args("read one two").is_err());
+        assert!(parse_worktree_slash_args("unknown").is_err());
+    }
+
+    #[test]
+    fn parses_background_agent_start_worktree_flag() {
+        assert_eq!(
+            parse_background_agent_slash_args("start fix tests").expect("plain start"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "fix tests".to_string(),
+                worktree_id: None,
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start --worktree wt-123 fix tests")
+                .expect("worktree flag"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "fix tests".to_string(),
+                worktree_id: Some("wt-123".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start --worktree=wt-456 fix tests")
+                .expect("worktree equals flag"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "fix tests".to_string(),
+                worktree_id: Some("wt-456".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start --worktree wt-123   fix \"quoted\"  tests")
+                .expect("worktree preserves raw prompt"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "fix \"quoted\"  tests".to_string(),
+                worktree_id: Some("wt-123".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start --audit config loading")
+                .expect("dash-leading prompt"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "--audit config loading".to_string(),
+                worktree_id: None,
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start -- --prompt-looking text")
+                .expect("flag terminator"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "--prompt-looking text".to_string(),
+                worktree_id: None,
+            }
+        );
+        assert_eq!(
+            parse_background_agent_slash_args("start --worktree wt-123 -- --prompt-looking text")
+                .expect("worktree flag terminator"),
+            BackgroundAgentSlashCommand::Start {
+                prompt: "--prompt-looking text".to_string(),
+                worktree_id: Some("wt-123".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_background_agent_start_worktree_flag() {
+        assert!(parse_background_agent_slash_args("start --worktree").is_err());
+        assert!(parse_background_agent_slash_args("start --worktree wt-123").is_err());
     }
 }

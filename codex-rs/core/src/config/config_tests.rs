@@ -34,6 +34,7 @@ use codex_config::permissions_toml::PermissionsToml;
 use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
+use codex_config::types::AuthProfileAutoSwitchStrategyToml;
 use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::BundledSkillsConfig;
 use codex_config::types::FeedbackConfigToml;
@@ -60,6 +61,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_core_plugins::PluginsManager;
@@ -5419,6 +5421,9 @@ async fn config_resolves_auth_profile_auto_switch() -> std::io::Result<()> {
                 profiles: vec!["work".to_string(), "personal".to_string()],
                 on_5h_limit: Some(true),
                 on_weekly_limit: Some(false),
+                strategy: Some(AuthProfileAutoSwitchStrategyToml::Ordered),
+                heartbeat_interval_secs: Some(120),
+                heartbeat_freshness_secs: Some(180),
             }),
             ..ConfigToml::default()
         },
@@ -5434,6 +5439,77 @@ async fn config_resolves_auth_profile_auto_switch() -> std::io::Result<()> {
     );
     assert!(config.auth_profile_auto_switch.on_5h_limit);
     assert!(!config.auth_profile_auto_switch.on_weekly_limit);
+    assert_eq!(
+        config.auth_profile_auto_switch.strategy,
+        AuthProfileAutoSwitchStrategy::Ordered
+    );
+    assert_eq!(config.auth_profile_auto_switch.heartbeat_interval_secs, 120);
+    assert_eq!(
+        config.auth_profile_auto_switch.heartbeat_freshness_secs,
+        180
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!default_config.usage_self_heal.enabled);
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            usage_self_heal: Some(UsageSelfHealToml {
+                enabled: Some(false),
+                max_retries: Some(5),
+                initial_backoff_secs: Some(0),
+                max_backoff_secs: Some(0),
+                reset_retry_buffer_secs: Some(45),
+                max_reset_retry_delay_secs: Some(600),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.usage_self_heal.enabled);
+    assert_eq!(config.usage_self_heal.max_retries, 5);
+    assert_eq!(config.usage_self_heal.initial_backoff_secs, 1);
+    assert_eq!(config.usage_self_heal.max_backoff_secs, 1);
+    assert_eq!(config.usage_self_heal.reset_retry_buffer_secs, 45);
+    assert_eq!(config.usage_self_heal.max_reset_retry_delay_secs, 600);
+
+    let enabled_config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            usage_self_heal: Some(UsageSelfHealToml {
+                enabled: Some(true),
+                max_retries: None,
+                initial_backoff_secs: None,
+                max_backoff_secs: None,
+                reset_retry_buffer_secs: None,
+                max_reset_retry_delay_secs: None,
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(enabled_config.usage_self_heal.enabled);
 
     Ok(())
 }
@@ -5452,6 +5528,9 @@ async fn config_rejects_invalid_auth_profile_auto_switch_profile() -> std::io::R
                 profiles: vec!["nested/work".to_string()],
                 on_5h_limit: None,
                 on_weekly_limit: None,
+                strategy: None,
+                heartbeat_interval_secs: None,
+                heartbeat_freshness_secs: None,
             }),
             ..ConfigToml::default()
         },

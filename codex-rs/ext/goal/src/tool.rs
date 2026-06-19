@@ -19,7 +19,7 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
-use crate::runtime::GoalPlanRuntimeConfig;
+use crate::runtime::GoalPlanRuntimeConfigHandle;
 use crate::spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
@@ -34,8 +34,11 @@ use crate::spec::create_get_goal_plan_tool;
 use crate::spec::create_get_goal_tool;
 use crate::spec::create_resume_goal_tool;
 use crate::spec::create_update_goal_tool;
-use crate::tool_plan::ActivatedGoalAccounting;
+use crate::tool_plan::GoalPlanCompletionReport;
 use crate::tool_plan::GoalPlanResponse;
+
+const MAX_GOAL_TOOL_RESPONSE_PLANS: usize = 4;
+const MAX_GOAL_TOOL_OBJECTIVE_CHARS: usize = 512;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
@@ -45,7 +48,7 @@ pub(crate) struct GoalToolExecutor {
     pub(crate) accounting_state: Arc<GoalAccountingState>,
     pub(crate) event_emitter: GoalEventEmitter,
     pub(crate) metrics: GoalMetrics,
-    pub(crate) plan_config: Option<GoalPlanRuntimeConfig>,
+    pub(crate) plan_config: Option<GoalPlanRuntimeConfigHandle>,
 }
 
 #[derive(Clone, Copy)]
@@ -82,8 +85,11 @@ pub(crate) struct GoalToolResponse {
     activated_goal: Option<ThreadGoal>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     goal_plans: Vec<GoalPlanResponse>,
+    #[serde(skip_serializing_if = "is_zero")]
+    goal_plans_omitted_count: i64,
     remaining_tokens: Option<i64>,
     completion_budget_report: Option<String>,
+    goal_plan_completion_report: Option<GoalPlanCompletionReport>,
 }
 
 #[derive(Clone, Copy)]
@@ -135,7 +141,7 @@ impl GoalToolExecutor {
         accounting_state: Arc<GoalAccountingState>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        plan_config: GoalPlanRuntimeConfig,
+        plan_config: GoalPlanRuntimeConfigHandle,
     ) -> Self {
         Self {
             kind: GoalToolKind::GetPlan,
@@ -154,7 +160,7 @@ impl GoalToolExecutor {
         accounting_state: Arc<GoalAccountingState>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        plan_config: GoalPlanRuntimeConfig,
+        plan_config: GoalPlanRuntimeConfigHandle,
     ) -> Self {
         Self {
             kind: GoalToolKind::CreatePlan,
@@ -173,7 +179,7 @@ impl GoalToolExecutor {
         accounting_state: Arc<GoalAccountingState>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        plan_config: GoalPlanRuntimeConfig,
+        plan_config: GoalPlanRuntimeConfigHandle,
     ) -> Self {
         Self {
             kind: GoalToolKind::ActivatePlanNode,
@@ -192,6 +198,7 @@ impl GoalToolExecutor {
         accounting_state: Arc<GoalAccountingState>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfigHandle,
     ) -> Self {
         Self {
             kind: GoalToolKind::Update,
@@ -200,7 +207,7 @@ impl GoalToolExecutor {
             accounting_state,
             event_emitter,
             metrics,
-            plan_config: None,
+            plan_config: Some(plan_config),
         }
     }
 
@@ -360,10 +367,10 @@ impl GoalToolExecutor {
         let args: UpdateGoalArgs = parse_arguments(invocation.function_arguments()?)?;
         if !matches!(
             args.status,
-            ThreadGoalStatus::Complete | ThreadGoalStatus::Blocked
+            ThreadGoalStatus::Complete | ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled
         ) {
             return Err(FunctionCallError::RespondToModel(
-                "update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
+                "update_goal can only mark the existing goal complete, blocked, or cancelled; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
                     .to_string(),
             ));
         }
@@ -382,7 +389,9 @@ impl GoalToolExecutor {
             invocation.turn_id.as_str(),
             match args.status {
                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
-                ThreadGoalStatus::Blocked => codex_state::GoalAccountingMode::ActiveOrStopped,
+                ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled => {
+                    codex_state::GoalAccountingMode::ActiveOrStopped
+                }
                 ThreadGoalStatus::Active
                 | ThreadGoalStatus::Paused
                 | ThreadGoalStatus::UsageLimited
@@ -416,12 +425,34 @@ impl GoalToolExecutor {
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
+        if goal.status == codex_state::ThreadGoalStatus::Blocked {
+            crate::pending_interaction::record_goal_status_wait(
+                self.state_db.as_ref(),
+                self.thread_id,
+                &goal,
+                Some(invocation.turn_id.as_str()),
+                "update-goal-blocked",
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to record blocked goal pending interaction: {err}"
+                ))
+            })?;
+        }
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
         let plan_outcome = if args.status == ThreadGoalStatus::Complete {
+            let plan_config = self.plan_config.as_ref().ok_or_else(|| {
+                FunctionCallError::Fatal("goal update tool missing runtime config".to_string())
+            })?;
             self.state_db
                 .thread_goals()
-                .complete_goal_plan_node_and_maybe_advance(self.thread_id, &goal)
+                .complete_goal_plan_node_and_maybe_advance(
+                    self.thread_id,
+                    &goal,
+                    plan_config.current().auto_execute,
+                )
                 .await
                 .map_err(|err| {
                     FunctionCallError::RespondToModel(format!("failed to advance goal plan: {err}"))
@@ -440,19 +471,27 @@ impl GoalToolExecutor {
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
-        let (goal_plans, activated_goal) = if let Some((snapshot, activated_goal)) = plan_outcome {
-            let activated_goal = self
-                .apply_activated_goal_from_plan(
-                    &invocation,
+        let (goal_plans, activated_goal, goal_plan_completion_report) =
+            if let Some((snapshot, activated_goal)) = plan_outcome {
+                self.event_emitter.thread_goal_plan_updated(
+                    format!("{}-goal-plan", invocation.call_id),
+                    Some(invocation.turn_id.clone()),
+                    snapshot.clone(),
+                );
+                let goal_plan_completion_report =
+                    GoalPlanCompletionReport::from_snapshot_if_terminal(&snapshot);
+                let activated_goal = self
+                    .apply_activated_goal_from_plan(&invocation, activated_goal)
+                    .await?;
+                (
+                    vec![GoalPlanResponse::from(snapshot)],
                     activated_goal,
-                    ActivatedGoalAccounting::Idle,
+                    goal_plan_completion_report,
                 )
-                .await?;
-            (vec![GoalPlanResponse::from(snapshot)], activated_goal)
-        } else {
-            (Vec::new(), None)
-        };
-        goal_response_with_plan(
+            } else {
+                (Vec::new(), None, None)
+            };
+        goal_response_with_plan_and_report(
             Some(goal),
             activated_goal,
             goal_plans,
@@ -461,6 +500,7 @@ impl GoalToolExecutor {
             } else {
                 CompletionBudgetReport::Omit
             },
+            goal_plan_completion_report,
         )
     }
 
@@ -511,6 +551,12 @@ impl GoalToolExecutor {
                         .to_string(),
                 ));
             }
+            codex_state::ThreadGoalStatus::Cancelled => {
+                return Err(FunctionCallError::RespondToModel(
+                    "cannot resume a cancelled goal; create a new goal only when explicitly requested"
+                        .to_string(),
+                ));
+            }
         }
 
         let previous_status = existing_goal.status;
@@ -537,6 +583,18 @@ impl GoalToolExecutor {
             })?;
         self.metrics
             .record_resumed_if_status_changed(Some(previous_status), goal.status);
+        crate::pending_interaction::clear_goal_status_waits(
+            self.state_db.as_ref(),
+            self.thread_id,
+            existing_goal.goal_id.as_str(),
+            "goal resumed",
+        )
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to clear goal pending interactions: {err}"
+            ))
+        })?;
         self.state_db
             .thread_goals()
             .sync_goal_plan_node_for_goal(self.thread_id, &goal)
@@ -626,7 +684,8 @@ impl GoalToolExecutor {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
                 self.metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
-                self.state_db
+                let plan_snapshot = self
+                    .state_db
                     .thread_goals()
                     .sync_goal_plan_node_for_goal(self.thread_id, &goal)
                     .await
@@ -635,6 +694,13 @@ impl GoalToolExecutor {
                             "failed to sync goal plan progress: {err}"
                         ))
                     })?;
+                if let Some(snapshot) = plan_snapshot {
+                    self.event_emitter.thread_goal_plan_updated(
+                        format!("{event_id}-goal-plan"),
+                        Some(turn_id.to_string()),
+                        snapshot,
+                    );
+                }
                 self.accounting_state.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
@@ -710,11 +776,28 @@ pub(crate) fn goal_response_with_plan(
     goal_plans: Vec<GoalPlanResponse>,
     completion_budget_report: CompletionBudgetReport,
 ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    goal_response_with_plan_and_report(
+        goal,
+        activated_goal,
+        goal_plans,
+        completion_budget_report,
+        None,
+    )
+}
+
+pub(crate) fn goal_response_with_plan_and_report(
+    goal: Option<ThreadGoal>,
+    activated_goal: Option<ThreadGoal>,
+    goal_plans: Vec<GoalPlanResponse>,
+    completion_budget_report: CompletionBudgetReport,
+    goal_plan_completion_report: Option<GoalPlanCompletionReport>,
+) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
     let value = serde_json::to_value(GoalToolResponse::new(
         goal,
         activated_goal,
         goal_plans,
         completion_budget_report,
+        goal_plan_completion_report,
     ))
     .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(Box::new(JsonToolOutput::new(value)))
@@ -726,6 +809,7 @@ impl GoalToolResponse {
         activated_goal: Option<ThreadGoal>,
         goal_plans: Vec<GoalPlanResponse>,
         report_mode: CompletionBudgetReport,
+        goal_plan_completion_report: Option<GoalPlanCompletionReport>,
     ) -> Self {
         let remaining_tokens = goal.as_ref().and_then(|goal| {
             goal.token_budget
@@ -738,14 +822,47 @@ impl GoalToolResponse {
                 .and_then(completion_budget_report),
             CompletionBudgetReport::Omit => None,
         };
+        let goal_plans_omitted_count = goal_plans
+            .len()
+            .saturating_sub(MAX_GOAL_TOOL_RESPONSE_PLANS)
+            as i64;
         Self {
-            goal,
-            activated_goal,
-            goal_plans,
+            goal: goal.map(bounded_goal_for_tool_response),
+            activated_goal: activated_goal.map(bounded_goal_for_tool_response),
+            goal_plans: goal_plans
+                .into_iter()
+                .take(MAX_GOAL_TOOL_RESPONSE_PLANS)
+                .collect(),
+            goal_plans_omitted_count,
             remaining_tokens,
             completion_budget_report,
+            goal_plan_completion_report,
         }
     }
+}
+
+fn bounded_goal_for_tool_response(goal: ThreadGoal) -> ThreadGoal {
+    ThreadGoal {
+        objective: truncate_chars(goal.objective, MAX_GOAL_TOOL_OBJECTIVE_CHARS),
+        ..goal
+    }
+}
+
+fn truncate_chars(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 pub(crate) async fn fill_empty_thread_preview_if_possible(
@@ -766,6 +883,7 @@ pub(crate) async fn fill_empty_thread_preview_if_possible(
 pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadGoal {
     ThreadGoal {
         thread_id: goal.thread_id,
+        goal_id: goal.goal_id,
         objective: goal.objective,
         status: protocol_status_from_state(goal.status),
         token_budget: goal.token_budget,
@@ -784,6 +902,7 @@ fn protocol_status_from_state(status: codex_state::ThreadGoalStatus) -> ThreadGo
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+        codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
 }
 
@@ -797,6 +916,7 @@ pub(crate) fn state_status_from_protocol(
         ThreadGoalStatus::UsageLimited => codex_state::ThreadGoalStatus::UsageLimited,
         ThreadGoalStatus::BudgetLimited => codex_state::ThreadGoalStatus::BudgetLimited,
         ThreadGoalStatus::Complete => codex_state::ThreadGoalStatus::Complete,
+        ThreadGoalStatus::Cancelled => codex_state::ThreadGoalStatus::Cancelled,
     }
 }
 

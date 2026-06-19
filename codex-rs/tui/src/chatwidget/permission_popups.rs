@@ -310,37 +310,19 @@ impl ChatWidget {
 
     pub(super) fn approval_preset_actions(
         approval: AskForApproval,
-        permission_profile: PermissionProfile,
         active_permission_profile: ActivePermissionProfile,
         label: String,
         approvals_reviewer: ApprovalsReviewer,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
-            tx.send(AppEvent::CodexOp(AppCommand::override_turn_context(
-                /*cwd*/ None,
-                Some(approval),
-                Some(approvals_reviewer),
-                Some(permission_profile.clone()),
-                Some(active_permission_profile.clone()),
-                /*windows_sandbox_level*/ None,
-                /*model*/ None,
-                /*effort*/ None,
-                /*summary*/ None,
-                /*service_tier*/ None,
-                /*collaboration_mode*/ None,
-                /*personality*/ None,
-            )));
-            tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
-            tx.send(AppEvent::UpdateActivePermissionProfile(
-                active_permission_profile.clone(),
+            tx.send(AppEvent::SelectPermissionProfile(
+                PermissionProfileSelection {
+                    profile_id: active_permission_profile.id.clone(),
+                    approval_policy: Some(approval),
+                    approvals_reviewer: Some(approvals_reviewer),
+                    display_label: label.clone(),
+                },
             ));
-            tx.send(AppEvent::UpdateApprovalsReviewer(approvals_reviewer));
-            tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::new_info_event(
-                    format!("Permissions updated to {label}"),
-                    /*hint*/ None,
-                ),
-            )));
         })]
     }
 
@@ -365,7 +347,6 @@ impl ChatWidget {
                 || {
                     Self::approval_preset_actions(
                         AskForApproval::from(preset.approval),
-                        preset.permission_profile.clone(),
                         preset.active_permission_profile.clone(),
                         label.clone(),
                         approvals_reviewer,
@@ -500,7 +481,6 @@ impl ChatWidget {
             || {
                 Self::approval_preset_actions(
                     approval,
-                    preset.permission_profile.clone(),
                     preset.active_permission_profile.clone(),
                     selected_name.clone(),
                     ApprovalsReviewer::User,
@@ -516,7 +496,6 @@ impl ChatWidget {
             || {
                 Self::approval_preset_actions(
                     approval,
-                    preset.permission_profile,
                     preset.active_permission_profile,
                     selected_name,
                     ApprovalsReviewer::User,

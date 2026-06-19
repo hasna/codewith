@@ -1,0 +1,895 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "type": "string"
+    },
+    "ActiveSessionCapability": {
+      "enum": [
+        "receiveMessage",
+        "queueMessage",
+        "triggerTurn",
+        "claudeChannelBridge"
+      ],
+      "type": "string"
+    },
+    "ActiveSessionPeerKind": {
+      "enum": [
+        "codewithSession",
+        "spawnedAgent",
+        "bridgeAdapter"
+      ],
+      "type": "string"
+    },
+    "AgentPath": {
+      "type": "string"
+    },
+    "LocalSession": {
+      "properties": {
+        "activeFlags": {
+          "description": "Active-status flags from the thread runtime. Empty for non-active sessions.",
+          "items": {
+            "$ref": "#/definitions/ThreadActiveFlag"
+          },
+          "type": "array"
+        },
+        "agentPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cwd": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gitInfo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalSessionGitInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "peer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalSessionPeer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Live active-session routing metadata when this record can receive in-memory activeSession/send traffic."
+        },
+        "redactions": {
+          "items": {
+            "$ref": "#/definitions/LocalSessionRedaction"
+          },
+          "type": "array"
+        },
+        "runtimeSessionId": {
+          "description": "Live session instance id when known. Persisted-only records return null because a durable thread id is not the same as a runtime session id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/SessionSource"
+        },
+        "status": {
+          "$ref": "#/definitions/LocalSessionStatus"
+        },
+        "threadId": {
+          "description": "Durable Codewith thread id for the session record.",
+          "type": "string"
+        },
+        "threadSource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activeFlags",
+        "createdAt",
+        "cwd",
+        "modelProvider",
+        "redactions",
+        "source",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "LocalSessionGitInfo": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "LocalSessionPeer": {
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/definitions/ActiveSessionCapability"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/definitions/ActiveSessionPeerKind"
+        },
+        "lastSeenAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "peerId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capabilities",
+        "kind",
+        "lastSeenAt",
+        "peerId"
+      ],
+      "type": "object"
+    },
+    "LocalSessionRedaction": {
+      "enum": [
+        "gitOriginUrl",
+        "processDetails"
+      ],
+      "type": "string"
+    },
+    "LocalSessionStatus": {
+      "enum": [
+        "active",
+        "idle",
+        "systemError",
+        "closing",
+        "loadedWithoutActivePeer",
+        "notLoaded"
+      ],
+      "type": "string"
+    },
+    "MissionControlCapabilities": {
+      "properties": {
+        "durableMailbox": {
+          "type": "boolean"
+        },
+        "filesystemMutation": {
+          "type": "boolean"
+        },
+        "goals": {
+          "type": "boolean"
+        },
+        "localSessions": {
+          "type": "boolean"
+        },
+        "pendingInteractions": {
+          "type": "boolean"
+        },
+        "remoteDispatch": {
+          "type": "boolean"
+        },
+        "shellExecution": {
+          "type": "boolean"
+        },
+        "workflowMutation": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "durableMailbox",
+        "filesystemMutation",
+        "goals",
+        "localSessions",
+        "pendingInteractions",
+        "remoteDispatch",
+        "shellExecution",
+        "workflowMutation"
+      ],
+      "type": "object"
+    },
+    "MissionControlSession": {
+      "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadGoal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goalPlans": {
+          "items": {
+            "$ref": "#/definitions/ThreadGoalPlan"
+          },
+          "type": "array"
+        },
+        "session": {
+          "$ref": "#/definitions/LocalSession"
+        }
+      },
+      "required": [
+        "goalPlans",
+        "session"
+      ],
+      "type": "object"
+    },
+    "SessionSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "custom"
+          ],
+          "title": "CustomSessionSource",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "subAgent": {
+              "$ref": "#/definitions/SubAgentSource"
+            }
+          },
+          "required": [
+            "subAgent"
+          ],
+          "title": "SubAgentSessionSource",
+          "type": "object"
+        }
+      ]
+    },
+    "SubAgentSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "review",
+            "compact",
+            "memory_consolidation"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "thread_spawn": {
+              "properties": {
+                "agent_nickname": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agent_path": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/AgentPath"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "agent_role": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "depth": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "parent_thread_id": {
+                  "$ref": "#/definitions/ThreadId"
+                }
+              },
+              "required": [
+                "depth",
+                "parent_thread_id"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "thread_spawn"
+          ],
+          "title": "ThreadSpawnSubAgentSource",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "other"
+          ],
+          "title": "OtherSubAgentSource",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadActiveFlag": {
+      "enum": [
+        "waitingOnApproval",
+        "waitingOnUserInput"
+      ],
+      "type": "string"
+    },
+    "ThreadGoal": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "goalId": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadGoalStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timeUsedSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "goalId",
+        "objective",
+        "status",
+        "threadId",
+        "timeUsedSeconds",
+        "tokensUsed",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalPlan": {
+      "properties": {
+        "activeNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "autoExecute": {
+          "$ref": "#/definitions/ThreadGoalPlanAutoExecute"
+        },
+        "blockedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "budgetLimitedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cancelledNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/definitions/ThreadGoalPlanNode"
+          },
+          "type": "array"
+        },
+        "pausedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pendingNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "readyNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "remainingTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadGoalPlanStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "totalTimeUsedSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalTokensUsed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "usageLimitedNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activeNodeCount",
+        "autoExecute",
+        "blockedNodeCount",
+        "budgetLimitedNodeCount",
+        "cancelledNodeCount",
+        "completedNodeCount",
+        "createdAt",
+        "nodeCount",
+        "nodes",
+        "pausedNodeCount",
+        "pendingNodeCount",
+        "planId",
+        "readyNodeCount",
+        "status",
+        "threadId",
+        "totalTimeUsedSeconds",
+        "totalTokensUsed",
+        "updatedAt",
+        "usageLimitedNodeCount"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalPlanAutoExecute": {
+      "enum": [
+        "off",
+        "readyOnly",
+        "aiDirected"
+      ],
+      "type": "string"
+    },
+    "ThreadGoalPlanNode": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "priority": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "projectedGoalId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadGoalPlanNodeStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timeUsedSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "dependsOn",
+        "key",
+        "nodeId",
+        "objective",
+        "planId",
+        "priority",
+        "ready",
+        "sequence",
+        "status",
+        "threadId",
+        "timeUsedSeconds",
+        "tokensUsed",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalPlanNodeStatus": {
+      "enum": [
+        "pending",
+        "active",
+        "paused",
+        "blocked",
+        "usageLimited",
+        "budgetLimited",
+        "complete",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ThreadGoalPlanStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "blocked",
+        "budgetLimited",
+        "complete",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ThreadGoalStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "blocked",
+        "usageLimited",
+        "budgetLimited",
+        "complete",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ThreadId": {
+      "type": "string"
+    },
+    "ThreadPendingInteraction": {
+      "properties": {
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "deliveredAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "interactionId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ThreadPendingInteractionKind"
+        },
+        "noClientPolicy": {
+          "type": "string"
+        },
+        "requestPayload": true,
+        "requestPayloadPreview": {
+          "type": "string"
+        },
+        "requestPayloadSha256": {
+          "type": "string"
+        },
+        "requestRedactions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "respondedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "responsePayload": true,
+        "responsePayloadPreview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responsePayloadSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responseRedactions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sourceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceKind": {
+          "$ref": "#/definitions/ThreadPendingInteractionSourceKind"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadPendingInteractionStatus"
+        },
+        "terminalAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "timeoutAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workerRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "createdAt",
+        "interactionId",
+        "kind",
+        "noClientPolicy",
+        "requestPayload",
+        "requestPayloadPreview",
+        "requestPayloadSha256",
+        "requestRedactions",
+        "responseRedactions",
+        "sourceKind",
+        "status",
+        "threadId",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadPendingInteractionKind": {
+      "enum": [
+        "commandApproval",
+        "fileChangeApproval",
+        "userInput",
+        "mcpElicitation",
+        "permissionGrant",
+        "dynamicTool",
+        "usageLimit",
+        "profileSwitch",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionSourceKind": {
+      "enum": [
+        "thread",
+        "backgroundAgent",
+        "goal",
+        "usageProfile"
+      ],
+      "type": "string"
+    },
+    "ThreadPendingInteractionStatus": {
+      "enum": [
+        "pending",
+        "delivered",
+        "responded",
+        "expired",
+        "cancelled",
+        "denied",
+        "noLongerWaiting"
+      ],
+      "type": "string"
+    },
+    "ThreadSource": {
+      "enum": [
+        "user",
+        "subagent",
+        "memory_consolidation"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "capabilities": {
+      "$ref": "#/definitions/MissionControlCapabilities"
+    },
+    "nextPendingInteractionCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nextSessionCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pendingInteractions": {
+      "items": {
+        "$ref": "#/definitions/ThreadPendingInteraction"
+      },
+      "type": "array"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "#/definitions/MissionControlSession"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "capabilities",
+    "pendingInteractions",
+    "sessions"
+  ],
+  "title": "MissionControlOverviewResponse",
+  "type": "object"
+}

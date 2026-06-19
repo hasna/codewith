@@ -433,7 +433,7 @@ where
                 runtime.accounting_state(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-                runtime.plan_config(),
+                runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::create(
                 runtime.thread_id(),
@@ -448,7 +448,7 @@ where
                 runtime.accounting_state(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-                runtime.plan_config(),
+                runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::activate_plan_node(
                 runtime.thread_id(),
@@ -456,7 +456,7 @@ where
                 runtime.accounting_state(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-                runtime.plan_config(),
+                runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::update(
                 runtime.thread_id(),
@@ -464,6 +464,7 @@ where
                 runtime.accounting_state(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
+                runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::resume(
                 runtime.thread_id(),

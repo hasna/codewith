@@ -45,9 +45,16 @@ impl HistoryCell for StreamingPlanTailCell {
     }
 }
 /// Render a user‑friendly plan update styled like a checkbox todo list.
-pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
+pub(crate) fn new_plan_update(
+    update: UpdatePlanArgs,
+    goal_context: Option<String>,
+) -> PlanUpdateCell {
     let UpdatePlanArgs { explanation, plan } = update;
-    PlanUpdateCell { explanation, plan }
+    PlanUpdateCell {
+        explanation,
+        plan,
+        goal_context,
+    }
 }
 
 /// Create a proposed-plan cell that snapshots the session cwd for later markdown rendering.
@@ -162,6 +169,7 @@ impl HistoryCell for ProposedPlanStreamCell {
 pub(crate) struct PlanUpdateCell {
     explanation: Option<String>,
     plan: Vec<PlanItemArg>,
+    goal_context: Option<String>,
 }
 
 impl HistoryCell for PlanUpdateCell {
@@ -196,6 +204,14 @@ impl HistoryCell for PlanUpdateCell {
         lines.push(vec!["• ".dim(), "Updated Plan".bold()].into());
 
         let mut indented_lines = vec![];
+        if let Some(goal_context) = self
+            .goal_context
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            indented_lines.extend(render_note(&format!("Goal chain: {goal_context}")));
+        }
         let note = self
             .explanation
             .as_ref()
@@ -219,6 +235,14 @@ impl HistoryCell for PlanUpdateCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![Line::from("Updated Plan")];
+        if let Some(goal_context) = self
+            .goal_context
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            lines.push(Line::from(format!("Goal chain: {goal_context}")));
+        }
         if let Some(explanation) = self
             .explanation
             .as_ref()

@@ -42,6 +42,9 @@ impl ChatWidget {
             ServerNotification::ThreadGoalUpdated(notification) => {
                 self.on_thread_goal_updated(notification.goal, notification.turn_id);
             }
+            ServerNotification::ThreadGoalPlanUpdated(notification) => {
+                self.on_thread_goal_plan_updated(notification.plan);
+            }
             ServerNotification::ThreadGoalCleared(notification) => {
                 self.on_thread_goal_cleared(notification.thread_id.as_str());
             }

@@ -2,7 +2,7 @@ use crate::status::format_tokens_compact;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus;
 
-pub(crate) const GOAL_USAGE: &str = "Usage: /goal [<objective>|clear|edit|pause|resume]";
+pub(crate) const GOAL_USAGE: &str = "Usage: /goal [<objective>|cancel|clear|edit|pause|resume]";
 
 pub(crate) fn format_goal_elapsed_seconds(seconds: i64) -> String {
     let seconds = seconds.max(0) as u64;
@@ -38,6 +38,7 @@ pub(crate) fn goal_status_label(status: ThreadGoalStatus) -> &'static str {
         ThreadGoalStatus::UsageLimited => "usage limited",
         ThreadGoalStatus::BudgetLimited => "limited by budget",
         ThreadGoalStatus::Complete => "complete",
+        ThreadGoalStatus::Cancelled => "cancelled",
     }
 }
 
@@ -87,6 +88,7 @@ mod tests {
     fn test_thread_goal(token_budget: Option<i64>, tokens_used: i64) -> ThreadGoal {
         ThreadGoal {
             thread_id: "thread-1".to_string(),
+            goal_id: "goal-1".to_string(),
             objective: "Complete the task described in ../gameboy-long-running-prompt5.txt"
                 .to_string(),
             status: ThreadGoalStatus::BudgetLimited,

@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/goal_menu.rs
+expression: "render_bottom_popup(&chat, 110)"
+---
+  Map existing goal persistence and UI surfaces
+  active · 0/2 goals complete · ai-directed · 25K tokens · time 3m
+
+  Search plan goals
+› Current: Map existing goal persistence and UI surfaces · active · time … no dependencies · 12.5K tokens ·
+                                                                           time 1m
+  Implement durable dependent goal execution · pending · time 1m
+  Back to goals
+
+  Press enter to confirm or esc to go back

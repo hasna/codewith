@@ -1,4 +1,6 @@
 use super::*;
+use crate::request_processors::thread_goal_processor::api_thread_goal_from_state;
+use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -515,6 +517,17 @@ pub(super) async fn handle_thread_listener_command(
                 ))
                 .await;
         }
+        ThreadListenerCommand::EmitThreadGoalPlanUpdated { turn_id, plan } => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                    ThreadGoalPlanUpdatedNotification {
+                        thread_id: conversation_id.to_string(),
+                        turn_id,
+                        plan,
+                    },
+                ))
+                .await;
+        }
         ThreadListenerCommand::EmitThreadGoalCleared => {
             outgoing
                 .send_server_notification(ServerNotification::ThreadGoalCleared(
@@ -776,6 +789,32 @@ pub(super) async fn send_thread_goal_snapshot_notification(
             tracing::warn!(
                 thread_id = %thread_id,
                 "failed to read thread goal for resume snapshot: {err}"
+            );
+        }
+    }
+
+    match state_db
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await
+    {
+        Ok(plans) => {
+            for snapshot in plans {
+                outgoing
+                    .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                        ThreadGoalPlanUpdatedNotification {
+                            thread_id: thread_id.to_string(),
+                            turn_id: None,
+                            plan: api_thread_goal_plan_from_state(snapshot),
+                        },
+                    ))
+                    .await;
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                thread_id = %thread_id,
+                "failed to read thread goal plans for resume snapshot: {err}"
             );
         }
     }

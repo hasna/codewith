@@ -5,6 +5,7 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use std::collections::HashSet;
 
 use super::epoch_millis_to_datetime;
 
@@ -16,6 +17,7 @@ pub enum ThreadGoalStatus {
     UsageLimited,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 impl ThreadGoalStatus {
@@ -27,6 +29,7 @@ impl ThreadGoalStatus {
             Self::UsageLimited => "usage_limited",
             Self::BudgetLimited => "budget_limited",
             Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -35,7 +38,7 @@ impl ThreadGoalStatus {
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::BudgetLimited | Self::Complete)
+        matches!(self, Self::BudgetLimited | Self::Complete | Self::Cancelled)
     }
 }
 
@@ -50,6 +53,7 @@ impl TryFrom<&str> for ThreadGoalStatus {
             "usage_limited" => Ok(Self::UsageLimited),
             "budget_limited" => Ok(Self::BudgetLimited),
             "complete" => Ok(Self::Complete),
+            "cancelled" | "canceled" => Ok(Self::Cancelled),
             other => Err(anyhow!("unknown thread goal status `{other}`")),
         }
     }
@@ -75,6 +79,7 @@ pub enum ThreadGoalPlanStatus {
     Blocked,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 impl ThreadGoalPlanStatus {
@@ -85,6 +90,7 @@ impl ThreadGoalPlanStatus {
             Self::Blocked => "blocked",
             Self::BudgetLimited => "budget_limited",
             Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -99,6 +105,7 @@ impl TryFrom<&str> for ThreadGoalPlanStatus {
             "blocked" => Ok(Self::Blocked),
             "budget_limited" => Ok(Self::BudgetLimited),
             "complete" => Ok(Self::Complete),
+            "cancelled" | "canceled" => Ok(Self::Cancelled),
             other => Err(anyhow!("unknown thread goal plan status `{other}`")),
         }
     }
@@ -108,6 +115,10 @@ impl TryFrom<&str> for ThreadGoalPlanStatus {
 pub enum ThreadGoalPlanAutoExecute {
     Off,
     ReadyOnly,
+    /// Activate the highest-priority ready node without asking the model to choose.
+    ///
+    /// This continues to serialize as `ai_directed` for persisted config and DB
+    /// compatibility with earlier goal-plan experiments.
     AiDirected,
 }
 
@@ -128,7 +139,7 @@ impl TryFrom<&str> for ThreadGoalPlanAutoExecute {
         match value {
             "off" => Ok(Self::Off),
             "ready_only" => Ok(Self::ReadyOnly),
-            "ai_directed" => Ok(Self::AiDirected),
+            "ai_directed" | "priority_first" => Ok(Self::AiDirected),
             other => Err(anyhow!(
                 "unknown thread goal plan auto-execute mode `{other}`"
             )),
@@ -145,6 +156,7 @@ pub enum ThreadGoalPlanNodeStatus {
     UsageLimited,
     BudgetLimited,
     Complete,
+    Cancelled,
 }
 
 impl ThreadGoalPlanNodeStatus {
@@ -157,6 +169,7 @@ impl ThreadGoalPlanNodeStatus {
             Self::UsageLimited => "usage_limited",
             Self::BudgetLimited => "budget_limited",
             Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -173,6 +186,7 @@ impl TryFrom<&str> for ThreadGoalPlanNodeStatus {
             "usage_limited" => Ok(Self::UsageLimited),
             "budget_limited" => Ok(Self::BudgetLimited),
             "complete" => Ok(Self::Complete),
+            "cancelled" | "canceled" => Ok(Self::Cancelled),
             other => Err(anyhow!("unknown thread goal plan node status `{other}`")),
         }
     }
@@ -187,6 +201,7 @@ impl From<ThreadGoalStatus> for ThreadGoalPlanNodeStatus {
             ThreadGoalStatus::UsageLimited => Self::UsageLimited,
             ThreadGoalStatus::BudgetLimited => Self::BudgetLimited,
             ThreadGoalStatus::Complete => Self::Complete,
+            ThreadGoalStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -225,6 +240,105 @@ pub struct ThreadGoalPlanNode {
 pub struct ThreadGoalPlanSnapshot {
     pub plan: ThreadGoalPlan,
     pub nodes: Vec<ThreadGoalPlanNode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadGoalPlanUsageSummary {
+    pub node_count: i64,
+    pub completed_node_count: i64,
+    pub ready_node_count: i64,
+    pub active_node_count: i64,
+    pub pending_node_count: i64,
+    pub paused_node_count: i64,
+    pub blocked_node_count: i64,
+    pub usage_limited_node_count: i64,
+    pub budget_limited_node_count: i64,
+    pub cancelled_node_count: i64,
+    pub total_tokens_used: i64,
+    pub total_time_used_seconds: i64,
+    pub remaining_tokens: Option<i64>,
+}
+
+impl ThreadGoalPlanSnapshot {
+    pub fn usage_summary(&self) -> ThreadGoalPlanUsageSummary {
+        let mut summary = self.usage_summary_without_ready_nodes();
+        summary.ready_node_count = i64::try_from(self.ready_node_ids().len()).unwrap_or(i64::MAX);
+        summary
+    }
+
+    pub fn ready_node_ids(&self) -> Vec<String> {
+        if self.plan.status != ThreadGoalPlanStatus::Active {
+            return Vec::new();
+        }
+
+        let summary = self.usage_summary_without_ready_nodes();
+        if self
+            .plan
+            .max_tokens
+            .is_some_and(|max_tokens| summary.total_tokens_used >= max_tokens)
+        {
+            return Vec::new();
+        }
+
+        let completed_keys: HashSet<&str> = self
+            .nodes
+            .iter()
+            .filter(|node| node.status == ThreadGoalPlanNodeStatus::Complete)
+            .map(|node| node.key.as_str())
+            .collect();
+
+        self.nodes
+            .iter()
+            .filter(|node| {
+                node.status == ThreadGoalPlanNodeStatus::Pending
+                    && node
+                        .depends_on
+                        .iter()
+                        .all(|dependency| completed_keys.contains(dependency.as_str()))
+            })
+            .map(|node| node.node_id.clone())
+            .collect()
+    }
+
+    fn usage_summary_without_ready_nodes(&self) -> ThreadGoalPlanUsageSummary {
+        let mut summary = ThreadGoalPlanUsageSummary {
+            node_count: 0,
+            completed_node_count: 0,
+            ready_node_count: 0,
+            active_node_count: 0,
+            pending_node_count: 0,
+            paused_node_count: 0,
+            blocked_node_count: 0,
+            usage_limited_node_count: 0,
+            budget_limited_node_count: 0,
+            cancelled_node_count: 0,
+            total_tokens_used: 0,
+            total_time_used_seconds: 0,
+            remaining_tokens: None,
+        };
+
+        for node in &self.nodes {
+            summary.node_count += 1;
+            summary.total_tokens_used += node.tokens_used.max(0);
+            summary.total_time_used_seconds += node.time_used_seconds.max(0);
+            match node.status {
+                ThreadGoalPlanNodeStatus::Pending => summary.pending_node_count += 1,
+                ThreadGoalPlanNodeStatus::Active => summary.active_node_count += 1,
+                ThreadGoalPlanNodeStatus::Paused => summary.paused_node_count += 1,
+                ThreadGoalPlanNodeStatus::Blocked => summary.blocked_node_count += 1,
+                ThreadGoalPlanNodeStatus::UsageLimited => summary.usage_limited_node_count += 1,
+                ThreadGoalPlanNodeStatus::BudgetLimited => summary.budget_limited_node_count += 1,
+                ThreadGoalPlanNodeStatus::Complete => summary.completed_node_count += 1,
+                ThreadGoalPlanNodeStatus::Cancelled => summary.cancelled_node_count += 1,
+            }
+        }
+
+        summary.remaining_tokens = self
+            .plan
+            .max_tokens
+            .map(|max_tokens| max_tokens.saturating_sub(summary.total_tokens_used).max(0));
+        summary
+    }
 }
 
 pub(crate) struct ThreadGoalRow {

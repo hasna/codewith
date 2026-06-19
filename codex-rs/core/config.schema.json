@@ -317,12 +317,42 @@
         }
       ]
     },
+    "AuthProfileAutoSwitchStrategyToml": {
+      "oneOf": [
+        {
+          "description": "Prefer the profile with the most remaining enabled Codewith limit.",
+          "enum": [
+            "highest_available"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Preserve configured order and rotate to the next available profile.",
+          "enum": [
+            "ordered"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "AuthProfileAutoSwitchToml": {
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "description": "Enables runtime switching to another auth profile when selected rate limit windows are fully exhausted.",
           "type": "boolean"
+        },
+        "heartbeat_freshness_secs": {
+          "description": "Maximum age in seconds for usage data to guide profile selection.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "heartbeat_interval_secs": {
+          "description": "Seconds between background usage heartbeat checks.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "on_5h_limit": {
           "description": "Switch when the 5h Codewith window reaches 100%.",
@@ -339,6 +369,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "strategy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthProfileAutoSwitchStrategyToml"
+            }
+          ],
+          "description": "Strategy used to choose the next profile."
         }
       },
       "type": "object"
@@ -538,6 +576,9 @@
             "local_thread_store_compression": {
               "type": "boolean"
             },
+            "mailbox_dispatcher": {
+              "type": "boolean"
+            },
             "memories": {
               "type": "boolean"
             },
@@ -686,6 +727,9 @@
               "type": "boolean"
             },
             "web_search_request": {
+              "type": "boolean"
+            },
+            "workflows": {
               "type": "boolean"
             },
             "workspace_dependencies": {
@@ -4370,6 +4414,46 @@
         }
       ]
     },
+    "UsageSelfHealToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enables automatic retry for recoverable usage and transient availability errors.",
+          "type": "boolean"
+        },
+        "initial_backoff_secs": {
+          "description": "Initial retry delay in seconds for transient errors or usage errors without reset metadata.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_backoff_secs": {
+          "description": "Maximum retry delay in seconds for exponential backoff.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_reset_retry_delay_secs": {
+          "description": "Longest reset-based delay, in seconds, that Codewith will schedule automatically.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_retries": {
+          "description": "Maximum automatic retry attempts per failing turn.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reset_retry_buffer_secs": {
+          "description": "Extra seconds to wait after a usage-limit reset timestamp before retrying.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Verbosity": {
       "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
       "enum": [
@@ -4471,6 +4555,74 @@
       ]
     },
     "WorkspaceRootsToml": {
+      "type": "object"
+    },
+    "WorktreeCleanupToml": {
+      "enum": [
+        "retain",
+        "delete-if-clean",
+        "force-delete"
+      ],
+      "type": "string"
+    },
+    "WorktreeSessionConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeSessionModeToml"
+            }
+          ],
+          "description": "Controls whether this session class can use managed worktrees."
+        }
+      },
+      "type": "object"
+    },
+    "WorktreeSessionModeToml": {
+      "enum": [
+        "off",
+        "manual",
+        "auto"
+      ],
+      "type": "string"
+    },
+    "WorktreesConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "cleanup_default": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeCleanupToml"
+            }
+          ],
+          "description": "Default cleanup policy when a managed worktree is released."
+        },
+        "enabled": {
+          "description": "Global managed-worktree gate. When false, creation/attach actions should be unavailable.",
+          "type": "boolean"
+        },
+        "main_sessions": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeSessionConfigToml"
+            }
+          ],
+          "description": "Policy for ordinary interactive sessions."
+        },
+        "root": {
+          "description": "Optional root directory for Codewith-owned managed worktrees.",
+          "type": "string"
+        },
+        "sub_sessions": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeSessionConfigToml"
+            }
+          ],
+          "description": "Policy for subagent and background-agent sessions."
+        }
+      },
       "type": "object"
     }
   },
@@ -4764,6 +4916,9 @@
         "local_thread_store_compression": {
           "type": "boolean"
         },
+        "mailbox_dispatcher": {
+          "type": "boolean"
+        },
         "memories": {
           "type": "boolean"
         },
@@ -4912,6 +5067,9 @@
           "type": "boolean"
         },
         "web_search_request": {
+          "type": "boolean"
+        },
+        "workflows": {
           "type": "boolean"
         },
         "workspace_dependencies": {
@@ -5355,6 +5513,15 @@
       ],
       "description": "Collection of settings that are specific to the TUI."
     },
+    "usage_self_heal": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UsageSelfHealToml"
+        }
+      ],
+      "default": null,
+      "description": "Automatic retry behavior for recoverable usage-limit and availability failures."
+    },
     "web_search": {
       "allOf": [
         {
@@ -5371,6 +5538,15 @@
       ],
       "default": null,
       "description": "Windows-specific configuration."
+    },
+    "worktrees": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WorktreesConfigToml"
+        }
+      ],
+      "default": null,
+      "description": "Managed worktree defaults and session-class gates."
     }
   },
   "title": "ConfigToml",

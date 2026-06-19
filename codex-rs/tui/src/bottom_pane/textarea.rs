@@ -1954,11 +1954,12 @@ impl StatefulWidgetRef for &TextArea {
 }
 
 impl TextArea {
-    pub(crate) fn render_ref_masked(
+    pub(crate) fn render_ref_masked_styled(
         &self,
         area: Rect,
         buf: &mut Buffer,
         state: &mut TextAreaState,
+        base_style: Style,
         mask_char: char,
     ) {
         let lines = self.wrapped_lines(area.width);
@@ -1967,7 +1968,7 @@ impl TextArea {
 
         let start = scroll as usize;
         let end = (scroll + area.height).min(lines.len() as u16) as usize;
-        self.render_lines_masked(area, buf, &lines, start..end, mask_char);
+        self.render_lines_masked(area, buf, &lines, start..end, base_style, mask_char);
     }
 
     /// Render the textarea with `base_style` plus additional render-only highlight ranges.
@@ -2032,7 +2033,7 @@ impl TextArea {
                 }
                 let highlighted = &self.text[overlap_start..overlap_end];
                 let x_off = self.text[line_range.start..overlap_start].width() as u16;
-                buf.set_string(area.x + x_off, y, highlighted, *style);
+                buf.set_string(area.x + x_off, y, highlighted, base_style.patch(*style));
             }
         }
     }
@@ -2043,6 +2044,7 @@ impl TextArea {
         buf: &mut Buffer,
         lines: &[Range<usize>],
         range: std::ops::Range<usize>,
+        base_style: Style,
         mask_char: char,
     ) {
         for (row, idx) in range.enumerate() {
@@ -2053,7 +2055,8 @@ impl TextArea {
                 .chars()
                 .map(|_| mask_char)
                 .collect::<String>();
-            buf.set_string(area.x, y, &masked, Style::default());
+            buf.set_style(Rect::new(area.x, y, area.width, 1), base_style);
+            buf.set_string(area.x, y, &masked, base_style);
         }
     }
 }
@@ -3497,6 +3500,43 @@ mod tests {
                 .add_modifier
                 .contains(ratatui::style::Modifier::REVERSED)
         );
+    }
+
+    #[test]
+    fn styled_highlights_preserve_base_background() {
+        let t = ta_with("hello world");
+        let area = Rect::new(0, 0, 20, 1);
+        let mut state = TextAreaState::default();
+        let mut buf = Buffer::empty(area);
+        let base_style = Style::default().bg(ratatui::style::Color::Blue);
+        let highlight_style = Style::default().fg(ratatui::style::Color::Magenta);
+
+        t.render_ref_styled_with_highlights(
+            area,
+            &mut buf,
+            &mut state,
+            base_style,
+            &[(6..11, highlight_style)],
+        );
+
+        assert_eq!(buf[(0, 0)].style().bg, Some(ratatui::style::Color::Blue));
+        assert_eq!(buf[(6, 0)].style().bg, Some(ratatui::style::Color::Blue));
+        assert_eq!(buf[(6, 0)].style().fg, Some(ratatui::style::Color::Magenta));
+    }
+
+    #[test]
+    fn styled_masked_render_preserves_base_background() {
+        let t = ta_with("secret");
+        let area = Rect::new(0, 0, 20, 1);
+        let mut state = TextAreaState::default();
+        let mut buf = Buffer::empty(area);
+        let base_style = Style::default().bg(ratatui::style::Color::Blue);
+
+        t.render_ref_masked_styled(area, &mut buf, &mut state, base_style, '*');
+
+        assert_eq!(buf[(0, 0)].symbol(), "*");
+        assert_eq!(buf[(0, 0)].style().bg, Some(ratatui::style::Color::Blue));
+        assert_eq!(buf[(6, 0)].style().bg, Some(ratatui::style::Color::Blue));
     }
 
     #[test]

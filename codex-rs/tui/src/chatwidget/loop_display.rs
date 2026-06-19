@@ -482,8 +482,7 @@ fn thread_schedule_manager_params(
             })];
             items.push(SelectionItem {
                 name: loop_manager_row_name(&schedule),
-                description: Some(loop_manager_row_description(&schedule)),
-                selected_description: Some(loop_schedule_detail(&schedule)),
+                selected_description: Some(loop_manager_row_description(&schedule)),
                 actions,
                 dismiss_on_select: true,
                 search_value: Some(loop_schedule_search_value(&schedule)),
@@ -662,23 +661,19 @@ pub(crate) fn loop_schedule_summary(schedule: &ThreadSchedule) -> String {
 }
 
 fn loop_manager_row_name(schedule: &ThreadSchedule) -> String {
-    format!(
-        "{}  {}",
-        thread_schedule_status_label(schedule.status),
-        thread_schedule_spec_label(&schedule.schedule)
-    )
+    loop_detail_join(vec![
+        thread_schedule_status_label(schedule.status).to_string(),
+        thread_schedule_spec_label(&schedule.schedule),
+    ])
 }
 
 fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
-    let next = schedule
-        .next_run_at
-        .map(format_schedule_timestamp)
-        .unwrap_or_else(|| "not scheduled".to_string());
     let prompt = truncate_text(&schedule.prompt, /*max_graphemes*/ 72);
     let mut parts = vec![
         format!("id {}", schedule.schedule_id),
-        format!("next {next}"),
+        format!("next {}", schedule_next_label(schedule)),
         format!("prompt {prompt}"),
+        format!("tz {}", schedule.timezone),
     ];
     if let Some(lease_expires_at) = schedule.lease_expires_at {
         parts.push(format!(
@@ -695,17 +690,14 @@ fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
             pluralize_with_amount(schedule.failure_count, "failure")
         ));
     }
-    parts.join(" | ")
+    parts.push("Press Enter to manage.".to_string());
+    loop_detail_join(parts)
 }
 
 fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
-    let next = schedule
-        .next_run_at
-        .map(format_schedule_timestamp)
-        .unwrap_or_else(|| "not scheduled".to_string());
     let mut parts = vec![thread_schedule_status_label(schedule.status).to_string()];
     parts.push(thread_schedule_spec_label(&schedule.schedule));
-    parts.push(format!("next {next}"));
+    parts.push(format!("next {}", schedule_next_label(schedule)));
     if let Some(lease_expires_at) = schedule.lease_expires_at {
         parts.push(format!(
             "running until {}",
@@ -725,7 +717,22 @@ fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
             pluralize_with_amount(schedule.failure_count, "failure")
         ));
     }
-    parts.join(" | ")
+    loop_detail_join(parts)
+}
+
+fn schedule_next_label(schedule: &ThreadSchedule) -> String {
+    schedule
+        .next_run_at
+        .map(format_schedule_timestamp)
+        .unwrap_or_else(|| "not scheduled".to_string())
+}
+
+fn loop_detail_join(parts: Vec<String>) -> String {
+    parts
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn loop_schedule_search_value(schedule: &ThreadSchedule) -> String {
@@ -1125,9 +1132,9 @@ mod tests {
         assert_eq!(
             item_names,
             vec![
-                "active  every 5 minutes".to_string(),
-                "paused  every 5 minutes".to_string(),
-                "expired  every 5 minutes".to_string(),
+                "active · every 5 minutes".to_string(),
+                "paused · every 5 minutes".to_string(),
+                "expired · every 5 minutes".to_string(),
             ]
         );
     }

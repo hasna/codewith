@@ -149,10 +149,14 @@ impl ChatWidget {
             if !enabled {
                 self.current_goal_status_indicator = None;
                 self.current_goal_status = None;
+                self.current_goal_plan = None;
                 self.turn_lifecycle.goal_status_active_turn_started_at = None;
                 self.turn_lifecycle.budget_limited_turn_ids.clear();
                 self.update_collaboration_mode_indicator();
             }
+        }
+        if feature == Feature::Workflows {
+            self.sync_workflow_command_enabled();
         }
         if feature == Feature::ScheduledTasks {
             self.sync_scheduled_tasks_command_enabled();
@@ -466,6 +470,11 @@ impl ChatWidget {
     pub(super) fn sync_goal_command_enabled(&mut self) {
         self.bottom_pane
             .set_goal_command_enabled(self.config.features.enabled(Feature::Goals));
+    }
+
+    pub(super) fn sync_workflow_command_enabled(&mut self) {
+        self.bottom_pane
+            .set_workflow_command_enabled(self.config.features.enabled(Feature::Workflows));
     }
 
     pub(super) fn sync_scheduled_tasks_command_enabled(&mut self) {
@@ -847,8 +856,62 @@ impl ChatWidget {
         {
             self.turn_lifecycle.mark_budget_limited(turn_id);
         }
-        self.current_goal_status = Some(GoalStatusState::new(goal, Instant::now()));
+        let now = Instant::now();
+        self.current_goal_status = Some(GoalStatusState::updated(
+            self.current_goal_status.as_ref(),
+            goal,
+            now,
+            self.turn_lifecycle.goal_status_active_turn_started_at,
+        ));
         self.update_collaboration_mode_indicator();
+    }
+
+    pub(crate) fn on_thread_goal_plan_updated(&mut self, plan: AppThreadGoalPlan) {
+        if let Some(active_thread_id) = self.thread_id
+            && active_thread_id.to_string() != plan.thread_id
+        {
+            return;
+        }
+        if !self.config.features.enabled(Feature::Goals) {
+            self.current_goal_plan = None;
+            return;
+        }
+        self.current_goal_plan = Some(plan);
+    }
+
+    pub(super) fn current_goal_plan_progress_summary(&self) -> Option<String> {
+        let plan = self.current_goal_plan.as_ref()?;
+        let mut parts = vec![
+            format!(
+                "{}/{} goals complete",
+                plan.completed_node_count, plan.node_count
+            ),
+            format!(
+                "{} tokens",
+                crate::status::format_tokens_compact(plan.total_tokens_used)
+            ),
+        ];
+        if plan.total_time_used_seconds > 0 {
+            parts.push(crate::goal_display::format_goal_elapsed_seconds(
+                plan.total_time_used_seconds,
+            ));
+        }
+        if let Some(max_tokens) = plan.max_tokens {
+            let remaining = plan.remaining_tokens.unwrap_or(0);
+            parts.push(format!(
+                "{} remaining of {}",
+                crate::status::format_tokens_compact(remaining),
+                crate::status::format_tokens_compact(max_tokens)
+            ));
+        }
+        if let Some(active_node) = plan
+            .nodes
+            .iter()
+            .find(|node| node.status == codex_app_server_protocol::ThreadGoalPlanNodeStatus::Active)
+        {
+            parts.push(format!("active {}", active_node.key));
+        }
+        Some(parts.join(" | "))
     }
 
     pub(crate) fn set_collaboration_mask_from_user_action(&mut self, mask: CollaborationModeMask) {

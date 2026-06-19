@@ -22,6 +22,7 @@ use crate::BackgroundAgentStatusSnapshot;
 use crate::BackgroundAgentStatusSnapshotParams;
 use crate::BackgroundAgentThreadBindingParams;
 use crate::BackgroundAgentWorkspaceCleanup;
+use crate::BackgroundAgentWorkspaceMode;
 use crate::BackgroundAgentWorktreeLease;
 use crate::BackgroundAgentWorktreeLeaseCreateParams;
 use crate::GOALS_DB_FILENAME;
@@ -30,6 +31,17 @@ use crate::LogEntry;
 use crate::LogQuery;
 use crate::LogRow;
 use crate::MEMORIES_DB_FILENAME;
+use crate::ManagedWorktreeCleanupPolicy;
+use crate::ManagedWorktreeLifecycleStatus;
+use crate::ManagedWorktreeOwnerKind;
+use crate::PendingInteraction;
+use crate::PendingInteractionCreateParams;
+use crate::PendingInteractionEvent;
+use crate::PendingInteractionEventKind;
+use crate::PendingInteractionKind;
+use crate::PendingInteractionRespondParams;
+use crate::PendingInteractionSourceKind;
+use crate::PendingInteractionStatus;
 use crate::STATE_DB_FILENAME;
 use crate::SortKey;
 use crate::ThreadMetadata;
@@ -47,6 +59,8 @@ use crate::model::BackgroundAgentPendingInteractionRow;
 use crate::model::BackgroundAgentRunRow;
 use crate::model::BackgroundAgentStatusSnapshotRow;
 use crate::model::BackgroundAgentWorktreeLeaseRow;
+use crate::model::PendingInteractionEventRow;
+use crate::model::PendingInteractionRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -88,13 +102,22 @@ mod background_agents;
 mod goal_plans;
 mod goals;
 mod logs;
+mod machine_registry;
+mod mailbox;
+mod managed_worktrees;
 mod memories;
 mod monitors;
+mod pending_interactions;
 mod remote_control;
 mod schedules;
 #[cfg(test)]
 mod test_support;
 mod threads;
+mod workflow_automation;
+mod workflow_goal_plan_projections;
+mod workflow_orchestrator;
+mod workflow_verifiers;
+mod workflows;
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
@@ -106,17 +129,84 @@ pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
+pub use machine_registry::DEFAULT_MACHINE_REGISTRY_LIST_LIMIT;
+pub use machine_registry::MAX_MACHINE_REGISTRY_LIST_LIMIT;
+pub use machine_registry::MachineEndpointUpsertParams;
+pub use machine_registry::MachineRegistryListPage;
+pub use machine_registry::MachineRegistryListParams;
+pub use machine_registry::MachineRegistryStore;
+pub use machine_registry::MachineRegistryUpsertParams;
+pub use mailbox::DEFAULT_MAILBOX_MESSAGE_LIST_LIMIT;
+pub use mailbox::MAX_MAILBOX_MESSAGE_LIST_LIMIT;
+pub use mailbox::MailboxAckParams;
+pub use mailbox::MailboxClaim;
+pub use mailbox::MailboxClaimParams;
+pub use mailbox::MailboxDispatchClaimParams;
+pub use mailbox::MailboxEnqueueOutcome;
+pub use mailbox::MailboxEnqueueParams;
+pub use mailbox::MailboxFailDisposition;
+pub use mailbox::MailboxFailParams;
+pub use mailbox::MailboxMessagePage;
+pub use mailbox::MailboxMessageStore;
+pub use mailbox::MailboxMessageStoreListParams;
+pub use managed_worktrees::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT;
+pub use managed_worktrees::MAX_MANAGED_WORKTREE_LIST_LIMIT;
+pub use managed_worktrees::ManagedWorktreeAssignmentTarget;
+pub use managed_worktrees::ManagedWorktreeAttachParams;
+pub use managed_worktrees::ManagedWorktreeCleanupFailureParams;
+pub use managed_worktrees::ManagedWorktreeCreateParams;
+pub use managed_worktrees::ManagedWorktreeDetachParams;
+pub use managed_worktrees::ManagedWorktreeListPage;
+pub use managed_worktrees::ManagedWorktreeMergeCandidateRecordParams;
+pub use managed_worktrees::ManagedWorktreeStore;
 pub use memories::MemoryStore;
 pub use monitors::MonitorStore;
 pub use monitors::ThreadMonitorCreateParams;
 pub use monitors::ThreadMonitorEventCreateParams;
 pub use monitors::ThreadMonitorUpdate;
+pub use pending_interactions::DEFAULT_PENDING_INTERACTION_LIST_LIMIT;
+pub use pending_interactions::MAX_PENDING_INTERACTION_LIST_LIMIT;
+pub use pending_interactions::PendingInteractionListParams;
+pub use pending_interactions::PendingInteractionPage;
+pub use pending_interactions::PendingInteractionRespondForSourceParams;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
+pub use workflow_automation::WorkflowAutomationStore;
+pub use workflow_automation::WorkflowMonitorObservationOutcome;
+pub use workflow_automation::WorkflowMonitorObservationParams;
+pub use workflow_automation::WorkflowTimerClaim;
+pub use workflow_automation::WorkflowTimerClaimParams;
+pub use workflow_automation::WorkflowTimerFireCompleteOutcome;
+pub use workflow_automation::WorkflowTimerFireCompleteParams;
+pub use workflow_goal_plan_projections::WorkflowGoalPlanProjectionOutcome;
+pub use workflow_goal_plan_projections::WorkflowGoalPlanProjectionParams;
+pub use workflow_orchestrator::WorkflowRunAdvanceOutcome;
+pub use workflow_orchestrator::WorkflowRunAdvanceParams;
+pub use workflow_orchestrator::WorkflowRunBranchAdmission;
+pub use workflow_orchestrator::WorkflowRunBranchAdmissionOutcome;
+pub use workflow_orchestrator::WorkflowRunBranchAdmissionParams;
+pub use workflow_orchestrator::WorkflowRunBranchReconcileOutcome;
+pub use workflow_orchestrator::WorkflowRunBranchReconcileParams;
+pub use workflow_orchestrator::WorkflowRunClaimOutcome;
+pub use workflow_orchestrator::WorkflowRunClaimParams;
+pub use workflow_verifiers::WorkflowRunVerifierClaimOutcome;
+pub use workflow_verifiers::WorkflowRunVerifierClaimParams;
+pub use workflow_verifiers::WorkflowRunVerifierClaimSelection;
+pub use workflow_verifiers::WorkflowRunVerifierOutcomeStatus;
+pub use workflow_verifiers::WorkflowRunVerifierRecordResultOutcome;
+pub use workflow_verifiers::WorkflowRunVerifierRecordResultParams;
+pub use workflow_verifiers::WorkflowRunVerifierResultSummary;
+pub use workflows::DEFAULT_THREAD_WORKFLOW_LIST_LIMIT;
+pub use workflows::MAX_THREAD_WORKFLOW_LIST_LIMIT;
+pub use workflows::WorkflowRunCancelParams;
+pub use workflows::WorkflowRunCreateParams;
+pub use workflows::WorkflowSpecCreateParams;
+pub use workflows::WorkflowSpecListPage;
+pub use workflows::WorkflowStore;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
@@ -191,6 +281,11 @@ pub struct StateRuntime {
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
+    machine_registry: MachineRegistryStore,
+    mailbox_messages: MailboxMessageStore,
+    managed_worktrees: ManagedWorktreeStore,
+    workflows: WorkflowStore,
+    workflow_automation: WorkflowAutomationStore,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
@@ -301,6 +396,11 @@ impl StateRuntime {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
+            machine_registry: MachineRegistryStore::new(Arc::clone(&pool)),
+            mailbox_messages: MailboxMessageStore::new(Arc::clone(&pool)),
+            managed_worktrees: ManagedWorktreeStore::new(Arc::clone(&pool)),
+            workflows: WorkflowStore::new(Arc::clone(&pool)),
+            workflow_automation: WorkflowAutomationStore::new(Arc::clone(&pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -332,6 +432,26 @@ impl StateRuntime {
 
     pub fn thread_monitors(&self) -> &MonitorStore {
         &self.thread_monitors
+    }
+
+    pub fn machine_registry(&self) -> &MachineRegistryStore {
+        &self.machine_registry
+    }
+
+    pub fn mailbox_messages(&self) -> &MailboxMessageStore {
+        &self.mailbox_messages
+    }
+
+    pub fn managed_worktrees(&self) -> &ManagedWorktreeStore {
+        &self.managed_worktrees
+    }
+
+    pub fn workflows(&self) -> &WorkflowStore {
+        &self.workflows
+    }
+
+    pub fn workflow_automation(&self) -> &WorkflowAutomationStore {
+        &self.workflow_automation
     }
 
     pub fn memories(&self) -> &MemoryStore {
@@ -517,18 +637,25 @@ pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> 
 #[cfg(test)]
 mod tests {
     use super::StateRuntime;
+    use super::goals_db_path;
     use super::open_state_sqlite;
+    use super::runtime_goals_migrator;
     use super::runtime_state_migrator;
     use super::sqlite_integrity_check;
     use super::state_db_path;
+    use super::test_support::test_thread_metadata;
     use super::test_support::unique_temp_dir;
     use crate::DB_INIT_METRIC;
     use crate::DbTelemetry;
+    use crate::migrations::GOALS_MIGRATOR;
     use crate::migrations::STATE_MIGRATOR;
+    use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
+    use std::borrow::Cow;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -593,6 +720,23 @@ mod tests {
         )
         .await
         .expect("open sqlite pool")
+    }
+
+    fn migrator_through(base: &Migrator, version: i64) -> Migrator {
+        Migrator {
+            migrations: Cow::Owned(
+                base.migrations
+                    .iter()
+                    .filter(|migration| migration.version <= version)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+            table_name: base.table_name.clone(),
+            create_schemas: base.create_schemas.clone(),
+        }
     }
 
     #[tokio::test]
@@ -671,6 +815,390 @@ mod tests {
         .await
         .expect("runtime migrator should tolerate newer applied migrations");
         tolerant_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn managed_worktree_migration_releases_dirty_shared_repo_cleanup_row() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        let through_background_agent_worktrees = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version <= 39)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
+        };
+        through_background_agent_worktrees
+            .run(&pool)
+            .await
+            .expect("apply legacy background agent worktree schema");
+        sqlx::query(
+            r#"
+INSERT INTO background_agent_runs (
+    id,
+    source,
+    prompt_snapshot_ref,
+    thread_store_kind,
+    desired_state,
+    status,
+    created_at,
+    updated_at
+) VALUES ('legacy-run', 'test', 'prompt', 'background-agent', 'running', 'running', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy background run should insert");
+        sqlx::query(
+            r#"
+INSERT INTO background_agent_worktree_leases (
+    id,
+    run_id,
+    identity,
+    mode,
+    base_repo_path,
+    worktree_path,
+    status_snapshot_json,
+    dirty,
+    cleanup_after,
+    created_at,
+    updated_at,
+    released_at,
+    deleted_at
+) VALUES
+    ('active-shared', 'legacy-run', 'active-shared', 'shared_repository', '/repo', '/repo', '{}', 0, NULL, 1, 1, NULL, NULL),
+    ('dirty-cleanup', 'legacy-run', 'dirty-cleanup', 'shared_repository', '/repo', '/repo', '{}', 1, 3, 1, 2, 2, NULL),
+    ('isolated-cleanup', 'legacy-run', 'isolated-cleanup', 'isolated_worktree', '/repo', '/repo/.codewith/worktrees/isolated-cleanup', '{}', 1, 3, 1, 2, 2, NULL)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy worktree rows should insert");
+        pool.close().await;
+
+        let current_pool = open_state_sqlite(
+            state_path.as_path(),
+            &runtime_state_migrator(),
+            /*telemetry_override*/ None,
+        )
+        .await
+        .expect("current migration should accept legacy cleanup row");
+        let statuses: Vec<String> = sqlx::query_scalar(
+            "SELECT lifecycle_status FROM managed_worktrees ORDER BY worktree_id",
+        )
+        .fetch_all(&current_pool)
+        .await
+        .expect("managed worktree statuses should query");
+        assert_eq!(
+            vec![
+                "active".to_string(),
+                "released".to_string(),
+                "cleanup_pending".to_string()
+            ],
+            statuses
+        );
+        current_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn workflow_automation_migration_upgrades_pre_0045_state_db() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        migrator_through(&STATE_MIGRATOR, 44)
+            .run(&pool)
+            .await
+            .expect("apply pre-automation workflow schema");
+        pool.close().await;
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let spec = runtime
+            .workflows()
+            .save_workflow_spec_yaml(crate::WorkflowSpecCreateParams {
+                source_thread_id: None,
+                source_yaml: codex_prompts::DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save after migration");
+        let run = runtime
+            .workflows()
+            .create_workflow_run(crate::WorkflowRunCreateParams {
+                workflow_record_id: spec.workflow_record_id,
+                source_thread_id: None,
+                idempotency_key: Some("automation-migration-run".to_string()),
+            })
+            .await
+            .expect("workflow run should create after migration");
+
+        assert_eq!(
+            1,
+            run.run.loops_json.as_ref().unwrap()["data"]
+                .as_array()
+                .unwrap()
+                .len()
+        );
+        assert_eq!(
+            1,
+            run.run.monitor_links_json.as_ref().unwrap()["data"]
+                .as_array()
+                .unwrap()
+                .len()
+        );
+        let timer_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE run_id = ?")
+                .bind(run.run.run_id.as_str())
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("timer count should query");
+        assert_eq!(1, timer_count);
+        let monitor_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workflow_run_monitor_links WHERE run_id = ?")
+                .bind(run.run.run_id.as_str())
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("monitor count should query");
+        assert_eq!(1, monitor_count);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn workflow_goal_plan_projection_migration_upgrades_pre_0003_goals_db() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let goals_path = goals_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&goals_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open goals db");
+        migrator_through(&GOALS_MIGRATOR, 2)
+            .run(&pool)
+            .await
+            .expect("apply pre-projection goals schema");
+        pool.close().await;
+
+        let current_pool = super::open_goals_sqlite(
+            goals_path.as_path(),
+            &runtime_goals_migrator(),
+            /*telemetry_override*/ None,
+        )
+        .await
+        .expect("current goals migration should apply");
+        current_pool.close().await;
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000003").expect("valid thread id");
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                runtime.codex_home(),
+                thread_id,
+                runtime.codex_home().join("workspace"),
+            ))
+            .await
+            .expect("thread should upsert");
+        let spec = runtime
+            .workflows()
+            .save_workflow_spec_yaml(crate::WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: codex_prompts::DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save");
+        let run = runtime
+            .workflows()
+            .create_workflow_run(crate::WorkflowRunCreateParams {
+                workflow_record_id: spec.workflow_record_id,
+                source_thread_id: Some(thread_id),
+                idempotency_key: Some("projection-migration-run".to_string()),
+            })
+            .await
+            .expect("workflow run should create");
+        let projection = runtime
+            .project_workflow_run_to_goal_plan(crate::WorkflowGoalPlanProjectionParams {
+                workflow_run_id: run.run.run_id.clone(),
+                thread_id,
+                idempotency_key: Some("projection-migration".to_string()),
+            })
+            .await
+            .expect("workflow projection should run")
+            .expect("workflow should project");
+
+        assert_eq!(run.run.run_id, projection.run_id);
+        assert_eq!(thread_id, projection.thread_id);
+        assert_eq!(run.steps.len(), projection.snapshot.nodes.len());
+        let goals_query_pool = open_db_pool(goals_path.as_path()).await;
+        let projection_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workflow_goal_plan_projections")
+                .fetch_one(&goals_query_pool)
+                .await
+                .expect("projection count should query");
+        assert_eq!(1, projection_count);
+        let node_projection_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workflow_goal_plan_node_projections")
+                .fetch_one(&goals_query_pool)
+                .await
+                .expect("node projection count should query");
+        assert_eq!(
+            projection.snapshot.nodes.len() as i64,
+            node_projection_count
+        );
+        goals_query_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn thread_goal_cancellation_migration_upgrades_pre_0004_goals_db() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let goals_path = goals_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&goals_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open goals db");
+        migrator_through(&GOALS_MIGRATOR, 3)
+            .run(&pool)
+            .await
+            .expect("apply pre-cancellation goals schema");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goals (
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('thread-1', 'goal-1', 'Cancel this goal.', 'active', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy goal should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('plan-1', 'thread-1', 'active', 'ready_only', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('node-1', 'plan-1', 'thread-1', 'cancel', 0, 0, 'Cancel this plan node.', 'active', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan node should insert");
+        pool.close().await;
+
+        let current_pool = super::open_goals_sqlite(
+            goals_path.as_path(),
+            &runtime_goals_migrator(),
+            /*telemetry_override*/ None,
+        )
+        .await
+        .expect("current goals migration should apply");
+        sqlx::query("UPDATE thread_goals SET status = 'cancelled'")
+            .execute(&current_pool)
+            .await
+            .expect("goal cancellation status should be accepted");
+        sqlx::query("UPDATE thread_goal_plans SET status = 'cancelled'")
+            .execute(&current_pool)
+            .await
+            .expect("plan cancellation status should be accepted");
+        sqlx::query("UPDATE thread_goal_plan_nodes SET status = 'cancelled'")
+            .execute(&current_pool)
+            .await
+            .expect("plan node cancellation status should be accepted");
+        let statuses: (String, String, String) = sqlx::query_as(
+            r#"
+SELECT
+    goal.status,
+    plan.status,
+    node.status
+FROM thread_goals goal
+JOIN thread_goal_plans plan ON plan.thread_id = goal.thread_id
+JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
+            "#,
+        )
+        .fetch_one(&current_pool)
+        .await
+        .expect("cancelled statuses should query");
+        assert_eq!(
+            (
+                "cancelled".to_string(),
+                "cancelled".to_string(),
+                "cancelled".to_string()
+            ),
+            statuses
+        );
+        current_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

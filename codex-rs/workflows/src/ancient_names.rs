@@ -1,0 +1,73 @@
+pub(crate) fn is_ancient_display_name(display_name: &str) -> bool {
+    let Some((role, name)) = display_name.rsplit_once('-') else {
+        return false;
+    };
+    if role.trim().is_empty() || name.trim().is_empty() {
+        return false;
+    }
+    let normalized = name.trim().to_ascii_lowercase();
+    ANCIENT_NAMES.binary_search(&normalized.as_str()).is_ok()
+}
+
+const ANCIENT_NAMES: &[&str] = &[
+    "aeschylus",
+    "agrippa",
+    "alexander",
+    "anaxagoras",
+    "anaximander",
+    "apollonius",
+    "archimedes",
+    "aristarchus",
+    "aristotle",
+    "aryabhata",
+    "augustus",
+    "aurelius",
+    "boethius",
+    "caesar",
+    "cato",
+    "cicero",
+    "claudius",
+    "cleopatra",
+    "confucius",
+    "democritus",
+    "diophantus",
+    "eratosthenes",
+    "euclid",
+    "eudoxus",
+    "galen",
+    "hammurabi",
+    "hero",
+    "hipparchus",
+    "hippocrates",
+    "hypatia",
+    "julius",
+    "lucretius",
+    "marcus aurelius",
+    "menelaus",
+    "nero",
+    "nicomachus",
+    "ovid",
+    "pappus",
+    "parmenides",
+    "phidias",
+    "plato",
+    "pliny",
+    "plotinus",
+    "plutarch",
+    "ptolemy",
+    "pythagoras",
+    "quintilian",
+    "seneca",
+    "socrates",
+    "solon",
+    "sophocles",
+    "strabo",
+    "tacitus",
+    "themistocles",
+    "theophrastus",
+    "thucydides",
+    "varro",
+    "virgil",
+    "vitruvius",
+    "zeno",
+];

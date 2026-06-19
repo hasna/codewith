@@ -136,7 +136,8 @@ Example with notification opt-out:
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. Experimental clients can read `runtimeWorkspaceRoots` for the thread-scoped runtime roots and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known.
 - `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Subagent threads also include `parentThreadId` when the immediate control/spawn parent is known.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
-- `activeSession/list` and `activeSession/send` — list currently loaded message-capable sessions and send a message to a loaded target. Delivery is active-only: an unloaded target returns `status: "notLoaded"` and app-server does not resume the thread or store an offline message.
+- `localSession/list` — experimental; page through local persisted sessions and overlay live runtime metadata when a session is currently loaded. This is a read-only inventory surface: it does not resume unloaded sessions, send messages, or create offline mailbox entries. Live routing details are present only in the nullable `peer` object; unloaded records keep `runtimeSessionId: null` and `peer: null`.
+- `activeSession/list` and `activeSession/send` — list currently loaded message-capable sessions and send a message to a loaded target. Delivery is active-only: an unloaded target returns `status: "notLoaded"` and app-server does not resume the thread or store an offline message. An active peer owned by a bridge adapter the app-server cannot deliver through yet returns `status: "unsupported"`.
 - `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/turns/items/list` — experimental; reserved for paging full items for one turn. The API shape is present, but app-server currently returns an unsupported-method JSON-RPC error.
@@ -146,10 +147,17 @@ Example with notification opt-out:
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
-- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
+- `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal and refreshed plan snapshot.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
+- `thread/goalPlan/updated` — notification emitted whenever a durable goal plan changes; includes the full plan snapshot with aggregate usage.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
+- `thread/workflow/create` — experimental; validate and save a Codewith workflow YAML spec for a materialized thread. Requires `capabilities.experimentalApi: true` and the default-off `workflows` feature.
+- `thread/workflow/get` — experimental; fetch sanitized saved workflow spec metadata for a materialized thread without returning raw YAML or source prompts.
+- `thread/workflow/list` — experimental; page through sanitized saved workflow spec metadata for a materialized thread.
+- `thread/mailbox/enqueue`, `thread/mailbox/list`, `thread/mailbox/read`, `thread/mailbox/claim`, `thread/mailbox/ack`, `thread/mailbox/fail`, and `thread/mailbox/receipts/list` — experimental; persist local durable mailbox messages for materialized threads with idempotency, leases, attempts, receipts, retry/poison state, and redacted list views. This is separate from `activeSession/send`.
+- `missionControl/overview`, `missionControl/enqueueInstruction`, `missionControl/mailboxReceipts`, and `missionControl/respondInteraction` — experimental; local-first orchestration facade that combines local session inventory, durable mailbox enqueue/receipts, pending interactions, current goals, and goal-plan summaries. It does not mutate workflow definitions or expose shell, filesystem, or remote-machine control.
 - `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
 - `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
 - `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
@@ -451,9 +459,134 @@ When `nextCursor` is `null`, you’ve reached the final page.
 } }
 ```
 
+### Example: Inventory local sessions
+
+`localSession/list` is an experimental read-only inventory that combines persisted local sessions with live runtime metadata. It includes active, idle, closing, loaded-without-active-peer, and not-loaded records. It intentionally redacts process details and git origin URLs from the response while listing the redaction reasons.
+
+```json
+{ "method": "localSession/list", "id": 22, "params": { "limit": 20 } }
+{ "id": 22, "result": {
+    "data": [{
+        "threadId": "thr_123",
+        "runtimeSessionId": "sess_abc",
+        "peer": {
+            "peerId": "thr_123",
+            "kind": "codewithSession",
+            "capabilities": ["receiveMessage", "queueMessage", "triggerTurn"],
+            "lastSeenAt": 1781790000
+        },
+        "status": "idle",
+        "activeFlags": [],
+        "cwd": "/Users/me/project",
+        "displayName": null,
+        "agentPath": null,
+        "modelProvider": "openai",
+        "model": "gpt-5.2",
+        "source": "cli",
+        "threadSource": "user",
+        "createdAt": 1781789000,
+        "updatedAt": 1781790000,
+        "path": "/Users/me/.codewith/sessions/2026/06/18/rollout.jsonl",
+        "gitInfo": { "sha": "abc123", "branch": "main" },
+        "redactions": ["gitOriginUrl", "processDetails"]
+    }],
+    "nextCursor": null
+} }
+```
+
+### Example: Use the durable thread mailbox
+
+`thread/mailbox/*` is an experimental local durable mailbox for materialized threads. It stores queued instructions separately from active-session delivery, records attempts and receipts, and uses summaries with `redactions: ["messageBody", "idempotencyKey"]` for list/enqueue responses. `thread/mailbox/read` and `thread/mailbox/claim` are the explicit payload-bearing APIs.
+
+Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. This first implementation does not authorize remote callers, discover remote machines, resume unloaded sessions, or deliver into a live runtime automatically; dispatcher behavior builds on these stored primitives separately.
+
+```json
+{ "method": "thread/mailbox/enqueue", "id": 23, "params": {
+    "targetThreadId": "thr_123",
+    "idempotencyKey": "daily-thoughts-2026-06-18",
+    "kind": "userInstruction",
+    "message": { "text": "Decompose this into project goals" },
+    "preview": "Decompose this into project goals"
+} }
+```
+
+```json
+{ "method": "thread/mailbox/claim", "id": 24, "params": {
+    "targetThreadId": "thr_123",
+    "leaseOwner": "local-dispatcher",
+    "leaseSeconds": 600
+} }
+```
+
+### Example: Mission control overview and instruction enqueue
+
+`missionControl/overview` is a local operator facade over existing primitives. It pages local sessions and pending interactions together, and can include each session's current goal plus durable goal-plan summaries. The response advertises capabilities explicitly; in this phase `remoteDispatch`, `workflowMutation`, `shellExecution`, and `filesystemMutation` are always `false`.
+
+```json
+{ "method": "missionControl/overview", "id": 31, "params": {
+    "limit": 20,
+    "includeGoalPlans": true,
+    "pendingInteractionStatuses": ["pending"],
+    "pendingInteractionLimit": 20
+} }
+```
+
+`missionControl/enqueueInstruction` stores a durable local mailbox instruction for a materialized target thread. Set `dryRun: true` to validate and preview the instruction without creating a mailbox row. Set `resume: true` to request `resumeAndTrigger` dispatcher policy; otherwise the instruction is `liveOnly`.
+
+```json
+{ "method": "missionControl/enqueueInstruction", "id": 32, "params": {
+    "targetThreadId": "thr_123",
+    "senderLabel": "daily coordinator",
+    "idempotencyKey": "daily-thoughts-2026-06-18",
+    "message": "Decompose yesterday's notes into project goals.",
+    "resume": true
+} }
+```
+
+Use `missionControl/mailboxReceipts` to read receipts for the created mailbox message, and `missionControl/respondInteraction` to answer pending questions or terminal waits. `missionControl/respondInteraction` supports `dryRun: true`, which validates the response shape and returns the current interaction without mutating it.
+
 ### Example: List and message active sessions
 
-`activeSession/list` returns message-capable sessions that are currently loaded in memory. This is an active-session surface, not an inbox: inactive or unloaded threads are omitted.
+`activeSession/list` returns message-capable sessions that are currently loaded in memory and not already closing, including loaded Codewith sessions, spawned agents, and in-process background-agent threads. This is an active-session surface, not an inbox: inactive, closing, or unloaded threads are omitted. The current surface is process-local and intended for trusted local app-server clients; daemon-wide cross-workspace routing must add explicit caller authorization before exposing peers outside that trust boundary.
+
+#### Active-session contract for durable orchestration
+
+Future durable orchestration must keep this API's live-channel model separate from any durable mailbox it introduces:
+
+- `peerId` is the active routing key returned by `activeSession/list`. For local Codewith sessions it matches `threadId`; bridge peers may use transport-scoped ids.
+- `threadId` is the Codewith thread that owns the active peer registration, and `sessionId` is the currently loaded session instance. Neither is a remote machine id.
+- `messageId` in `activeSession/send` responses is generated by app-server for this active delivery attempt. It is not a durable mailbox id, read receipt, or retry attempt id.
+- `senderThreadId` and `senderLabel` are untrusted attribution supplied by the caller. They must not be treated as authentication or authorization for future cross-session or cross-machine dispatch.
+- `status: "delivered"` only means the message reached the target's live in-memory submission channel. Any durable mailbox must expose separate message ids, attempt ids, receipts, retry state, and authorization checks.
+- `status: "notLoaded"` is terminal for this API call. Clients that want offline delivery must use a future durable mailbox API rather than expecting `activeSession/send` to resume or persist work.
+
+Identifier model for the orchestration roadmap:
+
+- Active channel identifiers: `peerId`, `threadId`, `sessionId`, and active delivery `messageId`.
+- Future durable mailbox identifiers: local or remote `machineId`, durable `mailboxMessageId`, `deliveryAttemptId`, `receiptId`, and the authenticated caller identity. These must be separate from active delivery `messageId`.
+- Future pending-interaction identifiers: stable question/approval/wait ids that can be answered independently of any one active transport attempt.
+
+Authorization model for future orchestration:
+
+- Trusted local app-server clients may use `activeSession/list` and `activeSession/send` for currently loaded peers only.
+- Future local mission-control APIs may enqueue durable local mailbox messages, answer pending interactions, and request local session resume only through explicit orchestration methods with receipts and audit events.
+- Future remote dispatch may only call explicit Codewith orchestration RPCs on trusted registered machines after capability and authorization checks.
+- Remote dispatch must deny command execution, process spawning, filesystem access, MCP mutation, config/auth/profile changes, plugin operations, and workflow mutation by default.
+- Responses and audit entries must redact secrets, auth tokens, provider credentials, environment values, and transport details that are not needed for routing.
+
+Compatibility gates for adding durable orchestration:
+
+- `codex-app-server-protocol` schema and serialization tests must continue to show `activeSession/send` as an active peer send surface, not an offline inbox.
+- App-server active-session tests must continue to cover loaded delivery, bridge `unsupported`, unloaded `notLoaded`, message/label caps, and no offline resume or persistence.
+- New durable mailbox tests must use separate mailbox ids, attempt ids, statuses, receipts, retry/poison state, and authorization failures instead of extending `ActiveSessionSendStatus`.
+- Workflow builder and workflow-run tests are out of scope for this contract and must not be changed just to add mailbox delivery.
+
+Non-goals for this phase:
+
+- No Open Machines hard dependency in public Codewith. Optional discovery adapters may be added later behind a Codewith-native machine registry boundary.
+- No workflow implementation or workflow-owned data mutation.
+- No broad remote host control surface.
+- No offline delivery, read receipt, retry, or durable queue behavior in `activeSession/send`.
 
 ```json
 { "method": "activeSession/list", "id": 22, "params": { "limit": 20 } }
@@ -473,11 +606,11 @@ When `nextCursor` is `null`, you’ve reached the final page.
 } }
 ```
 
-`activeSession/send` delivers only to a currently loaded target. Use `delivery: "queueOnly"` to enqueue the message without waking the target, or `delivery: "triggerTurn"` to ask the target to process it immediately.
+`activeSession/send` delivers only to a currently loaded target that is not already closing. Use `targetPeerId` to address the `peerId` returned by `activeSession/list`; `targetThreadId` is still accepted as a legacy alias for local Codewith threads. Use `delivery: "queueOnly"` to enqueue the message without waking the target, or `delivery: "triggerTurn"` to ask the target to process it immediately. A `status: "delivered"` response means the message was enqueued on the target session's live in-memory submission channel; it does not mean the target has drained the mailbox, started a turn, or persisted the communication. Pending mailbox items are in-memory until the target drains them, and only drained conversation items are persisted in the thread rollout. App-server does not provide an offline inbox, read receipt, or durable `inter_agent_messages` ledger for inactive targets. Client-supplied `senderThreadId` and `senderLabel` are treated as untrusted attribution for this API; the message body is capped at 4096 bytes and `senderLabel` is capped at 256 bytes. If a peer is active but owned by a bridge adapter the app-server cannot deliver through yet, the response status is `unsupported`.
 
 ```json
 { "method": "activeSession/send", "id": 23, "params": {
-    "targetThreadId": "thr_123",
+    "targetPeerId": "thr_123",
     "senderThreadId": "thr_456",
     "senderLabel": "review session",
     "delivery": "queueOnly",
@@ -486,6 +619,7 @@ When `nextCursor` is `null`, you’ve reached the final page.
 { "id": 23, "result": {
     "status": "delivered",
     "messageId": "018f...",
+    "targetPeerId": "thr_123",
     "targetThreadId": "thr_123",
     "senderThreadId": "thr_456",
     "reason": null
@@ -498,9 +632,23 @@ If the target is inactive or unloaded, app-server returns a typed response and d
 { "id": 24, "result": {
     "status": "notLoaded",
     "messageId": "018f...",
-    "targetThreadId": "thr_missing",
+    "targetPeerId": "thr_missing",
+    "targetThreadId": null,
     "senderThreadId": null,
     "reason": "target thread is not currently loaded; no offline delivery was attempted"
+} }
+```
+
+If the target is active but uses an owner that the local app-server cannot deliver through yet, app-server returns `unsupported` and does not fall back to local-thread injection:
+
+```json
+{ "id": 25, "result": {
+    "status": "unsupported",
+    "messageId": "018f...",
+    "targetPeerId": "claude:session-1",
+    "targetThreadId": null,
+    "senderThreadId": null,
+    "reason": "target peer is active but this app-server cannot deliver to its owner yet"
 } }
 ```
 
@@ -655,6 +803,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
 } }
 { "id": 27, "result": { "goal": {
     "threadId": "thr_123",
+    "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
     "status": "active",
     "tokenBudget": 200000,
@@ -665,6 +814,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
 } } }
 { "method": "thread/goal/updated", "params": { "threadId": "thr_123", "goal": {
     "threadId": "thr_123",
+    "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
     "status": "active",
     "tokenBudget": 200000,
@@ -682,6 +832,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
 } }
 { "id": 28, "result": { "goal": {
     "threadId": "thr_123",
+    "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
     "status": "blocked",
     "tokenBudget": 200000,
@@ -699,7 +850,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. In plan nodes, `tokenBudget: null` means the node is unlimited.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag indicate pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -711,6 +862,18 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
         "status": "active",
         "autoExecute": "aiDirected",
         "maxTokens": null,
+        "totalTokensUsed": 0,
+        "totalTimeUsedSeconds": 0,
+        "remainingTokens": null,
+        "nodeCount": 1,
+        "completedNodeCount": 0,
+        "readyNodeCount": 1,
+        "activeNodeCount": 0,
+        "pendingNodeCount": 1,
+        "pausedNodeCount": 0,
+        "blockedNodeCount": 0,
+        "usageLimitedNodeCount": 0,
+        "budgetLimitedNodeCount": 0,
         "createdAt": 1776272400,
         "updatedAt": 1776272400,
         "nodes": [{
@@ -722,6 +885,7 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
             "priority": 10,
             "objective": "Implement the planned goal chain",
             "status": "pending",
+            "ready": true,
             "tokenBudget": null,
             "tokensUsed": 0,
             "timeUsedSeconds": 0,
@@ -735,12 +899,79 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
 } }
 ```
 
+Use `thread/goalPlan/activateNode` to start one ready pending node manually when automatic execution is off or the client wants explicit user control.
+
+```json
+{ "method": "thread/goalPlan/activateNode", "id": 31, "params": {
+    "threadId": "thr_123",
+    "nodeId": "node_123"
+} }
+{ "id": 31, "result": {
+    "goal": {
+        "threadId": "thr_123",
+        "goalId": "goal_456",
+        "objective": "Implement the planned goal chain",
+        "status": "active",
+        "tokenBudget": null,
+        "tokensUsed": 0,
+        "timeUsedSeconds": 0,
+        "createdAt": 1776272400,
+        "updatedAt": 1776272400
+    },
+    "plan": { "planId": "plan_123", "readyNodeCount": 0 }
+} }
+{ "method": "thread/goalPlan/updated", "params": { "threadId": "thr_123", "plan": { "planId": "plan_123" } } }
+```
+
 Use `thread/goal/clear` to remove the current goal.
 
 ```json
-{ "method": "thread/goal/clear", "id": 31, "params": { "threadId": "thr_123" } }
-{ "id": 31, "result": { "cleared": true } }
+{ "method": "thread/goal/clear", "id": 32, "params": { "threadId": "thr_123" } }
+{ "id": 32, "result": { "cleared": true } }
 { "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
+```
+
+### Example: Save workflow spec metadata
+
+Experimental: use `thread/workflow/create` to validate and save a Codewith workflow YAML spec for a materialized thread. Clients must opt into `capabilities.experimentalApi: true`, and the server must have `[features].workflows = true`. When either gate is missing, the request is rejected before YAML is parsed or persisted.
+
+The current app-server workflow API is intentionally metadata-only. It does not start goals, schedules, monitors, agents, worktrees, timers, shell commands, or verifier execution. Responses expose sanitized counts, hashes, status, and timestamps; they do not return raw YAML, `sourcePrompt`, verifier commands, or workflow-generated prompts.
+
+```json
+{ "method": "thread/workflow/create", "id": 33, "params": {
+    "threadId": "thr_123",
+    "yaml": "schema_version: \"workflow.codex.codewith/v0\"\nworkflow_id: \"wf_dentist_leads\"\ndisplay_name: \"Dentist Lead SaaS\"\n..."
+} }
+{ "id": 33, "result": { "workflow": {
+    "threadId": "thr_123",
+    "workflowRecordId": "workflow_123",
+    "specWorkflowId": "wf_dentist_leads",
+    "schemaVersion": "workflow.codex.codewith/v0",
+    "displayName": "Dentist Lead SaaS",
+    "status": "draft",
+    "sourceYamlSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "agentCount": 4,
+    "stepCount": 12,
+    "parallelGroupCount": 2,
+    "verifierCount": 5,
+    "runCommandVerifierCount": 1,
+    "modelRoutedStepCount": 12,
+    "createdAt": 1776272400,
+    "updatedAt": 1776272400
+} } }
+```
+
+Use `thread/workflow/get` to read one saved workflow metadata record, or `thread/workflow/list` to page through records with optional `cursor` and `limit`.
+
+```json
+{ "method": "thread/workflow/get", "id": 34, "params": {
+    "threadId": "thr_123",
+    "workflowRecordId": "workflow_123"
+} }
+{ "id": 34, "result": { "workflow": { "workflowRecordId": "workflow_123" } } }
+
+{ "method": "thread/workflow/list", "id": 35, "params": { "threadId": "thr_123", "limit": 20 } }
+{ "id": 35, "result": { "data": [{ "workflowRecordId": "workflow_123" }], "nextCursor": null } }
 ```
 
 ### Example: Schedule a thread loop

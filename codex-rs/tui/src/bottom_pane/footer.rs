@@ -105,6 +105,7 @@ pub(crate) enum GoalStatusIndicator {
     UsageLimited,
     BudgetLimited { usage: Option<String> },
     Complete { usage: Option<String> },
+    Cancelled { usage: Option<String> },
 }
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
@@ -572,6 +573,13 @@ pub(crate) fn goal_status_indicator_line(
                 format!("Goal achieved ({usage})")
             } else {
                 "Goal achieved".to_string()
+            }
+        }
+        GoalStatusIndicator::Cancelled { usage } => {
+            if let Some(usage) = usage {
+                format!("Goal cancelled ({usage})")
+            } else {
+                "Goal cancelled".to_string()
             }
         }
     };

@@ -1,4 +1,6 @@
 use super::*;
+use codex_app_server_protocol::AskForApproval;
+use codex_config::types::ApprovalsReviewer;
 use color_eyre::eyre::WrapErr;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -68,6 +70,25 @@ fn trusted_project_edit_targets_project_trust_level() {
             value: serde_json::json!("trusted"),
             merge_strategy: MergeStrategy::Replace,
         }
+    );
+}
+
+#[test]
+fn permission_profile_selection_edits_persist_profile_policy_and_reviewer() {
+    assert_eq!(
+        build_permission_profile_selection_edits(
+            ":danger-full-access",
+            Some(AskForApproval::Never),
+            Some(ApprovalsReviewer::User),
+        ),
+        vec![
+            replace_config_value(
+                "default_permissions",
+                serde_json::json!(":danger-full-access"),
+            ),
+            replace_config_value("approval_policy", serde_json::json!("never")),
+            replace_config_value("approvals_reviewer", serde_json::json!("user")),
+        ]
     );
 }
 

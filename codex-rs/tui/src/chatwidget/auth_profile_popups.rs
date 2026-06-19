@@ -23,7 +23,6 @@ use std::time::Instant;
 
 const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
-const AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN: Duration = Duration::from_secs(60);
 
 impl ChatWidget {
     pub(crate) fn open_profile_popup(&mut self) {
@@ -402,9 +401,18 @@ impl ChatWidget {
     }
 
     fn should_request_auth_profile_usage_heartbeat(&mut self, profile: Option<&str>) -> bool {
+        let heartbeat_interval =
+            Duration::from_secs(self.config.auth_profile_auto_switch.heartbeat_interval_secs);
+        let heartbeat_freshness = Duration::from_secs(
+            self.config
+                .auth_profile_auto_switch
+                .heartbeat_freshness_secs,
+        );
         if self
             .auth_profile_usage_snapshots(profile)
-            .is_some_and(auth_profile_usage_snapshots_are_fresh)
+            .is_some_and(|snapshots| {
+                auth_profile_usage_snapshots_are_fresh(snapshots, heartbeat_freshness)
+            })
         {
             return false;
         }
@@ -413,9 +421,7 @@ impl ChatWidget {
         if self
             .auth_profile_usage_heartbeat_requested_at_by_profile
             .get(&profile)
-            .is_some_and(|requested_at| {
-                requested_at.elapsed() < AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN
-            })
+            .is_some_and(|requested_at| requested_at.elapsed() < heartbeat_interval)
         {
             return false;
         }
@@ -757,12 +763,13 @@ fn compact_usage_hint_for_snapshot(snapshot: &RateLimitSnapshotDisplay) -> Strin
 
 fn auth_profile_usage_snapshots_are_fresh(
     snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
+    freshness: Duration,
 ) -> bool {
-    let heartbeat_interval =
-        chrono::Duration::seconds(AUTH_PROFILE_USAGE_HEARTBEAT_COOLDOWN.as_secs() as i64);
-    snapshots.values().any(|snapshot| {
-        Local::now().signed_duration_since(snapshot.captured_at) <= heartbeat_interval
-    })
+    let freshness =
+        chrono::Duration::seconds(i64::try_from(freshness.as_secs()).unwrap_or(i64::MAX));
+    snapshots
+        .values()
+        .any(|snapshot| Local::now().signed_duration_since(snapshot.captured_at) <= freshness)
 }
 
 fn compact_usage_hint_for_window(window: &RateLimitWindowDisplay, is_secondary: bool) -> String {

@@ -48,7 +48,7 @@ impl ChatWidget {
         }
         items.push(self.builtin_permission_mode_selection_item(
             full_access,
-            ":danger-no-sandbox",
+            codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
             full_access.description.to_string(),
             AskForApproval::from(full_access.approval),
             ApprovalsReviewer::User,

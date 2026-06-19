@@ -3,6 +3,8 @@ use std::sync::Weak;
 
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadGoal;
+use codex_app_server_protocol::ThreadGoalPlan;
+use codex_app_server_protocol::ThreadGoalPlanUpdatedNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
 use codex_core::NewThread;
@@ -41,6 +43,12 @@ where
 {
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
     if let Some(state_db) = state_db {
+        crate::mission_control_tools::install(
+            &mut builder,
+            state_db.clone(),
+            thread_manager.clone(),
+            |config: &Config| config.features.enabled(codex_features::Feature::Goals),
+        );
         codex_goal_extension::install_with_backend(
             &mut builder,
             state_db,
@@ -67,6 +75,9 @@ where
     codex_memories_extension::install(&mut builder, codex_otel::global());
     codex_web_search_extension::install(&mut builder, auth_manager.clone());
     codex_image_generation_extension::install(&mut builder, auth_manager);
+    codex_workflows_extension::install(&mut builder, |config: &Config| {
+        config.features.enabled(codex_features::Feature::Workflows)
+    });
     Arc::new(builder.build())
 }
 
@@ -115,6 +126,38 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                                 thread_id: thread_id.to_string(),
                                 turn_id,
                                 goal,
+                            },
+                        ))
+                        .await;
+                });
+            }
+            EventMsg::ThreadGoalPlanUpdated(thread_goal_plan_event) => {
+                let thread_id = thread_goal_plan_event.thread_id;
+                let turn_id = thread_goal_plan_event.turn_id;
+                let plan: ThreadGoalPlan = thread_goal_plan_event.plan.into();
+                if let Some(listener_command_tx) = self
+                    .thread_state_manager
+                    .current_listener_command_tx(thread_id)
+                {
+                    let command = ThreadListenerCommand::EmitThreadGoalPlanUpdated {
+                        turn_id: turn_id.clone(),
+                        plan: plan.clone(),
+                    };
+                    if listener_command_tx.send(command).is_ok() {
+                        return;
+                    }
+                    tracing::warn!(
+                        "failed to enqueue extension goal plan update for {thread_id}: listener command channel is closed"
+                    );
+                }
+                let outgoing = Arc::clone(&self.outgoing);
+                tokio::spawn(async move {
+                    outgoing
+                        .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                            ThreadGoalPlanUpdatedNotification {
+                                thread_id: thread_id.to_string(),
+                                turn_id,
+                                plan,
                             },
                         ))
                         .await;
@@ -231,6 +274,7 @@ mod tests {
                 turn_id: Some(turn_id.to_string()),
                 goal: CoreThreadGoal {
                     thread_id,
+                    goal_id: format!("goal-{turn_id}"),
                     objective: "wire extension events".to_string(),
                     status: ThreadGoalStatus::Active,
                     token_budget: Some(123),

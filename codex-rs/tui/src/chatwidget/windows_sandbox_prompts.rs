@@ -77,13 +77,12 @@ impl ChatWidget {
         extra_count: usize,
         failed_scan: bool,
     ) {
-        let (approval, permission_profile, active_permission_profile) = match &preset {
+        let (approval, active_permission_profile) = match &preset {
             Some(p) => (
                 Some(AskForApproval::from(p.approval)),
-                Some(p.permission_profile.clone()),
                 Some(p.active_permission_profile.clone()),
             ),
-            None => (None, None, None),
+            None => (None, None),
         };
         let mut header_children: Vec<Box<dyn Renderable>> = Vec::new();
         let describe_profile = |profile: &PermissionProfile| {
@@ -148,14 +147,11 @@ impl ChatWidget {
         }
         if let Some(selection) = profile_selection.clone() {
             accept_actions.extend(Self::permission_profile_selection_actions(selection));
-        } else if let (Some(approval), Some(permission_profile), Some(active_permission_profile)) = (
-            approval,
-            permission_profile.clone(),
-            active_permission_profile.clone(),
-        ) {
+        } else if let (Some(approval), Some(active_permission_profile)) =
+            (approval, active_permission_profile.clone())
+        {
             accept_actions.extend(Self::approval_preset_actions(
                 approval,
-                permission_profile,
                 active_permission_profile,
                 mode_label.to_string(),
                 ApprovalsReviewer::User,
@@ -170,12 +166,11 @@ impl ChatWidget {
         if let Some(selection) = profile_selection {
             accept_and_remember_actions
                 .extend(Self::permission_profile_selection_actions(selection));
-        } else if let (Some(approval), Some(permission_profile), Some(active_permission_profile)) =
-            (approval, permission_profile, active_permission_profile)
+        } else if let (Some(approval), Some(active_permission_profile)) =
+            (approval, active_permission_profile)
         {
             accept_and_remember_actions.extend(Self::approval_preset_actions(
                 approval,
-                permission_profile,
                 active_permission_profile,
                 mode_label.to_string(),
                 ApprovalsReviewer::User,

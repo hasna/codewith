@@ -135,6 +135,23 @@ fn scheduled_tasks_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn mailbox_dispatcher_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::MailboxDispatcher.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::MailboxDispatcher.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("mailbox_dispatcher"),
+        Some(Feature::MailboxDispatcher)
+    );
+}
+
+#[test]
+fn workflows_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::Workflows.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::Workflows.default_enabled(), false);
+    assert_eq!(feature_for_key("workflows"), Some(Feature::Workflows));
+}
+
+#[test]
 fn external_migration_is_experimental_and_disabled_by_default() {
     let spec = Feature::ExternalMigration.info();
     let stage = spec.stage;

@@ -244,6 +244,33 @@ impl App {
         }
     }
 
+    pub(super) async fn activate_thread_goal_plan_node(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        node_id: String,
+    ) {
+        let result = app_server
+            .thread_goal_plan_activate_node(thread_id, node_id)
+            .await;
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
+
+        match result {
+            Ok(response) => {
+                self.chat_widget.on_thread_goal_plan_updated(response.plan);
+                self.chat_widget.add_info_message(
+                    format!("Goal {}", goal_status_label(response.goal.status)),
+                    Some(goal_usage_summary(&response.goal)),
+                );
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to activate goal-plan node: {err}")),
+        }
+    }
+
     fn show_replace_thread_goal_confirmation(&mut self, thread_id: ThreadId, objective: String) {
         let replace_objective = objective.clone();
         let replace_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -304,10 +331,10 @@ fn is_ephemeral_thread_goal_error(err: &color_eyre::Report) -> bool {
 }
 
 fn should_confirm_before_replacing_goal(goal: &ThreadGoal) -> bool {
-    // Completed goals are terminal, so `/goal <objective>` can start a fresh goal
+    // Completed and cancelled goals are terminal, so `/goal <objective>` can start a fresh goal
     // without asking the user to confirm replacing already-finished work.
     match goal.status {
-        ThreadGoalStatus::Complete => false,
+        ThreadGoalStatus::Complete | ThreadGoalStatus::Cancelled => false,
         ThreadGoalStatus::Active
         | ThreadGoalStatus::Paused
         | ThreadGoalStatus::Blocked
@@ -379,6 +406,13 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_goal_does_not_require_replace_confirmation() {
+        assert!(!should_confirm_before_replacing_goal(&test_goal(
+            ThreadGoalStatus::Cancelled
+        )));
+    }
+
+    #[test]
     fn unfinished_goals_require_replace_confirmation() {
         for status in [
             ThreadGoalStatus::Active,
@@ -394,6 +428,7 @@ mod tests {
     fn test_goal(status: ThreadGoalStatus) -> ThreadGoal {
         ThreadGoal {
             thread_id: ThreadId::new().to_string(),
+            goal_id: "goal-test".to_string(),
             objective: "Finish the thing.".to_string(),
             status,
             token_budget: None,

@@ -5,6 +5,7 @@ mod errors;
 mod info;
 mod operations;
 mod platform;
+mod worktree;
 
 pub use apply::ApplyGitRequest;
 pub use apply::ApplyGitResult;
@@ -39,3 +40,10 @@ pub use info::local_git_branches;
 pub use info::recent_commits;
 pub use info::resolve_root_git_project_for_trust;
 pub use platform::create_symlink;
+pub use worktree::GitMergeTreeDryRun;
+pub use worktree::GitWorktreeEntry;
+pub use worktree::GitWorktreeStatusSnapshot;
+pub use worktree::get_git_worktree_status_snapshot;
+pub use worktree::list_git_worktrees;
+pub use worktree::merge_tree_dry_run;
+pub use worktree::remove_linked_git_worktree;

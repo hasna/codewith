@@ -1797,12 +1797,14 @@ default_permissions = "locked-down"
     app.harness_overrides.permission_profile = Some(PermissionProfile::workspace_write());
 
     assert!(
-        app.apply_permission_profile_selection(PermissionProfileSelection {
-            profile_id: "locked-down".to_string(),
-            approval_policy: None,
-            approvals_reviewer: None,
-            display_label: "locked-down".to_string(),
-        })
+        app.apply_permission_profile_selection_without_config_write_for_tests(
+            PermissionProfileSelection {
+                profile_id: "locked-down".to_string(),
+                approval_policy: None,
+                approvals_reviewer: None,
+                display_label: "locked-down".to_string(),
+            },
+        )
         .await
     );
 
@@ -4275,15 +4277,19 @@ async fn permission_update_persists_last_permissions_for_selected_auth_profile()
     save_test_auth_profile_for_app(&app, "work");
     app.config.selected_auth_profile = Some("work".to_string());
     app.chat_widget.set_auth_profile(Some("work".to_string()));
+    let app_server = start_config_write_test_app_server(&app).await?;
 
     assert!(
-        app.apply_permission_profile_selection(PermissionProfileSelection {
-            profile_id: codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
-                .to_string(),
-            approval_policy: Some(AskForApproval::Never),
-            approvals_reviewer: Some(ApprovalsReviewer::User),
-            display_label: "Full Access".to_string(),
-        })
+        app.apply_permission_profile_selection(
+            &app_server,
+            PermissionProfileSelection {
+                profile_id: codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+                    .to_string(),
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                display_label: "Full Access".to_string(),
+            },
+        )
         .await
     );
 
@@ -4297,6 +4303,27 @@ async fn permission_update_persists_last_permissions_for_selected_auth_profile()
         })
     );
 
+    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    let config_value = toml::from_str::<TomlValue>(&config)?;
+    let config_table = config_value
+        .as_table()
+        .expect("config.toml should be a table");
+    assert_eq!(
+        config_table.get("default_permissions"),
+        Some(&TomlValue::String(
+            codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string(),
+        )),
+    );
+    assert_eq!(
+        config_table.get("approval_policy"),
+        Some(&TomlValue::String("never".to_string())),
+    );
+    assert_eq!(
+        config_table.get("approvals_reviewer"),
+        Some(&TomlValue::String("user".to_string())),
+    );
+
+    app_server.shutdown().await?;
     Ok(())
 }
 

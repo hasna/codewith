@@ -13,4 +13,7 @@ Budget:
 
 Adjust the current turn to pursue the updated objective. Avoid continuing work that only served the previous objective unless it also helps the updated objective.
 
+Adversarial verification:
+Use at least one adversarial agent to verify and validate the updated goal before completion, even if the user did not ask for one. If no adversarial agent can be spawned, explicitly perform and report an adversarial self-review with the same standards.
+
 Do not call update_goal unless the updated goal is actually complete.
