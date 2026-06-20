@@ -225,7 +225,7 @@ impl ToolExecutor<ToolCall> for MissionControlTool {
         ToolSpec::Function(ResponsesApiTool {
             name: self.kind.name().to_string(),
             description: self.kind.description().to_string(),
-            strict: true,
+            strict: self.kind.strict(),
             defer_loading: None,
             parameters: self.kind.parameters(),
             output_schema: None,
@@ -298,76 +298,61 @@ impl MissionControlToolKind {
         }
     }
 
+    fn strict(self) -> bool {
+        !matches!(self, Self::RespondInteraction)
+    }
+
     fn parameters(self) -> JsonSchema {
         match self {
-            Self::Overview => strict_object(
-                BTreeMap::from([
-                    (
-                        "pending_cursor".to_string(),
-                        nullable_string("Cursor for pending interaction pagination."),
-                    ),
-                    (
-                        "pending_limit".to_string(),
-                        nullable_integer("Maximum pending interactions to return."),
-                    ),
-                    (
-                        "include_live_sessions".to_string(),
-                        JsonSchema::boolean(Some(
-                            "Whether to include live thread ids from the local process."
-                                .to_string(),
-                        )),
-                    ),
-                ]),
-                Vec::new(),
-            ),
-            Self::EnqueueInstruction => strict_object(
-                BTreeMap::from([
-                    (
-                        "target_thread_id".to_string(),
-                        JsonSchema::string(Some("Existing durable target thread id.".to_string())),
-                    ),
-                    (
-                        "message".to_string(),
-                        JsonSchema::string(Some("Instruction text to enqueue.".to_string())),
-                    ),
-                    (
-                        "sender_thread_id".to_string(),
-                        nullable_string(
-                            "Optional sender thread id; defaults to the calling thread.",
-                        ),
-                    ),
-                    (
-                        "sender_label".to_string(),
-                        nullable_string("Optional sender label for mailbox attribution."),
-                    ),
-                    (
-                        "idempotency_key".to_string(),
-                        nullable_string("Optional idempotency key for safe retries."),
-                    ),
-                    (
-                        "resume".to_string(),
-                        JsonSchema::boolean(Some(
-                            "If true, mark the message for resume-and-trigger dispatch."
-                                .to_string(),
-                        )),
-                    ),
-                    (
-                        "dry_run".to_string(),
-                        JsonSchema::boolean(Some(
-                            "If true, validate and preview without enqueuing.".to_string(),
-                        )),
-                    ),
-                ]),
-                vec!["target_thread_id", "message"],
-            ),
-            Self::MailboxReceipts => strict_object(
-                BTreeMap::from([(
-                    "message_id".to_string(),
-                    JsonSchema::string(Some("Mailbox message id.".to_string())),
-                )]),
-                vec!["message_id"],
-            ),
-            Self::RespondInteraction => strict_object(
+            Self::Overview => strict_object(BTreeMap::from([
+                (
+                    "pending_cursor".to_string(),
+                    nullable_string("Cursor for pending interaction pagination."),
+                ),
+                (
+                    "pending_limit".to_string(),
+                    nullable_integer("Maximum pending interactions to return."),
+                ),
+                (
+                    "include_live_sessions".to_string(),
+                    nullable_boolean("Whether to include live thread ids from the local process."),
+                ),
+            ])),
+            Self::EnqueueInstruction => strict_object(BTreeMap::from([
+                (
+                    "target_thread_id".to_string(),
+                    JsonSchema::string(Some("Existing durable target thread id.".to_string())),
+                ),
+                (
+                    "message".to_string(),
+                    JsonSchema::string(Some("Instruction text to enqueue.".to_string())),
+                ),
+                (
+                    "sender_thread_id".to_string(),
+                    nullable_string("Optional sender thread id; defaults to the calling thread."),
+                ),
+                (
+                    "sender_label".to_string(),
+                    nullable_string("Optional sender label for mailbox attribution."),
+                ),
+                (
+                    "idempotency_key".to_string(),
+                    nullable_string("Optional idempotency key for safe retries."),
+                ),
+                (
+                    "resume".to_string(),
+                    nullable_boolean("If true, mark the message for resume-and-trigger dispatch."),
+                ),
+                (
+                    "dry_run".to_string(),
+                    nullable_boolean("If true, validate and preview without enqueuing."),
+                ),
+            ])),
+            Self::MailboxReceipts => strict_object(BTreeMap::from([(
+                "message_id".to_string(),
+                JsonSchema::string(Some("Mailbox message id.".to_string())),
+            )])),
+            Self::RespondInteraction => non_strict_object(
                 BTreeMap::from([
                     (
                         "interaction_id".to_string(),
@@ -396,9 +381,7 @@ impl MissionControlToolKind {
                     ),
                     (
                         "dry_run".to_string(),
-                        JsonSchema::boolean(Some(
-                            "If true, validate and preview without updating.".to_string(),
-                        )),
+                        nullable_boolean("If true, validate and preview without updating."),
                     ),
                 ]),
                 vec!["interaction_id", "terminal_status", "response"],
@@ -646,7 +629,12 @@ where
         .map_err(|err| model_error(format!("invalid {tool_name} arguments: {err}")))
 }
 
-fn strict_object(properties: BTreeMap<String, JsonSchema>, required: Vec<&str>) -> JsonSchema {
+fn strict_object(properties: BTreeMap<String, JsonSchema>) -> JsonSchema {
+    let required = properties.keys().cloned().collect();
+    JsonSchema::object(properties, Some(required), Some(false.into()))
+}
+
+fn non_strict_object(properties: BTreeMap<String, JsonSchema>, required: Vec<&str>) -> JsonSchema {
     JsonSchema::object(
         properties,
         Some(required.into_iter().map(str::to_string).collect()),
@@ -664,6 +652,13 @@ fn nullable_string(description: &str) -> JsonSchema {
 fn nullable_integer(description: &str) -> JsonSchema {
     JsonSchema::any_of(
         vec![JsonSchema::integer(None), JsonSchema::null(None)],
+        Some(description.to_string()),
+    )
+}
+
+fn nullable_boolean(description: &str) -> JsonSchema {
+    JsonSchema::any_of(
+        vec![JsonSchema::boolean(None), JsonSchema::null(None)],
         Some(description.to_string()),
     )
 }
@@ -861,6 +856,7 @@ mod tests {
     use codex_protocol::models::ResponseInputItem;
     use codex_protocol::protocol::SessionSource;
     use pretty_assertions::assert_eq;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -1121,6 +1117,100 @@ mod tests {
         assert!(spec.description.contains("mailbox"));
         assert!(spec.description.contains("does not execute shell commands"));
         assert!(spec.description.contains("create workflows"));
+    }
+
+    #[tokio::test]
+    async fn mission_control_tool_specs_serialize_for_responses_api() {
+        let runtime = MissionControlRuntime {
+            state_db: test_state_db().await,
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id: test_thread_id(),
+        };
+
+        for kind in [
+            MissionControlToolKind::Overview,
+            MissionControlToolKind::EnqueueInstruction,
+            MissionControlToolKind::MailboxReceipts,
+            MissionControlToolKind::RespondInteraction,
+        ] {
+            let spec = MissionControlTool::new(kind, runtime.clone()).spec();
+            let ToolSpec::Function(function) = &spec else {
+                panic!("mission-control tool should be a function tool");
+            };
+            assert_eq!(function.strict, kind.strict());
+            if function.strict {
+                assert_required_matches_properties(&function.parameters);
+            }
+            let tool_json = codex_tools::create_tools_json_for_responses_api(&[spec])
+                .expect("mission-control tool schema should serialize for Responses");
+            assert_mission_control_schema_regression(kind, &tool_json[0]);
+        }
+    }
+
+    fn assert_required_matches_properties(schema: &JsonSchema) {
+        let properties = schema
+            .properties
+            .as_ref()
+            .expect("strict object should have properties")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let required = schema
+            .required
+            .as_ref()
+            .expect("strict object should have required properties")
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(properties, required);
+    }
+
+    fn assert_mission_control_schema_regression(kind: MissionControlToolKind, tool_json: &Value) {
+        match kind {
+            MissionControlToolKind::Overview => {
+                assert_eq!(
+                    tool_json.pointer("/parameters/required"),
+                    Some(&json!([
+                        "include_live_sessions",
+                        "pending_cursor",
+                        "pending_limit"
+                    ]))
+                );
+                assert_nullable_property(tool_json, "include_live_sessions");
+            }
+            MissionControlToolKind::EnqueueInstruction => {
+                assert_nullable_property(tool_json, "resume");
+                assert_nullable_property(tool_json, "dry_run");
+            }
+            MissionControlToolKind::MailboxReceipts => {
+                assert_eq!(
+                    tool_json.pointer("/parameters/required"),
+                    Some(&json!(["message_id"]))
+                );
+            }
+            MissionControlToolKind::RespondInteraction => {
+                assert_eq!(tool_json.get("strict"), Some(&json!(false)));
+                assert_eq!(
+                    tool_json.pointer("/parameters/additionalProperties"),
+                    Some(&json!(false))
+                );
+            }
+        }
+    }
+
+    fn assert_nullable_property(tool_json: &Value, property_name: &str) {
+        let variants = tool_json
+            .pointer(format!("/parameters/properties/{property_name}/anyOf").as_str())
+            .and_then(Value::as_array)
+            .expect("nullable property should use anyOf");
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.get("type") == Some(&json!("null"))),
+            "{property_name} should allow null"
+        );
     }
 
     async fn output_json(output: Box<dyn ToolOutput>) -> Value {

@@ -409,6 +409,42 @@ fn nvidia_responses_request_omits_unsupported_advanced_tools() {
 }
 
 #[test]
+fn responses_request_rejects_invalid_strict_tool_schema_before_provider_request() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut tool = test_function_tool("mission_control_overview");
+    tool.strict = true;
+    tool.parameters = JsonSchema::object(
+        BTreeMap::from([(
+            "include_live_sessions".to_string(),
+            JsonSchema::boolean(/*description*/ None),
+        )]),
+        Some(Vec::new()),
+        Some(false.into()),
+    );
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Function(tool)],
+        ..Default::default()
+    };
+
+    let err = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect_err("invalid strict tool schema should fail before request dispatch");
+
+    assert!(
+        err.to_string()
+            .contains("missing required properties: include_live_sessions"),
+        "{err}"
+    );
+}
+
+#[test]
 fn responses_request_omits_hosted_web_search_for_models_without_search_support() {
     let client = test_model_client(SessionSource::Cli);
     let function_tool = test_function_tool("exec_command");

@@ -151,6 +151,239 @@ fn create_tools_json_for_responses_api_includes_top_level_name() {
 }
 
 #[test]
+fn create_tools_json_for_responses_api_accepts_strict_nullable_property() {
+    assert_eq!(
+        create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+            name: "demo".to_string(),
+            description: "A demo tool".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "query".to_string(),
+                    JsonSchema::any_of(
+                        vec![
+                            JsonSchema::string(/*description*/ None),
+                            JsonSchema::null(/*description*/ None),
+                        ],
+                        Some("Optional query.".to_string()),
+                    ),
+                )]),
+                Some(vec!["query".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })])
+        .expect("serialize tools"),
+        vec![json!({
+            "type": "function",
+            "name": "demo",
+            "description": "A demo tool",
+            "strict": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "description": "Optional query.",
+                        "anyOf": [
+                            { "type": "string" },
+                            { "type": "null" }
+                        ],
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            },
+        })]
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_accepts_strict_nested_closed_object() {
+    assert_eq!(
+        create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+            name: "demo".to_string(),
+            description: "A demo tool".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "payload".to_string(),
+                    JsonSchema::object(
+                        BTreeMap::from([(
+                            "query".to_string(),
+                            JsonSchema::string(/*description*/ None),
+                        )]),
+                        Some(vec!["query".to_string()]),
+                        Some(false.into()),
+                    ),
+                )]),
+                Some(vec!["payload".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })])
+        .expect("serialize tools"),
+        vec![json!({
+            "type": "function",
+            "name": "demo",
+            "description": "A demo tool",
+            "strict": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "payload": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": false,
+                    },
+                },
+                "required": ["payload"],
+                "additionalProperties": false,
+            },
+        })]
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_rejects_strict_missing_required_property() {
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+        name: "demo".to_string(),
+        description: "A demo tool".to_string(),
+        strict: true,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            Some(Vec::new()),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })])
+    .expect_err("strict schema should be rejected locally");
+
+    assert!(
+        err.to_string()
+            .contains("missing required properties: query"),
+        "{err}"
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_rejects_strict_missing_required_array() {
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+        name: "demo".to_string(),
+        description: "A demo tool".to_string(),
+        strict: true,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            None,
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })])
+    .expect_err("strict schema should be rejected locally");
+
+    assert!(
+        err.to_string()
+            .contains("object schemas must provide required with every property key"),
+        "{err}"
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_rejects_strict_missing_additional_properties() {
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+        name: "demo".to_string(),
+        description: "A demo tool".to_string(),
+        strict: true,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            Some(vec!["query".to_string()]),
+            None,
+        ),
+        output_schema: None,
+    })])
+    .expect_err("strict schema should be rejected locally");
+
+    assert!(
+        err.to_string()
+            .contains("parameters: object schemas must set additionalProperties to false"),
+        "{err}"
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_rejects_strict_nested_open_object() {
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Function(ResponsesApiTool {
+        name: "demo".to_string(),
+        description: "A demo tool".to_string(),
+        strict: true,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "payload".to_string(),
+                JsonSchema::object(BTreeMap::new(), Some(Vec::new()), Some(true.into())),
+            )]),
+            Some(vec!["payload".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })])
+    .expect_err("strict nested object should be rejected locally");
+
+    assert!(
+        err.to_string().contains(
+            "parameters.properties.payload: object schemas must set additionalProperties to false"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn create_tools_json_for_responses_api_validates_strict_namespace_child_tools() {
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Namespace(ResponsesApiNamespace {
+        name: "mcp__demo__".to_string(),
+        description: "Demo tools".to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "lookup_order".to_string(),
+            description: "Look up an order".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "order_id".to_string(),
+                    JsonSchema::string(/*description*/ None),
+                )]),
+                Some(Vec::new()),
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })],
+    })])
+    .expect_err("strict namespace child schema should be rejected locally");
+
+    assert!(
+        err.to_string()
+            .contains("missing required properties: order_id"),
+        "{err}"
+    );
+}
+
+#[test]
 fn namespace_tool_spec_serializes_expected_wire_shape() {
     assert_eq!(
         serde_json::to_value(ToolSpec::Namespace(ResponsesApiNamespace {

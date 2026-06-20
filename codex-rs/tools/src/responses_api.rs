@@ -26,9 +26,8 @@ pub struct FreeformToolFormat {
 pub struct ResponsesApiTool {
     pub name: String,
     pub description: String,
-    /// TODO: Validation. When strict is set to true, the JSON schema,
-    /// `required` and `additional_properties` must be present. All fields in
-    /// `properties` must be present in `required`.
+    /// When strict is set to true, `create_tools_json_for_responses_api`
+    /// validates that the JSON schema is compatible with OpenAI strict mode.
     pub strict: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,

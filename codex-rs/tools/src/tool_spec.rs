@@ -1,7 +1,11 @@
+use crate::AdditionalProperties;
 use crate::FreeformTool;
 use crate::JsonSchema;
+use crate::JsonSchemaPrimitiveType;
+use crate::JsonSchemaType;
 use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
+use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -9,6 +13,7 @@ use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLo
 use codex_protocol::config_types::WebSearchUserLocationType;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -105,11 +110,174 @@ pub fn create_tools_json_for_responses_api(
     let mut tools_json = Vec::new();
 
     for tool in tools {
+        validate_tool_spec_for_responses_api(tool)?;
         let json = serde_json::to_value(tool)?;
         tools_json.push(json);
     }
 
     Ok(tools_json)
+}
+
+fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_json::Error> {
+    match tool {
+        ToolSpec::Function(tool) => validate_responses_api_tool(tool),
+        ToolSpec::Namespace(namespace) => {
+            for tool in &namespace.tools {
+                match tool {
+                    ResponsesApiNamespaceTool::Function(tool) => validate_responses_api_tool(tool)?,
+                }
+            }
+            Ok(())
+        }
+        ToolSpec::ToolSearch { .. }
+        | ToolSpec::ImageGeneration { .. }
+        | ToolSpec::WebSearch { .. }
+        | ToolSpec::AnthropicWebSearch { .. }
+        | ToolSpec::OpenRouterWebSearch { .. }
+        | ToolSpec::XaiWebSearch { .. }
+        | ToolSpec::XiaomiWebSearch { .. }
+        | ToolSpec::QwenWebSearch { .. }
+        | ToolSpec::ZaiWebSearch { .. }
+        | ToolSpec::Freeform(_) => Ok(()),
+    }
+}
+
+fn validate_responses_api_tool(tool: &ResponsesApiTool) -> Result<(), serde_json::Error> {
+    if !tool.strict {
+        return Ok(());
+    }
+    if !is_object_schema(&tool.parameters) {
+        return Err(strict_schema_error(
+            tool.name.as_str(),
+            "parameters",
+            "strict function parameters must be an object schema",
+        ));
+    }
+    validate_strict_schema(tool.name.as_str(), "parameters", &tool.parameters)
+}
+
+fn validate_strict_schema(
+    tool_name: &str,
+    path: &str,
+    schema: &JsonSchema,
+) -> Result<(), serde_json::Error> {
+    if is_object_schema(schema) {
+        match schema.additional_properties.as_ref() {
+            Some(AdditionalProperties::Boolean(false)) => {}
+            _ => {
+                return Err(strict_schema_error(
+                    tool_name,
+                    path,
+                    "object schemas must set additionalProperties to false",
+                ));
+            }
+        }
+
+        let properties = schema.properties.as_ref();
+        let property_names = properties
+            .map(|properties| {
+                properties
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let Some(required) = schema.required.as_ref() else {
+            return Err(strict_schema_error(
+                tool_name,
+                path,
+                "object schemas must provide required with every property key",
+            ));
+        };
+        let required_names = required.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        if property_names != required_names {
+            let missing = property_names
+                .difference(&required_names)
+                .copied()
+                .collect::<Vec<_>>();
+            let extra = required_names
+                .difference(&property_names)
+                .copied()
+                .collect::<Vec<_>>();
+            let mut details = Vec::new();
+            if !missing.is_empty() {
+                details.push(format!(
+                    "missing required properties: {}",
+                    missing.join(", ")
+                ));
+            }
+            if !extra.is_empty() {
+                details.push(format!("unknown required properties: {}", extra.join(", ")));
+            }
+            return Err(strict_schema_error(tool_name, path, details.join("; ")));
+        }
+    }
+
+    if let Some(properties) = schema.properties.as_ref() {
+        for (name, property) in properties {
+            validate_strict_schema(
+                tool_name,
+                format!("{path}.properties.{name}").as_str(),
+                property,
+            )?;
+        }
+    }
+    if let Some(items) = schema.items.as_ref() {
+        validate_strict_schema(tool_name, format!("{path}.items").as_str(), items)?;
+    }
+    if let Some(variants) = schema.any_of.as_ref() {
+        for (index, variant) in variants.iter().enumerate() {
+            validate_strict_schema(
+                tool_name,
+                format!("{path}.anyOf[{index}]").as_str(),
+                variant,
+            )?;
+        }
+    }
+    if let Some(defs) = schema.defs.as_ref() {
+        for (name, definition) in defs {
+            validate_strict_schema(
+                tool_name,
+                format!("{path}.$defs.{name}").as_str(),
+                definition,
+            )?;
+        }
+    }
+    if let Some(definitions) = schema.definitions.as_ref() {
+        for (name, definition) in definitions {
+            validate_strict_schema(
+                tool_name,
+                format!("{path}.definitions.{name}").as_str(),
+                definition,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_object_schema(schema: &JsonSchema) -> bool {
+    matches!(
+        schema.schema_type.as_ref(),
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
+    ) || matches!(
+        schema.schema_type.as_ref(),
+        Some(JsonSchemaType::Multiple(types)) if types.contains(&JsonSchemaPrimitiveType::Object)
+    ) || schema.properties.is_some()
+}
+
+fn strict_schema_error(
+    tool_name: &str,
+    path: &str,
+    message: impl Into<String>,
+) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!(
+            "strict tool schema for '{tool_name}' is invalid at {path}: {}",
+            message.into()
+        ),
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
