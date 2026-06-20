@@ -217,10 +217,20 @@ impl ThreadWorkflowRequestProcessor {
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
         let idempotency_key = params.idempotency_key.and_then(normalize_optional_string);
+        let workflow_record_id = params.workflow_record_id;
+        if state_db
+            .workflows()
+            .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read thread workflow: {err}")))?
+            .is_none()
+        {
+            return Err(invalid_request("workflow not found for thread"));
+        }
         let snapshot = state_db
             .workflows()
             .create_workflow_run(codex_state::WorkflowRunCreateParams {
-                workflow_record_id: params.workflow_record_id,
+                workflow_record_id,
                 source_thread_id: Some(thread_id),
                 idempotency_key: idempotency_key.clone(),
             })
@@ -258,7 +268,6 @@ impl ThreadWorkflowRequestProcessor {
             return Ok(ThreadWorkflowRunPauseResponse { run: None });
         }
         let run = state_db
-            .workflows()
             .pause_workflow_run(codex_state::WorkflowRunPauseParams {
                 run_id: params.run_id,
                 reason: params
@@ -283,7 +292,6 @@ impl ThreadWorkflowRequestProcessor {
             return Ok(ThreadWorkflowRunResumeResponse { run: None });
         }
         let run = state_db
-            .workflows()
             .resume_workflow_run(codex_state::WorkflowRunResumeParams {
                 run_id: params.run_id,
             })

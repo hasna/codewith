@@ -4225,16 +4225,20 @@ dependencies = [
 name = "codex-workflows-extension"
 version = "0.1.42"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "chrono",
  "codex-extension-api",
  "codex-prompts",
  "codex-protocol",
+ "codex-state",
  "codex-tools",
  "codex-utils-output-truncation",
  "codex-workflows",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

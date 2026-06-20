@@ -367,6 +367,34 @@ RETURNING generation
         }
         Ok(snapshot)
     }
+
+    pub async fn pause_workflow_run(
+        &self,
+        params: crate::WorkflowRunPauseParams,
+    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+        let run_id = params.run_id.clone();
+        let snapshot = self.workflows.pause_workflow_run(params).await?;
+        if snapshot.is_some() {
+            self.thread_goals
+                .pause_workflow_goal_plan_projection(run_id.as_str())
+                .await?;
+        }
+        Ok(snapshot)
+    }
+
+    pub async fn resume_workflow_run(
+        &self,
+        params: crate::WorkflowRunResumeParams,
+    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+        let run_id = params.run_id.clone();
+        let snapshot = self.workflows.resume_workflow_run(params).await?;
+        if snapshot.is_some() {
+            self.thread_goals
+                .resume_workflow_goal_plan_projection(run_id.as_str())
+                .await?;
+        }
+        Ok(snapshot)
+    }
 }
 
 pub(super) async fn claim_checked_workflow_run_in_tx(
@@ -3192,6 +3220,93 @@ WHERE worktree_id = ? AND detached_at_ms IS NULL
                 .get_thread_goal(thread_id)
                 .await
                 .expect("thread goal should read")
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_pause_and_resume_sync_projected_goal_plan() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let marker = runtime.codex_home().join("pause-marker");
+        let (run, projection) =
+            create_projected_run(&runtime, thread_id, "wf_pause_projection", &marker, false).await;
+        let node_id = projection.snapshot.nodes[0].node_id.clone();
+        let activation = runtime
+            .thread_goals()
+            .activate_thread_goal_plan_node(thread_id, node_id.as_str())
+            .await
+            .expect("activation should succeed")
+            .expect("node should activate");
+        let active_goal = activation
+            .activated_goal
+            .expect("projection activation should create a goal");
+        assert_eq!(crate::ThreadGoalStatus::Active, active_goal.status);
+
+        let paused = runtime
+            .pause_workflow_run(WorkflowRunPauseParams {
+                run_id: run.run.run_id.clone(),
+                reason: "pause".to_string(),
+            })
+            .await
+            .expect("pause should succeed")
+            .expect("workflow run should exist");
+
+        assert_eq!(crate::WorkflowRunStatus::Paused, paused.run.status);
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("thread goal should read")
+            .expect("active goal should still exist");
+        assert_eq!(crate::ThreadGoalStatus::Paused, goal.status);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(crate::ThreadGoalPlanStatus::Paused, plan.plan.status);
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Paused],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+
+        let resumed = runtime
+            .resume_workflow_run(WorkflowRunResumeParams {
+                run_id: run.run.run_id.clone(),
+            })
+            .await
+            .expect("resume should succeed")
+            .expect("workflow run should exist");
+
+        assert_eq!(crate::WorkflowRunStatus::Waiting, resumed.run.status);
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("thread goal should read")
+            .expect("active goal should still exist");
+        assert_eq!(crate::ThreadGoalStatus::Active, goal.status);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(projection.plan_id, plan.plan.plan_id);
+        assert_eq!(crate::ThreadGoalPlanStatus::Active, plan.plan.status);
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Active],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
         );
     }
 

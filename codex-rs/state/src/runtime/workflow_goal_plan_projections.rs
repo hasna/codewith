@@ -171,6 +171,145 @@ WHERE plan_id = ?
         Ok(vec![snapshot])
     }
 
+    pub(crate) async fn pause_workflow_goal_plan_projection(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Vec<crate::ThreadGoalPlanSnapshot>> {
+        let Some(plan_id) =
+            workflow_goal_plan_projection_plan_id_in_pool(&self.pool, run_id).await?
+        else {
+            return Ok(Vec::new());
+        };
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goals
+SET status = ?, updated_at_ms = ?
+WHERE status = 'active'
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goal_plan_nodes node
+      WHERE node.projected_goal_id = thread_goals.goal_id
+        AND node.plan_id = ?
+  )
+            "#,
+        )
+        .bind(crate::ThreadGoalStatus::Paused.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plan_nodes
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status IN ('pending', 'active')
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanNodeStatus::Paused.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plans
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status = 'active'
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanStatus::Paused.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, plan_id.as_str()).await?;
+        tx.commit().await?;
+        Ok(vec![snapshot])
+    }
+
+    pub(crate) async fn resume_workflow_goal_plan_projection(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Vec<crate::ThreadGoalPlanSnapshot>> {
+        let Some(plan_id) =
+            workflow_goal_plan_projection_plan_id_in_pool(&self.pool, run_id).await?
+        else {
+            return Ok(Vec::new());
+        };
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plan_nodes
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status = 'paused'
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goals current_goal
+      WHERE current_goal.goal_id = thread_goal_plan_nodes.projected_goal_id
+        AND current_goal.status = 'paused'
+  )
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanNodeStatus::Active.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goals
+SET status = ?, updated_at_ms = ?
+WHERE status = 'paused'
+  AND EXISTS (
+      SELECT 1
+      FROM thread_goal_plan_nodes node
+      WHERE node.projected_goal_id = thread_goals.goal_id
+        AND node.plan_id = ?
+  )
+            "#,
+        )
+        .bind(crate::ThreadGoalStatus::Active.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plan_nodes
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status = 'paused'
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plans
+SET status = ?, updated_at_ms = ?
+WHERE plan_id = ?
+  AND status = 'paused'
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanStatus::Active.as_str())
+        .bind(now_ms)
+        .bind(plan_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, plan_id.as_str()).await?;
+        tx.commit().await?;
+        Ok(vec![snapshot])
+    }
+
     pub(crate) async fn completed_workflow_projection_steps(
         &self,
         run_id: &str,

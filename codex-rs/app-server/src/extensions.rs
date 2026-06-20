@@ -42,6 +42,7 @@ where
     S: AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> + 'static,
 {
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
+    let workflow_state_db = state_db.clone();
     if let Some(state_db) = state_db {
         crate::mission_control_tools::install(
             &mut builder,
@@ -75,7 +76,7 @@ where
     codex_memories_extension::install(&mut builder, codex_otel::global());
     codex_web_search_extension::install(&mut builder, auth_manager.clone());
     codex_image_generation_extension::install(&mut builder, auth_manager);
-    codex_workflows_extension::install(&mut builder, |config: &Config| {
+    codex_workflows_extension::install(&mut builder, workflow_state_db, |config: &Config| {
         config.features.enabled(codex_features::Feature::Workflows)
     });
     Arc::new(builder.build())
