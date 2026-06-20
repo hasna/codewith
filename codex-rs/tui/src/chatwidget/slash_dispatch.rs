@@ -1403,6 +1403,17 @@ impl ChatWidget {
                 }
                 match parse_workflow_slash_args(trimmed) {
                     Ok(WorkflowSlashCommand::Draft { request }) => {
+                        if self.bottom_pane.is_task_running() {
+                            self.add_error_message(
+                                "'/workflow draft' is disabled while a task is in progress."
+                                    .to_string(),
+                            );
+                            if source == SlashCommandDispatchSource::Live {
+                                self.bottom_pane.drain_pending_submission_state();
+                            }
+                            self.request_redraw();
+                            return;
+                        }
                         let workflow_prompt = workflow_generation_prompt(request);
                         self.app_event_tx.send(AppEvent::PrefillComposer {
                             text: workflow_prompt,

@@ -359,13 +359,13 @@ RETURNING generation
         params: WorkflowRunCancelParams,
     ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
         let run_id = params.run_id.clone();
-        let snapshot = self.workflows.request_workflow_run_cancel(params).await?;
-        if snapshot.is_some() {
+        let outcome = self.workflows.request_workflow_run_cancel(params).await?;
+        if outcome.as_ref().is_some_and(|outcome| outcome.changed) {
             self.thread_goals
                 .block_workflow_goal_plan_projection(run_id.as_str())
                 .await?;
         }
-        Ok(snapshot)
+        Ok(outcome.map(|outcome| outcome.snapshot))
     }
 
     pub async fn pause_workflow_run(
@@ -373,13 +373,13 @@ RETURNING generation
         params: crate::WorkflowRunPauseParams,
     ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
         let run_id = params.run_id.clone();
-        let snapshot = self.workflows.pause_workflow_run(params).await?;
-        if snapshot.is_some() {
+        let outcome = self.workflows.pause_workflow_run(params).await?;
+        if outcome.as_ref().is_some_and(|outcome| outcome.changed) {
             self.thread_goals
                 .pause_workflow_goal_plan_projection(run_id.as_str())
                 .await?;
         }
-        Ok(snapshot)
+        Ok(outcome.map(|outcome| outcome.snapshot))
     }
 
     pub async fn resume_workflow_run(
@@ -387,13 +387,13 @@ RETURNING generation
         params: crate::WorkflowRunResumeParams,
     ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
         let run_id = params.run_id.clone();
-        let snapshot = self.workflows.resume_workflow_run(params).await?;
-        if snapshot.is_some() {
+        let outcome = self.workflows.resume_workflow_run(params).await?;
+        if outcome.as_ref().is_some_and(|outcome| outcome.changed) {
             self.thread_goals
                 .resume_workflow_goal_plan_projection(run_id.as_str())
                 .await?;
         }
-        Ok(snapshot)
+        Ok(outcome.map(|outcome| outcome.snapshot))
     }
 }
 
@@ -2999,8 +2999,8 @@ WHERE plan_id = ? AND key = ?
                 worktree_path: "/repo/.git/worktrees/branch-lease".to_string(),
                 branch: Some("codewith/branch-lease".to_string()),
                 head_sha: Some("abc123".to_string()),
-                status_snapshot_json: json!({"dirty": false}),
-                dirty: false,
+                status_snapshot_json: json!({"dirty": true, "paths": ["src/user-work.rs"]}),
+                dirty: true,
                 cleanup_after: None,
             })
             .await
@@ -3061,6 +3061,26 @@ WHERE worktree_id = ? AND detached_at_ms IS NULL
                 .iter()
                 .any(|worktree| worktree.worktree_id == "branch-lease")
         );
+        let cleanup_candidate = cleanup_candidates
+            .iter()
+            .find(|worktree| worktree.worktree_id == "branch-lease")
+            .expect("dirty branch lease should be a cleanup candidate");
+        assert!(cleanup_candidate.dirty);
+        let tombstone: (i64, String) = sqlx::query_as(
+            r#"
+SELECT dirty_worktree, payload_json
+FROM background_agent_cleanup_tombstones
+WHERE run_id = ?
+            "#,
+        )
+        .bind(branch_run_id.as_str())
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("cleanup tombstone should load");
+        assert_eq!(tombstone.0, 1);
+        let payload: Value =
+            serde_json::from_str(tombstone.1.as_str()).expect("payload should be JSON");
+        assert_eq!(payload["forceDeleteRequired"], true);
         assert_eq!(
             crate::WorkflowRunStatus::Cancelled,
             cancelled.snapshot.run.status
@@ -3303,6 +3323,95 @@ WHERE worktree_id = ? AND detached_at_ms IS NULL
         assert_eq!(crate::ThreadGoalPlanStatus::Active, plan.plan.status);
         assert_eq!(
             vec![crate::ThreadGoalPlanNodeStatus::Active],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+
+        runtime
+            .thread_goals()
+            .pause_workflow_goal_plan_projection(run.run.run_id.as_str())
+            .await
+            .expect("projection pause should succeed");
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(crate::ThreadGoalPlanStatus::Paused, plan.plan.status);
+
+        let resumed_again = runtime
+            .resume_workflow_run(WorkflowRunResumeParams {
+                run_id: run.run.run_id.clone(),
+            })
+            .await
+            .expect("second resume should succeed")
+            .expect("workflow run should exist");
+
+        assert_eq!(crate::WorkflowRunStatus::Waiting, resumed_again.run.status);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(projection.plan_id, plan.plan.plan_id);
+        assert_eq!(crate::ThreadGoalPlanStatus::Paused, plan.plan.status);
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Paused],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_terminal_cancel_does_not_block_projected_goal_plan() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let marker = runtime.codex_home().join("terminal-cancel-marker");
+        let (run, projection) =
+            create_projected_run(&runtime, thread_id, "wf_terminal_cancel", &marker, false).await;
+        sqlx::query(
+            r#"
+UPDATE workflow_runs
+SET status = ?, updated_at_ms = updated_at_ms + 1
+WHERE run_id = ?
+            "#,
+        )
+        .bind(crate::WorkflowRunStatus::Completed.as_str())
+        .bind(run.run.run_id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("workflow run should update");
+
+        let cancelled = runtime
+            .request_workflow_run_cancel(WorkflowRunCancelParams {
+                run_id: run.run.run_id,
+                reason: "cancel completed run".to_string(),
+            })
+            .await
+            .expect("terminal cancel should succeed")
+            .expect("workflow run should exist");
+
+        assert_eq!(crate::WorkflowRunStatus::Completed, cancelled.run.status);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(projection.plan_id, plan.plan.plan_id);
+        assert_eq!(crate::ThreadGoalPlanStatus::Active, plan.plan.status);
+        assert_eq!(
+            vec![crate::ThreadGoalPlanNodeStatus::Pending],
             plan.nodes
                 .iter()
                 .map(|node| node.status)

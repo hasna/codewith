@@ -209,6 +209,7 @@ pub use workflows::WorkflowRunCreateParams;
 pub use workflows::WorkflowRunListPage;
 pub use workflows::WorkflowRunPauseParams;
 pub use workflows::WorkflowRunResumeParams;
+pub use workflows::WorkflowRunStatusMutationOutcome;
 pub use workflows::WorkflowSpecCreateParams;
 pub use workflows::WorkflowSpecListPage;
 pub use workflows::WorkflowStore;

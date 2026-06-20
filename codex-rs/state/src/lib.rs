@@ -213,6 +213,7 @@ pub use runtime::WorkflowRunCreateParams;
 pub use runtime::WorkflowRunListPage;
 pub use runtime::WorkflowRunPauseParams;
 pub use runtime::WorkflowRunResumeParams;
+pub use runtime::WorkflowRunStatusMutationOutcome;
 pub use runtime::WorkflowRunVerifierClaimOutcome;
 pub use runtime::WorkflowRunVerifierClaimParams;
 pub use runtime::WorkflowRunVerifierClaimSelection;

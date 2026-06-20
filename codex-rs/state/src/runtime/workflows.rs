@@ -47,6 +47,12 @@ pub struct WorkflowRunListPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunStatusMutationOutcome {
+    pub snapshot: crate::WorkflowRunSnapshot,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunCreateParams {
     pub workflow_record_id: String,
     pub source_thread_id: Option<ThreadId>,
@@ -415,15 +421,17 @@ LIMIT ? OFFSET ?
     pub async fn request_workflow_run_cancel(
         &self,
         params: WorkflowRunCancelParams,
-    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+    ) -> anyhow::Result<Option<WorkflowRunStatusMutationOutcome>> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let Some(run) = get_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await? else {
             tx.commit().await?;
             return Ok(None);
         };
+        let mut changed = false;
 
         if !run.status.is_terminal() && run.status != crate::WorkflowRunStatus::CancelRequested {
+            changed = true;
             let status_reason = sanitized_workflow_cancel_reason();
             sqlx::query(
                 r#"
@@ -466,24 +474,26 @@ WHERE run_id = ?
 
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
         tx.commit().await?;
-        Ok(Some(snapshot))
+        Ok(Some(WorkflowRunStatusMutationOutcome { snapshot, changed }))
     }
 
     pub async fn pause_workflow_run(
         &self,
         params: WorkflowRunPauseParams,
-    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+    ) -> anyhow::Result<Option<WorkflowRunStatusMutationOutcome>> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let Some(run) = get_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await? else {
             tx.commit().await?;
             return Ok(None);
         };
+        let mut changed = false;
 
         if !run.status.is_terminal()
             && run.status != crate::WorkflowRunStatus::CancelRequested
             && run.status != crate::WorkflowRunStatus::Paused
         {
+            changed = true;
             sqlx::query(
                 r#"
 UPDATE workflow_runs
@@ -525,21 +535,23 @@ WHERE run_id = ?
 
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
         tx.commit().await?;
-        Ok(Some(snapshot))
+        Ok(Some(WorkflowRunStatusMutationOutcome { snapshot, changed }))
     }
 
     pub async fn resume_workflow_run(
         &self,
         params: WorkflowRunResumeParams,
-    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+    ) -> anyhow::Result<Option<WorkflowRunStatusMutationOutcome>> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let Some(run) = get_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await? else {
             tx.commit().await?;
             return Ok(None);
         };
+        let mut changed = false;
 
         if run.status == crate::WorkflowRunStatus::Paused {
+            changed = true;
             sqlx::query(
                 r#"
 UPDATE workflow_runs
@@ -579,7 +591,7 @@ WHERE run_id = ?
 
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
         tx.commit().await?;
-        Ok(Some(snapshot))
+        Ok(Some(WorkflowRunStatusMutationOutcome { snapshot, changed }))
     }
 }
 
@@ -1801,22 +1813,24 @@ mod tests {
             .await
             .expect("cancel request should succeed")
             .expect("workflow run should exist");
+        assert!(cancelled.changed);
         assert_eq!(
             crate::WorkflowRunStatus::CancelRequested,
-            cancelled.run.status
+            cancelled.snapshot.run.status
         );
         assert_eq!(
             Some("user requested workflow cancellation"),
-            cancelled.run.status_reason.as_deref()
+            cancelled.snapshot.run.status_reason.as_deref()
         );
         assert_eq!(
             Some("user_cancel_requested"),
-            cancelled.run.reason_code.as_deref()
+            cancelled.snapshot.run.reason_code.as_deref()
         );
-        assert_eq!(2, cancelled.run.last_event_seq);
+        assert_eq!(2, cancelled.snapshot.run.last_event_seq);
         assert_eq!(
             vec!["created", "cancel_requested"],
             cancelled
+                .snapshot
                 .events
                 .iter()
                 .map(|event| event.event_type.as_str())
@@ -1824,6 +1838,7 @@ mod tests {
         );
         assert!(
             !cancelled
+                .snapshot
                 .events
                 .iter()
                 .map(|event| event.event_payload_json.to_string())
@@ -1840,8 +1855,9 @@ mod tests {
             .await
             .expect("second cancel request should succeed")
             .expect("workflow run should exist");
-        assert_eq!(2, cancelled_again.run.last_event_seq);
-        assert_eq!(2, cancelled_again.events.len());
+        assert!(!cancelled_again.changed);
+        assert_eq!(2, cancelled_again.snapshot.run.last_event_seq);
+        assert_eq!(2, cancelled_again.snapshot.events.len());
     }
 
     #[tokio::test]

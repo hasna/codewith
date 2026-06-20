@@ -1,6 +1,8 @@
 use serde_json::Value;
 use serde_json::json;
 
+const MAX_MODEL_RUN_DETAILS: usize = 20;
+
 pub(crate) fn workflow_json(workflow: codex_state::WorkflowSpecRecord) -> Value {
     json!({
         "threadId": workflow.source_thread_id.map(|thread_id| thread_id.to_string()),
@@ -58,11 +60,34 @@ pub(crate) fn run_summary_json(snapshot: &codex_state::WorkflowRunSnapshot) -> V
 }
 
 pub(crate) fn run_snapshot_json(snapshot: &codex_state::WorkflowRunSnapshot) -> Value {
+    let steps = snapshot
+        .steps
+        .iter()
+        .take(MAX_MODEL_RUN_DETAILS)
+        .map(step_json)
+        .collect::<Vec<_>>();
+    let verifiers = snapshot
+        .verifiers
+        .iter()
+        .take(MAX_MODEL_RUN_DETAILS)
+        .map(verifier_json)
+        .collect::<Vec<_>>();
+    let event_count = snapshot.events.len();
+    let events = snapshot
+        .events
+        .iter()
+        .skip(event_count.saturating_sub(MAX_MODEL_RUN_DETAILS))
+        .map(event_json)
+        .collect::<Vec<_>>();
+
     json!({
         "run": run_summary_json(snapshot),
-        "steps": snapshot.steps.iter().map(step_json).collect::<Vec<_>>(),
-        "verifiers": snapshot.verifiers.iter().map(verifier_json).collect::<Vec<_>>(),
-        "events": snapshot.events.iter().map(event_json).collect::<Vec<_>>(),
+        "steps": steps,
+        "omittedStepCount": snapshot.steps.len().saturating_sub(MAX_MODEL_RUN_DETAILS),
+        "verifiers": verifiers,
+        "omittedVerifierCount": snapshot.verifiers.len().saturating_sub(MAX_MODEL_RUN_DETAILS),
+        "recentEvents": events,
+        "omittedEventCount": event_count.saturating_sub(MAX_MODEL_RUN_DETAILS),
     })
 }
 
@@ -143,4 +168,79 @@ fn truncate_text(value: &str) -> String {
         return value.to_string();
     }
     value.chars().take(MAX_CHARS).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn run_snapshot_json_bounds_recent_events_for_model_context() {
+        let timestamp = chrono::Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let snapshot = codex_state::WorkflowRunSnapshot {
+            run: codex_state::WorkflowRun {
+                run_id: "run-1".to_string(),
+                workflow_record_id: "workflow-1".to_string(),
+                source_thread_id: None,
+                idempotency_key: None,
+                spec_workflow_id: "wf_context_bound".to_string(),
+                schema_version: "1".to_string(),
+                source_yaml_sha256: "sha".to_string(),
+                status: codex_state::WorkflowRunStatus::Running,
+                status_reason: None,
+                reason_code: None,
+                generation: 1,
+                owner_id: None,
+                lease_expires_at: None,
+                heartbeat_at: None,
+                last_event_seq: 25,
+                agents_json: json!([]),
+                execution_defaults_json: json!({}),
+                limits_json: json!({}),
+                approvals_json: json!({}),
+                loops_json: None,
+                monitor_links_json: None,
+                artifacts_json: json!({}),
+                cleanup_json: json!({}),
+                created_at: timestamp,
+                updated_at: timestamp,
+                started_at: Some(timestamp),
+                completed_at: None,
+            },
+            steps: Vec::new(),
+            verifiers: Vec::new(),
+            events: (1..=25)
+                .map(|seq| codex_state::WorkflowRunEvent {
+                    event_id: format!("event-{seq}"),
+                    run_id: "run-1".to_string(),
+                    seq,
+                    event_type: format!("event-{seq}"),
+                    actor_kind: "system".to_string(),
+                    actor_id: None,
+                    step_run_id: None,
+                    verifier_run_id: None,
+                    visibility: "internal".to_string(),
+                    event_payload_json: json!({"secret": "not serialized"}),
+                    created_at: timestamp,
+                })
+                .collect(),
+        };
+
+        let value = run_snapshot_json(&snapshot);
+
+        assert_eq!(5, value["omittedEventCount"]);
+        let events = value["recentEvents"]
+            .as_array()
+            .expect("events should be array");
+        assert_eq!(MAX_MODEL_RUN_DETAILS, events.len());
+        assert_eq!(6, events[0]["seq"]);
+        assert_eq!(25, events[19]["seq"]);
+        assert!(!value.to_string().contains("not serialized"));
+    }
 }

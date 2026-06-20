@@ -263,7 +263,6 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Review
             | SlashCommand::Plan
-            | SlashCommand::Workflow
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -284,6 +283,7 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
             | SlashCommand::Schedule
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
-        assert!(!SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Workflow.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
@@ -530,6 +530,6 @@ mod tests {
             "manage workflow specs and runs for this thread"
         );
         assert!(SlashCommand::Workflow.supports_inline_args());
-        assert!(!SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Workflow.available_during_task());
     }
 }

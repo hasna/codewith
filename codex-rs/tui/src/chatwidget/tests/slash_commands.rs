@@ -2038,6 +2038,60 @@ async fn workflow_run_slash_commands_emit_management_events() {
 }
 
 #[tokio::test]
+async fn workflow_run_controls_work_while_task_running_but_draft_is_blocked() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::Workflow,
+        "run cancel run-1".to_string(),
+        Vec::new(),
+    );
+
+    let event = rx.try_recv().expect("expected workflow run cancel event");
+    let AppEvent::ManageThreadWorkflow {
+        thread_id: actual_thread_id,
+        action,
+    } = event
+    else {
+        panic!("expected ManageThreadWorkflow, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(
+        action,
+        crate::app_event::ThreadWorkflowAction::RunCancel {
+            run_id: "run-1".to_string(),
+        }
+    );
+    assert_no_submit_op(&mut op_rx);
+
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::Workflow,
+        "draft build a workflow".to_string(),
+        Vec::new(),
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("'/workflow draft' is disabled while a task is in progress."),
+        "expected /workflow draft task-running error, got {rendered:?}"
+    );
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn workflow_draft_slash_command_prefills_yaml_generation_prompt_without_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
