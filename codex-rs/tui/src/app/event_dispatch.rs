@@ -931,8 +931,8 @@ impl App {
                 )
                 .await;
             }
-            AppEvent::OpenThreadWorkflowManager { thread_id } => {
-                self.open_thread_workflow_manager(app_server, thread_id)
+            AppEvent::ManageThreadWorkflow { thread_id, action } => {
+                self.manage_thread_workflow(app_server, thread_id, action)
                     .await;
             }
             AppEvent::OpenThreadGoalPlanDetail { thread_id, plan } => {

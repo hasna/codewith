@@ -1,6 +1,19 @@
 use super::ChatWidget;
+use codex_app_server_protocol::ThreadGoalPlan;
+use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadWorkflow;
+use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
+use codex_app_server_protocol::ThreadWorkflowRun;
+use codex_app_server_protocol::ThreadWorkflowRunGetResponse;
+use codex_app_server_protocol::ThreadWorkflowRunListResponse;
+use codex_app_server_protocol::ThreadWorkflowRunSnapshot;
+use codex_app_server_protocol::ThreadWorkflowRunStartResponse;
+use codex_app_server_protocol::ThreadWorkflowRunStatus;
+use codex_app_server_protocol::ThreadWorkflowRunStep;
+use codex_app_server_protocol::ThreadWorkflowRunStepStatus;
+use codex_app_server_protocol::ThreadWorkflowRunStepVerifier;
+use codex_app_server_protocol::ThreadWorkflowRunStepVerifierStatus;
 use codex_app_server_protocol::ThreadWorkflowStatus;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -16,6 +29,78 @@ impl ChatWidget {
         }
 
         self.add_plain_history_lines(thread_workflow_summary_lines(&response.data));
+    }
+
+    pub(crate) fn show_thread_workflow_detail(&mut self, response: ThreadWorkflowGetResponse) {
+        let Some(workflow) = response.workflow else {
+            self.add_info_message(
+                "No workflow found for this thread.".to_string(),
+                Some(super::workflow_slash::WORKFLOW_USAGE_HINT.to_string()),
+            );
+            return;
+        };
+
+        self.add_plain_history_lines(thread_workflow_detail_lines(&workflow));
+    }
+
+    pub(crate) fn show_thread_workflow_run_summary(
+        &mut self,
+        response: ThreadWorkflowRunListResponse,
+    ) {
+        if response.data.is_empty() {
+            self.add_info_message(
+                "No workflow runs for this thread.".to_string(),
+                Some("/workflow run start <workflow_record_id>".to_string()),
+            );
+            return;
+        }
+
+        self.add_plain_history_lines(thread_workflow_run_summary_lines(&response.data));
+    }
+
+    pub(crate) fn show_thread_workflow_run_detail(
+        &mut self,
+        response: ThreadWorkflowRunGetResponse,
+    ) {
+        let Some(run) = response.run else {
+            self.add_info_message(
+                "No workflow run found for this thread.".to_string(),
+                Some("/workflow run list".to_string()),
+            );
+            return;
+        };
+
+        self.add_plain_history_lines(thread_workflow_run_detail_lines(&run));
+    }
+
+    pub(crate) fn show_thread_workflow_run_started(
+        &mut self,
+        response: ThreadWorkflowRunStartResponse,
+    ) {
+        let mut lines = vec!["Started workflow run".bold().into()];
+        lines.extend(thread_workflow_run_snapshot_lines(&response.run));
+        if let Some(goal_plan) = response.goal_plan {
+            lines.push(goal_plan_summary_line(&goal_plan));
+        }
+        self.add_plain_history_lines(lines);
+    }
+
+    pub(crate) fn show_thread_workflow_run_update(
+        &mut self,
+        title: &'static str,
+        run: Option<ThreadWorkflowRunSnapshot>,
+    ) {
+        let Some(run) = run else {
+            self.add_info_message(
+                "No workflow run found for this thread.".to_string(),
+                Some("/workflow run list".to_string()),
+            );
+            return;
+        };
+
+        let mut lines = vec![title.bold().into()];
+        lines.extend(thread_workflow_run_snapshot_lines(&run));
+        self.add_plain_history_lines(lines);
     }
 }
 
@@ -59,7 +144,195 @@ pub(crate) fn thread_workflow_summary_lines(workflows: &[ThreadWorkflow]) -> Vec
     lines
 }
 
+pub(crate) fn thread_workflow_detail_lines(workflow: &ThreadWorkflow) -> Vec<Line<'static>> {
+    let mut lines = vec!["Workflow spec metadata".bold().into()];
+    lines.extend(thread_workflow_summary_lines(std::slice::from_ref(
+        workflow,
+    )));
+    lines.push(super::workflow_slash::WORKFLOW_USAGE_HINT.dim().into());
+    lines
+}
+
+pub(crate) fn thread_workflow_run_summary_lines(runs: &[ThreadWorkflowRun]) -> Vec<Line<'static>> {
+    let mut lines = vec!["Workflow runs".bold().into()];
+    for run in runs {
+        lines.push(run_header_line(run));
+        lines.push(run_counts_line(run).dim().into());
+        lines.push(
+            format!(
+                "  run {} | workflow {} | yaml sha256 {} | updated {}",
+                short_id(&run.run_id),
+                short_id(&run.workflow_record_id),
+                short_id(&run.source_yaml_sha256),
+                run.updated_at
+            )
+            .dim()
+            .into(),
+        );
+    }
+    lines
+}
+
+pub(crate) fn thread_workflow_run_detail_lines(
+    snapshot: &ThreadWorkflowRunSnapshot,
+) -> Vec<Line<'static>> {
+    let mut lines = vec!["Workflow run detail".bold().into()];
+    lines.extend(thread_workflow_run_snapshot_lines(snapshot));
+    if !snapshot.steps.is_empty() {
+        lines.push("Steps".bold().into());
+        for step in snapshot.steps.iter().take(8) {
+            lines.push(step_line(step));
+        }
+        push_remaining_count_line(&mut lines, snapshot.steps.len(), 8, "steps");
+    }
+    if !snapshot.verifiers.is_empty() {
+        lines.push("Verifiers".bold().into());
+        for verifier in snapshot.verifiers.iter().take(8) {
+            lines.push(verifier_line(verifier));
+        }
+        push_remaining_count_line(&mut lines, snapshot.verifiers.len(), 8, "verifiers");
+    }
+    if !snapshot.events.is_empty() {
+        lines.push("Recent events".bold().into());
+        let event_count = snapshot.events.len();
+        for event in snapshot.events.iter().rev().take(8).rev() {
+            lines.push(
+                format!(
+                    "  #{} {} {} {}",
+                    event.seq,
+                    sanitize_metadata_label(&event.event_type),
+                    sanitize_metadata_label(&event.actor_kind),
+                    event.created_at
+                )
+                .dim()
+                .into(),
+            );
+        }
+        push_remaining_count_line(&mut lines, event_count, 8, "events");
+    }
+    lines
+}
+
+fn thread_workflow_run_snapshot_lines(snapshot: &ThreadWorkflowRunSnapshot) -> Vec<Line<'static>> {
+    vec![
+        run_header_line(&snapshot.run),
+        run_counts_line(&snapshot.run).dim().into(),
+        format!(
+            "  run {} | workflow {} | yaml sha256 {} | updated {}",
+            short_id(&snapshot.run.run_id),
+            short_id(&snapshot.run.workflow_record_id),
+            short_id(&snapshot.run.source_yaml_sha256),
+            snapshot.run.updated_at
+        )
+        .dim()
+        .into(),
+    ]
+}
+
+fn run_header_line(run: &ThreadWorkflowRun) -> Line<'static> {
+    vec![
+        "• ".into(),
+        sanitize_metadata_label(&run.spec_workflow_id).bold(),
+        "  ".into(),
+        workflow_run_status_label(run.status).dim(),
+        "  ".into(),
+        short_id(&run.run_id).to_string().dim(),
+    ]
+    .into()
+}
+
+fn run_counts_line(run: &ThreadWorkflowRun) -> String {
+    let mut step_counts = Vec::new();
+    if run.pending_step_count > 0 {
+        step_counts.push(format!("pending {}", run.pending_step_count));
+    }
+    if run.ready_step_count > 0 {
+        step_counts.push(format!("ready {}", run.ready_step_count));
+    }
+    if run.active_step_count > 0 {
+        step_counts.push(format!("active {}", run.active_step_count));
+    }
+    if run.waiting_verifier_step_count > 0 {
+        step_counts.push(format!(
+            "waiting verifier {}",
+            run.waiting_verifier_step_count
+        ));
+    }
+    if run.blocked_step_count > 0 {
+        step_counts.push(format!("blocked {}", run.blocked_step_count));
+    }
+    if run.failed_step_count > 0 {
+        step_counts.push(format!("failed {}", run.failed_step_count));
+    }
+    if run.succeeded_step_count > 0 {
+        step_counts.push(format!("succeeded {}", run.succeeded_step_count));
+    }
+    if run.skipped_step_count > 0 {
+        step_counts.push(format!("skipped {}", run.skipped_step_count));
+    }
+    if step_counts.is_empty() {
+        step_counts.push("none".to_string());
+    }
+
+    format!(
+        "  steps {} | verifiers {} | events {}",
+        step_counts.join(", "),
+        run.verifier_count,
+        run.event_count
+    )
+}
+
+fn step_line(step: &ThreadWorkflowRunStep) -> Line<'static> {
+    vec![
+        "  ".into(),
+        format!("{}.", step.sequence).dim(),
+        " ".into(),
+        sanitize_metadata_label(&step.title).into(),
+        "  ".into(),
+        workflow_run_step_status_label(step.status).dim(),
+        "  ".into(),
+        step.step_id.clone().dim(),
+    ]
+    .into()
+}
+
+fn verifier_line(verifier: &ThreadWorkflowRunStepVerifier) -> Line<'static> {
+    vec![
+        "  ".into(),
+        sanitize_metadata_label(&verifier.verifier_id).into(),
+        "  ".into(),
+        workflow_run_step_verifier_status_label(verifier.status).dim(),
+        "  ".into(),
+        sanitize_metadata_label(&verifier.verifier_type).dim(),
+        "  ".into(),
+        verifier.step_id.clone().dim(),
+    ]
+    .into()
+}
+
+fn goal_plan_summary_line(goal_plan: &ThreadGoalPlan) -> Line<'static> {
+    format!(
+        "  task plan {} | {} | nodes {} | ready {} | active {} | pending {}",
+        short_id(&goal_plan.plan_id),
+        goal_plan_status_label(goal_plan.status),
+        goal_plan.node_count,
+        goal_plan.ready_node_count,
+        goal_plan.active_node_count,
+        goal_plan.pending_node_count
+    )
+    .dim()
+    .into()
+}
+
 fn public_workflow_display_name(value: &str) -> String {
+    sanitize_metadata_label_with_redaction(value, "[redacted workflow name]")
+}
+
+fn sanitize_metadata_label(value: &str) -> String {
+    sanitize_metadata_label_with_redaction(value, "[redacted]")
+}
+
+fn sanitize_metadata_label_with_redaction(value: &str, redacted_label: &str) -> String {
     let mut cleaned = String::new();
     let mut last_was_space = false;
     for character in value.chars() {
@@ -84,7 +357,7 @@ fn public_workflow_display_name(value: &str) -> String {
         return "[unnamed workflow]".to_string();
     }
     if metadata_label_looks_sensitive(cleaned) {
-        return "[redacted workflow name]".to_string();
+        return redacted_label.to_string();
     }
     truncate_display_name(cleaned, /*max_chars*/ 80)
 }
@@ -125,11 +398,77 @@ fn workflow_status_label(status: ThreadWorkflowStatus) -> &'static str {
     }
 }
 
+fn workflow_run_status_label(status: ThreadWorkflowRunStatus) -> &'static str {
+    match status {
+        ThreadWorkflowRunStatus::Pending => "pending",
+        ThreadWorkflowRunStatus::Running => "running",
+        ThreadWorkflowRunStatus::Waiting => "waiting",
+        ThreadWorkflowRunStatus::Blocked => "blocked",
+        ThreadWorkflowRunStatus::Paused => "paused",
+        ThreadWorkflowRunStatus::CancelRequested => "cancel requested",
+        ThreadWorkflowRunStatus::Cancelled => "cancelled",
+        ThreadWorkflowRunStatus::Failed => "failed",
+        ThreadWorkflowRunStatus::Completed => "completed",
+        ThreadWorkflowRunStatus::Other => "other",
+    }
+}
+
+fn workflow_run_step_status_label(status: ThreadWorkflowRunStepStatus) -> &'static str {
+    match status {
+        ThreadWorkflowRunStepStatus::Pending => "pending",
+        ThreadWorkflowRunStepStatus::Ready => "ready",
+        ThreadWorkflowRunStepStatus::Active => "active",
+        ThreadWorkflowRunStepStatus::WaitingVerifier => "waiting verifier",
+        ThreadWorkflowRunStepStatus::Blocked => "blocked",
+        ThreadWorkflowRunStepStatus::Skipped => "skipped",
+        ThreadWorkflowRunStepStatus::Cancelled => "cancelled",
+        ThreadWorkflowRunStepStatus::Failed => "failed",
+        ThreadWorkflowRunStepStatus::Succeeded => "succeeded",
+        ThreadWorkflowRunStepStatus::Other => "other",
+    }
+}
+
+fn workflow_run_step_verifier_status_label(
+    status: ThreadWorkflowRunStepVerifierStatus,
+) -> &'static str {
+    match status {
+        ThreadWorkflowRunStepVerifierStatus::Pending => "pending",
+        ThreadWorkflowRunStepVerifierStatus::Running => "running",
+        ThreadWorkflowRunStepVerifierStatus::Blocked => "blocked",
+        ThreadWorkflowRunStepVerifierStatus::Passed => "passed",
+        ThreadWorkflowRunStepVerifierStatus::Failed => "failed",
+        ThreadWorkflowRunStepVerifierStatus::Skipped => "skipped",
+        ThreadWorkflowRunStepVerifierStatus::Other => "other",
+    }
+}
+
+fn goal_plan_status_label(status: ThreadGoalPlanStatus) -> &'static str {
+    match status {
+        ThreadGoalPlanStatus::Active => "active",
+        ThreadGoalPlanStatus::Paused => "paused",
+        ThreadGoalPlanStatus::Blocked => "blocked",
+        ThreadGoalPlanStatus::BudgetLimited => "budget limited",
+        ThreadGoalPlanStatus::Complete => "complete",
+        ThreadGoalPlanStatus::Cancelled => "cancelled",
+    }
+}
+
 fn short_id(value: &str) -> &str {
     value
         .char_indices()
         .nth(12)
         .map_or(value, |(idx, _)| &value[..idx])
+}
+
+fn push_remaining_count_line(
+    lines: &mut Vec<Line<'static>>,
+    total: usize,
+    displayed: usize,
+    noun: &str,
+) {
+    if total > displayed {
+        lines.push(format!("  +{} more {noun}", total - displayed).dim().into());
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +552,130 @@ mod tests {
     fn short_id_preserves_short_values() {
         assert_eq!(short_id("abc"), "abc");
         assert_eq!(short_id("abcdefghijklmnop"), "abcdefghijkl");
+    }
+
+    #[test]
+    fn workflow_run_detail_renders_sanitized_snapshot() {
+        let snapshot = ThreadWorkflowRunSnapshot {
+            run: ThreadWorkflowRun {
+                thread_id: Some("thread-1".to_string()),
+                run_id: "run-123456789abcdef".to_string(),
+                workflow_record_id: "workflow-record-123456789".to_string(),
+                spec_workflow_id: "wf_dentist_lead_saas".to_string(),
+                schema_version: "workflow.codex.codewith/v0".to_string(),
+                source_yaml_sha256:
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+                status: ThreadWorkflowRunStatus::Paused,
+                status_reason: Some("workflow run paused".to_string()),
+                reason_code: Some("paused_by_user".to_string()),
+                generation: 2,
+                pending_step_count: 1,
+                ready_step_count: 0,
+                active_step_count: 0,
+                waiting_verifier_step_count: 0,
+                blocked_step_count: 0,
+                failed_step_count: 0,
+                succeeded_step_count: 1,
+                skipped_step_count: 0,
+                verifier_count: 1,
+                event_count: 2,
+                created_at: 1_800_000_000,
+                updated_at: 1_800_000_123,
+                started_at: None,
+                completed_at: None,
+            },
+            steps: vec![
+                ThreadWorkflowRunStep {
+                    step_run_id: "step-run-1".to_string(),
+                    step_id: "collect_leads".to_string(),
+                    sequence: 1,
+                    title: "Collect lead requirements".to_string(),
+                    agent_id: "Socrates".to_string(),
+                    status: ThreadWorkflowRunStepStatus::Succeeded,
+                    status_reason: None,
+                    reason_code: None,
+                    depends_on: Vec::new(),
+                    background_agent_run_id: None,
+                    created_at: 1_800_000_001,
+                    updated_at: 1_800_000_010,
+                    started_at: Some(1_800_000_002),
+                    completed_at: Some(1_800_000_010),
+                },
+                ThreadWorkflowRunStep {
+                    step_run_id: "step-run-2".to_string(),
+                    step_id: "sensitive_step".to_string(),
+                    sequence: 2,
+                    title: "source_prompt secret command should not leak".to_string(),
+                    agent_id: "Cicero".to_string(),
+                    status: ThreadWorkflowRunStepStatus::Pending,
+                    status_reason: None,
+                    reason_code: None,
+                    depends_on: vec!["collect_leads".to_string()],
+                    background_agent_run_id: None,
+                    created_at: 1_800_000_011,
+                    updated_at: 1_800_000_012,
+                    started_at: None,
+                    completed_at: None,
+                },
+            ],
+            verifiers: vec![ThreadWorkflowRunStepVerifier {
+                verifier_run_id: "verifier-run-1".to_string(),
+                step_id: "collect_leads".to_string(),
+                verifier_id: "test-suite".to_string(),
+                verifier_type: "run_commands".to_string(),
+                status: ThreadWorkflowRunStepVerifierStatus::Passed,
+                status_reason: None,
+                reason_code: None,
+                attempt_count: 1,
+                max_attempts: Some(2),
+                created_at: 1_800_000_010,
+                updated_at: 1_800_000_011,
+                completed_at: Some(1_800_000_011),
+            }],
+            events: vec![
+                codex_app_server_protocol::ThreadWorkflowRunEvent {
+                    seq: 1,
+                    event_type: "created".to_string(),
+                    actor_kind: "system".to_string(),
+                    actor_id: None,
+                    step_run_id: None,
+                    verifier_run_id: None,
+                    visibility: "public".to_string(),
+                    created_at: 1_800_000_000,
+                },
+                codex_app_server_protocol::ThreadWorkflowRunEvent {
+                    seq: 2,
+                    event_type: "paused".to_string(),
+                    actor_kind: "user".to_string(),
+                    actor_id: None,
+                    step_run_id: None,
+                    verifier_run_id: None,
+                    visibility: "public".to_string(),
+                    created_at: 1_800_000_123,
+                },
+            ],
+        };
+        let rendered = render_lines(&thread_workflow_run_detail_lines(&snapshot));
+
+        insta::assert_snapshot!(
+            rendered,
+            @r###"
+Workflow run detail
+• wf_dentist_lead_saas  paused  run-12345678
+  steps pending 1, succeeded 1 | verifiers 1 | events 2
+  run run-12345678 | workflow workflow-rec | yaml sha256 0123456789ab | updated 1800000123
+Steps
+  1. Collect lead requirements  succeeded  collect_leads
+  2. [redacted]  pending  sensitive_step
+Verifiers
+  test-suite  passed  run_commands  collect_leads
+Recent events
+  #1 created system 1800000000
+  #2 paused user 1800000123
+"###
+        );
+        assert!(!rendered.contains("source_prompt"));
+        assert!(!rendered.contains("secret command"));
     }
 
     fn render_lines(lines: &[Line<'static>]) -> String {

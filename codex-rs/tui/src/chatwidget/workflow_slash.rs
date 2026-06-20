@@ -1,31 +1,85 @@
-pub(super) const WORKFLOW_USAGE: &str = "Usage: /workflow [list|draft <request>]";
-pub(super) const WORKFLOW_USAGE_HINT: &str =
-    "Examples: /workflow list, /workflow draft build a SaaS that collects dentist leads";
+pub(super) const WORKFLOW_USAGE: &str = concat!(
+    "Usage: /workflow [list|show <workflow_record_id>|draft <request>|",
+    "run [list|show <run_id>|start <workflow_record_id>|pause <run_id>|resume <run_id>|cancel <run_id>]]"
+);
+pub(super) const WORKFLOW_USAGE_HINT: &str = concat!(
+    "Examples: /workflow list, /workflow show <workflow_record_id>, ",
+    "/workflow run, /workflow run start <workflow_record_id>, /workflow run pause <run_id>"
+);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum WorkflowSlashCommand<'a> {
     List,
+    Show { workflow_record_id: &'a str },
     Draft { request: &'a str },
+    RunList,
+    RunShow { run_id: &'a str },
+    RunStart { workflow_record_id: &'a str },
+    RunPause { run_id: &'a str },
+    RunResume { run_id: &'a str },
+    RunCancel { run_id: &'a str },
 }
 
 pub(super) fn parse_workflow_slash_args(trimmed: &str) -> Result<WorkflowSlashCommand<'_>, String> {
     let trimmed = trimmed.trim();
     match trimmed.to_ascii_lowercase().as_str() {
         "" | "list" => Ok(WorkflowSlashCommand::List),
+        "run" | "run list" => Ok(WorkflowSlashCommand::RunList),
         "help" | "--help" | "-h" => Err(WORKFLOW_USAGE.to_string()),
         _ => {
-            let Some((command, request)) = trimmed.split_once(char::is_whitespace) else {
+            let Some((command, rest)) = trimmed.split_once(char::is_whitespace) else {
                 return Err(format!("Unknown /workflow command `{trimmed}`."));
             };
+            let rest = rest.trim();
             match command.to_ascii_lowercase().as_str() {
-                "draft" if request.trim().is_empty() => Err(WORKFLOW_USAGE.to_string()),
-                "draft" => Ok(WorkflowSlashCommand::Draft {
-                    request: request.trim(),
-                }),
+                "draft" if rest.is_empty() => Err(WORKFLOW_USAGE.to_string()),
+                "draft" => Ok(WorkflowSlashCommand::Draft { request: rest }),
+                "show" => required_id(rest, "workflow_record_id")
+                    .map(|workflow_record_id| WorkflowSlashCommand::Show { workflow_record_id }),
+                "run" => parse_workflow_run_slash_args(rest),
                 _ => Err(format!("Unknown /workflow command `{command}`.")),
             }
         }
     }
+}
+
+fn parse_workflow_run_slash_args(trimmed: &str) -> Result<WorkflowSlashCommand<'_>, String> {
+    let trimmed = trimmed.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return Ok(WorkflowSlashCommand::RunList);
+    }
+    let Some((command, value)) = trimmed.split_once(char::is_whitespace) else {
+        return Err(format!("Unknown /workflow run command `{trimmed}`."));
+    };
+    let value = value.trim();
+    match command.to_ascii_lowercase().as_str() {
+        "show" => {
+            required_id(value, "run_id").map(|run_id| WorkflowSlashCommand::RunShow { run_id })
+        }
+        "start" => required_id(value, "workflow_record_id")
+            .map(|workflow_record_id| WorkflowSlashCommand::RunStart { workflow_record_id }),
+        "pause" => {
+            required_id(value, "run_id").map(|run_id| WorkflowSlashCommand::RunPause { run_id })
+        }
+        "resume" => {
+            required_id(value, "run_id").map(|run_id| WorkflowSlashCommand::RunResume { run_id })
+        }
+        "cancel" => {
+            required_id(value, "run_id").map(|run_id| WorkflowSlashCommand::RunCancel { run_id })
+        }
+        _ => Err(format!("Unknown /workflow run command `{command}`.")),
+    }
+}
+
+fn required_id<'a>(value: &'a str, name: &str) -> Result<&'a str, String> {
+    let mut parts = value.split_whitespace();
+    let Some(id) = parts.next() else {
+        return Err(WORKFLOW_USAGE.to_string());
+    };
+    if parts.next().is_some() {
+        return Err(format!("Expected one {name}."));
+    }
+    Ok(id)
 }
 
 pub(super) fn workflow_generation_prompt(request: &str) -> String {
@@ -64,6 +118,46 @@ mod tests {
         assert_eq!(
             parse_workflow_slash_args("list"),
             Ok(WorkflowSlashCommand::List)
+        );
+    }
+
+    #[test]
+    fn parses_show_and_run_commands() {
+        assert_eq!(
+            parse_workflow_slash_args("show workflow-1"),
+            Ok(WorkflowSlashCommand::Show {
+                workflow_record_id: "workflow-1"
+            })
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run"),
+            Ok(WorkflowSlashCommand::RunList)
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run list"),
+            Ok(WorkflowSlashCommand::RunList)
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run show run-1"),
+            Ok(WorkflowSlashCommand::RunShow { run_id: "run-1" })
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run start workflow-1"),
+            Ok(WorkflowSlashCommand::RunStart {
+                workflow_record_id: "workflow-1"
+            })
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run pause run-1"),
+            Ok(WorkflowSlashCommand::RunPause { run_id: "run-1" })
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run resume run-1"),
+            Ok(WorkflowSlashCommand::RunResume { run_id: "run-1" })
+        );
+        assert_eq!(
+            parse_workflow_slash_args("run cancel run-1"),
+            Ok(WorkflowSlashCommand::RunCancel { run_id: "run-1" })
         );
     }
 

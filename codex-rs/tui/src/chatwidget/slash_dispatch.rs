@@ -23,6 +23,7 @@ use super::workflow_slash::workflow_generation_prompt;
 use super::*;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
 use crate::app_event::ThreadGoalSetMode;
+use crate::app_event::ThreadWorkflowAction;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
@@ -806,8 +807,10 @@ impl ChatWidget {
                     return;
                 }
                 if let Some(thread_id) = self.thread_id {
-                    self.app_event_tx
-                        .send(AppEvent::OpenThreadWorkflowManager { thread_id });
+                    self.app_event_tx.send(AppEvent::ManageThreadWorkflow {
+                        thread_id,
+                        action: ThreadWorkflowAction::List,
+                    });
                     self.append_message_history_entry("/workflow".to_string());
                 } else {
                     self.add_info_message(
@@ -1399,27 +1402,6 @@ impl ChatWidget {
                     return;
                 }
                 match parse_workflow_slash_args(trimmed) {
-                    Ok(WorkflowSlashCommand::List) => {
-                        let Some(thread_id) = self.thread_id else {
-                            self.add_info_message(
-                                WORKFLOW_USAGE.to_string(),
-                                Some(
-                                    "The session must start before you can list saved workflows."
-                                        .to_string(),
-                                ),
-                            );
-                            if source == SlashCommandDispatchSource::Live {
-                                self.bottom_pane.drain_pending_submission_state();
-                            }
-                            return;
-                        };
-                        self.app_event_tx
-                            .send(AppEvent::OpenThreadWorkflowManager { thread_id });
-                        self.append_message_history_entry(format!("/workflow {trimmed}"));
-                        if source == SlashCommandDispatchSource::Live {
-                            self.bottom_pane.drain_pending_submission_state();
-                        }
-                    }
                     Ok(WorkflowSlashCommand::Draft { request }) => {
                         let workflow_prompt = workflow_generation_prompt(request);
                         self.app_event_tx.send(AppEvent::PrefillComposer {
@@ -1432,6 +1414,29 @@ impl ChatWidget {
                                     .to_string(),
                             ),
                         );
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                    }
+                    Ok(command) => {
+                        let Some(thread_id) = self.thread_id else {
+                            self.add_info_message(
+                                WORKFLOW_USAGE.to_string(),
+                                Some(
+                                    "The session must start before you can manage workflows."
+                                        .to_string(),
+                                ),
+                            );
+                            if source == SlashCommandDispatchSource::Live {
+                                self.bottom_pane.drain_pending_submission_state();
+                            }
+                            return;
+                        };
+                        self.app_event_tx.send(AppEvent::ManageThreadWorkflow {
+                            thread_id,
+                            action: workflow_slash_command_to_action(command),
+                        });
+                        self.append_message_history_entry(format!("/workflow {trimmed}"));
                         if source == SlashCommandDispatchSource::Live {
                             self.bottom_pane.drain_pending_submission_state();
                         }
@@ -2281,6 +2286,32 @@ impl ChatWidget {
         ));
         self.bottom_pane.drain_pending_submission_state();
         false
+    }
+}
+
+fn workflow_slash_command_to_action(command: WorkflowSlashCommand<'_>) -> ThreadWorkflowAction {
+    match command {
+        WorkflowSlashCommand::List => ThreadWorkflowAction::List,
+        WorkflowSlashCommand::Show { workflow_record_id } => ThreadWorkflowAction::Show {
+            workflow_record_id: workflow_record_id.to_string(),
+        },
+        WorkflowSlashCommand::Draft { .. } => ThreadWorkflowAction::List,
+        WorkflowSlashCommand::RunList => ThreadWorkflowAction::RunList,
+        WorkflowSlashCommand::RunShow { run_id } => ThreadWorkflowAction::RunShow {
+            run_id: run_id.to_string(),
+        },
+        WorkflowSlashCommand::RunStart { workflow_record_id } => ThreadWorkflowAction::RunStart {
+            workflow_record_id: workflow_record_id.to_string(),
+        },
+        WorkflowSlashCommand::RunPause { run_id } => ThreadWorkflowAction::RunPause {
+            run_id: run_id.to_string(),
+        },
+        WorkflowSlashCommand::RunResume { run_id } => ThreadWorkflowAction::RunResume {
+            run_id: run_id.to_string(),
+        },
+        WorkflowSlashCommand::RunCancel { run_id } => ThreadWorkflowAction::RunCancel {
+            run_id: run_id.to_string(),
+        },
     }
 }
 

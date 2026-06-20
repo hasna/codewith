@@ -169,8 +169,22 @@ use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadWorkflowGetParams;
+use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListParams;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
+use codex_app_server_protocol::ThreadWorkflowRunCancelParams;
+use codex_app_server_protocol::ThreadWorkflowRunCancelResponse;
+use codex_app_server_protocol::ThreadWorkflowRunGetParams;
+use codex_app_server_protocol::ThreadWorkflowRunGetResponse;
+use codex_app_server_protocol::ThreadWorkflowRunListParams;
+use codex_app_server_protocol::ThreadWorkflowRunListResponse;
+use codex_app_server_protocol::ThreadWorkflowRunPauseParams;
+use codex_app_server_protocol::ThreadWorkflowRunPauseResponse;
+use codex_app_server_protocol::ThreadWorkflowRunResumeParams;
+use codex_app_server_protocol::ThreadWorkflowRunResumeResponse;
+use codex_app_server_protocol::ThreadWorkflowRunStartParams;
+use codex_app_server_protocol::ThreadWorkflowRunStartResponse;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -1153,6 +1167,135 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/workflow/list failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_get(
+        &mut self,
+        thread_id: ThreadId,
+        workflow_record_id: String,
+    ) -> Result<ThreadWorkflowGetResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowGet {
+                request_id,
+                params: ThreadWorkflowGetParams {
+                    thread_id: thread_id.to_string(),
+                    workflow_record_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/get failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadWorkflowRunListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunList {
+                request_id,
+                params: ThreadWorkflowRunListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/list failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_get(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+    ) -> Result<ThreadWorkflowRunGetResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunGet {
+                request_id,
+                params: ThreadWorkflowRunGetParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/get failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_start(
+        &mut self,
+        thread_id: ThreadId,
+        workflow_record_id: String,
+    ) -> Result<ThreadWorkflowRunStartResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunStart {
+                request_id,
+                params: ThreadWorkflowRunStartParams {
+                    thread_id: thread_id.to_string(),
+                    workflow_record_id,
+                    idempotency_key: None,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/start failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_pause(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+    ) -> Result<ThreadWorkflowRunPauseResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunPause {
+                request_id,
+                params: ThreadWorkflowRunPauseParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    reason: Some("user requested pause from TUI".to_string()),
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/pause failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_resume(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+    ) -> Result<ThreadWorkflowRunResumeResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunResume {
+                request_id,
+                params: ThreadWorkflowRunResumeParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/resume failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_run_cancel(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+    ) -> Result<ThreadWorkflowRunCancelResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowRunCancel {
+                request_id,
+                params: ThreadWorkflowRunCancelParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    reason: Some("user requested cancellation from TUI".to_string()),
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/run/cancel failed in TUI")
     }
 
     pub(crate) async fn thread_schedule_create(

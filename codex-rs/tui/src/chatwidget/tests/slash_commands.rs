@@ -1956,15 +1956,85 @@ async fn workflow_list_slash_command_emits_metadata_event() {
     submit_composer_text(&mut chat, command);
 
     let event = rx.try_recv().expect("expected workflow manager event");
-    let AppEvent::OpenThreadWorkflowManager {
+    let AppEvent::ManageThreadWorkflow {
         thread_id: actual_thread_id,
+        action,
     } = event
     else {
-        panic!("expected OpenThreadWorkflowManager, got {event:?}");
+        panic!("expected ManageThreadWorkflow, got {event:?}");
     };
     assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(action, crate::app_event::ThreadWorkflowAction::List);
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn workflow_run_slash_commands_emit_management_events() {
+    let cases = [
+        (
+            "/workflow show workflow-1",
+            crate::app_event::ThreadWorkflowAction::Show {
+                workflow_record_id: "workflow-1".to_string(),
+            },
+        ),
+        (
+            "/workflow run",
+            crate::app_event::ThreadWorkflowAction::RunList,
+        ),
+        (
+            "/workflow run show run-1",
+            crate::app_event::ThreadWorkflowAction::RunShow {
+                run_id: "run-1".to_string(),
+            },
+        ),
+        (
+            "/workflow run start workflow-1",
+            crate::app_event::ThreadWorkflowAction::RunStart {
+                workflow_record_id: "workflow-1".to_string(),
+            },
+        ),
+        (
+            "/workflow run pause run-1",
+            crate::app_event::ThreadWorkflowAction::RunPause {
+                run_id: "run-1".to_string(),
+            },
+        ),
+        (
+            "/workflow run resume run-1",
+            crate::app_event::ThreadWorkflowAction::RunResume {
+                run_id: "run-1".to_string(),
+            },
+        ),
+        (
+            "/workflow run cancel run-1",
+            crate::app_event::ThreadWorkflowAction::RunCancel {
+                run_id: "run-1".to_string(),
+            },
+        ),
+    ];
+
+    for (command, expected_action) in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected workflow event");
+        let AppEvent::ManageThreadWorkflow {
+            thread_id: actual_thread_id,
+            action,
+        } = event
+        else {
+            panic!("expected ManageThreadWorkflow, got {event:?}");
+        };
+        assert_eq!(actual_thread_id, thread_id);
+        assert_eq!(action, expected_action);
+        assert_no_submit_op(&mut op_rx);
+        assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
 }
 
 #[tokio::test]
@@ -2001,6 +2071,8 @@ async fn workflow_commands_are_inert_when_feature_is_disabled() {
         "/workflow",
         "/workflow list",
         "/workflow draft build a SaaS that collects leads for dentists",
+        "/workflow run",
+        "/workflow run start workflow-1",
     ] {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.thread_id = Some(ThreadId::new());

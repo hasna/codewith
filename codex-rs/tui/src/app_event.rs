@@ -380,9 +380,10 @@ pub(crate) enum AppEvent {
         response: ThreadPendingInteractionResponsePayload,
     },
 
-    /// Open the current thread workflow metadata summary.
-    OpenThreadWorkflowManager {
+    /// Run a thread workflow management action.
+    ManageThreadWorkflow {
         thread_id: ThreadId,
+        action: ThreadWorkflowAction,
     },
 
     /// Open details for one durable thread goal plan.
@@ -1571,6 +1572,18 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ThreadWorkflowAction {
+    List,
+    Show { workflow_record_id: String },
+    RunList,
+    RunShow { run_id: String },
+    RunStart { workflow_record_id: String },
+    RunPause { run_id: String },
+    RunResume { run_id: String },
+    RunCancel { run_id: String },
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.

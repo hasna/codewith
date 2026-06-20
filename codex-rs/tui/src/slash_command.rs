@@ -157,7 +157,7 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::MissionControl => "show orchestration sessions and projects",
-            SlashCommand::Workflow => "prepare YAML workflow drafts and show saved spec metadata",
+            SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(SlashCommand::Workflow.command(), "workflow");
         assert_eq!(
             SlashCommand::Workflow.description(),
-            "prepare YAML workflow drafts and show saved spec metadata"
+            "manage workflow specs and runs for this thread"
         );
         assert!(SlashCommand::Workflow.supports_inline_args());
         assert!(!SlashCommand::Workflow.available_during_task());

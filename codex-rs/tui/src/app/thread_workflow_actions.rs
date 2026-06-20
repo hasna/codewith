@@ -1,24 +1,112 @@
 use super::App;
+use crate::app_event::ThreadWorkflowAction;
 use crate::app_server_session::AppServerSession;
 use codex_protocol::ThreadId;
 
 impl App {
-    pub(super) async fn open_thread_workflow_manager(
+    pub(super) async fn manage_thread_workflow(
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        action: ThreadWorkflowAction,
     ) {
-        let result = app_server.thread_workflow_list(thread_id).await;
+        let action_name = thread_workflow_action_name(&action);
+        let result = match action {
+            ThreadWorkflowAction::List => app_server
+                .thread_workflow_list(thread_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::List(response)),
+            ThreadWorkflowAction::Show { workflow_record_id } => app_server
+                .thread_workflow_get(thread_id, workflow_record_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::Show(response)),
+            ThreadWorkflowAction::RunList => app_server
+                .thread_workflow_run_list(thread_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunList(response)),
+            ThreadWorkflowAction::RunShow { run_id } => app_server
+                .thread_workflow_run_get(thread_id, run_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunShow(response)),
+            ThreadWorkflowAction::RunStart { workflow_record_id } => app_server
+                .thread_workflow_run_start(thread_id, workflow_record_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunStart(response)),
+            ThreadWorkflowAction::RunPause { run_id } => app_server
+                .thread_workflow_run_pause(thread_id, run_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunPause(response)),
+            ThreadWorkflowAction::RunResume { run_id } => app_server
+                .thread_workflow_run_resume(thread_id, run_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunResume(response)),
+            ThreadWorkflowAction::RunCancel { run_id } => app_server
+                .thread_workflow_run_cancel(thread_id, run_id)
+                .await
+                .map(|response| ThreadWorkflowDisplayResponse::RunCancel(response)),
+        };
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
         }
 
         match result {
-            Ok(response) => self.chat_widget.show_thread_workflow_summary(response),
+            Ok(ThreadWorkflowDisplayResponse::List(response)) => {
+                self.chat_widget.show_thread_workflow_summary(response);
+            }
+            Ok(ThreadWorkflowDisplayResponse::Show(response)) => {
+                self.chat_widget.show_thread_workflow_detail(response);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunList(response)) => {
+                self.chat_widget.show_thread_workflow_run_summary(response);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunShow(response)) => {
+                self.chat_widget.show_thread_workflow_run_detail(response);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunStart(response)) => {
+                self.chat_widget.show_thread_workflow_run_started(response);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunPause(response)) => {
+                self.chat_widget
+                    .show_thread_workflow_run_update("Paused workflow run.", response.run);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunResume(response)) => {
+                self.chat_widget
+                    .show_thread_workflow_run_update("Resumed workflow run.", response.run);
+            }
+            Ok(ThreadWorkflowDisplayResponse::RunCancel(response)) => {
+                self.chat_widget.show_thread_workflow_run_update(
+                    "Cancel requested for workflow run.",
+                    response.run,
+                );
+            }
             Err(err) => self
                 .chat_widget
-                .add_error_message(thread_workflow_error_message("read", &err)),
+                .add_error_message(thread_workflow_error_message(action_name, &err)),
         }
+    }
+}
+
+enum ThreadWorkflowDisplayResponse {
+    List(codex_app_server_protocol::ThreadWorkflowListResponse),
+    Show(codex_app_server_protocol::ThreadWorkflowGetResponse),
+    RunList(codex_app_server_protocol::ThreadWorkflowRunListResponse),
+    RunShow(codex_app_server_protocol::ThreadWorkflowRunGetResponse),
+    RunStart(codex_app_server_protocol::ThreadWorkflowRunStartResponse),
+    RunPause(codex_app_server_protocol::ThreadWorkflowRunPauseResponse),
+    RunResume(codex_app_server_protocol::ThreadWorkflowRunResumeResponse),
+    RunCancel(codex_app_server_protocol::ThreadWorkflowRunCancelResponse),
+}
+
+fn thread_workflow_action_name(action: &ThreadWorkflowAction) -> &'static str {
+    match action {
+        ThreadWorkflowAction::List => "read",
+        ThreadWorkflowAction::Show { .. } => "read",
+        ThreadWorkflowAction::RunList => "list workflow runs",
+        ThreadWorkflowAction::RunShow { .. } => "read workflow run",
+        ThreadWorkflowAction::RunStart { .. } => "start workflow run",
+        ThreadWorkflowAction::RunPause { .. } => "pause workflow run",
+        ThreadWorkflowAction::RunResume { .. } => "resume workflow run",
+        ThreadWorkflowAction::RunCancel { .. } => "cancel workflow run",
     }
 }
 
