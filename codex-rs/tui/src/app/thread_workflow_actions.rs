@@ -15,35 +15,35 @@ impl App {
             ThreadWorkflowAction::List => app_server
                 .thread_workflow_list(thread_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::List(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::List(Box::new(response))),
             ThreadWorkflowAction::Show { workflow_record_id } => app_server
                 .thread_workflow_get(thread_id, workflow_record_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::Show(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::Show(Box::new(response))),
             ThreadWorkflowAction::RunList => app_server
                 .thread_workflow_run_list(thread_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunList(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunList(Box::new(response))),
             ThreadWorkflowAction::RunShow { run_id } => app_server
                 .thread_workflow_run_get(thread_id, run_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunShow(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunShow(Box::new(response))),
             ThreadWorkflowAction::RunStart { workflow_record_id } => app_server
                 .thread_workflow_run_start(thread_id, workflow_record_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunStart(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunStart(Box::new(response))),
             ThreadWorkflowAction::RunPause { run_id } => app_server
                 .thread_workflow_run_pause(thread_id, run_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunPause(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunPause(Box::new(response))),
             ThreadWorkflowAction::RunResume { run_id } => app_server
                 .thread_workflow_run_resume(thread_id, run_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunResume(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunResume(Box::new(response))),
             ThreadWorkflowAction::RunCancel { run_id } => app_server
                 .thread_workflow_run_cancel(thread_id, run_id)
                 .await
-                .map(|response| ThreadWorkflowDisplayResponse::RunCancel(response)),
+                .map(|response| ThreadWorkflowDisplayResponse::RunCancel(Box::new(response))),
         };
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -51,19 +51,19 @@ impl App {
 
         match result {
             Ok(ThreadWorkflowDisplayResponse::List(response)) => {
-                self.chat_widget.show_thread_workflow_summary(response);
+                self.chat_widget.show_thread_workflow_summary(*response);
             }
             Ok(ThreadWorkflowDisplayResponse::Show(response)) => {
-                self.chat_widget.show_thread_workflow_detail(response);
+                self.chat_widget.show_thread_workflow_detail(*response);
             }
             Ok(ThreadWorkflowDisplayResponse::RunList(response)) => {
-                self.chat_widget.show_thread_workflow_run_summary(response);
+                self.chat_widget.show_thread_workflow_run_summary(*response);
             }
             Ok(ThreadWorkflowDisplayResponse::RunShow(response)) => {
-                self.chat_widget.show_thread_workflow_run_detail(response);
+                self.chat_widget.show_thread_workflow_run_detail(*response);
             }
             Ok(ThreadWorkflowDisplayResponse::RunStart(response)) => {
-                self.chat_widget.show_thread_workflow_run_started(response);
+                self.chat_widget.show_thread_workflow_run_started(*response);
             }
             Ok(ThreadWorkflowDisplayResponse::RunPause(response)) => {
                 self.chat_widget
@@ -87,14 +87,14 @@ impl App {
 }
 
 enum ThreadWorkflowDisplayResponse {
-    List(codex_app_server_protocol::ThreadWorkflowListResponse),
-    Show(codex_app_server_protocol::ThreadWorkflowGetResponse),
-    RunList(codex_app_server_protocol::ThreadWorkflowRunListResponse),
-    RunShow(codex_app_server_protocol::ThreadWorkflowRunGetResponse),
-    RunStart(codex_app_server_protocol::ThreadWorkflowRunStartResponse),
-    RunPause(codex_app_server_protocol::ThreadWorkflowRunPauseResponse),
-    RunResume(codex_app_server_protocol::ThreadWorkflowRunResumeResponse),
-    RunCancel(codex_app_server_protocol::ThreadWorkflowRunCancelResponse),
+    List(Box<codex_app_server_protocol::ThreadWorkflowListResponse>),
+    Show(Box<codex_app_server_protocol::ThreadWorkflowGetResponse>),
+    RunList(Box<codex_app_server_protocol::ThreadWorkflowRunListResponse>),
+    RunShow(Box<codex_app_server_protocol::ThreadWorkflowRunGetResponse>),
+    RunStart(Box<codex_app_server_protocol::ThreadWorkflowRunStartResponse>),
+    RunPause(Box<codex_app_server_protocol::ThreadWorkflowRunPauseResponse>),
+    RunResume(Box<codex_app_server_protocol::ThreadWorkflowRunResumeResponse>),
+    RunCancel(Box<codex_app_server_protocol::ThreadWorkflowRunCancelResponse>),
 }
 
 fn thread_workflow_action_name(action: &ThreadWorkflowAction) -> &'static str {
