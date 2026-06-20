@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 pub const DEFAULT_THREAD_WORKFLOW_LIST_LIMIT: u32 = 20;
 pub const MAX_THREAD_WORKFLOW_LIST_LIMIT: u32 = 50;
+pub const DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT: u32 = 20;
+pub const MAX_THREAD_WORKFLOW_RUN_LIST_LIMIT: u32 = 50;
 
 #[derive(Clone)]
 pub struct WorkflowStore {
@@ -39,6 +41,12 @@ pub struct WorkflowSpecListPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunListPage {
+    pub data: Vec<crate::WorkflowRunSnapshot>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunCreateParams {
     pub workflow_record_id: String,
     pub source_thread_id: Option<ThreadId>,
@@ -49,6 +57,17 @@ pub struct WorkflowRunCreateParams {
 pub struct WorkflowRunCancelParams {
     pub run_id: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunPauseParams {
+    pub run_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunResumeParams {
+    pub run_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,6 +374,44 @@ LIMIT ? OFFSET ?
         Ok(snapshot)
     }
 
+    pub async fn list_thread_workflow_runs_page(
+        &self,
+        thread_id: ThreadId,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> anyhow::Result<WorkflowRunListPage> {
+        let offset = cursor.unwrap_or(0);
+        let limit = limit.clamp(1, MAX_THREAD_WORKFLOW_RUN_LIST_LIMIT);
+        let rows = sqlx::query(
+            r#"
+SELECT run_id
+FROM workflow_runs
+WHERE source_thread_id = ?
+ORDER BY updated_at_ms DESC, run_id
+LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(i64::from(limit) + 1)
+        .bind(i64::from(offset))
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        let has_more = rows.len() > limit as usize;
+        let run_ids = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(|row| row.try_get("run_id").map_err(anyhow::Error::from))
+            .collect::<anyhow::Result<Vec<String>>>()?;
+        let mut tx = self.pool.begin().await?;
+        let mut data = Vec::with_capacity(run_ids.len());
+        for run_id in run_ids {
+            data.push(snapshot_workflow_run_in_tx(&mut tx, run_id.as_str()).await?);
+        }
+        tx.commit().await?;
+        let next_cursor = has_more.then(|| offset.saturating_add(limit).to_string());
+        Ok(WorkflowRunListPage { data, next_cursor })
+    }
+
     pub async fn request_workflow_run_cancel(
         &self,
         params: WorkflowRunCancelParams,
@@ -411,6 +468,119 @@ WHERE run_id = ?
         tx.commit().await?;
         Ok(Some(snapshot))
     }
+
+    pub async fn pause_workflow_run(
+        &self,
+        params: WorkflowRunPauseParams,
+    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let Some(run) = get_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await? else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        if !run.status.is_terminal()
+            && run.status != crate::WorkflowRunStatus::CancelRequested
+            && run.status != crate::WorkflowRunStatus::Paused
+        {
+            sqlx::query(
+                r#"
+UPDATE workflow_runs
+SET
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    owner_id = NULL,
+    lease_expires_at_ms = NULL,
+    heartbeat_at_ms = NULL,
+    generation = generation + 1,
+    updated_at_ms = ?
+WHERE run_id = ?
+                "#,
+            )
+            .bind(crate::WorkflowRunStatus::Paused.as_str())
+            .bind(sanitized_workflow_pause_reason())
+            .bind("user_pause_requested")
+            .bind(now_ms)
+            .bind(params.run_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+            append_workflow_run_event_in_tx(
+                &mut tx,
+                params.run_id.as_str(),
+                WorkflowRunEventAppend {
+                    event_type: "paused",
+                    actor_kind: "system",
+                    actor_id: None,
+                    step_run_id: None,
+                    verifier_run_id: None,
+                    visibility: "internal",
+                    payload: json!({ "reasonCode": "user_pause_requested" }),
+                    now_ms,
+                },
+            )
+            .await?;
+        }
+
+        let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
+        tx.commit().await?;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn resume_workflow_run(
+        &self,
+        params: WorkflowRunResumeParams,
+    ) -> anyhow::Result<Option<crate::WorkflowRunSnapshot>> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let Some(run) = get_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await? else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        if run.status == crate::WorkflowRunStatus::Paused {
+            sqlx::query(
+                r#"
+UPDATE workflow_runs
+SET
+    status = ?,
+    status_reason = NULL,
+    reason_code = NULL,
+    owner_id = NULL,
+    lease_expires_at_ms = NULL,
+    heartbeat_at_ms = NULL,
+    generation = generation + 1,
+    updated_at_ms = ?
+WHERE run_id = ?
+                "#,
+            )
+            .bind(crate::WorkflowRunStatus::Waiting.as_str())
+            .bind(now_ms)
+            .bind(params.run_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+            append_workflow_run_event_in_tx(
+                &mut tx,
+                params.run_id.as_str(),
+                WorkflowRunEventAppend {
+                    event_type: "resumed",
+                    actor_kind: "system",
+                    actor_id: None,
+                    step_run_id: None,
+                    verifier_run_id: None,
+                    visibility: "internal",
+                    payload: json!({ "reasonCode": "user_resume_requested" }),
+                    now_ms,
+                },
+            )
+            .await?;
+        }
+
+        let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
+        tx.commit().await?;
+        Ok(Some(snapshot))
+    }
 }
 
 struct InsertWorkflowRunParams<'a> {
@@ -447,6 +617,10 @@ fn resolve_run_source_thread_id(
         );
     }
     Ok(params.source_thread_id.or(spec_record.source_thread_id))
+}
+
+fn sanitized_workflow_pause_reason() -> &'static str {
+    "workflow run paused"
 }
 
 async fn insert_workflow_run_in_tx(

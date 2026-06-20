@@ -21319,6 +21319,404 @@
       ],
       "type": "string"
     },
+    "ThreadWorkflowRun": {
+      "properties": {
+        "activeStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "blockedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "eventCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "failedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pendingStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "readyStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "type": "string"
+        },
+        "skippedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sourceYamlSha256": {
+          "type": "string"
+        },
+        "specWorkflowId": {
+          "type": "string"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadWorkflowRunStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "succeededStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "verifierCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "waitingVerifierStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workflowRecordId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "activeStepCount",
+        "blockedStepCount",
+        "createdAt",
+        "eventCount",
+        "failedStepCount",
+        "generation",
+        "pendingStepCount",
+        "readyStepCount",
+        "runId",
+        "schemaVersion",
+        "skippedStepCount",
+        "sourceYamlSha256",
+        "specWorkflowId",
+        "status",
+        "succeededStepCount",
+        "updatedAt",
+        "verifierCount",
+        "waitingVerifierStepCount",
+        "workflowRecordId"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunEvent": {
+      "properties": {
+        "actorId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actorKind": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "stepRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verifierRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "visibility": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorKind",
+        "createdAt",
+        "eventType",
+        "seq",
+        "visibility"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunSnapshot": {
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/definitions/ThreadWorkflowRunEvent"
+          },
+          "type": "array"
+        },
+        "run": {
+          "$ref": "#/definitions/ThreadWorkflowRun"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/definitions/ThreadWorkflowRunStep"
+          },
+          "type": "array"
+        },
+        "verifiers": {
+          "items": {
+            "$ref": "#/definitions/ThreadWorkflowRunStepVerifier"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "events",
+        "run",
+        "steps",
+        "verifiers"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "waiting",
+        "blocked",
+        "paused",
+        "cancelRequested",
+        "cancelled",
+        "failed",
+        "completed",
+        "other"
+      ],
+      "type": "string"
+    },
+    "ThreadWorkflowRunStep": {
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "backgroundAgentRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sequence": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadWorkflowRunStepStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stepId": {
+          "type": "string"
+        },
+        "stepRunId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentId",
+        "createdAt",
+        "dependsOn",
+        "sequence",
+        "status",
+        "stepId",
+        "stepRunId",
+        "title",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunStepStatus": {
+      "enum": [
+        "pending",
+        "ready",
+        "active",
+        "waitingVerifier",
+        "blocked",
+        "skipped",
+        "cancelled",
+        "failed",
+        "succeeded",
+        "other"
+      ],
+      "type": "string"
+    },
+    "ThreadWorkflowRunStepVerifier": {
+      "properties": {
+        "attemptCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadWorkflowRunStepVerifierStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stepId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "verifierId": {
+          "type": "string"
+        },
+        "verifierRunId": {
+          "type": "string"
+        },
+        "verifierType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attemptCount",
+        "createdAt",
+        "status",
+        "stepId",
+        "updatedAt",
+        "verifierId",
+        "verifierRunId",
+        "verifierType"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunStepVerifierStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "blocked",
+        "passed",
+        "failed",
+        "skipped",
+        "other"
+      ],
+      "type": "string"
+    },
     "TokenUsageBreakdown": {
       "properties": {
         "cachedInputTokens": {

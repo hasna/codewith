@@ -121,7 +121,7 @@ SET
     started_at_ms = COALESCE(started_at_ms, ?),
     updated_at_ms = ?
 WHERE run_id = ?
-  AND status NOT IN ('completed', 'failed', 'cancelled')
+  AND status NOT IN ('completed', 'failed', 'cancelled', 'paused')
   AND (
       owner_id IS NULL
       OR owner_id = ?
@@ -380,6 +380,9 @@ pub(super) async fn claim_checked_workflow_run_in_tx(
         return Ok(None);
     };
     let run = snapshot.run;
+    if run.status == crate::WorkflowRunStatus::Paused {
+        return Ok(None);
+    }
     if run.owner_id.as_deref() != Some(owner_id) {
         return Ok(None);
     }
@@ -2027,6 +2030,7 @@ fn workflow_run_reason_for_status(
         crate::WorkflowRunStatus::Pending
         | crate::WorkflowRunStatus::Running
         | crate::WorkflowRunStatus::CancelRequested
+        | crate::WorkflowRunStatus::Paused
         | crate::WorkflowRunStatus::Cancelled
         | crate::WorkflowRunStatus::Other(_) => (None, None),
     }

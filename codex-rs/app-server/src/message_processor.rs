@@ -1297,6 +1297,36 @@ impl MessageProcessor {
                     .thread_workflow_list(params)
                     .await
             }
+            ClientRequest::ThreadWorkflowRunList { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_list(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowRunGet { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_get(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowRunStart { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_start(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowRunPause { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_pause(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowRunResume { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_resume(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowRunCancel { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_run_cancel(params)
+                    .await
+            }
             ClientRequest::ThreadMailboxEnqueue { params, .. } => {
                 self.thread_processor.thread_mailbox_enqueue(params).await
             }

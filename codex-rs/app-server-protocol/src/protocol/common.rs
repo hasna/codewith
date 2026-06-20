@@ -693,6 +693,42 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadWorkflowListResponse,
     },
+    #[experimental("thread/workflow/run/list")]
+    ThreadWorkflowRunList => "thread/workflow/run/list" {
+        params: v2::ThreadWorkflowRunListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunListResponse,
+    },
+    #[experimental("thread/workflow/run/get")]
+    ThreadWorkflowRunGet => "thread/workflow/run/get" {
+        params: v2::ThreadWorkflowRunGetParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunGetResponse,
+    },
+    #[experimental("thread/workflow/run/start")]
+    ThreadWorkflowRunStart => "thread/workflow/run/start" {
+        params: v2::ThreadWorkflowRunStartParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunStartResponse,
+    },
+    #[experimental("thread/workflow/run/pause")]
+    ThreadWorkflowRunPause => "thread/workflow/run/pause" {
+        params: v2::ThreadWorkflowRunPauseParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunPauseResponse,
+    },
+    #[experimental("thread/workflow/run/resume")]
+    ThreadWorkflowRunResume => "thread/workflow/run/resume" {
+        params: v2::ThreadWorkflowRunResumeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunResumeResponse,
+    },
+    #[experimental("thread/workflow/run/cancel")]
+    ThreadWorkflowRunCancel => "thread/workflow/run/cancel" {
+        params: v2::ThreadWorkflowRunCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowRunCancelResponse,
+    },
     #[experimental("thread/mailbox/enqueue")]
     ThreadMailboxEnqueue => "thread/mailbox/enqueue" {
         params: v2::ThreadMailboxEnqueueParams,
@@ -4143,6 +4179,52 @@ mod tests {
                 limit: None,
             },
         };
+        let run_list_request = ClientRequest::ThreadWorkflowRunList {
+            request_id: RequestId::Integer(4),
+            params: v2::ThreadWorkflowRunListParams {
+                thread_id: "thr_123".to_string(),
+                cursor: None,
+                limit: None,
+            },
+        };
+        let run_get_request = ClientRequest::ThreadWorkflowRunGet {
+            request_id: RequestId::Integer(5),
+            params: v2::ThreadWorkflowRunGetParams {
+                thread_id: "thr_123".to_string(),
+                run_id: "run_123".to_string(),
+            },
+        };
+        let run_start_request = ClientRequest::ThreadWorkflowRunStart {
+            request_id: RequestId::Integer(6),
+            params: v2::ThreadWorkflowRunStartParams {
+                thread_id: "thr_123".to_string(),
+                workflow_record_id: "workflow_123".to_string(),
+                idempotency_key: None,
+            },
+        };
+        let run_pause_request = ClientRequest::ThreadWorkflowRunPause {
+            request_id: RequestId::Integer(7),
+            params: v2::ThreadWorkflowRunPauseParams {
+                thread_id: "thr_123".to_string(),
+                run_id: "run_123".to_string(),
+                reason: None,
+            },
+        };
+        let run_resume_request = ClientRequest::ThreadWorkflowRunResume {
+            request_id: RequestId::Integer(8),
+            params: v2::ThreadWorkflowRunResumeParams {
+                thread_id: "thr_123".to_string(),
+                run_id: "run_123".to_string(),
+            },
+        };
+        let run_cancel_request = ClientRequest::ThreadWorkflowRunCancel {
+            request_id: RequestId::Integer(9),
+            params: v2::ThreadWorkflowRunCancelParams {
+                thread_id: "thr_123".to_string(),
+                run_id: "run_123".to_string(),
+                reason: None,
+            },
+        };
 
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&create_request),
@@ -4155,6 +4237,30 @@ mod tests {
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
             Some("thread/workflow/list")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_list_request),
+            Some("thread/workflow/run/list")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_get_request),
+            Some("thread/workflow/run/get")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_start_request),
+            Some("thread/workflow/run/start")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_pause_request),
+            Some("thread/workflow/run/pause")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_resume_request),
+            Some("thread/workflow/run/resume")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_cancel_request),
+            Some("thread/workflow/run/cancel")
         );
     }
 

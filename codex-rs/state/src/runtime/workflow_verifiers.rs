@@ -107,7 +107,10 @@ impl StateRuntime {
             tx.commit().await?;
             return Ok(None);
         };
-        if run.status.is_terminal() || run.status == crate::WorkflowRunStatus::CancelRequested {
+        if run.status.is_terminal()
+            || run.status == crate::WorkflowRunStatus::CancelRequested
+            || run.status == crate::WorkflowRunStatus::Paused
+        {
             tx.commit().await?;
             return Ok(None);
         }
@@ -234,7 +237,10 @@ WHERE run_id = ?
             tx.commit().await?;
             return Ok(None);
         };
-        if run.status.is_terminal() || run.status == crate::WorkflowRunStatus::CancelRequested {
+        if run.status.is_terminal()
+            || run.status == crate::WorkflowRunStatus::CancelRequested
+            || run.status == crate::WorkflowRunStatus::Paused
+        {
             tx.commit().await?;
             return Ok(None);
         }

@@ -16,6 +16,13 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadWorkflowCreateResponse;
 use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
+use codex_app_server_protocol::ThreadWorkflowRunCancelResponse;
+use codex_app_server_protocol::ThreadWorkflowRunGetResponse;
+use codex_app_server_protocol::ThreadWorkflowRunListResponse;
+use codex_app_server_protocol::ThreadWorkflowRunPauseResponse;
+use codex_app_server_protocol::ThreadWorkflowRunResumeResponse;
+use codex_app_server_protocol::ThreadWorkflowRunStartResponse;
+use codex_app_server_protocol::ThreadWorkflowRunStatus;
 use codex_app_server_protocol::ThreadWorkflowStatus;
 use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
@@ -236,6 +243,140 @@ async fn workflow_create_get_and_list_return_sanitized_metadata_without_side_eff
 
     assert_no_execution_side_effects(codex_home.path(), parse_thread_id(thread_id.as_str())?)
         .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow run lifecycle")?;
+    let marker = codex_home.path().join("workflow-run-command-ran");
+    let yaml = valid_workflow_yaml(&marker, "wf_app_server_run_lifecycle");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "idempotencyKey": "run-lifecycle",
+            })),
+        )
+        .await?;
+    let start_resp = read_response(&mut mcp, start_id).await?;
+    let start_json = serde_json::to_string(&start_resp.result)?;
+    assert_does_not_leak(&start_json)?;
+    let started = to_response::<ThreadWorkflowRunStartResponse>(start_resp)?;
+    assert_eq!(ThreadWorkflowRunStatus::Pending, started.run.run.status);
+    assert_eq!(
+        workflow.workflow_record_id,
+        started.run.run.workflow_record_id
+    );
+    assert_eq!(3, started.run.steps.len());
+    assert_eq!(3, started.run.verifiers.len());
+    assert_eq!(
+        Some(3),
+        started.goal_plan.as_ref().map(|plan| plan.nodes.len())
+    );
+    assert!(!marker.exists());
+
+    let list_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/list",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "limit": 5,
+            })),
+        )
+        .await?;
+    let list_resp = read_response(&mut mcp, list_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&list_resp.result)?)?;
+    let list = to_response::<ThreadWorkflowRunListResponse>(list_resp)?;
+    assert_eq!(1, list.data.len());
+    assert_eq!(started.run.run.run_id, list.data[0].run_id);
+    assert_eq!(ThreadWorkflowRunStatus::Pending, list.data[0].status);
+
+    let get_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/get",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "runId": started.run.run.run_id.as_str(),
+            })),
+        )
+        .await?;
+    let get_resp = read_response(&mut mcp, get_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&get_resp.result)?)?;
+    let get = to_response::<ThreadWorkflowRunGetResponse>(get_resp)?;
+    assert_eq!(
+        Some(started.run.run.run_id.clone()),
+        get.run.map(|run| run.run.run_id)
+    );
+
+    let pause_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/pause",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "runId": started.run.run.run_id.as_str(),
+                "reason": RAW_SENTINEL,
+            })),
+        )
+        .await?;
+    let pause_resp = read_response(&mut mcp, pause_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&pause_resp.result)?)?;
+    let paused = to_response::<ThreadWorkflowRunPauseResponse>(pause_resp)?;
+    assert_eq!(
+        Some(ThreadWorkflowRunStatus::Paused),
+        paused.run.as_ref().map(|run| run.run.status)
+    );
+
+    let resume_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/resume",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "runId": started.run.run.run_id.as_str(),
+            })),
+        )
+        .await?;
+    let resume_resp = read_response(&mut mcp, resume_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&resume_resp.result)?)?;
+    let resumed = to_response::<ThreadWorkflowRunResumeResponse>(resume_resp)?;
+    assert_eq!(
+        Some(ThreadWorkflowRunStatus::Waiting),
+        resumed.run.as_ref().map(|run| run.run.status)
+    );
+
+    let cancel_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/cancel",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "runId": started.run.run.run_id.as_str(),
+                "reason": RAW_SENTINEL,
+            })),
+        )
+        .await?;
+    let cancel_resp = read_response(&mut mcp, cancel_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&cancel_resp.result)?)?;
+    let cancelled = to_response::<ThreadWorkflowRunCancelResponse>(cancel_resp)?;
+    assert_eq!(
+        Some(ThreadWorkflowRunStatus::CancelRequested),
+        cancelled.run.as_ref().map(|run| run.run.status)
+    );
+    assert!(!marker.exists());
 
     Ok(())
 }

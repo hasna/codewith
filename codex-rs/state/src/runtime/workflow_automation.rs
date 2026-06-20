@@ -131,7 +131,7 @@ WHERE fire.timer_fire_id = ?
   AND timer.lease_id = ?
   AND timer.status = 'active'
   AND run.owner_id = ?
-  AND run.status NOT IN ('cancelled', 'failed', 'completed')
+  AND run.status NOT IN ('cancelled', 'failed', 'completed', 'paused')
             "#,
         )
         .bind(params.timer_fire_id.as_str())
@@ -259,7 +259,7 @@ JOIN workflow_runs run
 WHERE link.run_id = ?
   AND link.status = 'active'
   AND run.owner_id = ?
-  AND run.status NOT IN ('cancelled', 'failed', 'completed')
+  AND run.status NOT IN ('cancelled', 'failed', 'completed', 'paused')
   AND (
     link.trigger_step_id IS NULL
     OR EXISTS (
@@ -388,7 +388,7 @@ WHERE timer_id = (
       AND (timer.expires_at_ms IS NULL OR timer.expires_at_ms > ?)
       AND timer.iteration_count < timer.max_iterations
       AND (timer.lease_id IS NULL OR timer.lease_expires_at_ms <= ?)
-      AND run.status NOT IN ('cancelled', 'failed', 'completed')
+      AND run.status NOT IN ('cancelled', 'failed', 'completed', 'paused')
       AND NOT (
         json_extract(timer.stop_condition_json, '$.data.type') = 'step_succeeded'
         AND EXISTS (

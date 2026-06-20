@@ -560,6 +560,14 @@ export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotificatio
 export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
 export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
 export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
+export type { ThreadWorkflowRun } from "./ThreadWorkflowRun";
+export type { ThreadWorkflowRunEvent } from "./ThreadWorkflowRunEvent";
+export type { ThreadWorkflowRunSnapshot } from "./ThreadWorkflowRunSnapshot";
+export type { ThreadWorkflowRunStatus } from "./ThreadWorkflowRunStatus";
+export type { ThreadWorkflowRunStep } from "./ThreadWorkflowRunStep";
+export type { ThreadWorkflowRunStepStatus } from "./ThreadWorkflowRunStepStatus";
+export type { ThreadWorkflowRunStepVerifier } from "./ThreadWorkflowRunStepVerifier";
+export type { ThreadWorkflowRunStepVerifierStatus } from "./ThreadWorkflowRunStepVerifierStatus";
 export type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
 export type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";
 export type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";
