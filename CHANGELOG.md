@@ -38,6 +38,18 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.42] - 2026-06-20
+
+Tag: `rust-v0.1.42`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.42>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.41...rust-v0.1.42>
+
+### Fixed
+
+- Fixed strict Responses API schemas for Mission Control tools so optional
+  arguments are represented as nullable required fields and invalid strict tool
+  schemas are rejected locally before reaching the provider.
+
 ## [0.1.41] - 2026-06-19
 
 Tag: `rust-v0.1.41`
