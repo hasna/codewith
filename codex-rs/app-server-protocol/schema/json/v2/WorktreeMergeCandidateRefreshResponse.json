@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WorktreeMergeCandidate": {
+      "properties": {
+        "appliedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "conflictSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "dismissedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "headSha": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/WorktreeMergeCandidateStatus"
+        },
+        "targetRef": {
+          "type": "string"
+        },
+        "targetSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "worktreeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "baseSha",
+        "candidateId",
+        "createdAt",
+        "headSha",
+        "status",
+        "targetRef",
+        "updatedAt",
+        "worktreeId"
+      ],
+      "type": "object"
+    },
+    "WorktreeMergeCandidateStatus": {
+      "enum": [
+        "open",
+        "blocked",
+        "applied",
+        "dismissed"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "candidate": {
+      "$ref": "#/definitions/WorktreeMergeCandidate"
+    }
+  },
+  "required": [
+    "candidate"
+  ],
+  "title": "WorktreeMergeCandidateRefreshResponse",
+  "type": "object"
+}

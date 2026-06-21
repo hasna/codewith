@@ -1332,6 +1332,7 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
     chat.config.auth_profile_auto_switch.enabled = true;
     chat.config.auth_profile_auto_switch.profiles =
         vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_self_heal.enabled = true;
     configure_test_session(&mut chat);
     drain_insert_history(&mut rx);
 
@@ -1586,8 +1587,10 @@ async fn usage_limit_self_heal_retries_failed_turn_after_reset() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     configure_test_session(&mut chat);
     chat.config.usage_self_heal.max_retries = 2;
+    chat.config.usage_self_heal.enabled = true;
     chat.config.usage_self_heal.reset_retry_buffer_secs = 0;
     chat.config.usage_self_heal.max_reset_retry_delay_secs = 2 * 60 * 60;
+    chat.config.auth_profile_auto_switch.enabled = false;
 
     chat.submit_user_message(UserMessage::from("retry me after reset"));
     match next_submit_op(&mut op_rx) {

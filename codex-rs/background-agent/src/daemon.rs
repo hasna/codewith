@@ -9,7 +9,9 @@ use anyhow::bail;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::fs;
+#[cfg(unix)]
 use tokio::time::Instant;
+#[cfg(unix)]
 use tokio::time::sleep;
 
 use crate::process_lifecycle::WorkerProcessCommand;
@@ -23,7 +25,9 @@ const DAEMON_STATE_DIR_NAME: &str = "background-agent-daemon";
 const DAEMON_PID_FILE_NAME: &str = "daemon.json";
 const DAEMON_LOCK_FILE_NAME: &str = "daemon.lock";
 const DAEMON_STDERR_FILE_NAME: &str = "daemon.stderr.log";
+#[cfg(unix)]
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
 const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_STOP_GRACE_PERIOD: Duration = Duration::from_secs(35);
 const DAEMON_HARD_KILL_TIMEOUT: Duration = Duration::from_secs(15);

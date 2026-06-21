@@ -1,0 +1,446 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentDesiredState": {
+      "enum": [
+        "running",
+        "stopped",
+        "deleted"
+      ],
+      "type": "string"
+    },
+    "AgentRetentionState": {
+      "enum": [
+        "active",
+        "archived",
+        "deleteRequested",
+        "deleted"
+      ],
+      "type": "string"
+    },
+    "AgentRun": {
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "archiveAfter": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "archivedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "authProfileRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "configFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "crashReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "deleteAfter": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deletedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "desiredState": {
+          "$ref": "#/definitions/AgentDesiredState"
+        },
+        "exitCode": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "exitSignal": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "heartbeatAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputSnapshotRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jobId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastEventSeq": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "lastSnapshotSeq": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "parentAgentRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pgid": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pid": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "promptSnapshotRef": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retentionState": {
+          "$ref": "#/definitions/AgentRetentionState"
+        },
+        "rolloutPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "spawnLinkage": true,
+        "startedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/AgentRunStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "supervisorId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadStoreId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadStoreKind": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "versionFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktreeLeaseId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agentId",
+        "createdAt",
+        "desiredState",
+        "generation",
+        "lastEventSeq",
+        "lastSnapshotSeq",
+        "promptSnapshotRef",
+        "retentionState",
+        "source",
+        "status",
+        "threadStoreKind",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "AgentRunStatus": {
+      "enum": [
+        "queued",
+        "starting",
+        "running",
+        "waitingOnApproval",
+        "waitingOnUser",
+        "stopping",
+        "completed",
+        "failed",
+        "cancelled",
+        "orphaned"
+      ],
+      "type": "string"
+    },
+    "Worktree": {
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentRun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseRepoPath": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleanupAfter": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cleanupPolicy": {
+          "$ref": "#/definitions/WorktreeCleanupPolicy"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "deletedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "forceDeleteRequested": {
+          "type": "boolean"
+        },
+        "headSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifecycleStatus": {
+          "$ref": "#/definitions/WorktreeLifecycleStatus"
+        },
+        "mode": {
+          "$ref": "#/definitions/WorktreeMode"
+        },
+        "ownerAgentRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ownerKind": {
+          "$ref": "#/definitions/WorktreeOwnerKind"
+        },
+        "ownerThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "releasedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "statusSnapshot": true,
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "worktreeId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "baseRepoPath",
+        "cleanupPolicy",
+        "createdAt",
+        "dirty",
+        "forceDeleteRequested",
+        "lifecycleStatus",
+        "mode",
+        "ownerKind",
+        "statusSnapshot",
+        "updatedAt",
+        "worktreeId",
+        "worktreePath"
+      ],
+      "type": "object"
+    },
+    "WorktreeCleanupPolicy": {
+      "enum": [
+        "retain",
+        "deleteIfClean",
+        "forceDelete"
+      ],
+      "type": "string"
+    },
+    "WorktreeLifecycleStatus": {
+      "enum": [
+        "active",
+        "cleanupPending",
+        "released",
+        "deleted"
+      ],
+      "type": "string"
+    },
+    "WorktreeMode": {
+      "enum": [
+        "isolatedWorktree",
+        "sharedRepository"
+      ],
+      "type": "string"
+    },
+    "WorktreeOwnerKind": {
+      "enum": [
+        "manual",
+        "mainSession",
+        "subSession",
+        "backgroundAgent"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Worktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "WorktreeReleaseResponse",
+  "type": "object"
+}

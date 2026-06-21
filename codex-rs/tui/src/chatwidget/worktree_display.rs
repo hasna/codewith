@@ -79,14 +79,32 @@ fn worktree_manager_params(
         } else if policy.main_sessions == WorktreeSessionMode::Off {
             "Main-session worktrees are disabled in config".to_string()
         } else {
-            "Creation backend is not wired yet".to_string()
+            String::new()
         };
         items.push(worktree_action_item(
             "Create worktree",
-            "Planned: create a managed isolated worktree",
-            true,
-            Some(create_disabled_reason),
-            || AppEvent::OpenWorktreeManager,
+            "Create a managed isolated worktree",
+            !create_disabled_reason.is_empty(),
+            (!create_disabled_reason.is_empty()).then_some(create_disabled_reason),
+            || AppEvent::CreateWorktree {
+                name: None,
+                branch: None,
+                start_point: None,
+            },
+        ));
+        let reconcile_disabled_reason = if policy.current_base_repo_path.is_none() {
+            "No git repository detected for this session".to_string()
+        } else if !policy.enabled {
+            "Managed worktrees are disabled in config".to_string()
+        } else {
+            String::new()
+        };
+        items.push(worktree_action_item(
+            "Reconcile worktrees",
+            "Discover linked Codewith worktrees and update state",
+            !reconcile_disabled_reason.is_empty(),
+            (!reconcile_disabled_reason.is_empty()).then_some(reconcile_disabled_reason),
+            || AppEvent::ReconcileWorktrees,
         ));
     }
 
@@ -139,6 +157,12 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
     let use_base_repo_path = Some(worktree.base_repo_path.clone());
     let start_agent_command = format!("/agent start --worktree {worktree_id} ");
     let open_agent_id = worktree.agent.as_ref().map(|agent| agent.agent_id.clone());
+    let merge_worktree_id = worktree_id.clone();
+    let merge_base_repo_path = Some(worktree.base_repo_path.clone());
+    let release_worktree_id = worktree_id.clone();
+    let release_base_repo_path = Some(worktree.base_repo_path.clone());
+    let cleanup_worktree_id = worktree_id;
+    let cleanup_base_repo_path = Some(worktree.base_repo_path.clone());
     let use_disabled_reason = if !policy.enabled {
         Some("Managed worktrees are disabled in config".to_string())
     } else if policy.main_sessions == WorktreeSessionMode::Off {
@@ -200,17 +224,38 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
         ),
         worktree_action_item(
             "Merge candidate",
-            "Planned: dry-run merge this worktree into an integration target",
-            true,
-            Some("Merge candidate backend is not wired yet".to_string()),
-            || AppEvent::OpenWorktreeManager,
+            "Dry-run merge this worktree into the current target",
+            worktree.lifecycle_status != WorktreeLifecycleStatus::Active,
+            (worktree.lifecycle_status != WorktreeLifecycleStatus::Active)
+                .then(|| "Only active worktrees can refresh merge candidates".to_string()),
+            move || AppEvent::RefreshWorktreeMergeCandidate {
+                worktree_id: merge_worktree_id.clone(),
+                base_repo_path: merge_base_repo_path.clone(),
+                target_ref: None,
+            },
+        ),
+        worktree_action_item(
+            "Release",
+            "Release this worktree and retain it on disk",
+            worktree.lifecycle_status == WorktreeLifecycleStatus::Deleted,
+            (worktree.lifecycle_status == WorktreeLifecycleStatus::Deleted)
+                .then(|| "Deleted worktrees cannot be released".to_string()),
+            move || AppEvent::ReleaseWorktree {
+                worktree_id: release_worktree_id.clone(),
+                base_repo_path: release_base_repo_path.clone(),
+            },
         ),
         worktree_action_item(
             "Cleanup",
-            "Planned: release or delete this worktree with dirty-work protection",
-            true,
-            Some("Cleanup backend is not wired yet".to_string()),
-            || AppEvent::OpenWorktreeManager,
+            "Release and delete if the worktree is clean",
+            worktree.lifecycle_status == WorktreeLifecycleStatus::Deleted,
+            (worktree.lifecycle_status == WorktreeLifecycleStatus::Deleted)
+                .then(|| "Deleted worktrees cannot be cleaned up".to_string()),
+            move || AppEvent::CleanupWorktree {
+                worktree_id: cleanup_worktree_id.clone(),
+                base_repo_path: cleanup_base_repo_path.clone(),
+                force_delete: false,
+            },
         ),
     ];
     items.push(worktree_action_item(

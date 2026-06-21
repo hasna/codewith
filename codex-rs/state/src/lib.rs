@@ -175,6 +175,8 @@ pub use runtime::ManagedWorktreeCreateParams;
 pub use runtime::ManagedWorktreeDetachParams;
 pub use runtime::ManagedWorktreeListPage;
 pub use runtime::ManagedWorktreeMergeCandidateRecordParams;
+pub use runtime::ManagedWorktreeReleaseParams;
+pub use runtime::ManagedWorktreeStatusUpdateParams;
 pub use runtime::ManagedWorktreeStore;
 pub use runtime::MemoryStore;
 pub use runtime::MonitorStore;

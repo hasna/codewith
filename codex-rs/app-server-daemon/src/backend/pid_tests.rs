@@ -1,13 +1,16 @@
 use std::time::Duration;
 
 use pretty_assertions::assert_eq;
+use std::process::Stdio;
 use tempfile::TempDir;
+use tokio::process::Command;
 
 use super::PidBackend;
 use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
+use super::process_exists;
 use super::read_stderr_log_tail;
 use super::stderr_log_file_for_pid_file;
 use super::try_lock_file;
@@ -175,6 +178,48 @@ fn app_server_remote_control_uses_runtime_flag() {
 }
 
 #[tokio::test]
+async fn app_server_force_terminate_kills_process_group() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let child_pid_file = temp_dir.path().join("child.pid");
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg("trap '' TERM; (trap '' TERM; sleep 60) & echo $! > \"$CHILD_PID_FILE\"; wait")
+        .env("CHILD_PID_FILE", &child_pid_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().expect("spawn process group leader");
+    let parent_pid = child.id().expect("child process should have pid");
+    let child_pid = wait_for_child_pid_file(&child_pid_file).await;
+    assert!(process_exists(parent_pid));
+    assert!(process_exists(child_pid));
+
+    let backend = PidBackend::new(
+        "codewith".into(),
+        temp_dir.path().join("app-server.pid"),
+        /*remote_control_enabled*/ false,
+    );
+    backend
+        .force_terminate_process(parent_pid)
+        .expect("force terminate process group");
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("wait for group leader")
+        .expect("group leader wait");
+    wait_for_process_exit(child_pid).await;
+}
+
+#[tokio::test]
 async fn read_stderr_log_tail_returns_recent_complete_lines() {
     let temp_dir = TempDir::new().expect("temp dir");
     let pid_file = temp_dir.path().join("app-server.pid");
@@ -193,4 +238,26 @@ async fn read_stderr_log_tail_returns_recent_complete_lines() {
             contents: "recent error\nusage".to_string(),
         })
     );
+}
+
+async fn wait_for_child_pid_file(path: &std::path::Path) -> u32 {
+    for _ in 0..100 {
+        if let Ok(contents) = tokio::fs::read_to_string(path).await
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for child pid file {}", path.display());
+}
+
+async fn wait_for_process_exit(pid: u32) {
+    for _ in 0..100 {
+        if !process_exists(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("process {pid} did not exit");
 }

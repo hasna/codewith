@@ -16,11 +16,14 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 #[cfg(unix)]
 use tokio::process::Command;
+#[cfg(unix)]
 use tokio::time::Instant;
+#[cfg(unix)]
 use tokio::time::sleep;
 
 const DEFAULT_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const DEFAULT_HARD_KILL_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(unix)]
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_STDERR_TAIL_BYTES: u64 = 4096;
 

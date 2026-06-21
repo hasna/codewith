@@ -151,15 +151,29 @@ where
         > = vec![Arc::new(ValidateWorkflowYamlTool::new(Arc::clone(
             &state.enabled,
         )))];
-        if state.tools_available_for_thread()
-            && let (Some(state_db), Some(thread_id)) = (&self.state_db, state.thread_id())
-        {
-            tools.push(Arc::new(ManageWorkflowTool::new(
+        let manage_tool = if !state.tools_available_for_thread() {
+            ManageWorkflowTool::unavailable(
                 Arc::clone(&state.enabled),
-                Arc::clone(state_db),
-                thread_id,
-            )));
-        }
+                "workflow management requires a saved non-review thread; start or resume a saved Codewith thread before creating or running workflows",
+            )
+        } else {
+            match (&self.state_db, state.thread_id()) {
+                (Some(state_db), Some(thread_id)) => ManageWorkflowTool::new(
+                    Arc::clone(&state.enabled),
+                    Arc::clone(state_db),
+                    thread_id,
+                ),
+                (None, _) => ManageWorkflowTool::unavailable(
+                    Arc::clone(&state.enabled),
+                    "workflow management is unavailable because the workflow state store is not initialized",
+                ),
+                (_, None) => ManageWorkflowTool::unavailable(
+                    Arc::clone(&state.enabled),
+                    "workflow management is unavailable because the current thread id is not available",
+                ),
+            }
+        };
+        tools.push(Arc::new(manage_tool));
         tools
     }
 }
@@ -211,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_extension_contributes_validation_tool_when_enabled() {
+    fn installed_extension_contributes_validation_and_management_tools_when_enabled() {
         let mut builder = ExtensionRegistryBuilder::<bool>::new();
         install(&mut builder, None, |enabled| *enabled);
         let registry = builder.build();
@@ -228,7 +242,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            vec![ToolName::plain(VALIDATE_WORKFLOW_YAML_TOOL_NAME)],
+            vec![
+                ToolName::plain(VALIDATE_WORKFLOW_YAML_TOOL_NAME),
+                ToolName::plain(MANAGE_WORKFLOW_TOOL_NAME),
+            ],
             tool_names
         );
     }
@@ -279,7 +296,7 @@ mod tests {
         thread_store.insert(state);
 
         let tools = registry.tool_contributors()[0].tools(&session_store, &thread_store);
-        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.len(), 2);
 
         let state = thread_store
             .get::<WorkflowExtensionState>()

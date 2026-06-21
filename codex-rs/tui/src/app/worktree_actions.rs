@@ -2,7 +2,9 @@ use super::App;
 use crate::app_server_session::AppServerSession;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::Worktree;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeLifecycleStatus;
+use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeSessionMode;
 use codex_exec_server::LOCAL_FS;
@@ -20,6 +22,64 @@ impl App {
             Err(err) => self
                 .chat_widget
                 .add_error_message(format!("Failed to read worktrees: {err}")),
+        }
+    }
+
+    pub(super) async fn reconcile_worktrees(&mut self, app_server: &mut AppServerSession) {
+        let base_repo_path = self.current_worktree_base_repo_path().await;
+        match app_server.worktree_reconcile(base_repo_path).await {
+            Ok(response) => {
+                self.chat_widget.add_info_message(
+                    "Reconciled worktrees".to_string(),
+                    Some(format!(
+                        "{} discovered, {} updated, {} deleted",
+                        response.discovered, response.updated, response.deleted
+                    )),
+                );
+                self.chat_widget
+                    .show_worktree_manager(response.data, response.policy);
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to reconcile worktrees: {err}")),
+        }
+    }
+
+    pub(super) async fn create_worktree(
+        &mut self,
+        app_server: &mut AppServerSession,
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    ) {
+        let base_repo_path = self.current_worktree_base_repo_path().await;
+        match app_server
+            .worktree_create(
+                base_repo_path,
+                name,
+                branch,
+                start_point,
+                Some(WorktreeCleanupPolicy::DeleteIfClean),
+            )
+            .await
+        {
+            Ok(response) => {
+                let short_id = response
+                    .worktree
+                    .worktree_id
+                    .chars()
+                    .take(8)
+                    .collect::<String>();
+                self.chat_widget.add_info_message(
+                    "Created worktree".to_string(),
+                    Some(format!("{short_id} at {}", response.worktree.worktree_path)),
+                );
+                self.chat_widget
+                    .show_worktree_actions(response.worktree, response.policy);
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to create worktree: {err}")),
         }
     }
 
@@ -145,6 +205,124 @@ impl App {
                 self.chat_widget
                     .add_error_message(format!("Failed to use worktree: {err}.{rollback_suffix}"));
             }
+        }
+    }
+
+    pub(super) async fn release_worktree(
+        &mut self,
+        app_server: &mut AppServerSession,
+        worktree_id: String,
+        base_repo_path: Option<String>,
+    ) {
+        let Some((worktree_id, _response)) = self
+            .read_selected_worktree(app_server, Some(worktree_id), base_repo_path, "release")
+            .await
+        else {
+            return;
+        };
+        match app_server
+            .worktree_release(
+                worktree_id.clone(),
+                Some(WorktreeCleanupPolicy::Retain),
+                Some(false),
+            )
+            .await
+        {
+            Ok(response) => {
+                if let Some(worktree) = response.worktree {
+                    self.chat_widget.add_info_message(
+                        "Released worktree".to_string(),
+                        Some(worktree.worktree_path.clone()),
+                    );
+                    self.chat_widget.show_worktree_read(worktree);
+                } else {
+                    self.show_no_matching_worktree(worktree_id);
+                }
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to release worktree: {err}")),
+        }
+    }
+
+    pub(super) async fn cleanup_worktree(
+        &mut self,
+        app_server: &mut AppServerSession,
+        worktree_id: String,
+        base_repo_path: Option<String>,
+        force_delete: bool,
+    ) {
+        let Some((worktree_id, _response)) = self
+            .read_selected_worktree(app_server, Some(worktree_id), base_repo_path, "cleanup")
+            .await
+        else {
+            return;
+        };
+        match app_server
+            .worktree_cleanup(worktree_id.clone(), Some(force_delete))
+            .await
+        {
+            Ok(response) => {
+                if let Some(worktree) = response.worktree {
+                    self.chat_widget.add_info_message(
+                        "Cleanup requested".to_string(),
+                        Some(worktree.worktree_path.clone()),
+                    );
+                    self.chat_widget.show_worktree_read(worktree);
+                } else {
+                    self.show_no_matching_worktree(worktree_id);
+                }
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to clean up worktree: {err}")),
+        }
+    }
+
+    pub(super) async fn refresh_worktree_merge_candidate(
+        &mut self,
+        app_server: &mut AppServerSession,
+        worktree_id: String,
+        base_repo_path: Option<String>,
+        target_ref: Option<String>,
+    ) {
+        let Some((worktree_id, _response)) = self
+            .read_selected_worktree(app_server, Some(worktree_id), base_repo_path, "merge")
+            .await
+        else {
+            return;
+        };
+        match app_server
+            .worktree_merge_candidate_refresh(worktree_id.clone(), target_ref)
+            .await
+        {
+            Ok(response) => {
+                let status = match response.candidate.status {
+                    WorktreeMergeCandidateStatus::Open => "open",
+                    WorktreeMergeCandidateStatus::Blocked => "blocked",
+                    WorktreeMergeCandidateStatus::Applied => "applied",
+                    WorktreeMergeCandidateStatus::Dismissed => "dismissed",
+                };
+                let detail = response
+                    .candidate
+                    .conflict_summary
+                    .clone()
+                    .unwrap_or_else(|| response.candidate.target_ref.clone());
+                self.chat_widget
+                    .add_info_message(format!("Merge candidate {status}"), Some(detail));
+                match app_server.worktree_merge_candidate_list(worktree_id).await {
+                    Ok(list) => self.chat_widget.add_info_message(
+                        "Merge candidates".to_string(),
+                        Some(format!("{} candidate(s)", list.data.len())),
+                    ),
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to list merge candidates: {err}")),
+                }
+            }
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to refresh merge candidate: {err}")),
         }
     }
 
@@ -279,6 +457,8 @@ fn one_worktree(mut worktrees: Vec<Worktree>) -> Result<String, WorktreeSelectio
 fn worktree_action_usage(action: &str) -> String {
     match action {
         "start-agent" => "Use /agent start --worktree <id> <prompt>.".to_string(),
+        "cleanup" => "Use /worktree cleanup <id> or /worktree cleanup --force <id>.".to_string(),
+        "merge" => "Use /worktree merge <id> [target].".to_string(),
         _ => format!("Use /worktree {action} <id>."),
     }
 }

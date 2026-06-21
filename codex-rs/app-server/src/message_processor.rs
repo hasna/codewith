@@ -1403,11 +1403,43 @@ impl MessageProcessor {
             ClientRequest::WorktreeRead { params, .. } => {
                 self.thread_processor.worktree_read(params).await
             }
+            ClientRequest::WorktreeCreate { params, .. } => {
+                self.thread_processor.worktree_create(params).await
+            }
+            ClientRequest::WorktreeReconcile { params, .. } => {
+                self.thread_processor.worktree_reconcile(params).await
+            }
             ClientRequest::WorktreeAttach { params, .. } => {
                 self.thread_processor.worktree_attach(params).await
             }
             ClientRequest::WorktreeDetach { params, .. } => {
                 self.thread_processor.worktree_detach(params).await
+            }
+            ClientRequest::WorktreeRelease { params, .. } => {
+                self.thread_processor.worktree_release(params).await
+            }
+            ClientRequest::WorktreeCleanup { params, .. } => {
+                self.thread_processor.worktree_cleanup(params).await
+            }
+            ClientRequest::WorktreeMergeCandidateList { params, .. } => {
+                self.thread_processor
+                    .worktree_merge_candidate_list(params)
+                    .await
+            }
+            ClientRequest::WorktreeMergeCandidateRefresh { params, .. } => {
+                self.thread_processor
+                    .worktree_merge_candidate_refresh(params)
+                    .await
+            }
+            ClientRequest::WorktreeMergeCandidateApply { params, .. } => {
+                self.thread_processor
+                    .worktree_merge_candidate_apply(params)
+                    .await
+            }
+            ClientRequest::WorktreeMergeCandidateDismiss { params, .. } => {
+                self.thread_processor
+                    .worktree_merge_candidate_dismiss(params)
+                    .await
             }
             ClientRequest::MachineRegistryList { params, .. } => {
                 self.machine_registry_processor.list(params).await

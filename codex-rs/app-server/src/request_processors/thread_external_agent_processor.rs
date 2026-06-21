@@ -24,6 +24,7 @@ use codex_external_agent::claude_code_harness;
 use codex_external_agent::cursor_acp_harness;
 use codex_external_agent::grok_build_acp_harness;
 use codex_login::AuthProfileSubscriptionProvider;
+use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -103,31 +104,32 @@ impl ThreadRequestProcessor {
         if task.is_empty() {
             return Ok(ExternalAgentStartOutcome::gated("task must not be empty"));
         }
+        match mode {
+            ThreadExternalAgentMode::Plan | ThreadExternalAgentMode::Propose => {}
+        }
+        let (thread_id, thread) = self.load_thread(&thread_id).await?;
+        let thread_config = thread.config().await;
         if let Err(message) = validate_external_agent_subscription_profile(
-            &self.config.codex_home,
-            self.config.selected_auth_profile.as_deref(),
+            &thread_config.codex_home,
+            thread_config.selected_auth_profile.as_deref(),
             runtime_id,
         ) {
             return Ok(ExternalAgentStartOutcome::gated(message));
         }
-        match mode {
-            ThreadExternalAgentMode::Plan | ThreadExternalAgentMode::Propose => {}
-        }
-        let (thread_id, _) = self.load_thread(&thread_id).await?;
 
         let run_id = format!("ext_{}", Uuid::new_v4());
         let runtime_mode = external_agent_mode(mode);
         let runtime_request = ExternalAgentRequest::new(
             runtime_id,
             task,
-            self.config.cwd.to_path_buf(),
+            thread_config.cwd.to_path_buf(),
             runtime_mode,
         );
         let runner = runner_for_runtime(runtime_id).ok_or_else(|| {
             invalid_request(format!("unsupported external-agent runtime `{runtime_id}`"))
         })?;
         let source_env = external_agent_source_env(
-            &self.config.permissions.shell_environment_policy,
+            &thread_config.permissions.shell_environment_policy,
             runtime_id,
         );
         let readiness = runner.readiness_with_env(&source_env).await;
@@ -137,21 +139,20 @@ impl ThreadRequestProcessor {
             )));
         }
         let permission_profile = external_agent_permission_profile(
-            &self.config.cwd,
-            &self.config.workspace_roots,
+            &thread_config.cwd,
+            &thread_config.workspace_roots,
             runtime_id,
             &source_env,
         );
         let sandbox_config = ExternalAgentSandboxConfig {
             use_legacy_landlock: external_agent_use_legacy_landlock(
                 &permission_profile,
-                self.config.cwd.as_path(),
+                thread_config.cwd.as_path(),
             ),
             permission_profile,
             codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
-            windows_sandbox_level: WindowsSandboxLevel::from_config(&self.config),
-            windows_sandbox_private_desktop: self
-                .config
+            windows_sandbox_level: WindowsSandboxLevel::from_config(thread_config.as_ref()),
+            windows_sandbox_private_desktop: thread_config
                 .permissions
                 .windows_sandbox_private_desktop,
         };
@@ -180,7 +181,8 @@ impl ThreadRequestProcessor {
                 source_env,
                 host: AppServerExternalAgentHost::new(
                     self.outgoing.clone(),
-                    thread_id_string,
+                    self.thread_state_manager.clone(),
+                    thread_id,
                     run_id,
                     cancellation_token,
                 ),
@@ -577,7 +579,8 @@ fn readiness_gate_message(readiness: ExternalAgentReadiness) -> String {
 #[derive(Clone)]
 struct AppServerExternalAgentHost {
     outgoing: Arc<OutgoingMessageSender>,
-    thread_id: String,
+    thread_state_manager: ThreadStateManager,
+    thread_id: ThreadId,
     run_id: String,
     terminal_sent: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
@@ -586,12 +589,14 @@ struct AppServerExternalAgentHost {
 impl AppServerExternalAgentHost {
     fn new(
         outgoing: Arc<OutgoingMessageSender>,
-        thread_id: String,
+        thread_state_manager: ThreadStateManager,
+        thread_id: ThreadId,
         run_id: String,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             outgoing,
+            thread_state_manager,
             thread_id,
             run_id,
             terminal_sent: Arc::new(AtomicBool::new(false)),
@@ -608,14 +613,24 @@ impl AppServerExternalAgentHost {
         ) {
             self.terminal_sent.store(true, Ordering::SeqCst);
         }
+        let connection_ids = self
+            .thread_state_manager
+            .subscribed_connection_ids(self.thread_id)
+            .await;
+        if connection_ids.is_empty() {
+            return;
+        }
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadExternalAgentEvent(
-                ThreadExternalAgentEventNotification {
-                    thread_id: self.thread_id.clone(),
-                    run_id: self.run_id.clone(),
-                    event,
-                },
-            ))
+            .send_server_notification_to_connections(
+                &connection_ids,
+                ServerNotification::ThreadExternalAgentEvent(
+                    ThreadExternalAgentEventNotification {
+                        thread_id: self.thread_id.to_string(),
+                        run_id: self.run_id.clone(),
+                        event,
+                    },
+                ),
+            )
             .await;
     }
 
@@ -742,8 +757,98 @@ fn action_json(action: &ExternalAgentActionRequest) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn external_agent_host_targets_subscribed_thread_connections() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000301")
+            .expect("thread id should parse");
+        thread_state_manager
+            .connection_initialized(ConnectionId(1), ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .connection_initialized(ConnectionId(2), ConnectionCapabilities::default())
+            .await;
+        assert!(
+            thread_state_manager
+                .try_add_connection_to_thread(thread_id, ConnectionId(1))
+                .await
+        );
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            thread_state_manager,
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        host.emit(ThreadExternalAgentEvent::Status {
+            message: "working".to_string(),
+        })
+        .await;
+
+        let envelope = rx.recv().await.expect("targeted notification");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            panic!("expected targeted envelope, got {envelope:?}");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        let OutgoingMessage::AppServerNotification(ServerNotification::ThreadExternalAgentEvent(
+            notification,
+        )) = message
+        else {
+            panic!("expected external-agent notification, got {message:?}");
+        };
+        assert_eq!(notification.thread_id, thread_id.to_string());
+        assert_eq!(notification.run_id, "run-1");
+        assert_eq!(
+            notification.event,
+            ThreadExternalAgentEvent::Status {
+                message: "working".to_string(),
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_drops_events_without_subscribers() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000302")
+            .expect("thread id should parse");
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            ThreadStateManager::new(),
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        host.emit(ThreadExternalAgentEvent::Status {
+            message: "working".to_string(),
+        })
+        .await;
+
+        assert!(rx.try_recv().is_err());
+    }
 
     #[test]
     fn external_agent_permission_profile_scopes_read_roots_with_network() {

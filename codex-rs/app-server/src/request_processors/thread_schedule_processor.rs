@@ -169,6 +169,9 @@ impl ThreadScheduleRequestProcessor {
         let (state_db, listener_command_tx) = self.prepare_schedule_mutation(thread_id).await?;
         self.ensure_thread_schedule_capacity(&state_db, thread_id)
             .await?;
+        let recorded_auth_profile = self
+            .recorded_auth_profile_for_running_thread(thread_id)
+            .await;
         let (prompt, state_prompt_source) = match prompt_source {
             ThreadSchedulePromptSource::Inline => (
                 validate_schedule_prompt(params.prompt.as_str())?,
@@ -190,20 +193,31 @@ impl ThreadScheduleRequestProcessor {
                 )
             }
         };
-        let schedule = state_db
-            .thread_schedules()
-            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt,
-                prompt_source: state_prompt_source,
-                schedule,
-                timezone,
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at,
-                expires_at,
-            })
-            .await
-            .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
+        let create_params = codex_state::ThreadScheduleCreateParams {
+            thread_id,
+            prompt,
+            prompt_source: state_prompt_source,
+            schedule,
+            timezone,
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at,
+            expires_at,
+        };
+        let schedule = match recorded_auth_profile {
+            Some(auth_profile) => {
+                state_db
+                    .thread_schedules()
+                    .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                    .await
+            }
+            None => {
+                state_db
+                    .thread_schedules()
+                    .create_thread_schedule(create_params)
+                    .await
+            }
+        }
+        .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -217,6 +231,14 @@ impl ThreadScheduleRequestProcessor {
         self.emit_thread_schedule_updated_ordered(thread_id, schedule, listener_command_tx)
             .await;
         Ok(())
+    }
+
+    async fn recorded_auth_profile_for_running_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<Option<String>> {
+        let thread = self.thread_manager.get_thread(thread_id).await.ok()?;
+        Some(thread.config_snapshot().await.selected_auth_profile)
     }
 
     async fn thread_schedule_list_inner(

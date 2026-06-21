@@ -1,12 +1,13 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 68
 expression: "render_bottom_popup(&chat, 120)"
 ---
-  Waiting 1  Answerable 1
+  1 waiting
 
-  Sessions (2)  Projects (2)  [Questions (1)]  Work Queue (2)  Goal Chains (2)
+  Sessions  Projects  [Questions]  Queue  Goals  Schedules
 
-  Search sessions, projects, questions, queues, and goal chains
-› Codewith orchestration  Thread 11111111 | interaction interaction-1 | Which project should receive this task?
+  Search
+› Codewith orchestration  question pending
 
   Press enter to confirm or esc to go back

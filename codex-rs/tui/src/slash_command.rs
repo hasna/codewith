@@ -77,6 +77,7 @@ pub enum SlashCommand {
     Mention,
     Status,
     Stats,
+    Changelog,
     DebugConfig,
     Title,
     Statusline,
@@ -135,6 +136,7 @@ impl SlashCommand {
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Stats => "show session stats and provider usage",
+            SlashCommand::Changelog => "show what changed in Codewith releases",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
@@ -235,6 +237,7 @@ impl SlashCommand {
                 | SlashCommand::Mention
                 | SlashCommand::Status
                 | SlashCommand::Stats
+                | SlashCommand::Changelog
                 | SlashCommand::Ide
         )
     }
@@ -278,6 +281,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Stats
+            | SlashCommand::Changelog
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -412,6 +416,8 @@ mod tests {
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
+        assert!(SlashCommand::Changelog.available_during_task());
+        assert!(SlashCommand::Changelog.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
         assert!(SlashCommand::MissionControl.available_during_task());
@@ -420,6 +426,48 @@ mod tests {
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn requested_running_task_slash_command_matrix_is_explicit() {
+        let available = [
+            SlashCommand::Profile,
+            SlashCommand::Goal,
+            SlashCommand::Loop,
+            SlashCommand::Workflow,
+            SlashCommand::MissionControl,
+            SlashCommand::Worktree,
+            SlashCommand::Status,
+            SlashCommand::Changelog,
+        ];
+        for command in available {
+            assert!(
+                command.available_during_task(),
+                "/{} should be available while a task is running",
+                command.command()
+            );
+        }
+
+        let unavailable = [
+            SlashCommand::Permissions,
+            SlashCommand::Model,
+            SlashCommand::Provider,
+            SlashCommand::Config,
+            SlashCommand::Resume,
+            SlashCommand::Tmux,
+        ];
+        for command in unavailable {
+            assert!(
+                !command.available_during_task(),
+                "/{} should wait for an idle task",
+                command.command()
+            );
+        }
+
+        assert_eq!(
+            SlashCommand::from_str("changelog"),
+            Ok(SlashCommand::Changelog)
+        );
     }
 
     #[test]
@@ -531,5 +579,16 @@ mod tests {
         );
         assert!(SlashCommand::Workflow.supports_inline_args());
         assert!(SlashCommand::Workflow.available_during_task());
+    }
+
+    #[test]
+    fn changelog_command_is_visible_session_information() {
+        assert_eq!(SlashCommand::Changelog.command(), "changelog");
+        assert_eq!(
+            SlashCommand::Changelog.description(),
+            "show what changed in Codewith releases"
+        );
+        assert!(SlashCommand::Changelog.available_during_task());
+        assert!(SlashCommand::Changelog.available_in_side_conversation());
     }
 }

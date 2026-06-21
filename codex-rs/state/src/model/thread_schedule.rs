@@ -146,6 +146,9 @@ impl TryFrom<&str> for ThreadScheduleRunStatus {
 pub struct ThreadSchedule {
     pub thread_id: ThreadId,
     pub schedule_id: String,
+    /// Selected auth profile captured when the schedule was created.
+    /// `None` means legacy/unknown; `Some(None)` means the root profile.
+    pub auth_profile: Option<Option<String>>,
     pub prompt_source: ThreadSchedulePromptSource,
     pub prompt: String,
     pub schedule: ThreadScheduleSpec,
@@ -197,6 +200,8 @@ pub(crate) struct ThreadScheduleRow {
     pub interval_unit: Option<String>,
     pub cron_expression: Option<String>,
     pub timezone: String,
+    pub auth_profile_recorded: i64,
+    pub auth_profile: Option<String>,
     pub status: String,
     pub next_run_at_ms: Option<i64>,
     pub last_run_at_ms: Option<i64>,
@@ -220,6 +225,8 @@ impl ThreadScheduleRow {
             interval_unit: row.try_get("interval_unit")?,
             cron_expression: row.try_get("cron_expression")?,
             timezone: row.try_get("timezone")?,
+            auth_profile_recorded: row.try_get("auth_profile_recorded")?,
+            auth_profile: row.try_get("auth_profile")?,
             status: row.try_get("status")?,
             next_run_at_ms: row.try_get("next_run_at_ms")?,
             last_run_at_ms: row.try_get("last_run_at_ms")?,
@@ -240,6 +247,11 @@ impl TryFrom<ThreadScheduleRow> for ThreadSchedule {
         Ok(Self {
             thread_id: ThreadId::try_from(row.thread_id)?,
             schedule_id: row.schedule_id,
+            auth_profile: match row.auth_profile_recorded {
+                0 => None,
+                1 => Some(row.auth_profile),
+                other => return Err(anyhow!("invalid auth_profile_recorded value `{other}`")),
+            },
             prompt_source: ThreadSchedulePromptSource::try_from(row.prompt_source.as_str())?,
             prompt: row.prompt,
             schedule: schedule_from_row_parts(

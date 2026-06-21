@@ -636,7 +636,7 @@ mod thread_mailbox_processor;
 mod thread_monitor_api;
 mod thread_monitor_processor;
 mod thread_monitor_runtime;
-mod thread_pending_interaction_processor;
+pub(crate) mod thread_pending_interaction_processor;
 mod thread_processor;
 mod thread_schedule_api;
 mod thread_schedule_default_prompt;

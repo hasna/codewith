@@ -1598,9 +1598,18 @@ async fn worktree_slash_command_emits_manage_events() {
     let cases = [
         ("/worktree", "list", None),
         ("/worktree list", "list", None),
+        ("/worktree reconcile", "reconcile", None),
+        ("/worktree create feature", "create", Some("feature")),
         ("/worktree read wt-123", "read", Some("wt-123")),
         ("/worktree actions wt-456", "actions", Some("wt-456")),
         ("/worktree use wt-789", "use", Some("wt-789")),
+        ("/worktree release wt-999", "release", Some("wt-999")),
+        (
+            "/worktree cleanup --force wt-999",
+            "cleanup",
+            Some("wt-999"),
+        ),
+        ("/worktree merge wt-999 main", "merge", Some("wt-999")),
     ];
 
     for (command, expected_kind, expected_worktree_id) in cases {
@@ -1611,6 +1620,19 @@ async fn worktree_slash_command_emits_manage_events() {
         let event = rx.try_recv().expect("expected worktree event");
         match (expected_kind, event) {
             ("list", AppEvent::OpenWorktreeManager) => {}
+            ("reconcile", AppEvent::ReconcileWorktrees) => {}
+            (
+                "create",
+                AppEvent::CreateWorktree {
+                    name,
+                    branch,
+                    start_point,
+                },
+            ) => {
+                assert_eq!(name.as_deref(), expected_worktree_id);
+                assert_eq!(branch, None);
+                assert_eq!(start_point, None);
+            }
             (
                 "read",
                 AppEvent::ReadWorktree {
@@ -1640,6 +1662,40 @@ async fn worktree_slash_command_emits_manage_events() {
             ) => {
                 assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
                 assert_eq!(base_repo_path, None);
+            }
+            (
+                "release",
+                AppEvent::ReleaseWorktree {
+                    worktree_id,
+                    base_repo_path,
+                },
+            ) => {
+                assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+            }
+            (
+                "cleanup",
+                AppEvent::CleanupWorktree {
+                    worktree_id,
+                    base_repo_path,
+                    force_delete,
+                },
+            ) => {
+                assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+                assert!(force_delete);
+            }
+            (
+                "merge",
+                AppEvent::RefreshWorktreeMergeCandidate {
+                    worktree_id,
+                    base_repo_path,
+                    target_ref,
+                },
+            ) => {
+                assert_eq!(Some(worktree_id.as_str()), expected_worktree_id);
+                assert_eq!(base_repo_path, None);
+                assert_eq!(target_ref.as_deref(), Some("main"));
             }
             (kind, event) => panic!("expected {kind} worktree event, got {event:?}"),
         }
@@ -3026,6 +3082,36 @@ async fn slash_exit_requests_exit() {
     chat.dispatch_command(SlashCommand::Exit);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
+}
+
+#[tokio::test]
+async fn slash_changelog_prints_release_notes() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Changelog);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one changelog history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    let preview = lines_to_single_string(&cells[0][..cells[0].len().min(12)])
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_chatwidget_snapshot!("slash_changelog_release_notes_preview", preview);
+    assert!(
+        rendered.contains("Codewith Changelog"),
+        "expected changelog title, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Unreleased"),
+        "expected unreleased section, got {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("Known evidence gaps"),
+        "expected repository notes to be omitted, got {rendered:?}"
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 
 #[tokio::test]

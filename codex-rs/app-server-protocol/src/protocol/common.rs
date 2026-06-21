@@ -188,6 +188,12 @@ fn canonical_thread_id_for_serialization(thread_id: &str) -> String {
         .unwrap_or_else(|_| thread_id.to_string())
 }
 
+/// Produces a client-request serialization scope from thread id fields.
+///
+/// Implementations are intentionally limited to thread id payload shapes used
+/// by protocol request params. Required thread ids should return a thread
+/// scope, while optional thread ids should return `None` when the caller did
+/// not provide a target thread.
 trait ThreadIdSerializationSource {
     fn serialization_scope(&self) -> Option<ClientRequestSerializationScope>;
 }
@@ -897,6 +903,16 @@ client_request_definitions! {
         serialization: global("worktree"),
         response: v2::WorktreeReadResponse,
     },
+    WorktreeCreate => "worktree/create" {
+        params: v2::WorktreeCreateParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeCreateResponse,
+    },
+    WorktreeReconcile => "worktree/reconcile" {
+        params: v2::WorktreeReconcileParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeReconcileResponse,
+    },
     WorktreeAttach => "worktree/attach" {
         params: v2::WorktreeAttachParams,
         serialization: global("worktree"),
@@ -906,6 +922,36 @@ client_request_definitions! {
         params: v2::WorktreeDetachParams,
         serialization: global("worktree"),
         response: v2::WorktreeDetachResponse,
+    },
+    WorktreeRelease => "worktree/release" {
+        params: v2::WorktreeReleaseParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeReleaseResponse,
+    },
+    WorktreeCleanup => "worktree/cleanup" {
+        params: v2::WorktreeCleanupParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeCleanupResponse,
+    },
+    WorktreeMergeCandidateList => "worktree/mergeCandidate/list" {
+        params: v2::WorktreeMergeCandidateListParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeMergeCandidateListResponse,
+    },
+    WorktreeMergeCandidateRefresh => "worktree/mergeCandidate/refresh" {
+        params: v2::WorktreeMergeCandidateRefreshParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeMergeCandidateRefreshResponse,
+    },
+    WorktreeMergeCandidateApply => "worktree/mergeCandidate/apply" {
+        params: v2::WorktreeMergeCandidateApplyParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeMergeCandidateApplyResponse,
+    },
+    WorktreeMergeCandidateDismiss => "worktree/mergeCandidate/dismiss" {
+        params: v2::WorktreeMergeCandidateDismissParams,
+        serialization: global("worktree"),
+        response: v2::WorktreeMergeCandidateDismissResponse,
     },
     #[experimental("machineRegistry/list")]
     MachineRegistryList => "machineRegistry/list" {
@@ -4298,6 +4344,65 @@ mod tests {
                 agent_run_id: None,
             },
         };
+        let create_request = ClientRequest::WorktreeCreate {
+            request_id: RequestId::Integer(5),
+            params: v2::WorktreeCreateParams {
+                base_repo_path: None,
+                name: Some("feature".to_string()),
+                branch: None,
+                start_point: None,
+                cleanup_policy: None,
+                thread_id: None,
+            },
+        };
+        let reconcile_request = ClientRequest::WorktreeReconcile {
+            request_id: RequestId::Integer(6),
+            params: v2::WorktreeReconcileParams {
+                base_repo_path: None,
+            },
+        };
+        let release_request = ClientRequest::WorktreeRelease {
+            request_id: RequestId::Integer(7),
+            params: v2::WorktreeReleaseParams {
+                worktree_id: "wt_123".to_string(),
+                cleanup_policy: None,
+                force_delete: None,
+            },
+        };
+        let cleanup_request = ClientRequest::WorktreeCleanup {
+            request_id: RequestId::Integer(8),
+            params: v2::WorktreeCleanupParams {
+                worktree_id: "wt_123".to_string(),
+                force_delete: None,
+            },
+        };
+        let merge_list_request = ClientRequest::WorktreeMergeCandidateList {
+            request_id: RequestId::Integer(9),
+            params: v2::WorktreeMergeCandidateListParams {
+                worktree_id: "wt_123".to_string(),
+                status: None,
+                limit: None,
+            },
+        };
+        let merge_refresh_request = ClientRequest::WorktreeMergeCandidateRefresh {
+            request_id: RequestId::Integer(10),
+            params: v2::WorktreeMergeCandidateRefreshParams {
+                worktree_id: "wt_123".to_string(),
+                target_ref: None,
+            },
+        };
+        let merge_apply_request = ClientRequest::WorktreeMergeCandidateApply {
+            request_id: RequestId::Integer(11),
+            params: v2::WorktreeMergeCandidateApplyParams {
+                candidate_id: "cand_123".to_string(),
+            },
+        };
+        let merge_dismiss_request = ClientRequest::WorktreeMergeCandidateDismiss {
+            request_id: RequestId::Integer(12),
+            params: v2::WorktreeMergeCandidateDismissParams {
+                candidate_id: "cand_123".to_string(),
+            },
+        };
 
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
@@ -4313,6 +4418,38 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&detach_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&create_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&reconcile_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&release_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&cleanup_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&merge_list_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&merge_refresh_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&merge_apply_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&merge_dismiss_request),
             None
         );
     }

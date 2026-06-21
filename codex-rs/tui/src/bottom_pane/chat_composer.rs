@@ -206,7 +206,7 @@ use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
-use crate::style::user_message_style;
+use crate::style::promptbar_style;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -4456,13 +4456,23 @@ impl ChatComposer {
                 }
             }
         }
-        let style = user_message_style();
-        Block::default().style(style).render_ref(composer_rect, buf);
+        let style = promptbar_style();
+        render_composer_background(composer_rect, buf, style);
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.attachments.remote_image_lines())
                 .style(style)
                 .render_ref(remote_images_rect, buf);
         }
+        self.render_textarea_surface(textarea_rect, buf, style, mask_char);
+    }
+
+    fn render_textarea_surface(
+        &self,
+        textarea_rect: Rect,
+        buf: &mut Buffer,
+        style: Style,
+        mask_char: Option<char>,
+    ) {
         if !textarea_rect.is_empty() {
             let prompt = if self.draft.input_enabled {
                 if self.draft.is_bash_mode {
@@ -4526,6 +4536,22 @@ impl ChatComposer {
                     .render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
             }
         }
+    }
+}
+
+fn render_composer_background(area: Rect, buf: &mut Buffer, style: Style) {
+    Block::default().style(style).render_ref(area, buf);
+    if area.width < 3 || area.height < 3 {
+        return;
+    }
+
+    for (x, y) in [
+        (area.left(), area.top()),
+        (area.right() - 1, area.top()),
+        (area.left(), area.bottom() - 1),
+        (area.right() - 1, area.bottom() - 1),
+    ] {
+        buf[(x, y)].set_symbol(" ").set_style(Style::reset());
     }
 }
 
@@ -4702,6 +4728,91 @@ mod tests {
             !bottom_row.contains("FLASH"),
             "expected expired flash to be hidden, saw: {bottom_row:?}",
         );
+    }
+
+    #[test]
+    fn composer_background_rounds_corner_cells() {
+        let area = Rect::new(0, 0, 6, 5);
+        let mut buf = Buffer::empty(area);
+
+        render_composer_background(
+            Rect::new(1, 1, 4, 3),
+            &mut buf,
+            Style::default().bg(Color::Blue),
+        );
+
+        insta::assert_snapshot!(
+            "composer_background_rounds_corner_cells",
+            format!("{buf:?}")
+        );
+    }
+
+    #[test]
+    fn textarea_surface_preserves_promptbar_background() {
+        let textarea_rect = Rect::new(LIVE_PREFIX_COLS, 0, 30, 1);
+        let area = Rect::new(0, 0, 40, 1);
+        let promptbar_style = Style::default().bg(Color::Blue);
+        let new_composer = || {
+            let (tx, _rx) = unbounded_channel::<AppEvent>();
+            ChatComposer::new(
+                /*has_input_focus*/ true,
+                AppEventSender::new(tx),
+                /*enhanced_keys_supported*/ false,
+                "Ask Codewith to do anything".to_string(),
+                /*disable_paste_burst*/ false,
+            )
+        };
+
+        let composer = new_composer();
+        let mut buf = Buffer::empty(area);
+        composer.render_textarea_surface(
+            textarea_rect,
+            &mut buf,
+            promptbar_style,
+            /*mask_char*/ None,
+        );
+        assert_eq!(
+            buf[(textarea_rect.x - LIVE_PREFIX_COLS, 0)].style().bg,
+            Some(Color::Blue)
+        );
+        assert_eq!(buf[(textarea_rect.x, 0)].style().bg, Some(Color::Blue));
+
+        let mut composer = new_composer();
+        composer.set_text_content("hello".to_string(), Vec::new(), Vec::new());
+        let mut buf = Buffer::empty(area);
+        composer.render_textarea_surface(
+            textarea_rect,
+            &mut buf,
+            promptbar_style,
+            /*mask_char*/ None,
+        );
+        assert_eq!(buf[(textarea_rect.x, 0)].style().bg, Some(Color::Blue));
+
+        let mask_char = Some('*');
+        let mut buf = Buffer::empty(area);
+        composer.render_textarea_surface(textarea_rect, &mut buf, promptbar_style, mask_char);
+        assert_eq!(buf[(textarea_rect.x, 0)].symbol(), "*");
+        assert_eq!(buf[(textarea_rect.x, 0)].style().bg, Some(Color::Blue));
+
+        let mut composer = new_composer();
+        let element_id = composer.draft.textarea.insert_element("@sample");
+        composer.draft.mention_bindings.insert(
+            element_id,
+            ComposerMentionBinding {
+                sigil: '@',
+                mention: "sample".to_string(),
+                path: "plugin://sample@test".to_string(),
+            },
+        );
+        let mut buf = Buffer::empty(area);
+        composer.render_textarea_surface(
+            textarea_rect,
+            &mut buf,
+            promptbar_style,
+            /*mask_char*/ None,
+        );
+        assert_eq!(buf[(textarea_rect.x, 0)].style().fg, Some(Color::Magenta));
+        assert_eq!(buf[(textarea_rect.x, 0)].style().bg, Some(Color::Blue));
     }
 
     fn snapshot_composer_state_with_width<F>(

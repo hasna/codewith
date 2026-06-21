@@ -25,6 +25,7 @@ use codex_core_api::EventMsg;
 use codex_core_api::ExecServerRuntimePaths;
 use codex_core_api::Features;
 use codex_core_api::GhostSnapshotConfig;
+use codex_core_api::HASNA_GATEWAY_ID;
 use codex_core_api::History;
 use codex_core_api::MemoriesConfig;
 use codex_core_api::ModelAvailabilityNuxConfig;
@@ -173,6 +174,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         model_auto_compact_token_limit: None,
         model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope::Total,
         model_provider_id,
+        model_gateway_id: HASNA_GATEWAY_ID.to_string(),
         model_provider,
         personality: None,
         permissions: Permissions::from_approval_and_profile(
@@ -218,6 +220,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         selected_auth_profile: None,
         auth_profile_auto_switch: Default::default(),
+        usage_self_heal: Default::default(),
         session_recap: SessionRecapConfig::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::File,
@@ -275,6 +278,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         background_terminal_max_timeout: 300_000,
         ghost_snapshot: GhostSnapshotConfig::default(),
         multi_agent_v2: MultiAgentV2Config::default(),
+        goals: Default::default(),
+        worktrees: Default::default(),
         features: Default::default(),
         suppress_unstable_features_warning: false,
         active_project: ProjectConfig { trust_level: None },

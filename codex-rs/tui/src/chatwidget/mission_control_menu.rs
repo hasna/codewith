@@ -1,17 +1,14 @@
 //! Mission-control overview for local orchestration sessions.
 
 use super::*;
+use crate::bottom_pane::SelectionRowDisplay;
 use crate::bottom_pane::SelectionTab;
 use codex_app_server_protocol::ActiveSessionCapability;
 use codex_app_server_protocol::LocalSessionStatus;
 use codex_app_server_protocol::MissionControlCapabilities;
 use codex_app_server_protocol::MissionControlOverviewResponse;
 use codex_app_server_protocol::MissionControlSession;
-use codex_app_server_protocol::ThreadActiveFlag;
 use codex_app_server_protocol::ThreadGoalPlan;
-use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
-use codex_app_server_protocol::ThreadGoalPlanNode;
-use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadPendingInteraction;
@@ -19,6 +16,9 @@ use codex_app_server_protocol::ThreadPendingInteractionKind;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_app_server_protocol::ThreadPendingInteractionStatus;
 use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
+use codex_app_server_protocol::ThreadSchedule;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ToolRequestUserInputAnswer;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
@@ -29,57 +29,61 @@ const PROJECTS_TAB_ID: &str = "projects";
 const QUESTIONS_TAB_ID: &str = "questions";
 const WORK_QUEUE_TAB_ID: &str = "work-queue";
 const GOAL_CHAINS_TAB_ID: &str = "goal-chains";
+const SCHEDULES_TAB_ID: &str = "schedules";
 
 impl ChatWidget {
     pub(crate) fn show_mission_control_overview(
         &mut self,
         response: MissionControlOverviewResponse,
     ) {
-        let subtitle = mission_control_subtitle(&response);
         let tabs = vec![
             SelectionTab {
                 id: SESSIONS_TAB_ID.to_string(),
-                label: format!("Sessions ({})", response.sessions.len()),
+                label: "Sessions".to_string(),
                 header: mission_control_header(&response),
                 items: session_items(&response),
             },
             SelectionTab {
                 id: PROJECTS_TAB_ID.to_string(),
-                label: format!("Projects ({})", project_count(&response.sessions)),
+                label: "Projects".to_string(),
                 header: project_header(&response),
                 items: project_items(&response),
             },
             SelectionTab {
                 id: QUESTIONS_TAB_ID.to_string(),
-                label: format!("Questions ({})", pending_interaction_count(&response)),
+                label: "Questions".to_string(),
                 header: questions_header(&response),
                 items: question_items(&response),
             },
             SelectionTab {
                 id: WORK_QUEUE_TAB_ID.to_string(),
-                label: format!("Work Queue ({})", work_queue_attention_count(&response)),
+                label: "Queue".to_string(),
                 header: work_queue_header(&response),
                 items: work_queue_items(&response),
             },
             SelectionTab {
                 id: GOAL_CHAINS_TAB_ID.to_string(),
-                label: format!("Goal Chains ({})", goal_chain_count(&response.sessions)),
+                label: "Goals".to_string(),
                 header: goal_chains_header(&response),
                 items: goal_chain_items(&response),
+            },
+            SelectionTab {
+                id: SCHEDULES_TAB_ID.to_string(),
+                label: "Schedules".to_string(),
+                header: schedules_header(&response),
+                items: schedule_items(&response),
             },
         ];
 
         self.show_selection_view(SelectionViewParams {
             title: Some("Mission Control".to_string()),
-            subtitle: Some(subtitle),
             footer_hint: Some(standard_popup_hint_line()),
             tabs,
             initial_tab_id: Some(SESSIONS_TAB_ID.to_string()),
             is_searchable: true,
-            search_placeholder: Some(
-                "Search sessions, projects, questions, queues, and goal chains".to_string(),
-            ),
+            search_placeholder: Some("Search".to_string()),
             col_width_mode: ColumnWidthMode::AutoAllRows,
+            row_display: SelectionRowDisplay::SingleLine,
             ..Default::default()
         });
     }
@@ -120,121 +124,51 @@ impl ChatWidget {
     }
 }
 
-fn mission_control_subtitle(response: &MissionControlOverviewResponse) -> String {
-    let pending_count = response
-        .pending_interactions
-        .iter()
-        .filter(|interaction| interaction_needs_attention(interaction.status))
-        .count();
-    let attention_count = response
-        .sessions
-        .iter()
-        .filter(|session| session_needs_attention(session, &response.pending_interactions))
-        .count();
-    format!(
-        "{} session{} | {} project{} | {} waiting | {} attention | {}",
-        response.sessions.len(),
-        plural(response.sessions.len()),
-        project_count(&response.sessions),
-        plural(project_count(&response.sessions)),
-        pending_count,
-        attention_count,
-        capability_summary(&response.capabilities)
-    )
-}
-
 fn mission_control_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
-    let active = response
-        .sessions
-        .iter()
-        .filter(|session| session.session.status == LocalSessionStatus::Active)
-        .count();
-    let idle = response
-        .sessions
-        .iter()
-        .filter(|session| session.session.status == LocalSessionStatus::Idle)
-        .count();
-    let unloaded = response
-        .sessions
-        .iter()
-        .filter(|session| session.session.status == LocalSessionStatus::NotLoaded)
-        .count();
     Box::new(Paragraph::new(vec![Line::from(vec![
-        "Active ".dim(),
-        active.to_string().into(),
-        "  Idle ".dim(),
-        idle.to_string().into(),
-        "  Not loaded ".dim(),
-        unloaded.to_string().into(),
+        response.sessions.len().to_string().into(),
+        format!(" session{}", plural(response.sessions.len())).dim(),
         pagination_suffix(response.next_session_cursor.as_ref()).dim(),
     ])]))
 }
 
 fn project_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
-    let goals = response
-        .sessions
-        .iter()
-        .filter(|session| session.goal.is_some())
-        .count();
-    let plans = response
-        .sessions
-        .iter()
-        .map(|session| session.goal_plans.len())
-        .sum::<usize>();
     Box::new(Paragraph::new(vec![Line::from(vec![
-        "Goals ".dim(),
-        goals.to_string().into(),
-        "  Plans ".dim(),
-        plans.to_string().into(),
-        "  Pending interactions ".dim(),
-        response.pending_interactions.len().to_string().into(),
+        project_count(&response.sessions).to_string().into(),
+        format!(" project{}", plural(project_count(&response.sessions))).dim(),
     ])]))
 }
 
 fn questions_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
-    let answerable = response
-        .pending_interactions
-        .iter()
-        .filter(|interaction| {
-            interaction_needs_attention(interaction.status)
-                && MissionControlAnswerTarget::from_interaction(interaction).is_some()
-        })
-        .count();
+    let waiting = pending_interaction_count(response);
     Box::new(Paragraph::new(vec![Line::from(vec![
-        "Waiting ".dim(),
-        pending_interaction_count(response).to_string().into(),
-        "  Answerable ".dim(),
-        answerable.to_string().into(),
+        waiting.to_string().into(),
+        " waiting".dim(),
         pagination_suffix(response.next_pending_interaction_cursor.as_ref()).dim(),
     ])]))
 }
 
 fn work_queue_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
+    let waiting = work_queue_attention_count(response);
     Box::new(Paragraph::new(vec![Line::from(vec![
-        "Durable mailbox ".dim(),
-        capability_label(response.capabilities.durable_mailbox).into(),
-        "  Waiting ".dim(),
-        pending_interaction_count(response).to_string().into(),
-        "  Usage/profile waits ".dim(),
-        usage_profile_wait_count(response).to_string().into(),
-        "  Unsupported controls ".dim(),
-        "retry/cancel".into(),
+        waiting.to_string().into(),
+        " waiting".dim(),
     ])]))
 }
 
 fn goal_chains_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
     let stats = GoalChainStats::from_sessions(&response.sessions);
     Box::new(Paragraph::new(vec![Line::from(vec![
-        "Plans ".dim(),
         stats.plans.to_string().into(),
-        "  Ready ".dim(),
-        stats.ready.to_string().into(),
-        "  Active ".dim(),
-        stats.active.to_string().into(),
-        "  Blocked ".dim(),
-        stats.blocked.to_string().into(),
-        "  Usage/budget ".dim(),
-        stats.waiting_on_limits.to_string().into(),
+        " plans".dim(),
+    ])]))
+}
+
+fn schedules_header(response: &MissionControlOverviewResponse) -> Box<dyn Renderable> {
+    let count = schedule_count(&response.sessions);
+    Box::new(Paragraph::new(vec![Line::from(vec![
+        count.to_string().into(),
+        format!(" schedule{}", plural(count)).dim(),
     ])]))
 }
 
@@ -263,8 +197,8 @@ fn session_items(response: &MissionControlOverviewResponse) -> Vec<SelectionItem
 
     if response.next_session_cursor.is_some() {
         items.push(SelectionItem {
-            name: "More sessions available".to_string(),
-            description: Some("Narrow the search or reopen for the next page".to_string()),
+            name: "More".to_string(),
+            description: Some("available".to_string()),
             is_disabled: true,
             ..Default::default()
         });
@@ -274,20 +208,12 @@ fn session_items(response: &MissionControlOverviewResponse) -> Vec<SelectionItem
 }
 
 fn session_item(session: &MissionControlSession, pending_count: usize) -> SelectionItem {
-    let status = session_status_label(session.session.status);
-    let project = project_label(session.session.cwd.as_path());
-    let goal = goal_summary(session);
     let name = session_display_name(session);
-    let detail = session_detail(session, pending_count);
     let actions = select_session_actions(session);
 
     SelectionItem {
         name,
-        description: Some(format!(
-            "{status} | {project} | {} | {goal}",
-            waiting_label(pending_count)
-        )),
-        selected_description: Some(detail),
+        description: Some(session_state_label(session, pending_count)),
         actions,
         dismiss_on_select: true,
         search_value: Some(session_search_value(session)),
@@ -368,20 +294,29 @@ fn question_items(response: &MissionControlOverviewResponse) -> Vec<SelectionIte
 
 fn work_queue_items(response: &MissionControlOverviewResponse) -> Vec<SelectionItem> {
     let pending_by_thread = pending_counts_by_thread(&response.pending_interactions);
-    let mut items = vec![mailbox_capability_item(&response.capabilities)];
+    let mut items = Vec::new();
 
-    items.extend(response.sessions.iter().map(|session| {
+    if !response.capabilities.durable_mailbox {
+        items.push(SelectionItem {
+            name: "Mailbox".to_string(),
+            description: Some("off".to_string()),
+            is_disabled: true,
+            ..Default::default()
+        });
+    }
+
+    items.extend(response.sessions.iter().filter_map(|session| {
         let pending_count = pending_by_thread
             .get(session.session.thread_id.as_str())
             .copied()
             .unwrap_or_default();
-        work_queue_item(session, pending_count)
+        (pending_count > 0 || session_has_limit_wait(session))
+            .then(|| work_queue_item(session, pending_count))
     }));
 
-    if response.sessions.is_empty() {
+    if items.is_empty() {
         items.push(SelectionItem {
-            name: "No queue targets found".to_string(),
-            description: Some(empty_sessions_description(&response.capabilities)),
+            name: "No queued work".to_string(),
             is_disabled: true,
             ..Default::default()
         });
@@ -390,53 +325,11 @@ fn work_queue_items(response: &MissionControlOverviewResponse) -> Vec<SelectionI
     items
 }
 
-fn mailbox_capability_item(capabilities: &MissionControlCapabilities) -> SelectionItem {
-    if capabilities.durable_mailbox {
-        SelectionItem {
-            name: "Mailbox message rows not loaded".to_string(),
-            description: Some(
-                "Overview shows waiting sessions; individual queued messages and receipts need mailbox list wiring".to_string(),
-            ),
-            selected_description: Some(
-                "Retry and cancel stay disabled until this view has message ids, lease state, and a supported cancel/retry RPC.".to_string(),
-            ),
-            is_disabled: true,
-            ..Default::default()
-        }
-    } else {
-        SelectionItem {
-            name: "Durable mailbox unavailable".to_string(),
-            description: Some(
-                "This app-server cannot expose queued mailbox instructions from mission control"
-                    .to_string(),
-            ),
-            is_disabled: true,
-            ..Default::default()
-        }
-    }
-}
-
 fn work_queue_item(session: &MissionControlSession, pending_count: usize) -> SelectionItem {
-    let queue_state = queue_state_label(session);
-    let limit_state = limit_wait_label(session);
-    let description = format!(
-        "{} | {} | {} | {queue_state}",
-        project_label(session.session.cwd.as_path()),
-        session_status_label(session.session.status),
-        waiting_label(pending_count)
-    );
-    let selected_description = format!(
-        "Thread {} | {} | active flags {} | peer {} | {}",
-        short_id(&session.session.thread_id),
-        session.session.cwd.as_path().display(),
-        active_flags_label(&session.session.active_flags),
-        peer_capabilities_label(session),
-        limit_state
-    );
+    let description = queue_row_description(session, pending_count);
     SelectionItem {
         name: session_display_name(session),
         description: Some(description),
-        selected_description: Some(selected_description),
         actions: select_session_actions(session),
         dismiss_on_select: true,
         search_value: Some(format!(
@@ -444,8 +337,8 @@ fn work_queue_item(session: &MissionControlSession, pending_count: usize) -> Sel
             session_display_name(session),
             session.session.thread_id,
             session.session.cwd.as_path().display(),
-            queue_state,
-            limit_state
+            queue_state_label(session),
+            limit_wait_label(session)
         )),
         ..Default::default()
     }
@@ -456,11 +349,6 @@ fn goal_chain_items(response: &MissionControlOverviewResponse) -> Vec<SelectionI
     for session in &response.sessions {
         for plan in &session.goal_plans {
             items.push(goal_plan_summary_item(session, plan));
-            items.extend(
-                plan.nodes
-                    .iter()
-                    .map(|node| goal_plan_node_item(session, plan, node)),
-            );
         }
     }
 
@@ -490,72 +378,101 @@ fn goal_plan_summary_item(session: &MissionControlSession, plan: &ThreadGoalPlan
             Vec::new()
         };
     SelectionItem {
-        name: format!(
-            "{} / {}",
-            session_display_name(session),
-            short_id(&plan.plan_id)
-        ),
+        name: session_display_name(session),
         description: Some(goal_plan_row_description(plan)),
-        selected_description: Some(goal_plan_selected_description(session, plan)),
         actions,
         dismiss_on_select: true,
         search_value: Some(format!(
-            "{} {} {}",
+            "{} {} {} {}",
             session_display_name(session),
             plan.plan_id,
-            goal_plan_row_description(plan)
+            goal_plan_row_description(plan),
+            goal_plan_node_search_value(plan)
         )),
         ..Default::default()
     }
 }
 
-fn goal_plan_node_item(
-    session: &MissionControlSession,
-    plan: &ThreadGoalPlan,
-    node: &ThreadGoalPlanNode,
-) -> SelectionItem {
-    let activate_target = node
-        .ready
-        .then(|| ThreadId::from_string(&node.thread_id).ok())
-        .flatten();
-    let actions: Vec<SelectionAction> = if let Some(thread_id) = activate_target {
-        let node_id = node.node_id.clone();
-        vec![Box::new(move |tx| {
-            tx.send(AppEvent::ActivateThreadGoalPlanNode {
-                thread_id,
-                node_id: node_id.clone(),
-            });
-        })]
-    } else {
-        Vec::new()
-    };
-    let disabled_reason = if node.ready {
-        actions
-            .is_empty()
-            .then(|| "This goal-chain node has an invalid thread id".to_string())
-    } else {
-        Some("Only ready goal-chain nodes can be activated from mission control".to_string())
-    };
+fn schedule_items(response: &MissionControlOverviewResponse) -> Vec<SelectionItem> {
+    if !response.capabilities.scheduled_tasks {
+        return vec![SelectionItem {
+            name: "Schedules".to_string(),
+            description: Some("off".to_string()),
+            is_disabled: true,
+            ..Default::default()
+        }];
+    }
+
+    let mut items = Vec::new();
+    for session in &response.sessions {
+        for schedule in &session.schedules {
+            items.push(schedule_item(session, schedule));
+        }
+    }
+
+    if items.is_empty() {
+        items.push(SelectionItem {
+            name: "No schedules".to_string(),
+            is_disabled: true,
+            ..Default::default()
+        });
+    }
+
+    items
+}
+
+fn schedule_item(session: &MissionControlSession, schedule: &ThreadSchedule) -> SelectionItem {
+    let actions: Vec<SelectionAction> =
+        if let Ok(thread_id) = ThreadId::from_string(&schedule.thread_id) {
+            let schedule_id = schedule.schedule_id.clone();
+            match schedule_kind(schedule) {
+                ScheduleKind::Once => vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenThreadScheduleActions {
+                        thread_id,
+                        schedule_id: schedule_id.clone(),
+                    });
+                })],
+                ScheduleKind::Recurring => vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenThreadLoopScheduleActions {
+                        thread_id,
+                        schedule_id: schedule_id.clone(),
+                    });
+                })],
+            }
+        } else {
+            Vec::new()
+        };
+    let is_disabled = actions.is_empty();
     SelectionItem {
-        name: format!(
-            "  #{} {}",
-            node.sequence,
-            truncate_text(&node.key, /*max_graphemes*/ 22)
-        ),
-        description: Some(goal_node_row_description(plan, node)),
-        selected_description: Some(goal_node_selected_description(node)),
+        name: schedule_row_name(schedule),
+        description: Some(schedule_row_state(schedule)),
         actions,
-        dismiss_on_select: disabled_reason.is_none(),
-        disabled_reason,
+        dismiss_on_select: true,
         search_value: Some(format!(
             "{} {} {} {} {}",
             session_display_name(session),
-            plan.plan_id,
-            node.key,
-            node.node_id,
-            node.objective
+            session.session.thread_id,
+            schedule.schedule_id,
+            schedule_row_state(schedule),
+            schedule.prompt
         )),
+        is_disabled,
         ..Default::default()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScheduleKind {
+    Once,
+    Recurring,
+}
+
+fn schedule_kind(schedule: &ThreadSchedule) -> ScheduleKind {
+    match schedule.schedule {
+        ThreadScheduleSpec::Once => ScheduleKind::Once,
+        ThreadScheduleSpec::Dynamic
+        | ThreadScheduleSpec::Interval { .. }
+        | ThreadScheduleSpec::Cron { .. } => ScheduleKind::Recurring,
     }
 }
 
@@ -582,30 +499,22 @@ fn question_item(
         })];
         actions
     });
+    let description = format!(
+        "{} {}",
+        pending_kind_label(interaction.kind),
+        pending_status_label(interaction.status)
+    );
     let disabled_reason = answerable
         .is_none()
-        .then(|| mission_control_interaction_disabled_reason(interaction));
-    let description = format!(
-        "{} | {} | {} | {}",
-        project,
-        pending_kind_label(interaction.kind),
-        pending_status_label(interaction.status),
-        truncate_interaction_preview(&interaction.request_payload_preview)
-    );
-    let selected_description = format!(
-        "Thread {} | interaction {} | {}",
-        short_id(&interaction.thread_id),
-        interaction.interaction_id,
-        interaction.request_payload_preview
-    );
+        .then(|| disabled_question_reason(interaction));
     SelectionItem {
         name: session_name,
         description: Some(description),
-        selected_description: Some(selected_description),
         actions,
         dismiss_on_select: true,
         search_value: Some(format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
+            project,
             interaction.thread_id,
             interaction.interaction_id,
             pending_kind_label(interaction.kind),
@@ -731,19 +640,6 @@ fn question_needs_source_overlay(question: &ToolRequestUserInputQuestion) -> boo
             .is_some_and(|options| !options.is_empty())
 }
 
-fn mission_control_interaction_disabled_reason(interaction: &ThreadPendingInteraction) -> String {
-    if interaction.kind == ThreadPendingInteractionKind::UserInput
-        && let Ok(params) = serde_json::from_value::<ToolRequestUserInputParams>(
-            interaction.request_payload.clone(),
-        )
-        && params.questions.iter().any(question_needs_source_overlay)
-    {
-        return "Use the source session for secret, option, or Other prompts so the standard masked UI is preserved".to_string();
-    }
-
-    "This interaction needs a specialized approval UI in the source session".to_string()
-}
-
 fn question_answers(
     questions: &[ToolRequestUserInputQuestion],
     answer: String,
@@ -820,31 +716,25 @@ impl ProjectStats {
 
     fn into_selection_item(self) -> SelectionItem {
         let name = project_label(Path::new(&self.path));
-        let description = format!(
-            "{} session{} | {} active | {} idle | {} waiting | {} attention",
-            self.sessions,
-            plural(self.sessions),
-            self.active,
-            self.idle,
-            self.waiting,
-            self.needs_attention
-        );
-        let selected_description = format!(
-            "{} | {} | {} goal{} | {} plan{}",
-            description,
-            self.path,
-            self.goals,
-            plural(self.goals),
-            self.plans,
-            plural(self.plans)
-        );
         SelectionItem {
             name,
-            description: Some(description),
-            selected_description: Some(selected_description),
+            description: Some(self.row_state()),
             search_value: Some(self.path),
             ..Default::default()
         }
+    }
+
+    fn row_state(&self) -> String {
+        if self.waiting > 0 {
+            return format!("{} waiting", self.waiting);
+        }
+        if self.needs_attention > 0 {
+            return format!("{} attention", self.needs_attention);
+        }
+        if self.active > 0 {
+            return format!("{} active", self.active);
+        }
+        format!("{} sessions", self.sessions)
     }
 }
 
@@ -885,17 +775,6 @@ fn pending_counts_by_thread(interactions: &[ThreadPendingInteraction]) -> HashMa
     counts
 }
 
-fn session_needs_attention(
-    session: &MissionControlSession,
-    interactions: &[ThreadPendingInteraction],
-) -> bool {
-    interactions.iter().any(|interaction| {
-        interaction.thread_id == session.session.thread_id
-            && interaction_needs_attention(interaction.status)
-    }) || session_goal_needs_attention(session)
-        || matches!(session.session.status, LocalSessionStatus::SystemError)
-}
-
 fn session_goal_needs_attention(session: &MissionControlSession) -> bool {
     session.goal.as_ref().is_some_and(|goal| {
         matches!(
@@ -915,6 +794,62 @@ fn session_goal_needs_attention(session: &MissionControlSession) -> bool {
     })
 }
 
+fn session_state_label(session: &MissionControlSession, pending_count: usize) -> String {
+    if pending_count > 0 {
+        return format!("{pending_count} waiting");
+    }
+    if session_has_limit_wait(session) {
+        return "limited".to_string();
+    }
+    if session_goal_is_blocked(session) {
+        return "blocked".to_string();
+    }
+    if session
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.status == ThreadGoalStatus::Complete)
+        || session
+            .goal_plans
+            .iter()
+            .any(|plan| plan.status == ThreadGoalPlanStatus::Complete)
+    {
+        return "done".to_string();
+    }
+    session_status_label(session.session.status).to_string()
+}
+
+fn session_has_limit_wait(session: &MissionControlSession) -> bool {
+    session.goal.as_ref().is_some_and(|goal| {
+        matches!(
+            goal.status,
+            ThreadGoalStatus::UsageLimited | ThreadGoalStatus::BudgetLimited
+        )
+    }) || session
+        .goal_plans
+        .iter()
+        .any(|plan| plan.usage_limited_node_count > 0 || plan.budget_limited_node_count > 0)
+}
+
+fn queue_row_description(session: &MissionControlSession, pending_count: usize) -> String {
+    match (pending_count, session_has_limit_wait(session)) {
+        (0, true) => "limited".to_string(),
+        (0, false) => "idle".to_string(),
+        (count, true) => format!("{count} waiting, limited"),
+        (count, false) => format!("{count} waiting"),
+    }
+}
+
+fn session_goal_is_blocked(session: &MissionControlSession) -> bool {
+    session
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.status == ThreadGoalStatus::Blocked)
+        || session
+            .goal_plans
+            .iter()
+            .any(|plan| plan.status == ThreadGoalPlanStatus::Blocked || plan.blocked_node_count > 0)
+}
+
 fn session_display_name(session: &MissionControlSession) -> String {
     session
         .session
@@ -930,24 +865,6 @@ fn session_display_name(session: &MissionControlSession) -> String {
                 label
             }
         })
-}
-
-fn session_detail(session: &MissionControlSession, pending_count: usize) -> String {
-    let branch = session
-        .session
-        .git_info
-        .as_ref()
-        .and_then(|git| git.branch.as_deref())
-        .unwrap_or("no branch");
-    format!(
-        "Thread {} | {} | branch {branch} | {} | {} | {} | {}",
-        short_id(&session.session.thread_id),
-        session.session.cwd.as_path().display(),
-        model_label(session),
-        waiting_label(pending_count),
-        goal_detail(session),
-        plan_detail(session)
-    )
 }
 
 fn session_search_value(session: &MissionControlSession) -> String {
@@ -967,74 +884,6 @@ fn model_label(session: &MissionControlSession) -> String {
         .as_ref()
         .map(|model| format!("{}/{}", session.session.model_provider, model))
         .unwrap_or_else(|| session.session.model_provider.clone())
-}
-
-fn goal_summary(session: &MissionControlSession) -> String {
-    match (&session.goal, session.goal_plans.is_empty()) {
-        (Some(goal), true) => format!("goal {}", goal_status_label(goal.status)),
-        (Some(goal), false) => format!(
-            "goal {} | {} plan{}",
-            goal_status_label(goal.status),
-            session.goal_plans.len(),
-            plural(session.goal_plans.len())
-        ),
-        (None, false) => format!(
-            "{} plan{}",
-            session.goal_plans.len(),
-            plural(session.goal_plans.len())
-        ),
-        (None, true) => "no goal".to_string(),
-    }
-}
-
-fn goal_detail(session: &MissionControlSession) -> String {
-    session.goal.as_ref().map_or_else(
-        || "no goal".to_string(),
-        |goal| {
-            format!(
-                "goal {} {} tokens",
-                goal_status_label(goal.status),
-                format_tokens_compact(goal.tokens_used)
-            )
-        },
-    )
-}
-
-fn plan_detail(session: &MissionControlSession) -> String {
-    if session.goal_plans.is_empty() {
-        return "no plans".to_string();
-    }
-    let active = session
-        .goal_plans
-        .iter()
-        .filter(|plan| plan.status == ThreadGoalPlanStatus::Active)
-        .count();
-    let blocked = session
-        .goal_plans
-        .iter()
-        .filter(|plan| plan.status == ThreadGoalPlanStatus::Blocked)
-        .count();
-    let ready = session
-        .goal_plans
-        .iter()
-        .map(|plan| plan.ready_node_count)
-        .sum::<i64>();
-    format!(
-        "{} plan{} | {} active | {} blocked | {} ready",
-        session.goal_plans.len(),
-        plural(session.goal_plans.len()),
-        active,
-        blocked,
-        ready
-    )
-}
-
-fn waiting_label(count: usize) -> String {
-    if count == 0 {
-        "no waiting".to_string()
-    } else {
-        format!("{count} waiting")
-    }
 }
 
 fn pending_interaction_count(response: &MissionControlOverviewResponse) -> usize {
@@ -1065,17 +914,7 @@ fn usage_profile_wait_count(response: &MissionControlOverviewResponse) -> usize 
     let goal_waits = response
         .sessions
         .iter()
-        .filter(|session| {
-            session.goal.as_ref().is_some_and(|goal| {
-                matches!(
-                    goal.status,
-                    ThreadGoalStatus::UsageLimited | ThreadGoalStatus::BudgetLimited
-                )
-            }) || session
-                .goal_plans
-                .iter()
-                .any(|plan| plan.usage_limited_node_count > 0 || plan.budget_limited_node_count > 0)
-        })
+        .filter(|session| session_has_limit_wait(session))
         .count();
     interaction_waits + goal_waits
 }
@@ -1117,24 +956,6 @@ fn truncate_interaction_preview(value: &str) -> String {
     truncate_text(value, /*max_graphemes*/ 96)
 }
 
-fn capability_summary(capabilities: &MissionControlCapabilities) -> String {
-    let remote = if capabilities.remote_dispatch {
-        "remote on"
-    } else {
-        "remote off"
-    };
-    let mailbox = if capabilities.durable_mailbox {
-        "mailbox on"
-    } else {
-        "mailbox off"
-    };
-    format!("{remote} | {mailbox}")
-}
-
-fn capability_label(enabled: bool) -> &'static str {
-    if enabled { "on" } else { "off" }
-}
-
 fn empty_sessions_description(capabilities: &MissionControlCapabilities) -> String {
     if capabilities.local_sessions {
         "No local sessions matched the current filters".to_string()
@@ -1151,11 +972,8 @@ fn project_count(sessions: &[MissionControlSession]) -> usize {
         .len()
 }
 
-fn goal_chain_count(sessions: &[MissionControlSession]) -> usize {
-    sessions
-        .iter()
-        .map(|session| session.goal_plans.len())
-        .sum()
+fn schedule_count(sessions: &[MissionControlSession]) -> usize {
+    sessions.iter().map(|session| session.schedules.len()).sum()
 }
 
 fn project_label(path: &Path) -> String {
@@ -1193,41 +1011,6 @@ fn session_status_label(status: LocalSessionStatus) -> &'static str {
     }
 }
 
-fn active_flags_label(flags: &[ThreadActiveFlag]) -> String {
-    if flags.is_empty() {
-        return "none".to_string();
-    }
-    flags
-        .iter()
-        .map(|flag| match flag {
-            ThreadActiveFlag::WaitingOnApproval => "waiting-on-approval",
-            ThreadActiveFlag::WaitingOnUserInput => "waiting-on-user-input",
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn peer_capabilities_label(session: &MissionControlSession) -> String {
-    let Some(peer) = session.session.peer.as_ref() else {
-        return "no live peer".to_string();
-    };
-    if peer.capabilities.is_empty() {
-        return "peer has no message capabilities".to_string();
-    }
-    let labels = peer
-        .capabilities
-        .iter()
-        .map(|capability| match capability {
-            ActiveSessionCapability::ReceiveMessage => "receive",
-            ActiveSessionCapability::QueueMessage => "queue",
-            ActiveSessionCapability::TriggerTurn => "trigger",
-            ActiveSessionCapability::ClaudeChannelBridge => "claude-bridge",
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("peer {labels}")
-}
-
 fn queue_state_label(session: &MissionControlSession) -> &'static str {
     if session.session.peer.as_ref().is_some_and(|peer| {
         peer.capabilities
@@ -1247,54 +1030,10 @@ fn queue_state_label(session: &MissionControlSession) -> &'static str {
 }
 
 fn limit_wait_label(session: &MissionControlSession) -> String {
-    let goal_wait = session.goal.as_ref().and_then(|goal| match goal.status {
-        ThreadGoalStatus::UsageLimited => Some("goal usage-limited"),
-        ThreadGoalStatus::BudgetLimited => Some("goal budget-limited"),
-        ThreadGoalStatus::Active
-        | ThreadGoalStatus::Paused
-        | ThreadGoalStatus::Blocked
-        | ThreadGoalStatus::Complete
-        | ThreadGoalStatus::Cancelled => None,
-    });
-    let usage_limited_nodes = session
-        .goal_plans
-        .iter()
-        .map(|plan| plan.usage_limited_node_count)
-        .sum::<i64>();
-    let budget_limited_nodes = session
-        .goal_plans
-        .iter()
-        .map(|plan| plan.budget_limited_node_count)
-        .sum::<i64>();
-    let mut parts = goal_wait.map_or_else(Vec::new, |label| vec![label.to_string()]);
-    if usage_limited_nodes > 0 {
-        parts.push(format!(
-            "{usage_limited_nodes} usage-limited node{}",
-            plural_i64(usage_limited_nodes)
-        ));
-    }
-    if budget_limited_nodes > 0 {
-        parts.push(format!(
-            "{budget_limited_nodes} budget-limited node{}",
-            plural_i64(budget_limited_nodes)
-        ));
-    }
-    if parts.is_empty() {
-        "no usage/profile wait".to_string()
+    if session_has_limit_wait(session) {
+        "limited".to_string()
     } else {
-        parts.join(" | ")
-    }
-}
-
-fn goal_status_label(status: ThreadGoalStatus) -> &'static str {
-    match status {
-        ThreadGoalStatus::Active => "active",
-        ThreadGoalStatus::Paused => "paused",
-        ThreadGoalStatus::Blocked => "blocked",
-        ThreadGoalStatus::UsageLimited => "usage-limited",
-        ThreadGoalStatus::BudgetLimited => "budget-limited",
-        ThreadGoalStatus::Complete => "complete",
-        ThreadGoalStatus::Cancelled => "cancelled",
+        "idle".to_string()
     }
 }
 
@@ -1309,114 +1048,86 @@ fn goal_plan_status_label(status: ThreadGoalPlanStatus) -> &'static str {
     }
 }
 
-fn goal_plan_auto_execute_label(auto_execute: ThreadGoalPlanAutoExecute) -> &'static str {
-    match auto_execute {
-        ThreadGoalPlanAutoExecute::Off => "manual",
-        ThreadGoalPlanAutoExecute::ReadyOnly => "ready-only",
-        ThreadGoalPlanAutoExecute::AiDirected => "ai-directed",
-    }
-}
-
-fn goal_node_status_label(status: ThreadGoalPlanNodeStatus) -> &'static str {
-    match status {
-        ThreadGoalPlanNodeStatus::Pending => "pending",
-        ThreadGoalPlanNodeStatus::Active => "active",
-        ThreadGoalPlanNodeStatus::Paused => "paused",
-        ThreadGoalPlanNodeStatus::Blocked => "blocked",
-        ThreadGoalPlanNodeStatus::UsageLimited => "usage-limited",
-        ThreadGoalPlanNodeStatus::BudgetLimited => "budget-limited",
-        ThreadGoalPlanNodeStatus::Complete => "complete",
-        ThreadGoalPlanNodeStatus::Cancelled => "cancelled",
-    }
-}
-
 fn goal_plan_row_description(plan: &ThreadGoalPlan) -> String {
-    format!(
-        "{} | {}/{} complete | {} ready | auto {}",
-        goal_plan_status_label(plan.status),
-        plan.completed_node_count,
-        plan.node_count,
-        plan.ready_node_count,
-        goal_plan_auto_execute_label(plan.auto_execute)
-    )
-}
-
-fn goal_plan_selected_description(
-    session: &MissionControlSession,
-    plan: &ThreadGoalPlan,
-) -> String {
-    let mut parts = vec![
-        format!("Thread {}", short_id(&session.session.thread_id)),
-        format!("plan {}", plan.plan_id),
-        project_label(session.session.cwd.as_path()),
-        format!("{} active", plan.active_node_count),
-        format!("{} blocked", plan.blocked_node_count),
-        format!("{} usage-limited", plan.usage_limited_node_count),
-        format!("{} budget-limited", plan.budget_limited_node_count),
-    ];
-    if plan.cancelled_node_count > 0 {
-        parts.push(format!("{} cancelled", plan.cancelled_node_count));
+    if plan.ready_node_count > 0 {
+        return format!("{} ready", plan.ready_node_count);
     }
-    parts.push(plan_budget_label(plan));
-    parts.join(" | ")
+    if plan.blocked_node_count > 0 || plan.status == ThreadGoalPlanStatus::Blocked {
+        return "blocked".to_string();
+    }
+    if plan.usage_limited_node_count > 0 || plan.budget_limited_node_count > 0 {
+        return "limited".to_string();
+    }
+    if plan.completed_node_count == plan.node_count {
+        return "done".to_string();
+    }
+    goal_plan_status_label(plan.status).to_string()
 }
 
-fn goal_node_row_description(plan: &ThreadGoalPlan, node: &ThreadGoalPlanNode) -> String {
-    let ready = if node.ready { "ready" } else { "not ready" };
-    format!(
-        "{} | {ready} | plan {} | auto {}",
-        goal_node_status_label(node.status),
-        goal_plan_status_label(plan.status),
-        goal_plan_auto_execute_label(plan.auto_execute)
-    )
+fn goal_plan_node_search_value(plan: &ThreadGoalPlan) -> String {
+    plan.nodes
+        .iter()
+        .map(|node| {
+            format!(
+                "{} {} {} {}",
+                node.node_id,
+                node.key,
+                node.objective,
+                goal_plan_node_status_label(node.status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn goal_node_selected_description(node: &ThreadGoalPlanNode) -> String {
-    format!(
-        "Node {} | key {} | plan {} | depends {} | {} | {}",
-        node.node_id,
-        node.key,
-        node.plan_id,
-        depends_on_label(&node.depends_on),
-        node_budget_label(node),
-        node.objective
-    )
+fn goal_plan_node_status_label(
+    status: codex_app_server_protocol::ThreadGoalPlanNodeStatus,
+) -> &'static str {
+    match status {
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Pending => "pending",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Active => "active",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Paused => "paused",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Blocked => "blocked",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::UsageLimited => "usage-limited",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::BudgetLimited => "budget-limited",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Complete => "complete",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Cancelled => "cancelled",
+    }
 }
 
-fn depends_on_label(depends_on: &[String]) -> String {
-    if depends_on.is_empty() {
-        "none".to_string()
+fn disabled_question_reason(interaction: &ThreadPendingInteraction) -> String {
+    if interaction.kind == ThreadPendingInteractionKind::UserInput
+        && serde_json::from_value::<ToolRequestUserInputParams>(interaction.request_payload.clone())
+            .ok()
+            .is_some_and(|params| params.questions.iter().any(question_needs_source_overlay))
+    {
+        "source session".to_string()
     } else {
-        depends_on.join(",")
+        "unsupported here".to_string()
     }
 }
 
-fn plan_budget_label(plan: &ThreadGoalPlan) -> String {
-    plan.max_tokens.map_or_else(
-        || format!("{} tokens", format_tokens_compact(plan.total_tokens_used)),
-        |max_tokens| {
-            format!(
-                "{} / {} tokens",
-                format_tokens_compact(plan.total_tokens_used),
-                format_tokens_compact(max_tokens)
-            )
-        },
-    )
+fn schedule_row_name(schedule: &ThreadSchedule) -> String {
+    let prompt = schedule.prompt.trim();
+    if prompt.is_empty() {
+        short_id(&schedule.schedule_id).to_string()
+    } else {
+        truncate_text(prompt, /*max_graphemes*/ 36)
+    }
 }
 
-fn node_budget_label(node: &ThreadGoalPlanNode) -> String {
-    node.token_budget.map_or_else(
-        || format!("{} tokens", format_tokens_compact(node.tokens_used)),
-        |token_budget| {
-            format!(
-                "{} / {} tokens",
-                format_tokens_compact(node.tokens_used),
-                format_tokens_compact(token_budget)
-            )
+fn schedule_row_state(schedule: &ThreadSchedule) -> String {
+    let id = short_schedule_id(&schedule.schedule_id);
+    match schedule.status {
+        ThreadScheduleStatus::Active => match schedule_kind(schedule) {
+            ScheduleKind::Once => format!("scheduled {id}"),
+            ScheduleKind::Recurring => format!("active {id}"),
         },
-    )
+        ThreadScheduleStatus::Paused => format!("paused {id}"),
+        ThreadScheduleStatus::Expired => format!("expired {id}"),
+    }
 }
 
-fn plural_i64(count: i64) -> &'static str {
-    if count == 1 { "" } else { "s" }
+fn short_schedule_id(value: &str) -> String {
+    value.chars().take(8).collect()
 }

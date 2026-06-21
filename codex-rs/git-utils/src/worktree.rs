@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::GitToolingError;
+use crate::operations::resolve_head;
 use crate::operations::run_git_for_output;
 use crate::operations::run_git_for_status;
 use crate::operations::run_git_for_stdout;
@@ -37,6 +38,13 @@ pub struct GitMergeTreeDryRun {
     pub conflicted_paths: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitWorktreeAddOptions {
+    pub worktree_path: PathBuf,
+    pub branch: String,
+    pub start_point: String,
+}
+
 pub fn list_git_worktrees(base_repo_path: &Path) -> Result<Vec<GitWorktreeEntry>, GitToolingError> {
     let output = run_git_for_stdout(
         base_repo_path,
@@ -49,6 +57,32 @@ pub fn list_git_worktrees(base_repo_path: &Path) -> Result<Vec<GitWorktreeEntry>
         /*env*/ None,
     )?;
     Ok(parse_worktree_list_porcelain(output.as_str()))
+}
+
+pub fn add_linked_git_worktree(
+    base_repo_path: &Path,
+    options: GitWorktreeAddOptions,
+) -> Result<GitWorktreeEntry, GitToolingError> {
+    run_git_for_status(
+        base_repo_path,
+        [
+            OsString::from("worktree"),
+            OsString::from("add"),
+            OsString::from("-b"),
+            OsString::from(options.branch),
+            options.worktree_path.as_os_str().to_os_string(),
+            OsString::from(options.start_point),
+        ],
+        /*env*/ None,
+    )?;
+    let worktrees = list_git_worktrees(base_repo_path)?;
+    worktrees
+        .into_iter()
+        .find(|entry| paths_match(entry.path.as_path(), options.worktree_path.as_path()))
+        .ok_or_else(|| GitToolingError::WorktreeNotLinked {
+            base_repo_path: base_repo_path.to_path_buf(),
+            worktree_path: options.worktree_path,
+        })
 }
 
 pub fn get_git_worktree_status_snapshot(
@@ -66,6 +100,25 @@ pub fn get_git_worktree_status_snapshot(
         /*env*/ None,
     )?;
     Ok(parse_status_porcelain_v2(output.as_str()))
+}
+
+pub fn resolve_git_ref(repo_path: &Path, git_ref: &str) -> Result<Option<String>, GitToolingError> {
+    if git_ref.trim().is_empty() || git_ref == "HEAD" {
+        return resolve_head(repo_path);
+    }
+    match run_git_for_stdout(
+        repo_path,
+        [
+            OsString::from("rev-parse"),
+            OsString::from("--verify"),
+            OsString::from(git_ref),
+        ],
+        /*env*/ None,
+    ) {
+        Ok(sha) => Ok(Some(sha)),
+        Err(GitToolingError::GitCommand { status, .. }) if status.code() == Some(128) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn remove_linked_git_worktree(
@@ -147,6 +200,21 @@ pub fn merge_tree_dry_run(
         stderr,
         conflicted_paths,
     })
+}
+
+pub fn fast_forward_merge_ref(
+    base_repo_path: &Path,
+    head_ref: &str,
+) -> Result<(), GitToolingError> {
+    run_git_for_status(
+        base_repo_path,
+        [
+            OsString::from("merge"),
+            OsString::from("--ff-only"),
+            OsString::from(head_ref),
+        ],
+        /*env*/ None,
+    )
 }
 
 fn parse_worktree_list_porcelain(output: &str) -> Vec<GitWorktreeEntry> {

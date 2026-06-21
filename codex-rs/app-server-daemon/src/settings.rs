@@ -38,15 +38,28 @@ impl DaemonSettings {
         }
 
         let contents = serde_json::to_vec_pretty(self).context("failed to serialize settings")?;
-        fs::write(path, contents)
-            .await
-            .with_context(|| format!("failed to write daemon settings {}", path.display()))
+        let temp_path = path.with_extension("json.tmp");
+        if let Err(err) = fs::write(&temp_path, contents).await {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to write daemon settings temp file {}",
+                    temp_path.display()
+                )
+            });
+        }
+        if let Err(err) = fs::rename(&temp_path, path).await {
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(err)
+                .with_context(|| format!("failed to publish daemon settings {}", path.display()));
+        }
+        Ok(())
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     use super::DaemonSettings;
 
@@ -59,5 +72,20 @@ mod tests {
             .expect("serialize"),
             r#"{"remoteControlEnabled":true}"#
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_settings_save_publishes_parseable_file() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path = temp_dir.path().join("settings.json");
+        let settings = DaemonSettings {
+            remote_control_enabled: true,
+        };
+
+        settings.save(&path).await?;
+
+        assert_eq!(DaemonSettings::load(&path).await?, settings);
+        assert!(!path.with_extension("json.tmp").exists());
+        Ok(())
     }
 }

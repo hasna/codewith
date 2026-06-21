@@ -158,6 +158,8 @@ pub use managed_worktrees::ManagedWorktreeCreateParams;
 pub use managed_worktrees::ManagedWorktreeDetachParams;
 pub use managed_worktrees::ManagedWorktreeListPage;
 pub use managed_worktrees::ManagedWorktreeMergeCandidateRecordParams;
+pub use managed_worktrees::ManagedWorktreeReleaseParams;
+pub use managed_worktrees::ManagedWorktreeStatusUpdateParams;
 pub use managed_worktrees::ManagedWorktreeStore;
 pub use memories::MemoryStore;
 pub use monitors::MonitorStore;

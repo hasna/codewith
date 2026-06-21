@@ -3,6 +3,7 @@ use super::thread_goal_processor::api_thread_goal_plan_from_state;
 use super::thread_pending_interaction_processor::api_pending_interaction;
 use super::thread_pending_interaction_processor::read_pending_interaction;
 use super::thread_pending_interaction_processor::validate_response_matches_interaction;
+use super::thread_schedule_api::api_thread_schedule_from_state;
 use super::*;
 use codex_app_server_protocol::LocalSessionListParams;
 use codex_app_server_protocol::MissionControlCapabilities;
@@ -103,17 +104,21 @@ impl ThreadRequestProcessor {
                 limit: pending_interaction_limit,
             })
             .await?;
+        let goals_enabled = self.config.features.enabled(Feature::Goals);
+        let scheduled_tasks_enabled = self.config.features.enabled(Feature::ScheduledTasks);
         let sessions = self
-            .mission_control_sessions(local_sessions.data, include_goal_plans)
+            .mission_control_sessions(
+                local_sessions.data,
+                include_goal_plans,
+                scheduled_tasks_enabled,
+            )
             .await?;
         Ok(MissionControlOverviewResponse {
             sessions,
             pending_interactions: pending_interactions.data,
             next_session_cursor: local_sessions.next_cursor,
             next_pending_interaction_cursor: pending_interactions.next_cursor,
-            capabilities: mission_control_capabilities(
-                self.config.features.enabled(Feature::Goals),
-            ),
+            capabilities: mission_control_capabilities(goals_enabled, scheduled_tasks_enabled),
         })
     }
 
@@ -121,6 +126,7 @@ impl ThreadRequestProcessor {
         &self,
         sessions: Vec<codex_app_server_protocol::LocalSession>,
         include_goal_plans: bool,
+        include_schedules: bool,
     ) -> Result<Vec<MissionControlSession>, JSONRPCErrorError> {
         let mut output = Vec::with_capacity(sessions.len());
         let state_db = self.state_db.clone();
@@ -130,6 +136,7 @@ impl ThreadRequestProcessor {
                     session,
                     goal: None,
                     goal_plans: Vec::new(),
+                    schedules: Vec::new(),
                 });
                 continue;
             };
@@ -160,10 +167,25 @@ impl ThreadRequestProcessor {
             } else {
                 Vec::new()
             };
+            let schedules = if include_schedules {
+                state_db
+                    .thread_schedules()
+                    .list_thread_schedules(thread_id)
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!("failed to read thread schedules: {err}"))
+                    })?
+                    .into_iter()
+                    .map(api_thread_schedule_from_state)
+                    .collect()
+            } else {
+                Vec::new()
+            };
             output.push(MissionControlSession {
                 session,
                 goal,
                 goal_plans,
+                schedules,
             });
         }
         Ok(output)
@@ -275,12 +297,16 @@ impl ThreadRequestProcessor {
     }
 }
 
-fn mission_control_capabilities(goals_enabled: bool) -> MissionControlCapabilities {
+fn mission_control_capabilities(
+    goals_enabled: bool,
+    scheduled_tasks_enabled: bool,
+) -> MissionControlCapabilities {
     MissionControlCapabilities {
         local_sessions: true,
         durable_mailbox: true,
         pending_interactions: true,
         goals: goals_enabled,
+        scheduled_tasks: scheduled_tasks_enabled,
         remote_dispatch: false,
         workflow_mutation: false,
         shell_execution: false,

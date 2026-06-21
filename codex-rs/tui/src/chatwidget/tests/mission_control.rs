@@ -24,6 +24,10 @@ use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_app_server_protocol::ThreadPendingInteractionSourceKind;
 use codex_app_server_protocol::ThreadPendingInteractionStatus;
 use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
+use codex_app_server_protocol::ThreadSchedule;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
@@ -143,6 +147,12 @@ async fn mission_control_empty_states_snapshot() {
         "mission_control_empty_goal_chains",
         render_bottom_popup(&chat, /*width*/ 100)
     );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_chatwidget_snapshot!(
+        "mission_control_empty_schedules",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
 }
 
 #[tokio::test]
@@ -153,6 +163,7 @@ async fn mission_control_disabled_capabilities_snapshot() {
         durable_mailbox: false,
         pending_interactions: false,
         goals: false,
+        scheduled_tasks: false,
         remote_dispatch: false,
         workflow_mutation: false,
         shell_execution: false,
@@ -228,6 +239,21 @@ async fn mission_control_goal_chains_snapshot() {
 }
 
 #[tokio::test]
+async fn mission_control_schedules_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.show_mission_control_overview(test_overview_response());
+    for _ in 0..5 {
+        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    }
+
+    assert_chatwidget_snapshot!(
+        "mission_control_schedules",
+        render_bottom_popup(&chat, /*width*/ 120)
+    );
+}
+
+#[tokio::test]
 async fn mission_control_session_row_selects_thread() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let response = test_overview_response();
@@ -246,25 +272,59 @@ async fn mission_control_session_row_selects_thread() {
 }
 
 #[tokio::test]
-async fn mission_control_goal_chain_ready_node_activates() {
+async fn mission_control_not_loaded_session_row_selects_thread() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = "44444444-4444-4444-8444-444444444444";
+    let mut local_session = test_local_session(
+        thread_id,
+        "Archived operator session",
+        "/tmp/codewith/archived",
+        LocalSessionStatus::NotLoaded,
+        None,
+        None,
+    );
+    local_session.runtime_session_id = None;
+    local_session.peer = None;
+    let mut response = empty_overview_response(test_capabilities());
+    response.sessions.push(MissionControlSession {
+        session: local_session,
+        goal: None,
+        goal_plans: Vec::new(),
+        schedules: Vec::new(),
+    });
+
+    chat.show_mission_control_overview(response);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SelectAgentThread(selected_thread_id)) => {
+            assert_eq!(selected_thread_id.to_string(), thread_id);
+        }
+        other => panic!("expected SelectAgentThread event, got {other:?}"),
+    }
+    assert!(chat.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn mission_control_goal_chain_plan_opens_detail() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let response = test_overview_response();
     let expected_thread_id = response.sessions[0].session.thread_id.clone();
+    let expected_plan_id = response.sessions[0].goal_plans[0].plan_id.clone();
 
     chat.show_mission_control_overview(response);
     chat.handle_key_event(KeyEvent::from(KeyCode::Right));
     chat.handle_key_event(KeyEvent::from(KeyCode::Right));
     chat.handle_key_event(KeyEvent::from(KeyCode::Right));
     chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     match rx.try_recv() {
-        Ok(AppEvent::ActivateThreadGoalPlanNode { thread_id, node_id }) => {
+        Ok(AppEvent::OpenThreadGoalPlanDetail { thread_id, plan }) => {
             assert_eq!(thread_id.to_string(), expected_thread_id);
-            assert_eq!(node_id, "node-questions");
+            assert_eq!(plan.plan_id, expected_plan_id);
         }
-        other => panic!("expected ActivateThreadGoalPlanNode event, got {other:?}"),
+        other => panic!("expected OpenThreadGoalPlanDetail event, got {other:?}"),
     }
     assert!(chat.no_modal_or_popup_active());
 }
@@ -354,6 +414,15 @@ fn test_overview_response() -> MissionControlOverviewResponse {
                 ),
                 goal: Some(test_goal(active_thread_id, ThreadGoalStatus::UsageLimited)),
                 goal_plans: vec![test_plan(active_thread_id, ThreadGoalPlanStatus::Active)],
+                schedules: vec![test_schedule(
+                    active_thread_id,
+                    "Check release blockers",
+                    ThreadScheduleStatus::Active,
+                    ThreadScheduleSpec::Interval {
+                        amount: 15,
+                        unit: codex_app_server_protocol::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                )],
             },
             MissionControlSession {
                 session: test_local_session(
@@ -366,6 +435,7 @@ fn test_overview_response() -> MissionControlOverviewResponse {
                 ),
                 goal: None,
                 goal_plans: vec![test_plan(idle_thread_id, ThreadGoalPlanStatus::Blocked)],
+                schedules: Vec::new(),
             },
         ],
         pending_interactions: vec![test_pending_interaction(active_thread_id)],
@@ -401,6 +471,12 @@ fn long_overflow_response() -> MissionControlOverviewResponse {
             ),
             goal: Some(test_goal(thread_id, ThreadGoalStatus::Active)),
             goal_plans: vec![test_long_plan(thread_id)],
+            schedules: vec![test_schedule(
+                thread_id,
+                "Review the long responsive Mission Control schedule prompt before it wraps",
+                ThreadScheduleStatus::Paused,
+                ThreadScheduleSpec::Once,
+            )],
         }],
         pending_interactions: vec![test_pending_interaction_with_question(
             thread_id,
@@ -426,6 +502,7 @@ fn test_capabilities() -> MissionControlCapabilities {
         durable_mailbox: true,
         pending_interactions: true,
         goals: true,
+        scheduled_tasks: true,
         remote_dispatch: false,
         workflow_mutation: false,
         shell_execution: false,
@@ -603,6 +680,30 @@ fn test_plan_node(
         time_used_seconds: 60,
         projected_goal_id: None,
         depends_on: Vec::new(),
+        created_at: 1_700,
+        updated_at: 1_800,
+    }
+}
+
+fn test_schedule(
+    thread_id: &str,
+    prompt: &str,
+    status: ThreadScheduleStatus,
+    schedule: ThreadScheduleSpec,
+) -> ThreadSchedule {
+    ThreadSchedule {
+        thread_id: thread_id.to_string(),
+        schedule_id: format!("schedule-{thread_id}"),
+        prompt: prompt.to_string(),
+        prompt_source: ThreadSchedulePromptSource::Inline,
+        schedule,
+        timezone: "UTC".to_string(),
+        status,
+        next_run_at: Some(1_900),
+        last_run_at: None,
+        expires_at: None,
+        failure_count: 0,
+        lease_expires_at: None,
         created_at: 1_700,
         updated_at: 1_800,
     }

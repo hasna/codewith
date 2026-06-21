@@ -446,6 +446,18 @@ UPDATE background_agent_runs
 SET
     desired_state = ?,
     retention_state = ?,
+    status = CASE
+        WHEN supervisor_id IS NOT NULL
+          AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+        THEN ?
+        ELSE status
+    END,
+    status_reason = CASE
+        WHEN supervisor_id IS NOT NULL
+          AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+        THEN ?
+        ELSE status_reason
+    END,
     delete_after = COALESCE(delete_after, ?),
     updated_at = ?
 WHERE id = ? AND retention_state != ?
@@ -453,6 +465,8 @@ WHERE id = ? AND retention_state != ?
         )
         .bind(BackgroundAgentDesiredState::Deleted.as_str())
         .bind(crate::BackgroundAgentRetentionState::DeleteRequested.as_str())
+        .bind(BackgroundAgentRunStatus::Stopping.as_str())
+        .bind("delete requested")
         .bind(now)
         .bind(now)
         .bind(run_id)
@@ -489,6 +503,7 @@ WHERE
 
         let mut finalized = 0;
         for (run_id, supervisor_id, generation) in orphan_candidates {
+            let mut tx = self.pool.begin().await?;
             let result = sqlx::query(
                 r#"
 UPDATE background_agent_runs
@@ -517,10 +532,11 @@ WHERE
             .bind(BackgroundAgentDesiredState::Running.as_str())
             .bind(crate::BackgroundAgentRetentionState::Active.as_str())
             .bind(stale_before)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await?;
 
             if result.rows_affected() == 0 {
+                tx.commit().await?;
                 continue;
             }
 
@@ -539,20 +555,26 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
             .bind(run_id.as_str())
             .bind(supervisor_id.as_str())
             .bind(generation)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await?;
 
-            self.append_background_agent_event(
+            let payload_json = serde_json::json!({
+                "reason": "supervisor_heartbeat_stale",
+                "previousSupervisorId": supervisor_id,
+                "generation": generation,
+                "staleBefore": stale_before,
+            });
+            append_terminal_stale_background_agent_status_in_tx(
+                &mut tx,
                 run_id.as_str(),
+                BackgroundAgentRunStatus::Orphaned,
+                "supervisor heartbeat stale",
                 "agent.orphaned",
-                &serde_json::json!({
-                    "reason": "supervisor_heartbeat_stale",
-                    "previousSupervisorId": supervisor_id,
-                    "generation": generation,
-                    "staleBefore": stale_before,
-                }),
+                &payload_json,
+                now,
             )
             .await?;
+            tx.commit().await?;
             finalized += 1;
         }
 
@@ -575,6 +597,7 @@ WHERE
         .await?;
 
         for (run_id, supervisor_id, generation) in stopping_candidates {
+            let mut tx = self.pool.begin().await?;
             let result = sqlx::query(
                 r#"
 UPDATE background_agent_runs
@@ -605,10 +628,11 @@ WHERE
             .bind(BackgroundAgentDesiredState::Running.as_str())
             .bind(crate::BackgroundAgentRetentionState::DeleteRequested.as_str())
             .bind(stale_before)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await?;
 
             if result.rows_affected() == 0 {
+                tx.commit().await?;
                 continue;
             }
 
@@ -629,20 +653,26 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
             .bind(run_id.as_str())
             .bind(supervisor_id.as_str())
             .bind(generation)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await?;
 
-            self.append_background_agent_event(
+            let payload_json = serde_json::json!({
+                "reason": "stop_heartbeat_stale",
+                "previousSupervisorId": supervisor_id,
+                "generation": generation,
+                "staleBefore": stale_before,
+            });
+            append_terminal_stale_background_agent_status_in_tx(
+                &mut tx,
                 run_id.as_str(),
+                BackgroundAgentRunStatus::Cancelled,
+                "stop heartbeat stale",
                 "agent.cancelled",
-                &serde_json::json!({
-                    "reason": "stop_heartbeat_stale",
-                    "previousSupervisorId": supervisor_id,
-                    "generation": generation,
-                    "staleBefore": stale_before,
-                }),
+                &payload_json,
+                now,
             )
             .await?;
+            tx.commit().await?;
             finalized += 1;
         }
 
@@ -1000,6 +1030,62 @@ WHERE idempotency_key = ?
         .await?;
         row.map(BackgroundAgentRun::try_from).transpose()
     }
+}
+
+async fn append_terminal_stale_background_agent_status_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    status: BackgroundAgentRunStatus,
+    status_reason: &str,
+    event_type: &str,
+    event_payload_json: &serde_json::Value,
+    now: i64,
+) -> anyhow::Result<()> {
+    super::events::append_background_agent_event_in_tx(
+        tx,
+        run_id,
+        event_type,
+        event_payload_json,
+        now,
+    )
+    .await?;
+    let (last_event_seq, desired_state): (i64, String) = sqlx::query_as(
+        "SELECT last_event_seq, desired_state FROM background_agent_runs WHERE id = ?",
+    )
+    .bind(run_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let pending_interaction_count: i64 = sqlx::query_scalar(
+        r#"
+SELECT COUNT(*)
+FROM background_agent_pending_interactions
+WHERE run_id = ? AND status IN (?, ?)
+        "#,
+    )
+    .bind(run_id)
+    .bind(BackgroundAgentPendingInteractionStatus::Pending.as_str())
+    .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
+    .fetch_one(&mut **tx)
+    .await?;
+    super::snapshots::upsert_background_agent_status_snapshot_in_tx(
+        tx,
+        &BackgroundAgentStatusSnapshotParams {
+            run_id: run_id.to_string(),
+            seq: last_event_seq,
+            status,
+            desired_state: BackgroundAgentDesiredState::parse(desired_state.as_str())?,
+            summary: Some(status_reason.to_string()),
+            pending_interaction_count,
+            last_event_seq,
+            payload_json: serde_json::json!({
+                "reason": status_reason,
+                "event": event_payload_json,
+            }),
+        },
+        now,
+    )
+    .await?;
+    Ok(())
 }
 
 fn background_agent_status_timestamps(

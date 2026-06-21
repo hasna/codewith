@@ -149,7 +149,8 @@ impl ToolExecutor<ToolInvocation> for ManageScheduleHandler {
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
-        let response = manage_schedule(state_db, session.thread_id(), args).await?;
+        let auth_profile = session.selected_auth_profile().await;
+        let response = manage_schedule(state_db, session.thread_id(), auth_profile, args).await?;
         schedule_response(response).map(boxed_tool_output)
     }
 }
@@ -159,10 +160,11 @@ impl CoreToolRuntime for ManageScheduleHandler {}
 async fn manage_schedule(
     state_db: Arc<codex_state::StateRuntime>,
     thread_id: ThreadId,
+    auth_profile: Option<String>,
     args: ManageScheduleArgs,
 ) -> Result<ManageScheduleResponse, FunctionCallError> {
     match args.action {
-        ScheduleAction::Create => create_schedule(state_db, thread_id, args).await,
+        ScheduleAction::Create => create_schedule(state_db, thread_id, auth_profile, args).await,
         ScheduleAction::List => {
             let schedules = list_schedule_snapshots(&state_db, thread_id).await?;
             Ok(ManageScheduleResponse {
@@ -189,6 +191,7 @@ async fn manage_schedule(
 async fn create_schedule(
     state_db: Arc<codex_state::StateRuntime>,
     thread_id: ThreadId,
+    auth_profile: Option<String>,
     args: ManageScheduleArgs,
 ) -> Result<ManageScheduleResponse, FunctionCallError> {
     ensure_schedule_capacity(&state_db, thread_id).await?;
@@ -231,16 +234,19 @@ async fn create_schedule(
 
     let schedule = state_db
         .thread_schedules()
-        .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
-            thread_id,
-            prompt,
-            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-            schedule,
-            timezone,
-            status: codex_state::ThreadScheduleStatus::Active,
-            next_run_at,
-            expires_at,
-        })
+        .create_thread_schedule_for_auth_profile(
+            codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt,
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule,
+                timezone,
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at,
+                expires_at,
+            },
+            auth_profile,
+        )
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?;
     let affected_schedule = ScheduleSnapshot::from(schedule);
@@ -787,6 +793,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -823,6 +830,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -851,6 +859,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -885,6 +894,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Update,
                 schedule_id: Some(schedule.schedule_id.clone()),
@@ -937,6 +947,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Resume,
                 schedule_id: Some(schedule.schedule_id),
@@ -967,6 +978,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
+            None,
             ManageScheduleArgs {
                 action: ScheduleAction::Delete,
                 schedule_id: Some(first.schedule_id.clone()),

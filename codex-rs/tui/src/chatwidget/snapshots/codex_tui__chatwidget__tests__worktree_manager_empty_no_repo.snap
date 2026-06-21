@@ -7,7 +7,9 @@ expression: "render_bottom_popup(&chat, 100)"
 
   Search worktrees
 › Managed worktree policy    Creation/attach actions respect this config.
-  Create worktre… (disabled) Planned: create a managed isolated worktree (disabled: No git
+  Create worktre… (disabled) Create a managed isolated worktree (disabled: No git repository
+                             detected for this session)
+  Reconcile work… (disabled) Discover linked Codewith worktrees and update state (disabled: No git
                              repository detected for this session)
   No Codewith-managed workt… No git repository was detected for this session
 

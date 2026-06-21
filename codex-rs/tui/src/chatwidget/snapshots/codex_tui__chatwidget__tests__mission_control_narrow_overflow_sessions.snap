@@ -1,35 +1,14 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 190
 expression: "render_bottom_popup(&chat, 60)"
 ---
-  Active 1  Idle 0  Not loaded 0  More available
+  1 session  More available
 
-  [Sessions (1)]  Projects (1)  Questions (1)
-  Work Queue (1)  Goal Chains (1)
+  [Sessions]  Projects  Questions  Queue  Goals  Schedules
 
-  Search sessions, projects, questions, queues, and goal c
-› Mission Control With A Very Long Ope… Thread 33333333
-                                        | /tmp/codewith/
-                                        super-long-
-                                        project-name-
-                                        without-natural-
-                                        breaks-
-                                        abcdefghijklmnopqr
-                                        stuvwxyz | branch
-                                        feature/very-long-
-                                        branch-name-for-
-                                        responsive-
-                                        mission-control-
-                                        tests | openai/
-                                        mission-control-
-                                        model-with-a-long-
-                                        name | 1 waiting |
-                                        goal active 12.3K
-                                        tokens | 1 plan |
-                                        1 active | 0
-                                        blocked | 1 ready
-  More sessions available               Narrow the search
-                                        or reopen for the
-                                        next page
+  Search
+› Mission Control With A Very Long Ope… 1 waiting
+  More                                  available
 
   Press enter to confirm or esc to go back

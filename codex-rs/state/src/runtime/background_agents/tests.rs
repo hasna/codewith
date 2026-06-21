@@ -851,6 +851,18 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
             Some("stop requested"),
         )
         .await?;
+    runtime
+        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
+            run_id: "run-1".to_string(),
+            seq: 1,
+            status: BackgroundAgentRunStatus::Stopping,
+            desired_state: BackgroundAgentDesiredState::Stopped,
+            summary: Some("stop requested".to_string()),
+            pending_interaction_count: 0,
+            last_event_seq: 0,
+            payload_json: json!({"phase": "stopping"}),
+        })
+        .await?;
 
     assert_eq!(
         runtime
@@ -873,6 +885,105 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
     .fetch_one(runtime.pool.as_ref())
     .await?;
     assert_eq!(process_lease_status, "stopped");
+    let status_snapshot = runtime
+        .get_background_agent_status_snapshot("run-1")
+        .await?
+        .expect("status snapshot should exist");
+    assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Cancelled);
+    assert_eq!(
+        status_snapshot.desired_state,
+        BackgroundAgentDesiredState::Stopped
+    );
+    assert_eq!(
+        status_snapshot.summary.as_deref(),
+        Some("stop heartbeat stale")
+    );
+    assert_eq!(status_snapshot.last_event_seq, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_request_for_claimed_run_becomes_stopping_and_stale_cancelled() -> anyhow::Result<()>
+{
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+
+    let generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    runtime
+        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+            run_id: "run-1",
+            supervisor_id: "supervisor-1",
+            generation,
+            pid: Some(100),
+            pgid: Some(100),
+            job_id: Some("job-1"),
+            start_token: Some("start-1"),
+            stderr_log_path: Some("/tmp/run-1.stderr.log"),
+        })
+        .await?;
+
+    assert!(runtime.request_background_agent_delete("run-1").await?);
+    let stopping = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(stopping.status, BackgroundAgentRunStatus::Stopping);
+    assert_eq!(stopping.status_reason.as_deref(), Some("delete requested"));
+    runtime
+        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
+            run_id: "run-1".to_string(),
+            seq: 1,
+            status: BackgroundAgentRunStatus::Stopping,
+            desired_state: BackgroundAgentDesiredState::Deleted,
+            summary: Some("delete requested".to_string()),
+            pending_interaction_count: 0,
+            last_event_seq: 0,
+            payload_json: json!({"phase": "delete requested"}),
+        })
+        .await?;
+
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+
+    let cancelled = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(cancelled.status, BackgroundAgentRunStatus::Cancelled);
+    assert_eq!(
+        cancelled.retention_state,
+        crate::BackgroundAgentRetentionState::DeleteRequested
+    );
+    let process_lease_status: String = sqlx::query_scalar(
+        "SELECT status FROM background_agent_process_leases WHERE run_id = ? AND generation = ?",
+    )
+    .bind("run-1")
+    .bind(generation)
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(process_lease_status, "stopped");
+    let status_snapshot = runtime
+        .get_background_agent_status_snapshot("run-1")
+        .await?
+        .expect("status snapshot should exist");
+    assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Cancelled);
+    assert_eq!(
+        status_snapshot.desired_state,
+        BackgroundAgentDesiredState::Deleted
+    );
+    assert_eq!(
+        status_snapshot.summary.as_deref(),
+        Some("stop heartbeat stale")
+    );
+    assert_eq!(status_snapshot.last_event_seq, 1);
+
     Ok(())
 }
 

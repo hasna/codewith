@@ -709,6 +709,16 @@ pub(crate) enum AppEvent {
     /// Open the Codewith-managed worktree manager.
     OpenWorktreeManager,
 
+    /// Reconcile Codewith-managed worktree state with linked Git worktrees.
+    ReconcileWorktrees,
+
+    /// Create a Codewith-managed worktree.
+    CreateWorktree {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+
     /// Open actions for one Codewith-managed worktree.
     OpenWorktreeActions {
         worktree_id: String,
@@ -725,6 +735,26 @@ pub(crate) enum AppEvent {
     UseWorktree {
         worktree_id: String,
         base_repo_path: Option<String>,
+    },
+
+    /// Release one Codewith-managed worktree without forcing deletion.
+    ReleaseWorktree {
+        worktree_id: String,
+        base_repo_path: Option<String>,
+    },
+
+    /// Request cleanup for one Codewith-managed worktree.
+    CleanupWorktree {
+        worktree_id: String,
+        base_repo_path: Option<String>,
+        force_delete: bool,
+    },
+
+    /// Refresh merge-candidate state for one Codewith-managed worktree.
+    RefreshWorktreeMergeCandidate {
+        worktree_id: String,
+        base_repo_path: Option<String>,
+        target_ref: Option<String>,
     },
 
     /// List loaded sessions that can receive active messages.

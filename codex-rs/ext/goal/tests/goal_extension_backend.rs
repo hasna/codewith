@@ -1478,9 +1478,25 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
             thread_id,
             "ship goal extension backend",
             codex_state::ThreadGoalStatus::Blocked,
-            Some(100),
+            /*token_budget*/ Some(100),
         )
         .await?;
+    let outcome = runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 42,
+            /*token_delta*/ 17,
+            codex_state::GoalAccountingMode::ActiveOrStopped,
+            /*expected_goal_id*/ None,
+        )
+        .await?;
+    let codex_state::GoalAccountingOutcome::Updated(blocked_goal) = outcome else {
+        panic!("blocked goal should preserve accounted usage before resume");
+    };
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, blocked_goal.status);
+    assert_eq!(17, blocked_goal.tokens_used);
+    assert_eq!(42, blocked_goal.time_used_seconds);
     let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
     harness.start_turn("turn-1", &TokenUsage::default()).await;
 
@@ -1499,12 +1515,12 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
                 "objective": "ship goal extension backend",
                 "status": "active",
                 "tokenBudget": 100,
-                "tokensUsed": 0,
-                "timeUsedSeconds": 0,
+                "tokensUsed": 17,
+                "timeUsedSeconds": 42,
                 "createdAt": result["goal"]["createdAt"],
                 "updatedAt": result["goal"]["updatedAt"],
             },
-            "remainingTokens": 100,
+            "remainingTokens": 83,
             "completionBudgetReport": serde_json::Value::Null,
             "goalPlanCompletionReport": serde_json::Value::Null,
         })
@@ -1514,7 +1530,7 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
             event_id: "call-resume-goal".to_string(),
             turn_id: Some("turn-1".to_string()),
             status: ThreadGoalStatus::Active,
-            tokens_used: 0,
+            tokens_used: 17,
         }],
         harness.sink.goal_events()
     );
@@ -1543,13 +1559,135 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
-    assert_eq!(23, goal.tokens_used);
+    assert_eq!(40, goal.tokens_used);
+    assert!(
+        goal.time_used_seconds >= 42,
+        "resumed goal should not reset previously recorded elapsed time"
+    );
     assert_eq!(
         vec![CapturedGoalEvent {
             event_id: "call-shell".to_string(),
             turn_id: Some("turn-1".to_string()),
             status: ThreadGoalStatus::Active,
-            tokens_used: 23,
+            tokens_used: 40,
+        }],
+        harness.sink.goal_events()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_goal_preserves_usage_limited_goal_usage() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ Some(80),
+        )
+        .await?;
+    let outcome = runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 31,
+            /*token_delta*/ 19,
+            codex_state::GoalAccountingMode::ActiveOnly,
+            /*expected_goal_id*/ None,
+        )
+        .await?;
+    let codex_state::GoalAccountingOutcome::Updated(accounted_goal) = outcome else {
+        panic!("active goal should account usage before usage limiting");
+    };
+    assert_eq!(codex_state::ThreadGoalStatus::Active, accounted_goal.status);
+    let usage_limited_goal = runtime
+        .thread_goals()
+        .usage_limit_active_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("active goal should become usage limited"))?;
+    assert_eq!(
+        codex_state::ThreadGoalStatus::UsageLimited,
+        usage_limited_goal.status
+    );
+    assert_eq!(19, usage_limited_goal.tokens_used);
+    assert_eq!(31, usage_limited_goal.time_used_seconds);
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+    let invocation = tool_call("resume_goal", "call-resume-goal", json!({}));
+    let output = resume_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result,
+        json!({
+            "goal": {
+                "goalId": result["goal"]["goalId"],
+                "threadId": thread_id,
+                "objective": "ship goal extension backend",
+                "status": "active",
+                "tokenBudget": 80,
+                "tokensUsed": 19,
+                "timeUsedSeconds": 31,
+                "createdAt": result["goal"]["createdAt"],
+                "updatedAt": result["goal"]["updatedAt"],
+            },
+            "remainingTokens": 61,
+            "completionBudgetReport": serde_json::Value::Null,
+            "goalPlanCompletionReport": serde_json::Value::Null,
+        })
+    );
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "call-resume-goal".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Active,
+            tokens_used: 19,
+        }],
+        harness.sink.goal_events()
+    );
+
+    harness.sink.clear();
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-resume-goal", "resume_goal")
+        .await;
+    assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
+
+    harness
+        .notify_tool_finish("turn-1", "call-shell", "shell")
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    assert_eq!(42, goal.tokens_used);
+    assert!(
+        goal.time_used_seconds >= 31,
+        "usage-limited resume should preserve elapsed time before future accounting"
+    );
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "call-shell".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Active,
+            tokens_used: 42,
         }],
         harness.sink.goal_events()
     );

@@ -482,7 +482,7 @@ fn thread_schedule_manager_params(
             })];
             items.push(SelectionItem {
                 name: loop_manager_row_name(&schedule),
-                selected_description: Some(loop_manager_row_description(&schedule)),
+                description: Some(loop_manager_row_description(&schedule)),
                 actions,
                 dismiss_on_select: true,
                 search_value: Some(loop_schedule_search_value(&schedule)),
@@ -661,37 +661,21 @@ pub(crate) fn loop_schedule_summary(schedule: &ThreadSchedule) -> String {
 }
 
 fn loop_manager_row_name(schedule: &ThreadSchedule) -> String {
-    loop_detail_join(vec![
-        thread_schedule_status_label(schedule.status).to_string(),
-        thread_schedule_spec_label(&schedule.schedule),
-    ])
+    let prompt = schedule.prompt.trim();
+    if prompt.is_empty() {
+        short_schedule_id(&schedule.schedule_id)
+    } else {
+        truncate_text(prompt, /*max_graphemes*/ 36)
+    }
 }
 
 fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
-    let prompt = truncate_text(&schedule.prompt, /*max_graphemes*/ 72);
-    let mut parts = vec![
-        format!("id {}", schedule.schedule_id),
-        format!("next {}", schedule_next_label(schedule)),
-        format!("prompt {prompt}"),
-        format!("tz {}", schedule.timezone),
-    ];
-    if let Some(lease_expires_at) = schedule.lease_expires_at {
-        parts.push(format!(
-            "running until {}",
-            format_schedule_timestamp(lease_expires_at)
-        ));
-    }
-    if let Some(last_run_at) = schedule.last_run_at {
-        parts.push(format!("last {}", format_schedule_timestamp(last_run_at)));
-    }
-    if schedule.failure_count > 0 {
-        parts.push(format!(
-            "failure streak {}",
-            pluralize_with_amount(schedule.failure_count, "failure")
-        ));
-    }
-    parts.push("Press Enter to manage.".to_string());
-    loop_detail_join(parts)
+    format!(
+        "{} · {} · {}",
+        thread_schedule_status_label(schedule.status),
+        thread_schedule_spec_label(&schedule.schedule),
+        short_schedule_id(&schedule.schedule_id)
+    )
 }
 
 fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
@@ -1046,16 +1030,8 @@ mod tests {
 
         let manager_description = loop_manager_row_description(&schedule);
         assert!(
-            manager_description.contains("running until "),
+            manager_description.contains("active · every 5 minutes · sch_123"),
             "manager row should show active lease: {manager_description}"
-        );
-        assert!(
-            manager_description.contains("last "),
-            "manager row should show last run time: {manager_description}"
-        );
-        assert!(
-            manager_description.contains("failure streak 2 failures"),
-            "manager row should show failure streak: {manager_description}"
         );
     }
 
@@ -1124,17 +1100,17 @@ mod tests {
             ],
         );
 
-        let item_names = params
+        let item_descriptions = params
             .items
             .iter()
-            .map(|item| item.name.clone())
+            .map(|item| item.description.clone().unwrap_or_default())
             .collect::<Vec<_>>();
         assert_eq!(
-            item_names,
+            item_descriptions,
             vec![
-                "active · every 5 minutes".to_string(),
-                "paused · every 5 minutes".to_string(),
-                "expired · every 5 minutes".to_string(),
+                "active · every 5 minutes · active".to_string(),
+                "paused · every 5 minutes · paused".to_string(),
+                "expired · every 5 minutes · expired".to_string(),
             ]
         );
     }

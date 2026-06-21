@@ -9,6 +9,7 @@ use crate::terminal_palette::stdout_color_level;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
+use std::io::IsTerminal;
 
 const CODEWITH_EMERALD_RGB: (u8, u8, u8) = (5, 150, 105);
 const CODEWITH_LINK_EMERALD_RGB: (u8, u8, u8) = (4, 120, 87);
@@ -17,6 +18,10 @@ const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
 pub fn user_message_style() -> Style {
     user_message_style_for(adaptive_default_bg())
+}
+
+pub(crate) fn promptbar_style() -> Style {
+    promptbar_style_for(promptbar_default_bg())
 }
 
 pub fn proposed_plan_style() -> Style {
@@ -54,13 +59,43 @@ fn adaptive_default_bg() -> Option<(u8, u8, u8)> {
         .or_else(crate::render::highlight::current_theme_background_rgb)
 }
 
-fn terminal_theme_bg_hint() -> Option<(u8, u8, u8)> {
-    terminal_theme_bg_hint_from_vars(
+fn promptbar_default_bg() -> Option<(u8, u8, u8)> {
+    promptbar_default_bg_from_vars(
+        default_bg(),
+        std::io::stdout().is_terminal(),
         std::env::var("TERM_THEME").ok().as_deref(),
         std::env::var("VSCODE_THEME").ok().as_deref(),
         std::env::var("ANSI_LIGHT").ok().as_deref(),
         std::env::var("COLORFGBG").ok().as_deref(),
     )
+}
+
+fn terminal_theme_bg_hint() -> Option<(u8, u8, u8)> {
+    promptbar_default_bg_from_vars(
+        /*default_bg*/ None,
+        std::io::stdout().is_terminal(),
+        std::env::var("TERM_THEME").ok().as_deref(),
+        std::env::var("VSCODE_THEME").ok().as_deref(),
+        std::env::var("ANSI_LIGHT").ok().as_deref(),
+        std::env::var("COLORFGBG").ok().as_deref(),
+    )
+}
+
+fn promptbar_default_bg_from_vars(
+    default_bg: Option<(u8, u8, u8)>,
+    stdout_is_terminal: bool,
+    term_theme: Option<&str>,
+    vscode_theme: Option<&str>,
+    ansi_light: Option<&str>,
+    colorfgbg: Option<&str>,
+) -> Option<(u8, u8, u8)> {
+    default_bg.or_else(|| {
+        if stdout_is_terminal {
+            terminal_theme_bg_hint_from_vars(term_theme, vscode_theme, ansi_light, colorfgbg)
+        } else {
+            None
+        }
+    })
 }
 
 fn terminal_theme_bg_hint_from_vars(
@@ -100,6 +135,17 @@ pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
         Some(bg) => Style::default().bg(user_message_bg(bg)),
         None => Style::default(),
     }
+}
+
+fn promptbar_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
+    match terminal_bg {
+        Some(bg) => Style::default().bg(promptbar_bg(bg)),
+        None => Style::default(),
+    }
+}
+
+fn promptbar_bg(terminal_bg: (u8, u8, u8)) -> Color {
+    rgb_color(user_message_bg_rgb(terminal_bg))
 }
 
 pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
@@ -152,12 +198,16 @@ fn table_separator_style_for(
 
 #[allow(clippy::disallowed_methods)]
 pub fn user_message_bg(terminal_bg: (u8, u8, u8)) -> Color {
+    best_color(user_message_bg_rgb(terminal_bg))
+}
+
+fn user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
     let (top, alpha) = if is_light(terminal_bg) {
         ((0, 0, 0), 0.04)
     } else {
         ((255, 255, 255), 0.12)
     };
-    best_color(blend(top, terminal_bg, alpha))
+    blend(top, terminal_bg, alpha)
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -232,6 +282,39 @@ mod tests {
     }
 
     #[test]
+    fn promptbar_default_bg_ignores_theme_hints_without_terminal_stdout() {
+        assert_eq!(
+            promptbar_default_bg_from_vars(
+                /*default_bg*/ None,
+                /*stdout_is_terminal*/ false,
+                Some("light"),
+                Some("Light Modern"),
+                Some("1"),
+                Some("0;15"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn promptbar_default_bg_uses_light_theme_hints_with_terminal_stdout() {
+        let default_bg = promptbar_default_bg_from_vars(
+            /*default_bg*/ None,
+            /*stdout_is_terminal*/ true,
+            Some("light"),
+            Some("Light Modern"),
+            Some("1"),
+            Some("0;15"),
+        );
+
+        assert_eq!(default_bg, Some((255, 255, 255)));
+        assert_eq!(
+            promptbar_style_for(default_bg).bg,
+            Some(rgb_color((244, 244, 244)))
+        );
+    }
+
+    #[test]
     fn terminal_theme_bg_hint_uses_dark_markers_and_colorfgbg() {
         assert_eq!(
             terminal_theme_bg_hint_from_vars(Some("dark"), None, None, None),
@@ -245,6 +328,36 @@ mod tests {
             terminal_theme_bg_hint_from_vars(None, None, None, Some("0;15")),
             Some((255, 255, 255))
         );
+    }
+
+    #[test]
+    fn promptbar_style_uses_direct_rgb_background_for_known_light_theme() {
+        assert_eq!(
+            promptbar_style_for(Some((255, 255, 255))).bg,
+            Some(rgb_color((244, 244, 244)))
+        );
+    }
+
+    #[test]
+    fn promptbar_style_uses_direct_rgb_background_for_known_dark_theme() {
+        assert_eq!(
+            promptbar_style_for(Some((0, 0, 0))).bg,
+            Some(rgb_color((30, 30, 30)))
+        );
+    }
+
+    #[test]
+    fn promptbar_style_stays_default_without_background_evidence() {
+        assert_eq!(promptbar_style_for(/*terminal_bg*/ None), Style::default());
+    }
+
+    #[test]
+    fn promptbar_style_ignores_syntax_theme_background_without_terminal_evidence() {
+        if std::io::stdout().is_terminal() {
+            return;
+        }
+
+        assert_eq!(promptbar_style(), Style::default());
     }
 
     #[test]

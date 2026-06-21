@@ -145,8 +145,19 @@ fn mailbox_dispatcher_is_under_development_and_disabled_by_default() {
 }
 
 #[test]
-fn workflows_is_under_development_and_disabled_by_default() {
-    assert_eq!(Feature::Workflows.stage(), Stage::UnderDevelopment);
+fn workflows_is_experimental_and_disabled_by_default() {
+    let stage = Feature::Workflows.stage();
+
+    assert!(matches!(stage, Stage::Experimental { .. }));
+    assert_eq!(stage.experimental_menu_name(), Some("Workflows"));
+    assert_eq!(
+        stage.experimental_menu_description(),
+        Some("Show workflow commands for drafting, saving, and running thread workflow specs.")
+    );
+    assert_eq!(
+        stage.experimental_announcement(),
+        Some("NEW: Workflows are now available in /experimental.")
+    );
     assert_eq!(Feature::Workflows.default_enabled(), false);
     assert_eq!(feature_for_key("workflows"), Some(Feature::Workflows));
 }

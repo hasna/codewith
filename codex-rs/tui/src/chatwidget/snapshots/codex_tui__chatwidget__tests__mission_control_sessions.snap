@@ -1,14 +1,14 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 41
 expression: "render_bottom_popup(&chat, 120)"
 ---
-  Active 1  Idle 1  Not loaded 0
+  2 sessions
 
-  [Sessions (2)]  Projects (2)  Questions (1)  Work Queue (2)  Goal Chains (2)
+  [Sessions]  Projects  Questions  Queue  Goals  Schedules
 
-  Search sessions, projects, questions, queues, and goal chains
-› Codewith orchestration  Thread 11111111 | /tmp/codewith/open-codewith | branch main | openai/mission-control-ui | 1
-                          waiting | goal usage-limited 12.3K tokens | 1 plan | 1 active | 0 blocked | 1 ready
-  Workflow builder        idle | workflows | no waiting | 1 plan
+  Search
+› Codewith orchestration  1 waiting
+  Workflow builder        blocked
 
   Press enter to confirm or esc to go back

@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WorktreeCleanupPolicy": {
+      "enum": [
+        "retain",
+        "deleteIfClean",
+        "forceDelete"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "baseRepoPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "branch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cleanupPolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeCleanupPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "startPoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "WorktreeCreateParams",
+  "type": "object"
+}

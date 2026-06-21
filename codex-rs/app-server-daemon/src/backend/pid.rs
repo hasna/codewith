@@ -416,8 +416,8 @@ impl PidBackend {
 
     fn force_terminate_process(&self, pid: u32) -> Result<()> {
         match self.command_kind {
-            PidCommandKind::AppServer { .. } => force_terminate_process(pid),
-            PidCommandKind::UpdateLoop => force_terminate_process_group(pid),
+            PidCommandKind::AppServer { .. } => force_terminate_app_server_process(pid),
+            PidCommandKind::UpdateLoop => force_terminate_process_group(pid, "pid-managed updater"),
         }
     }
 
@@ -516,9 +516,15 @@ fn force_terminate_process(pid: u32) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn force_terminate_process_group(pid: u32) -> Result<()> {
-    let raw_pid = libc::pid_t::try_from(pid)
-        .with_context(|| format!("pid-managed updater pid {pid} is out of range"))?;
+fn force_terminate_app_server_process(pid: u32) -> Result<()> {
+    force_terminate_process_group(pid, "pid-managed app server")?;
+    force_terminate_process(pid)
+}
+
+#[cfg(unix)]
+fn force_terminate_process_group(pid: u32, label: &str) -> Result<()> {
+    let raw_pid =
+        libc::pid_t::try_from(pid).with_context(|| format!("{label} pid {pid} is out of range"))?;
     let result = unsafe { libc::kill(-raw_pid, libc::SIGKILL) };
     if result == 0 {
         return Ok(());
@@ -527,7 +533,7 @@ fn force_terminate_process_group(pid: u32) -> Result<()> {
     if err.raw_os_error() == Some(libc::ESRCH) {
         return Ok(());
     }
-    Err(err).with_context(|| format!("failed to force terminate pid-managed updater group {pid}"))
+    Err(err).with_context(|| format!("failed to force terminate {label} group {pid}"))
 }
 
 #[cfg(not(unix))]
@@ -541,7 +547,12 @@ fn force_terminate_process(_pid: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn force_terminate_process_group(_pid: u32) -> Result<()> {
+fn force_terminate_app_server_process(_pid: u32) -> Result<()> {
+    bail!("pid-managed app-server shutdown is unsupported on this platform")
+}
+
+#[cfg(not(unix))]
+fn force_terminate_process_group(_pid: u32, _label: &str) -> Result<()> {
     bail!("pid-managed updater shutdown is unsupported on this platform")
 }
 

@@ -46,9 +46,29 @@ impl ScheduleStore {
         &self,
         params: ThreadScheduleCreateParams,
     ) -> anyhow::Result<crate::ThreadSchedule> {
+        self.create_thread_schedule_with_recorded_auth_profile(params, None)
+            .await
+    }
+
+    pub async fn create_thread_schedule_for_auth_profile(
+        &self,
+        params: ThreadScheduleCreateParams,
+        auth_profile: Option<String>,
+    ) -> anyhow::Result<crate::ThreadSchedule> {
+        self.create_thread_schedule_with_recorded_auth_profile(params, Some(auth_profile))
+            .await
+    }
+
+    async fn create_thread_schedule_with_recorded_auth_profile(
+        &self,
+        params: ThreadScheduleCreateParams,
+        auth_profile: Option<Option<String>>,
+    ) -> anyhow::Result<crate::ThreadSchedule> {
         let schedule_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let spec = schedule_bindings(&params.schedule);
+        let auth_profile_recorded = auth_profile.is_some();
+        let auth_profile = auth_profile.flatten();
         let sql = schedule_returning(
             r#"
 INSERT INTO thread_schedules (
@@ -61,12 +81,14 @@ INSERT INTO thread_schedules (
     interval_unit,
     cron_expression,
     timezone,
+    auth_profile_recorded,
+    auth_profile,
     status,
     next_run_at_ms,
     expires_at_ms,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
 "#,
         );
@@ -80,6 +102,8 @@ RETURNING
             .bind(spec.interval_unit)
             .bind(spec.cron_expression)
             .bind(params.timezone)
+            .bind(if auth_profile_recorded { 1_i64 } else { 0_i64 })
+            .bind(auth_profile)
             .bind(params.status.as_str())
             .bind(params.next_run_at.map(datetime_to_epoch_millis))
             .bind(params.expires_at.map(datetime_to_epoch_millis))
@@ -122,6 +146,8 @@ SELECT
     interval_unit,
     cron_expression,
     timezone,
+    auth_profile_recorded,
+    auth_profile,
     status,
     next_run_at_ms,
     last_run_at_ms,
@@ -685,6 +711,8 @@ const SCHEDULE_COLUMNS: &str = r#"
     interval_unit,
     cron_expression,
     timezone,
+    auth_profile_recorded,
+    auth_profile,
     status,
     next_run_at_ms,
     last_run_at_ms,
@@ -814,6 +842,7 @@ mod tests {
         let expected_created = crate::ThreadSchedule {
             thread_id,
             schedule_id: created.schedule_id.clone(),
+            auth_profile: None,
             prompt: "summarize new alerts".to_string(),
             prompt_source: crate::ThreadSchedulePromptSource::Inline,
             schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
@@ -925,6 +954,7 @@ mod tests {
             crate::ThreadSchedule {
                 thread_id,
                 schedule_id: created.schedule_id.clone(),
+                auth_profile: None,
                 prompt: "ask one question".to_string(),
                 prompt_source: crate::ThreadSchedulePromptSource::Inline,
                 schedule: crate::ThreadScheduleSpec::Once,
@@ -940,6 +970,61 @@ mod tests {
                 updated_at: created.updated_at,
             },
             created
+        );
+    }
+
+    #[tokio::test]
+    async fn create_thread_schedule_records_auth_profile() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 13);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let named = runtime
+            .thread_schedules()
+            .create_thread_schedule_for_auth_profile(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "named profile".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Once,
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(at(/*seconds*/ 1_700_000_060)),
+                    expires_at: None,
+                },
+                Some("account002".to_string()),
+            )
+            .await
+            .expect("schedule should be created");
+        let root = runtime
+            .thread_schedules()
+            .create_thread_schedule_for_auth_profile(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "root profile".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Once,
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(at(/*seconds*/ 1_700_000_120)),
+                    expires_at: None,
+                },
+                None,
+            )
+            .await
+            .expect("schedule should be created");
+
+        assert_eq!(Some(Some("account002".to_string())), named.auth_profile);
+        assert_eq!(Some(None), root.auth_profile);
+        assert_eq!(
+            Some(Some("account002".to_string())),
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(named.schedule_id.as_str())
+                .await
+                .expect("schedule should load")
+                .expect("schedule should exist")
+                .auth_profile
         );
     }
 

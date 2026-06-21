@@ -46,9 +46,11 @@ use codex_config::format_config_error_with_source;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_login::AuthConfig;
+use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::enforce_login_restrictions;
+use codex_login::validate_auth_profile_name;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::SandboxMode;
@@ -512,6 +514,64 @@ async fn maybe_probe_default_daemon_socket(_codex_home: &Path) -> Option<Absolut
     None
 }
 
+#[cfg(unix)]
+async fn maybe_start_default_daemon_socket(
+    codex_home: &Path,
+    codex_bin: Option<&Path>,
+) -> Option<AbsolutePathBuf> {
+    maybe_start_default_daemon_socket_with(codex_home, codex_bin, |codex_bin| async move {
+        codex_app_server_daemon::ensure_local_daemon_started(
+            codex_app_server_daemon::LocalDaemonStartOptions { codex_bin },
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg(unix)]
+async fn maybe_start_default_daemon_socket_with<F, Fut>(
+    codex_home: &Path,
+    codex_bin: Option<&Path>,
+    start_daemon: F,
+) -> Option<AbsolutePathBuf>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<PathBuf>>,
+{
+    if let Some(socket_path) = maybe_probe_default_daemon_socket(codex_home).await {
+        return Some(socket_path);
+    }
+
+    let Some(codex_bin) = codex_bin else {
+        tracing::debug!(
+            "skipping default app-server daemon start because the Codewith binary path is unavailable"
+        );
+        return None;
+    };
+
+    match start_daemon(codex_bin.to_path_buf()).await {
+        Ok(socket_path) => match AbsolutePathBuf::try_from(socket_path) {
+            Ok(socket_path) => Some(socket_path),
+            Err(err) => {
+                tracing::debug!(%err, "default app-server daemon returned a non-absolute socket path");
+                None
+            }
+        },
+        Err(err) => {
+            tracing::debug!(%err, "failed to start default app-server daemon");
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn maybe_start_default_daemon_socket(
+    _codex_home: &Path,
+    _codex_bin: Option<&Path>,
+) -> Option<AbsolutePathBuf> {
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_app_server(
     target: &AppServerTarget,
@@ -910,12 +970,26 @@ fn can_reuse_implicit_local_daemon(
         && !has_non_replayable_launch_overrides
 }
 
+fn apply_auth_profile_to_app_server_env(auth_profile: Option<&str>) -> std::io::Result<()> {
+    let Some(auth_profile) = auth_profile else {
+        return Ok(());
+    };
+    validate_auth_profile_name(auth_profile)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    unsafe {
+        std::env::set_var(CODEWITH_AUTH_PROFILE_ENV_VAR, auth_profile);
+    }
+    Ok(())
+}
+
 pub async fn run_main(
     mut cli: Cli,
     arg0_paths: Arg0DispatchPaths,
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    apply_auth_profile_to_app_server_env(cli.auth_profile.as_deref())?;
+
     let strict_config = cli.strict_config;
     let (sandbox_mode, approval_policy) = if cli.dangerously_bypass_approvals_and_sandbox {
         (
@@ -974,7 +1048,7 @@ pub async fn run_main(
         cli.bypass_hook_trust,
     );
     let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
-        maybe_probe_default_daemon_socket(&codex_home).await
+        maybe_start_default_daemon_socket(&codex_home, arg0_paths.codex_self_exe.as_deref()).await
     } else {
         None
     };
@@ -2095,7 +2169,36 @@ mod tests {
     use codex_config::config_toml::ProjectConfig;
     use pretty_assertions::assert_eq;
     use serial_test::serial;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     async fn build_config(temp_dir: &TempDir) -> std::io::Result<Config> {
         ConfigBuilder::default()
@@ -2345,6 +2448,118 @@ mod tests {
             maybe_probe_default_daemon_socket(codex_home.path()).await,
             Some(socket_path)
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_daemon_auto_start_skips_when_codex_bin_is_unavailable()
+    -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let start_count = Arc::new(AtomicUsize::new(0));
+        let start_count_for_closure = Arc::clone(&start_count);
+        let unexpected_socket_path = codex_home.path().join("unexpected.sock");
+
+        let socket_path =
+            maybe_start_default_daemon_socket_with(codex_home.path(), None, move |_| async move {
+                start_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                Ok(unexpected_socket_path)
+            })
+            .await;
+
+        assert_eq!(socket_path, None);
+        assert_eq!(start_count.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_daemon_auto_start_uses_existing_socket_without_starting()
+    -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let socket_path =
+            codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+        std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
+        let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
+        let start_count = Arc::new(AtomicUsize::new(0));
+        let start_count_for_closure = Arc::clone(&start_count);
+        let unexpected_socket_path = codex_home.path().join("unexpected.sock");
+
+        let resolved_socket_path = maybe_start_default_daemon_socket_with(
+            codex_home.path(),
+            Some(std::path::Path::new("/bin/codewith")),
+            move |_| async move {
+                start_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                Ok(unexpected_socket_path)
+            },
+        )
+        .await;
+
+        assert_eq!(resolved_socket_path, Some(socket_path));
+        assert_eq!(start_count.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_daemon_auto_start_starts_when_socket_is_missing() -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let started_socket_path = codex_home.path().join("started.sock");
+        let expected_socket_path = AbsolutePathBuf::try_from(started_socket_path.clone())?;
+        let start_count = Arc::new(AtomicUsize::new(0));
+        let start_count_for_closure = Arc::clone(&start_count);
+
+        let socket_path = maybe_start_default_daemon_socket_with(
+            codex_home.path(),
+            Some(std::path::Path::new("/bin/codewith")),
+            move |codex_bin| {
+                let started_socket_path = started_socket_path.clone();
+                async move {
+                    assert_eq!(codex_bin, std::path::Path::new("/bin/codewith"));
+                    start_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                    Ok(started_socket_path)
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(socket_path, Some(expected_socket_path));
+        assert_eq!(start_count.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn default_daemon_auto_start_uses_auth_profile_scoped_socket() -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let _auth_profile_guard = EnvVarGuard::set(CODEWITH_AUTH_PROFILE_ENV_VAR, "work");
+        let expected_socket_path =
+            codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+        assert!(
+            expected_socket_path
+                .as_path()
+                .ends_with("app-server-control/auth_profiles/work/app-server-control.sock")
+        );
+        let start_count = Arc::new(AtomicUsize::new(0));
+        let start_count_for_closure = Arc::clone(&start_count);
+        let expected_socket_path_for_closure = expected_socket_path.clone();
+
+        let socket_path = maybe_start_default_daemon_socket_with(
+            codex_home.path(),
+            Some(std::path::Path::new("/bin/codewith")),
+            move |_| {
+                let expected_socket_path = expected_socket_path_for_closure.clone();
+                async move {
+                    start_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                    Ok(expected_socket_path.as_path().to_path_buf())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(socket_path, Some(expected_socket_path));
+        assert_eq!(start_count.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

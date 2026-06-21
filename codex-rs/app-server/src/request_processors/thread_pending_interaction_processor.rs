@@ -1,6 +1,10 @@
 use super::*;
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::GrantedPermissionProfile;
+use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::ThreadPendingInteraction;
@@ -137,6 +141,7 @@ impl ThreadRequestProcessor {
             read_pending_interaction(state_db.as_ref(), params.interaction_id.as_str(), thread_id)
                 .await?;
         validate_response_matches_interaction(interaction.kind, &params.response)?;
+        validate_response_status_matches_payload(&params.response, params.terminal_status)?;
         let response_result = response_payload_to_result(&params.response)?;
         let stored_response = redacted_response_payload(&params.response);
         let terminal_status =
@@ -223,10 +228,10 @@ impl ThreadRequestProcessor {
     }
 }
 
-pub(super) struct RedactedResponsePayload {
-    pub(super) payload: serde_json::Value,
-    pub(super) preview: String,
-    pub(super) redactions: Vec<String>,
+pub(crate) struct RedactedResponsePayload {
+    pub(crate) payload: serde_json::Value,
+    pub(crate) preview: String,
+    pub(crate) redactions: Vec<String>,
 }
 
 pub(super) async fn read_pending_interaction(
@@ -268,7 +273,7 @@ async fn ensure_pending_interaction_thread_exists(
     Ok(())
 }
 
-pub(super) fn validate_response_matches_interaction(
+pub(crate) fn validate_response_matches_interaction(
     kind: codex_state::PendingInteractionKind,
     response: &ThreadPendingInteractionResponsePayload,
 ) -> Result<(), JSONRPCErrorError> {
@@ -305,6 +310,96 @@ pub(super) fn validate_response_matches_interaction(
         Err(invalid_request(
             "pending interaction response kind mismatch",
         ))
+    }
+}
+
+pub(crate) fn validate_response_status_matches_payload(
+    response: &ThreadPendingInteractionResponsePayload,
+    terminal_status: ThreadPendingInteractionTerminalStatus,
+) -> Result<(), JSONRPCErrorError> {
+    let expected = match response {
+        ThreadPendingInteractionResponsePayload::CommandApproval { decision } => {
+            terminal_status_for_command_approval_decision(decision)
+        }
+        ThreadPendingInteractionResponsePayload::FileChangeApproval { decision } => {
+            terminal_status_for_file_change_approval_decision(decision)
+        }
+        ThreadPendingInteractionResponsePayload::RequestUserInput { .. }
+        | ThreadPendingInteractionResponsePayload::DynamicTool { .. } => {
+            ThreadPendingInteractionTerminalStatus::Responded
+        }
+        ThreadPendingInteractionResponsePayload::McpElicitation { action, .. } => {
+            terminal_status_for_mcp_elicitation_action(*action)
+        }
+        ThreadPendingInteractionResponsePayload::PermissionsApproval { permissions, .. } => {
+            if granted_permission_profile_is_empty(permissions) {
+                ThreadPendingInteractionTerminalStatus::Denied
+            } else {
+                ThreadPendingInteractionTerminalStatus::Responded
+            }
+        }
+        ThreadPendingInteractionResponsePayload::Terminal { .. } => return Ok(()),
+    };
+    if terminal_status == expected {
+        Ok(())
+    } else {
+        Err(invalid_request(format!(
+            "pending interaction terminalStatus must be {} for this response payload",
+            terminal_status_name(expected)
+        )))
+    }
+}
+
+fn terminal_status_for_command_approval_decision(
+    decision: &CommandExecutionApprovalDecision,
+) -> ThreadPendingInteractionTerminalStatus {
+    match decision {
+        CommandExecutionApprovalDecision::Accept
+        | CommandExecutionApprovalDecision::AcceptForSession
+        | CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
+        | CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment { .. } => {
+            ThreadPendingInteractionTerminalStatus::Responded
+        }
+        CommandExecutionApprovalDecision::Decline => ThreadPendingInteractionTerminalStatus::Denied,
+        CommandExecutionApprovalDecision::Cancel => {
+            ThreadPendingInteractionTerminalStatus::Cancelled
+        }
+    }
+}
+
+fn terminal_status_for_file_change_approval_decision(
+    decision: &FileChangeApprovalDecision,
+) -> ThreadPendingInteractionTerminalStatus {
+    match decision {
+        FileChangeApprovalDecision::Accept | FileChangeApprovalDecision::AcceptForSession => {
+            ThreadPendingInteractionTerminalStatus::Responded
+        }
+        FileChangeApprovalDecision::Decline => ThreadPendingInteractionTerminalStatus::Denied,
+        FileChangeApprovalDecision::Cancel => ThreadPendingInteractionTerminalStatus::Cancelled,
+    }
+}
+
+fn terminal_status_for_mcp_elicitation_action(
+    action: McpServerElicitationAction,
+) -> ThreadPendingInteractionTerminalStatus {
+    match action {
+        McpServerElicitationAction::Accept => ThreadPendingInteractionTerminalStatus::Responded,
+        McpServerElicitationAction::Decline => ThreadPendingInteractionTerminalStatus::Denied,
+        McpServerElicitationAction::Cancel => ThreadPendingInteractionTerminalStatus::Cancelled,
+    }
+}
+
+fn granted_permission_profile_is_empty(permissions: &GrantedPermissionProfile) -> bool {
+    permissions.network.is_none() && permissions.file_system.is_none()
+}
+
+fn terminal_status_name(status: ThreadPendingInteractionTerminalStatus) -> &'static str {
+    match status {
+        ThreadPendingInteractionTerminalStatus::Responded => "responded",
+        ThreadPendingInteractionTerminalStatus::Expired => "expired",
+        ThreadPendingInteractionTerminalStatus::Cancelled => "cancelled",
+        ThreadPendingInteractionTerminalStatus::Denied => "denied",
+        ThreadPendingInteractionTerminalStatus::NoLongerWaiting => "noLongerWaiting",
     }
 }
 
@@ -359,7 +454,7 @@ fn response_payload_to_result(
     .map_err(|err| invalid_request(format!("pending interaction response is invalid: {err}")))
 }
 
-pub(super) fn redacted_response_payload(
+pub(crate) fn redacted_response_payload(
     response: &ThreadPendingInteractionResponsePayload,
 ) -> RedactedResponsePayload {
     match response {
@@ -688,7 +783,9 @@ fn truncate_pending_interaction_preview(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::AdditionalNetworkPermissions;
     use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+    use codex_app_server_protocol::PermissionGrantScope;
     use codex_app_server_protocol::ToolRequestUserInputAnswer;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
@@ -735,5 +832,100 @@ mod tests {
         );
         assert_eq!(redacted.preview, "dynamic tool response: success=true");
         assert_eq!(redacted.redactions, vec!["responsePayload".to_string()]);
+    }
+
+    #[test]
+    fn response_status_validation_accepts_semantic_denials() {
+        validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::CommandApproval {
+                decision: CommandExecutionApprovalDecision::Decline,
+            },
+            ThreadPendingInteractionTerminalStatus::Denied,
+        )
+        .expect("command decline should be denied");
+
+        validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::McpElicitation {
+                action: McpServerElicitationAction::Cancel,
+                content: None,
+                meta: None,
+            },
+            ThreadPendingInteractionTerminalStatus::Cancelled,
+        )
+        .expect("MCP cancel should be cancelled");
+
+        validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::PermissionsApproval {
+                permissions: GrantedPermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: None,
+            },
+            ThreadPendingInteractionTerminalStatus::Denied,
+        )
+        .expect("empty permission grant should be denied");
+    }
+
+    #[test]
+    fn response_status_validation_rejects_mismatched_actionable_payloads() {
+        let command_error = validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::CommandApproval {
+                decision: CommandExecutionApprovalDecision::Accept,
+            },
+            ThreadPendingInteractionTerminalStatus::Denied,
+        )
+        .expect_err("accepted command should not persist as denied");
+        assert!(
+            command_error.message.contains("must be responded"),
+            "unexpected command error: {}",
+            command_error.message
+        );
+
+        let user_input_error = validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::RequestUserInput {
+                answers: HashMap::new(),
+            },
+            ThreadPendingInteractionTerminalStatus::Denied,
+        )
+        .expect_err("user input response should not persist as denied");
+        assert!(
+            user_input_error.message.contains("must be responded"),
+            "unexpected user input error: {}",
+            user_input_error.message
+        );
+
+        let mcp_error = validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::McpElicitation {
+                action: McpServerElicitationAction::Accept,
+                content: None,
+                meta: None,
+            },
+            ThreadPendingInteractionTerminalStatus::Cancelled,
+        )
+        .expect_err("accepted MCP elicitation should not persist as cancelled");
+        assert!(
+            mcp_error.message.contains("must be responded"),
+            "unexpected MCP error: {}",
+            mcp_error.message
+        );
+
+        let permissions_error = validate_response_status_matches_payload(
+            &ThreadPendingInteractionResponsePayload::PermissionsApproval {
+                permissions: GrantedPermissionProfile {
+                    network: Some(AdditionalNetworkPermissions {
+                        enabled: Some(true),
+                    }),
+                    file_system: None,
+                },
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: None,
+            },
+            ThreadPendingInteractionTerminalStatus::Denied,
+        )
+        .expect_err("non-empty permission grant should not persist as denied");
+        assert!(
+            permissions_error.message.contains("must be responded"),
+            "unexpected permissions error: {}",
+            permissions_error.message
+        );
     }
 }

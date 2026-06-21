@@ -2644,7 +2644,7 @@ async fn experimental_features_toggle_saves_on_exit() {
 }
 
 #[tokio::test]
-async fn experimental_popup_omits_stable_guardian_approval() {
+async fn experimental_popup_lists_registry_features_and_omits_stable_guardian_approval() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let guardian_stage = FEATURES
         .iter()
@@ -2658,9 +2658,20 @@ async fn experimental_popup_omits_stable_guardian_approval() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 120);
     assert!(
+        popup.contains("Workflows"),
+        "expected experimental workflows feature in popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains(
+            "Show workflow commands for drafting, saving, and running thread workflow specs."
+        ),
+        "expected workflows feature description in popup, got:\n{popup}"
+    );
+    assert!(
         !popup.contains("Auto-review"),
         "expected stable auto-review feature to be omitted from experimental popup, got:\n{popup}"
     );
+    assert_chatwidget_snapshot!("experimental_features_registry_popup", popup);
 }
 
 #[tokio::test]

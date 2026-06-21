@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 152
+expression: "render_bottom_popup(&chat, 100)"
+---
+  0 schedules
+
+  Sessions  Projects  Questions  Queue  Goals  [Schedules]
+
+  Search
+› No schedules
+
+  Press enter to confirm or esc to go back

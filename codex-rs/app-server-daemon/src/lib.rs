@@ -76,6 +76,11 @@ pub struct BootstrapOptions {
     pub remote_control_enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDaemonStartOptions {
+    pub codex_bin: PathBuf,
+}
+
 /// Passively probes an existing app-server socket and returns its reported
 /// app-server version.
 pub async fn probe_app_server_version(socket_path: &Path) -> Result<String> {
@@ -194,6 +199,13 @@ pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     Daemon::from_environment()?.run(command).await
 }
 
+pub async fn ensure_local_daemon_started(options: LocalDaemonStartOptions) -> Result<PathBuf> {
+    ensure_supported_platform()?;
+    let daemon = Daemon::from_environment_with_app_server_codex_bin(options.codex_bin)?;
+    let _operation_lock = daemon.acquire_operation_lock().await?;
+    daemon.start_local().await.map(|output| output.socket_path)
+}
+
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
     ensure_supported_platform()?;
     Daemon::from_environment()?.bootstrap(options).await
@@ -256,22 +268,38 @@ struct Daemon {
     operation_lock_file: PathBuf,
     settings_file: PathBuf,
     managed_codex_bin: PathBuf,
+    app_server_codex_bin: PathBuf,
 }
 
 impl Daemon {
     fn from_environment() -> Result<Self> {
         let codex_home = find_codex_home().context("failed to resolve CODEWITH_HOME")?;
-        let socket_path = app_server_control_socket_path(codex_home.as_path())?
+        let managed_codex_bin = managed_codex_bin(codex_home.as_path());
+        Self::from_codex_home_and_app_server_codex_bin(codex_home.as_path(), managed_codex_bin)
+    }
+
+    fn from_environment_with_app_server_codex_bin(app_server_codex_bin: PathBuf) -> Result<Self> {
+        let codex_home = find_codex_home().context("failed to resolve CODEWITH_HOME")?;
+        Self::from_codex_home_and_app_server_codex_bin(codex_home.as_path(), app_server_codex_bin)
+    }
+
+    fn from_codex_home_and_app_server_codex_bin(
+        codex_home: &Path,
+        app_server_codex_bin: PathBuf,
+    ) -> Result<Self> {
+        let managed_codex_bin = managed_codex_bin(codex_home);
+        let socket_path = app_server_control_socket_path(codex_home)?
             .as_path()
             .to_path_buf();
-        let state_dir = app_server_daemon_state_dir(codex_home.as_path())?;
+        let state_dir = app_server_daemon_state_dir(codex_home)?;
         Ok(Self {
             socket_path,
             pid_file: state_dir.join(PID_FILE_NAME),
             update_pid_file: state_dir.join(UPDATE_PID_FILE_NAME),
             operation_lock_file: state_dir.join(OPERATION_LOCK_FILE_NAME),
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
-            managed_codex_bin: managed_codex_bin(codex_home.as_path()),
+            managed_codex_bin,
+            app_server_codex_bin,
         })
     }
 
@@ -295,18 +323,31 @@ impl Daemon {
 
     async fn start(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
+        self.start_with_settings(&settings).await
+    }
+
+    async fn start_local(&self) -> Result<LifecycleOutput> {
+        self.start_with_settings(&Self::local_start_settings())
+            .await
+    }
+
+    fn local_start_settings() -> DaemonSettings {
+        DaemonSettings::default()
+    }
+
+    async fn start_with_settings(&self, settings: &DaemonSettings) -> Result<LifecycleOutput> {
         if let Ok(info) = client::probe(&self.socket_path).await {
             return Ok(self
                 .output(
                     LifecycleStatus::AlreadyRunning,
-                    self.running_backend(&settings).await?,
+                    self.running_backend(settings).await?,
                     /*pid*/ None,
                     Some(info.app_server_version),
                 )
                 .await);
         }
 
-        if self.running_backend_instance(&settings).await?.is_some() {
+        if self.running_backend_instance(settings).await?.is_some() {
             let info = self.wait_until_ready().await?;
             return Ok(self
                 .output(
@@ -318,8 +359,8 @@ impl Daemon {
                 .await);
         }
 
-        self.ensure_managed_codex_bin()?;
-        let pid = self.start_managed_backend(&settings).await?;
+        self.ensure_app_server_codex_bin()?;
+        let pid = self.start_app_server_backend(settings).await?;
         let info = self.wait_until_ready().await?;
         Ok(self
             .output(
@@ -341,12 +382,12 @@ impl Daemon {
             ));
         }
 
-        self.ensure_managed_codex_bin()?;
+        self.ensure_app_server_codex_bin()?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             backend.stop().await?;
         }
 
-        let pid = self.start_managed_backend(&settings).await?;
+        let pid = self.start_app_server_backend(&settings).await?;
         let info = self.wait_until_ready().await?;
         Ok(self
             .output(
@@ -383,7 +424,7 @@ impl Daemon {
                 RestartDecision::Restart => {
                     backend.stop().await?;
                     let _ = self
-                        .start_managed_backend_with_bin(&settings, managed_codex_bin)
+                        .start_backend_with_bin(&settings, managed_codex_bin)
                         .await?;
                     self.wait_until_ready().await?;
                     RestartIfRunningOutcome::Restarted
@@ -405,7 +446,17 @@ impl Daemon {
     }
 
     async fn stop(&self) -> Result<LifecycleOutput> {
-        let settings = self.load_settings().await?;
+        let settings = match self.load_settings().await {
+            Ok(settings) => settings,
+            Err(err)
+                if err
+                    .chain()
+                    .any(<dyn std::error::Error + 'static>::is::<serde_json::Error>) =>
+            {
+                DaemonSettings::default()
+            }
+            Err(err) => return Err(err),
+        };
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             backend.stop().await?;
             return Ok(self
@@ -475,13 +526,13 @@ impl Daemon {
     }
 
     async fn append_daemon_app_server_context(&self, context: &mut String) {
-        let managed_codex_version = self
-            .managed_codex_version_best_effort()
+        let app_server_codex_version = self
+            .app_server_codex_version_best_effort()
             .await
             .unwrap_or_else(|| "unknown".to_string());
         context.push_str(&format!(
-            "\n\nDaemon used app-server:\n  path: {}\n  version: {managed_codex_version}",
-            self.managed_codex_bin.display()
+            "\n\nDaemon used app-server:\n  path: {}\n  version: {app_server_codex_version}",
+            self.app_server_codex_bin.display()
         ));
     }
 
@@ -557,9 +608,9 @@ impl Daemon {
         settings.save(&self.settings_file).await?;
 
         let app_server_version = if let Some(backend) = backend {
-            self.ensure_managed_codex_bin()?;
+            self.ensure_app_server_codex_bin()?;
             backend.stop().await?;
-            let _ = self.start_managed_backend(&settings).await?;
+            let _ = self.start_app_server_backend(&settings).await?;
             Some(self.wait_until_ready().await?.app_server_version)
         } else {
             None
@@ -626,25 +677,24 @@ impl Daemon {
         &self,
         settings: &DaemonSettings,
     ) -> Result<Option<backend::PidBackend>> {
-        let backend = backend::pid_backend(self.backend_paths(settings));
+        let backend = backend::pid_backend(self.app_server_backend_paths(settings));
         if backend.is_starting_or_running().await? {
             return Ok(Some(backend));
         }
         Ok(None)
     }
 
-    async fn start_managed_backend(&self, settings: &DaemonSettings) -> Result<Option<u32>> {
-        self.start_managed_backend_with_bin(settings, &self.managed_codex_bin)
+    async fn start_app_server_backend(&self, settings: &DaemonSettings) -> Result<Option<u32>> {
+        self.start_backend_with_bin(settings, &self.app_server_codex_bin)
             .await
     }
 
-    async fn start_managed_backend_with_bin(
+    async fn start_backend_with_bin(
         &self,
         settings: &DaemonSettings,
-        managed_codex_bin: &Path,
+        codex_bin: &Path,
     ) -> Result<Option<u32>> {
-        let backend =
-            backend::pid_backend(self.backend_paths_with_bin(settings, managed_codex_bin));
+        let backend = backend::pid_backend(self.backend_paths_with_bin(settings, codex_bin));
         backend.start().await
     }
 
@@ -668,6 +718,20 @@ impl Daemon {
         ))
     }
 
+    fn ensure_app_server_codex_bin(&self) -> Result<()> {
+        if self.app_server_codex_bin.is_file() {
+            return Ok(());
+        }
+        if self.app_server_codex_bin == self.managed_codex_bin {
+            return self.ensure_managed_codex_bin();
+        }
+
+        let app_server_codex_path = self.app_server_codex_bin.display();
+        Err(anyhow!(
+            "Codewith binary not found at {app_server_codex_path}"
+        ))
+    }
+
     #[cfg(unix)]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         managed_codex_version(&self.managed_codex_bin).await.ok()
@@ -678,17 +742,27 @@ impl Daemon {
         None
     }
 
+    #[cfg(unix)]
+    async fn app_server_codex_version_best_effort(&self) -> Option<String> {
+        managed_codex_version(&self.app_server_codex_bin).await.ok()
+    }
+
+    #[cfg(not(unix))]
+    async fn app_server_codex_version_best_effort(&self) -> Option<String> {
+        None
+    }
+
+    fn app_server_backend_paths(&self, settings: &DaemonSettings) -> BackendPaths {
+        self.backend_paths_with_bin(settings, &self.app_server_codex_bin)
+    }
+
     fn backend_paths(&self, settings: &DaemonSettings) -> BackendPaths {
         self.backend_paths_with_bin(settings, &self.managed_codex_bin)
     }
 
-    fn backend_paths_with_bin(
-        &self,
-        settings: &DaemonSettings,
-        managed_codex_bin: &Path,
-    ) -> BackendPaths {
+    fn backend_paths_with_bin(&self, settings: &DaemonSettings, codex_bin: &Path) -> BackendPaths {
         BackendPaths {
-            codex_bin: managed_codex_bin.to_path_buf(),
+            codex_bin: codex_bin.to_path_buf(),
             pid_file: self.pid_file.clone(),
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
@@ -877,6 +951,7 @@ mod tests {
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
+    use crate::settings::DaemonSettings;
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -974,6 +1049,16 @@ mod tests {
     }
 
     #[test]
+    fn local_daemon_start_settings_disable_remote_control() {
+        assert_eq!(
+            Daemon::local_start_settings(),
+            DaemonSettings {
+                remote_control_enabled: false,
+            }
+        );
+    }
+
+    #[test]
     fn remote_control_start_output_serializes_inner_output_without_tag() {
         let lifecycle_output = LifecycleOutput {
             status: LifecycleStatus::AlreadyRunning,
@@ -1047,6 +1132,7 @@ mod tests {
             operation_lock_file: temp_dir.path().join("daemon.lock"),
             settings_file: temp_dir.path().join("settings.json"),
             managed_codex_bin: temp_dir.path().join("missing-codewith"),
+            app_server_codex_bin: temp_dir.path().join("runtime-codewith"),
         };
         let stderr_log = daemon.pid_file.with_extension("stderr.log");
         tokio::fs::write(&stderr_log, "unexpected argument")
@@ -1060,8 +1146,56 @@ mod tests {
                  Daemon used app-server:\n  path: {}\n  version: unknown\n\n\
                  Managed app-server stderr ({}):\n  unexpected argument",
                 daemon.socket_path.display(),
-                daemon.managed_codex_bin.display(),
+                daemon.app_server_codex_bin.display(),
                 stderr_log.display()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_recovers_from_corrupt_settings_when_not_running() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let daemon = Daemon {
+            socket_path: temp_dir.path().join("app-server-control.sock"),
+            pid_file: temp_dir.path().join("app-server.pid"),
+            update_pid_file: temp_dir.path().join("app-server-updater.pid"),
+            operation_lock_file: temp_dir.path().join("daemon.lock"),
+            settings_file: temp_dir.path().join("settings.json"),
+            managed_codex_bin: temp_dir.path().join("missing-codewith"),
+            app_server_codex_bin: temp_dir.path().join("runtime-codewith"),
+        };
+        tokio::fs::write(&daemon.settings_file, b"{")
+            .await
+            .expect("write corrupt settings");
+
+        let output = daemon.stop().await.expect("stop");
+
+        assert_eq!(output.status, LifecycleStatus::NotRunning);
+        assert_eq!(output.backend, None);
+    }
+
+    #[test]
+    fn non_managed_app_server_binary_uses_plain_missing_binary_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let daemon = Daemon {
+            socket_path: temp_dir.path().join("app-server-control.sock"),
+            pid_file: temp_dir.path().join("app-server.pid"),
+            update_pid_file: temp_dir.path().join("app-server-updater.pid"),
+            operation_lock_file: temp_dir.path().join("daemon.lock"),
+            settings_file: temp_dir.path().join("settings.json"),
+            managed_codex_bin: temp_dir.path().join("managed-codewith"),
+            app_server_codex_bin: temp_dir.path().join("runtime-codewith"),
+        };
+
+        let err = daemon
+            .ensure_app_server_codex_bin()
+            .expect_err("runtime binary should be missing");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Codewith binary not found at {}",
+                daemon.app_server_codex_bin.display()
             )
         );
     }

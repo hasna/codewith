@@ -694,6 +694,7 @@ mod tests {
         );
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Profile)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Provider)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Changelog)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Session)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Agent)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));

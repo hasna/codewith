@@ -4,5 +4,6 @@
 import type { LocalSession } from "./LocalSession";
 import type { ThreadGoal } from "./ThreadGoal";
 import type { ThreadGoalPlan } from "./ThreadGoalPlan";
+import type { ThreadSchedule } from "./ThreadSchedule";
 
-export type MissionControlSession = { session: LocalSession, goal: ThreadGoal | null, goalPlans: Array<ThreadGoalPlan>, };
+export type MissionControlSession = { session: LocalSession, goal: ThreadGoal | null, goalPlans: Array<ThreadGoalPlan>, schedules: Array<ThreadSchedule>, };

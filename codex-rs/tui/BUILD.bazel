@@ -12,6 +12,7 @@ codex_rust_crate(
         ],
         allow_empty = True,
     ) + [
+        "//:CHANGELOG.md",
         "//codex-rs/collaboration-mode-templates:templates/default.md",
         "//codex-rs/collaboration-mode-templates:templates/plan.md",
     ],

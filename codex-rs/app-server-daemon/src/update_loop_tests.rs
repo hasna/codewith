@@ -1,5 +1,6 @@
 use pretty_assertions::assert_eq;
 
+use super::update_failure_diagnostic;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -27,5 +28,15 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
             RestartMode::Always,
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
+    );
+}
+
+#[test]
+fn updater_failure_diagnostic_includes_error_chain() {
+    let err = anyhow::anyhow!("fetch failed").context("update pass failed");
+
+    assert_eq!(
+        update_failure_diagnostic(&err),
+        "Codewith app-server daemon updater failed: update pass failed: fetch failed"
     );
 }

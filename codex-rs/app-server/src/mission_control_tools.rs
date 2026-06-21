@@ -4,6 +4,9 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use chrono::DateTime;
+use chrono::Utc;
+use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_core::ThreadManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
@@ -32,6 +35,8 @@ const MISSION_CONTROL_ENQUEUE_INSTRUCTION_TOOL_NAME: &str = "mission_control_enq
 const MISSION_CONTROL_MAILBOX_RECEIPTS_TOOL_NAME: &str = "mission_control_mailbox_receipts";
 const MISSION_CONTROL_RESPOND_INTERACTION_TOOL_NAME: &str = "mission_control_respond_interaction";
 const MISSION_CONTROL_PREVIEW_CHARS: usize = 240;
+const DEFAULT_MISSION_CONTROL_SESSION_LIMIT: usize = 25;
+const MAX_MISSION_CONTROL_SESSION_LIMIT: usize = 100;
 const DEFAULT_MISSION_CONTROL_MAX_ATTEMPTS: i64 = 10;
 const MAX_MISSION_CONTROL_SENDER_LABEL_CHARS: usize = 120;
 
@@ -40,30 +45,40 @@ struct MissionControlExtension<C> {
     state_db: StateDbHandle,
     thread_manager: Weak<ThreadManager>,
     mission_control_enabled: Arc<dyn Fn(&C) -> bool + Send + Sync>,
+    scheduled_tasks_enabled: Arc<dyn Fn(&C) -> bool + Send + Sync>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MissionControlExtensionConfig {
     enabled: bool,
+    scheduled_tasks_enabled: bool,
 }
 
 struct MissionControlExtensionState {
     enabled: Arc<AtomicBool>,
+    scheduled_tasks_enabled: Arc<AtomicBool>,
     current_thread_id: ThreadId,
     tools_available_for_thread: bool,
 }
 
 impl MissionControlExtensionState {
-    fn new(enabled: bool, current_thread_id: ThreadId, tools_available_for_thread: bool) -> Self {
+    fn new(
+        config: MissionControlExtensionConfig,
+        current_thread_id: ThreadId,
+        tools_available_for_thread: bool,
+    ) -> Self {
         Self {
-            enabled: Arc::new(AtomicBool::new(enabled)),
+            enabled: Arc::new(AtomicBool::new(config.enabled)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(config.scheduled_tasks_enabled)),
             current_thread_id,
             tools_available_for_thread,
         }
     }
 
-    fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
+    fn set_config(&self, config: MissionControlExtensionConfig) {
+        self.enabled.store(config.enabled, Ordering::Relaxed);
+        self.scheduled_tasks_enabled
+            .store(config.scheduled_tasks_enabled, Ordering::Relaxed);
     }
 
     fn tools_enabled(&self) -> bool {
@@ -76,17 +91,20 @@ impl<C> MissionControlExtension<C> {
         state_db: StateDbHandle,
         thread_manager: Weak<ThreadManager>,
         mission_control_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+        scheduled_tasks_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
             state_db,
             thread_manager,
             mission_control_enabled: Arc::new(mission_control_enabled),
+            scheduled_tasks_enabled: Arc::new(scheduled_tasks_enabled),
         }
     }
 
     fn config(&self, config: &C) -> MissionControlExtensionConfig {
         MissionControlExtensionConfig {
             enabled: (self.mission_control_enabled)(config),
+            scheduled_tasks_enabled: (self.scheduled_tasks_enabled)(config),
         }
     }
 }
@@ -106,12 +124,12 @@ where
             .thread_store
             .get_or_init(|| {
                 MissionControlExtensionState::new(
-                    config.enabled,
+                    config,
                     current_thread_id,
                     input.persistent_thread_state_available,
                 )
             })
-            .set_enabled(config.enabled);
+            .set_config(config);
     }
 }
 
@@ -129,7 +147,7 @@ where
         let config = self.config(new_config);
         thread_store.insert(config);
         if let Some(state) = thread_store.get::<MissionControlExtensionState>() {
-            state.set_enabled(config.enabled);
+            state.set_config(config);
         }
     }
 }
@@ -154,6 +172,7 @@ where
             state_db: self.state_db.clone(),
             thread_manager: self.thread_manager.clone(),
             enabled: Arc::clone(&state.enabled),
+            scheduled_tasks_enabled: Arc::clone(&state.scheduled_tasks_enabled),
             current_thread_id: state.current_thread_id,
         };
         vec![
@@ -182,6 +201,7 @@ struct MissionControlRuntime {
     state_db: StateDbHandle,
     thread_manager: Weak<ThreadManager>,
     enabled: Arc<AtomicBool>,
+    scheduled_tasks_enabled: Arc<AtomicBool>,
     current_thread_id: ThreadId,
 }
 
@@ -284,7 +304,7 @@ impl MissionControlToolKind {
     fn description(self) -> &'static str {
         match self {
             Self::Overview => {
-                "Inspect local mission-control state: live thread ids, pending user interactions, and coordination capabilities. This tool only reads state."
+                "Inspect local mission-control state: persisted local sessions, live thread ids, pending user interactions, and coordination capabilities. This tool only reads state."
             }
             Self::EnqueueInstruction => {
                 "Queue a durable user instruction for another existing thread. This tool writes only to the thread mailbox; it does not execute shell commands, mutate files, create workflows, or spawn agents."
@@ -312,6 +332,14 @@ impl MissionControlToolKind {
                 (
                     "pending_limit".to_string(),
                     nullable_integer("Maximum pending interactions to return."),
+                ),
+                (
+                    "local_limit".to_string(),
+                    nullable_integer("Maximum local sessions to return."),
+                ),
+                (
+                    "local_cursor".to_string(),
+                    nullable_string("Cursor for local session pagination."),
                 ),
                 (
                     "include_live_sessions".to_string(),
@@ -409,6 +437,33 @@ impl MissionControlRuntime {
         } else {
             Vec::new()
         };
+        let local_limit = args
+            .local_limit
+            .map(|value| value as usize)
+            .unwrap_or(DEFAULT_MISSION_CONTROL_SESSION_LIMIT)
+            .clamp(1, MAX_MISSION_CONTROL_SESSION_LIMIT);
+        let local_anchor = args
+            .local_cursor
+            .as_deref()
+            .map(parse_local_session_cursor)
+            .transpose()?;
+        let local_sessions = self
+            .state_db
+            .list_threads(
+                local_limit,
+                codex_state::ThreadFilterOptions {
+                    archived_only: false,
+                    allowed_sources: &[],
+                    model_providers: None,
+                    cwd_filters: None,
+                    anchor: local_anchor.as_ref(),
+                    sort_key: codex_state::SortKey::UpdatedAt,
+                    sort_direction: codex_state::SortDirection::Desc,
+                    search_term: None,
+                },
+            )
+            .await
+            .map_err(|err| model_error(format!("failed to list local sessions: {err}")))?;
         let pending_limit = args
             .pending_limit
             .unwrap_or(codex_state::DEFAULT_PENDING_INTERACTION_LIST_LIMIT);
@@ -427,15 +482,35 @@ impl MissionControlRuntime {
             .await
             .map_err(|err| model_error(format!("failed to list pending interactions: {err}")))?;
 
+        let include_schedules = self.scheduled_tasks_enabled.load(Ordering::Relaxed);
+        let mut local_session_values = Vec::with_capacity(local_sessions.items.len());
+        for metadata in local_sessions.items {
+            let schedules = if include_schedules {
+                self.state_db
+                    .thread_schedules()
+                    .list_thread_schedules(metadata.id)
+                    .await
+                    .map_err(|err| model_error(format!("failed to list thread schedules: {err}")))?
+            } else {
+                Vec::new()
+            };
+            local_session_values.push(local_session_json(metadata, &live_thread_ids, schedules));
+        }
+
         Ok(json_output(json!({
             "liveThreadIds": live_thread_ids,
+            "localSessions": local_session_values,
+            "localSessionLimit": local_limit,
+            "nextLocalSessionCursor": local_sessions
+                .next_anchor
+                .map(|anchor| anchor.ts.timestamp_millis().to_string()),
             "pendingInteractions": page
                 .data
                 .into_iter()
                 .map(pending_interaction_json)
                 .collect::<Vec<_>>(),
             "nextPendingInteractionCursor": page.next_cursor,
-            "capabilities": mission_control_capabilities_json(),
+            "capabilities": mission_control_capabilities_json(include_schedules),
         })))
     }
 
@@ -543,27 +618,48 @@ impl MissionControlRuntime {
             .ok_or_else(|| {
                 model_error(format!("pending interaction not found: {interaction_id}"))
             })?;
-        let preview = args.response_preview.map_or_else(
-            || truncate_preview(args.response.to_string().as_str()),
-            |preview| truncate_preview(preview.trim()),
-        );
+        crate::request_processors::thread_pending_interaction_processor::validate_response_matches_interaction(
+            interaction.kind,
+            &args.response,
+        )
+        .map_err(model_error_from_json_rpc)?;
+        let stored_response =
+            crate::request_processors::thread_pending_interaction_processor::redacted_response_payload(
+                &args.response,
+            );
+        let response_preview = if stored_response.redactions.is_empty() {
+            args.response_preview
+                .as_deref()
+                .map(str::trim)
+                .filter(|preview| !preview.is_empty())
+                .map(truncate_preview)
+                .unwrap_or_else(|| stored_response.preview.clone())
+        } else {
+            stored_response.preview.clone()
+        };
 
         if args.dry_run.unwrap_or(false) {
             return Ok(json_output(json!({
                 "dryRun": true,
                 "updated": false,
                 "interaction": pending_interaction_json(interaction),
-                "responsePreview": preview,
+                "responsePreview": response_preview,
             })));
+        }
+
+        if interaction.server_request_id_json.is_some() {
+            return Err(model_error(
+                "pending interaction is tied to a live client request; use the app-server pending-interaction response path so the waiting client is notified",
+            ));
         }
 
         let updated = self
             .state_db
             .respond_thread_pending_interaction(&codex_state::PendingInteractionRespondParams {
                 interaction_id: interaction.interaction_id.clone(),
-                response_payload_json: args.response,
-                response_payload_preview: preview.clone(),
-                response_redactions_json: json!([]),
+                response_payload_json: stored_response.payload,
+                response_payload_preview: response_preview.clone(),
+                response_redactions_json: json!(stored_response.redactions),
                 terminal_status,
             })
             .await
@@ -580,7 +676,7 @@ impl MissionControlRuntime {
             "dryRun": false,
             "updated": updated,
             "interaction": interaction.map(pending_interaction_json),
-            "responsePreview": preview,
+            "responsePreview": response_preview,
         })))
     }
 }
@@ -590,6 +686,8 @@ impl MissionControlRuntime {
 struct OverviewArgs {
     pending_cursor: Option<String>,
     pending_limit: Option<u32>,
+    local_cursor: Option<String>,
+    local_limit: Option<u32>,
     include_live_sessions: Option<bool>,
 }
 
@@ -616,7 +714,7 @@ struct MailboxReceiptsArgs {
 struct RespondInteractionArgs {
     interaction_id: String,
     terminal_status: String,
-    response: Value,
+    response: ThreadPendingInteractionResponsePayload,
     response_preview: Option<String>,
     dry_run: Option<bool>,
 }
@@ -627,6 +725,16 @@ where
 {
     serde_json::from_str(invocation.function_arguments()?)
         .map_err(|err| model_error(format!("invalid {tool_name} arguments: {err}")))
+}
+
+fn parse_local_session_cursor(cursor: &str) -> Result<codex_state::Anchor, FunctionCallError> {
+    let millis = cursor
+        .trim()
+        .parse::<i64>()
+        .map_err(|err| model_error(format!("invalid local_cursor: {err}")))?;
+    let ts = DateTime::<Utc>::from_timestamp_millis(millis)
+        .ok_or_else(|| model_error("invalid local_cursor timestamp"))?;
+    Ok(codex_state::Anchor { ts })
 }
 
 fn strict_object(properties: BTreeMap<String, JsonSchema>) -> JsonSchema {
@@ -665,6 +773,12 @@ fn nullable_boolean(description: &str) -> JsonSchema {
 
 fn parse_thread_id(field_name: &str, value: &str) -> Result<ThreadId, FunctionCallError> {
     ThreadId::from_string(value).map_err(|err| model_error(format!("invalid {field_name}: {err}")))
+}
+
+fn model_error_from_json_rpc(
+    error: codex_app_server_protocol::JSONRPCErrorError,
+) -> FunctionCallError {
+    model_error(error.message)
 }
 
 async fn ensure_thread_exists(
@@ -778,6 +892,70 @@ fn mailbox_receipt_json(receipt: codex_state::MailboxReceipt) -> Value {
     })
 }
 
+fn local_session_json(
+    metadata: codex_state::ThreadMetadata,
+    live_thread_ids: &[String],
+    schedules: Vec<codex_state::ThreadSchedule>,
+) -> Value {
+    let thread_id = metadata.id.to_string();
+    let live = live_thread_ids.contains(&thread_id);
+    json!({
+        "threadId": thread_id,
+        "live": live,
+        "cwd": metadata.cwd.display().to_string(),
+        "title": metadata.title,
+        "preview": metadata.preview,
+        "modelProvider": metadata.model_provider,
+        "model": metadata.model,
+        "source": metadata.source,
+        "threadSource": metadata
+            .thread_source
+            .map(|source| source.as_str().to_string()),
+        "agentNickname": metadata.agent_nickname,
+        "agentRole": metadata.agent_role,
+        "agentPath": metadata.agent_path,
+        "createdAt": metadata.created_at.timestamp(),
+        "updatedAt": metadata.updated_at.timestamp(),
+        "path": metadata.rollout_path.display().to_string(),
+        "schedules": schedules.into_iter().map(schedule_json).collect::<Vec<_>>(),
+    })
+}
+
+fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
+    json!({
+        "threadId": schedule.thread_id.to_string(),
+        "scheduleId": schedule.schedule_id,
+        "prompt": schedule.prompt,
+        "promptSource": schedule.prompt_source.as_str(),
+        "schedule": schedule_spec_json(schedule.schedule),
+        "timezone": schedule.timezone,
+        "status": schedule.status.as_str(),
+        "nextRunAt": schedule.next_run_at.map(|timestamp| timestamp.timestamp()),
+        "lastRunAt": schedule.last_run_at.map(|timestamp| timestamp.timestamp()),
+        "expiresAt": schedule.expires_at.map(|timestamp| timestamp.timestamp()),
+        "failureCount": schedule.failure_count,
+        "leaseExpiresAt": schedule.lease_expires_at.map(|timestamp| timestamp.timestamp()),
+        "createdAt": schedule.created_at.timestamp(),
+        "updatedAt": schedule.updated_at.timestamp(),
+    })
+}
+
+fn schedule_spec_json(schedule: codex_state::ThreadScheduleSpec) -> Value {
+    match schedule {
+        codex_state::ThreadScheduleSpec::Once => json!({ "type": "once" }),
+        codex_state::ThreadScheduleSpec::Dynamic => json!({ "type": "dynamic" }),
+        codex_state::ThreadScheduleSpec::Interval(interval) => json!({
+            "type": "interval",
+            "amount": interval.amount,
+            "unit": interval.unit.as_str(),
+        }),
+        codex_state::ThreadScheduleSpec::Cron { expression } => json!({
+            "type": "cron",
+            "expression": expression,
+        }),
+    }
+}
+
 fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Value {
     json!({
         "interactionId": interaction.interaction_id,
@@ -806,12 +984,13 @@ fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Val
     })
 }
 
-fn mission_control_capabilities_json() -> Value {
+fn mission_control_capabilities_json(scheduled_tasks_enabled: bool) -> Value {
     json!({
         "localSessions": true,
         "durableMailbox": true,
         "pendingInteractions": true,
         "goals": true,
+        "scheduledTasks": scheduled_tasks_enabled,
         "remoteDispatch": false,
         "workflowMutation": false,
         "shellExecution": false,
@@ -832,6 +1011,7 @@ pub(crate) fn install<C>(
     state_db: StateDbHandle,
     thread_manager: Weak<ThreadManager>,
     mission_control_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+    scheduled_tasks_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
 ) where
     C: Send + Sync + 'static,
 {
@@ -839,6 +1019,7 @@ pub(crate) fn install<C>(
         state_db,
         thread_manager,
         mission_control_enabled,
+        scheduled_tasks_enabled,
     ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
@@ -849,6 +1030,8 @@ pub(crate) fn install<C>(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use codex_app_server_protocol::RequestId;
+    use codex_app_server_protocol::ToolRequestUserInputAnswer;
     use codex_extension_api::ExtensionRegistryBuilder;
     use codex_extension_api::ThreadStartInput;
     use codex_extension_api::ToolPayload;
@@ -857,6 +1040,7 @@ mod tests {
     use codex_protocol::protocol::SessionSource;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -866,7 +1050,13 @@ mod tests {
         runtime.block_on(async {
             let state_db = test_state_db().await;
             let mut builder = ExtensionRegistryBuilder::<bool>::new();
-            install(&mut builder, state_db, Weak::new(), |enabled| *enabled);
+            install(
+                &mut builder,
+                state_db,
+                Weak::new(),
+                |enabled| *enabled,
+                |_| true,
+            );
             let registry = builder.build();
             let session_store = ExtensionData::new("session");
             let thread_store = ExtensionData::new(test_thread_id().to_string());
@@ -895,7 +1085,13 @@ mod tests {
     async fn installed_extension_contributes_mission_control_tools_when_enabled() {
         let state_db = test_state_db().await;
         let mut builder = ExtensionRegistryBuilder::<bool>::new();
-        install(&mut builder, state_db, Weak::new(), |enabled| *enabled);
+        install(
+            &mut builder,
+            state_db,
+            Weak::new(),
+            |enabled| *enabled,
+            |_| true,
+        );
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new(test_thread_id().to_string());
@@ -937,6 +1133,7 @@ mod tests {
             state_db,
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
             current_thread_id,
         };
         let dry_run = output_json(
@@ -1039,10 +1236,25 @@ mod tests {
             })
             .await
             .expect("pending interaction should be created");
+        state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "Check schedule visibility".to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: DateTime::<Utc>::from_timestamp(1_900, 0),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should be created");
         let runtime = MissionControlRuntime {
-            state_db,
+            state_db: state_db.clone(),
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
             current_thread_id: thread_id,
         };
 
@@ -1051,6 +1263,8 @@ mod tests {
                 .handle_overview(OverviewArgs {
                     pending_cursor: None,
                     pending_limit: None,
+                    local_cursor: None,
+                    local_limit: None,
                     include_live_sessions: Some(false),
                 })
                 .await
@@ -1059,17 +1273,57 @@ mod tests {
         .await;
         assert_eq!(overview["liveThreadIds"], json!([]));
         assert_eq!(
+            overview["localSessions"][0]["threadId"],
+            thread_id.to_string()
+        );
+        assert_eq!(overview["localSessions"][0]["live"], false);
+        assert_eq!(
             overview["pendingInteractions"][0]["interactionId"],
             interaction_id
         );
+        assert_eq!(
+            overview["localSessions"][0]["schedules"]
+                .as_array()
+                .expect("schedules")
+                .len(),
+            1
+        );
+        assert_eq!(overview["capabilities"]["scheduledTasks"], true);
         assert_eq!(overview["capabilities"]["workflowMutation"], false);
+
+        runtime
+            .scheduled_tasks_enabled
+            .store(false, Ordering::Relaxed);
+        let schedules_disabled_overview = output_json(
+            runtime
+                .handle_overview(OverviewArgs {
+                    pending_cursor: None,
+                    pending_limit: None,
+                    local_cursor: None,
+                    local_limit: None,
+                    include_live_sessions: Some(false),
+                })
+                .await
+                .expect("overview should return output when schedules are disabled"),
+        )
+        .await;
+        assert_eq!(
+            schedules_disabled_overview["capabilities"]["scheduledTasks"],
+            false
+        );
+        assert_eq!(
+            schedules_disabled_overview["localSessions"][0]["schedules"],
+            json!([])
+        );
 
         let dry_run = output_json(
             runtime
                 .handle_respond_interaction(RespondInteractionArgs {
                     interaction_id: interaction_id.to_string(),
                     terminal_status: "responded".to_string(),
-                    response: json!({ "type": "terminal", "reason": "go ahead" }),
+                    response: ThreadPendingInteractionResponsePayload::Terminal {
+                        reason: "go ahead".to_string(),
+                    },
                     response_preview: None,
                     dry_run: Some(true),
                 })
@@ -1085,7 +1339,9 @@ mod tests {
                 .handle_respond_interaction(RespondInteractionArgs {
                     interaction_id: interaction_id.to_string(),
                     terminal_status: "responded".to_string(),
-                    response: json!({ "type": "terminal", "reason": "go ahead" }),
+                    response: ThreadPendingInteractionResponsePayload::Terminal {
+                        reason: "go ahead".to_string(),
+                    },
                     response_preview: Some("go ahead".to_string()),
                     dry_run: None,
                 })
@@ -1099,11 +1355,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn respond_interaction_rejects_kind_mismatch() {
+        let state_db = test_state_db().await;
+        let thread_id = test_thread_id();
+        let interaction_id = "int-kind-mismatch";
+        state_db
+            .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+                interaction_id: interaction_id.to_string(),
+                thread_id,
+                source_kind: codex_state::PendingInteractionSourceKind::Thread,
+                source_id: None,
+                turn_id: Some("turn-1".to_string()),
+                worker_request_id: Some("worker-1".to_string()),
+                server_request_id_json: None,
+                kind: codex_state::PendingInteractionKind::UserInput,
+                request_payload_json: json!({ "questions": [] }),
+                request_payload_preview: "question".to_string(),
+                request_redactions_json: json!([]),
+                no_client_policy: "persist".to_string(),
+                timeout_at: None,
+            })
+            .await
+            .expect("pending interaction should be created");
+        let runtime = MissionControlRuntime {
+            state_db,
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id: thread_id,
+        };
+
+        let Err(err) = runtime
+            .handle_respond_interaction(RespondInteractionArgs {
+                interaction_id: interaction_id.to_string(),
+                terminal_status: "responded".to_string(),
+                response: ThreadPendingInteractionResponsePayload::Terminal {
+                    reason: "wrong shape".to_string(),
+                },
+                response_preview: None,
+                dry_run: None,
+            })
+            .await
+        else {
+            panic!("kind mismatch should be rejected");
+        };
+
+        assert!(
+            err.to_string()
+                .contains("pending interaction response kind mismatch"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_interaction_redacts_sensitive_response_payloads() {
+        let state_db = test_state_db().await;
+        let thread_id = test_thread_id();
+        let interaction_id = "int-user-input";
+        state_db
+            .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+                interaction_id: interaction_id.to_string(),
+                thread_id,
+                source_kind: codex_state::PendingInteractionSourceKind::Thread,
+                source_id: None,
+                turn_id: Some("turn-1".to_string()),
+                worker_request_id: Some("worker-1".to_string()),
+                server_request_id_json: None,
+                kind: codex_state::PendingInteractionKind::UserInput,
+                request_payload_json: json!({ "questions": [] }),
+                request_payload_preview: "question".to_string(),
+                request_redactions_json: json!([]),
+                no_client_policy: "persist".to_string(),
+                timeout_at: None,
+            })
+            .await
+            .expect("pending interaction should be created");
+        let runtime = MissionControlRuntime {
+            state_db: state_db.clone(),
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id: thread_id,
+        };
+        let response = ThreadPendingInteractionResponsePayload::RequestUserInput {
+            answers: HashMap::from([(
+                "token".to_string(),
+                ToolRequestUserInputAnswer {
+                    answers: vec!["secret-value".to_string()],
+                },
+            )]),
+        };
+
+        let output = output_json(
+            runtime
+                .handle_respond_interaction(RespondInteractionArgs {
+                    interaction_id: interaction_id.to_string(),
+                    terminal_status: "responded".to_string(),
+                    response,
+                    response_preview: Some("secret-value".to_string()),
+                    dry_run: None,
+                })
+                .await
+                .expect("typed user-input response should be recorded"),
+        )
+        .await;
+
+        assert_eq!(output["updated"], true);
+        assert_eq!(output["responsePreview"], "1 user input answer(s)");
+        let stored = state_db
+            .get_thread_pending_interaction(interaction_id)
+            .await
+            .expect("pending interaction should reload")
+            .expect("pending interaction should exist");
+        assert_eq!(
+            stored.response_payload_json,
+            Some(json!({ "type": "requestUserInput", "answerCount": 1 }))
+        );
+        assert_eq!(
+            stored.response_redactions_json,
+            Some(json!(["responsePayload"]))
+        );
+        assert_eq!(
+            stored.response_payload_preview,
+            Some("1 user input answer(s)".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_interaction_rejects_live_client_requests() {
+        let state_db = test_state_db().await;
+        let thread_id = test_thread_id();
+        let interaction_id = "int-live-request";
+        state_db
+            .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+                interaction_id: interaction_id.to_string(),
+                thread_id,
+                source_kind: codex_state::PendingInteractionSourceKind::Thread,
+                source_id: None,
+                turn_id: Some("turn-1".to_string()),
+                worker_request_id: Some("worker-1".to_string()),
+                server_request_id_json: Some(
+                    serde_json::to_value(RequestId::Integer(7))
+                        .expect("request id should serialize"),
+                ),
+                kind: codex_state::PendingInteractionKind::Blocked,
+                request_payload_json: json!({ "reason": "needs user decision" }),
+                request_payload_preview: "needs user decision".to_string(),
+                request_redactions_json: json!([]),
+                no_client_policy: "persist".to_string(),
+                timeout_at: None,
+            })
+            .await
+            .expect("pending interaction should be created");
+        let runtime = MissionControlRuntime {
+            state_db,
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id: thread_id,
+        };
+
+        let Err(err) = runtime
+            .handle_respond_interaction(RespondInteractionArgs {
+                interaction_id: interaction_id.to_string(),
+                terminal_status: "responded".to_string(),
+                response: ThreadPendingInteractionResponsePayload::Terminal {
+                    reason: "go ahead".to_string(),
+                },
+                response_preview: None,
+                dry_run: None,
+            })
+            .await
+        else {
+            panic!("live client request should be rejected");
+        };
+
+        assert!(
+            err.to_string()
+                .contains("pending interaction is tied to a live client request"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn tool_spec_is_model_only_and_non_workflow_mutating() {
         let runtime = MissionControlRuntime {
             state_db: test_state_db().await,
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
             current_thread_id: test_thread_id(),
         };
         let tool = MissionControlTool::new(MissionControlToolKind::EnqueueInstruction, runtime);
@@ -1125,6 +1565,7 @@ mod tests {
             state_db: test_state_db().await,
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
             current_thread_id: test_thread_id(),
         };
 
@@ -1174,6 +1615,8 @@ mod tests {
                     tool_json.pointer("/parameters/required"),
                     Some(&json!([
                         "include_live_sessions",
+                        "local_cursor",
+                        "local_limit",
                         "pending_cursor",
                         "pending_limit"
                     ]))
@@ -1238,13 +1681,16 @@ mod tests {
     }
 
     async fn upsert_test_thread(state_db: &codex_state::StateRuntime, thread_id: ThreadId) {
-        let metadata = codex_state::ThreadMetadataBuilder::new(
+        let mut metadata = codex_state::ThreadMetadataBuilder::new(
             thread_id,
             PathBuf::from(format!("/tmp/{thread_id}.jsonl")),
             Utc::now(),
             SessionSource::Cli,
         )
         .build("test-provider");
+        metadata.title = "test session".to_string();
+        metadata.preview = Some("test session".to_string());
+        metadata.first_user_message = Some("test session".to_string());
         state_db
             .upsert_thread(&metadata)
             .await

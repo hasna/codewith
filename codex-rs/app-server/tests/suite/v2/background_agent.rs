@@ -42,8 +42,14 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupResponse;
+use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachResponse;
+use codex_app_server_protocol::WorktreeLifecycleStatus;
 use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateApplyResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateRefreshResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_protocol::ThreadId;
@@ -52,6 +58,7 @@ use codex_state::BackgroundAgentDesiredState as StateBackgroundAgentDesiredState
 use codex_state::BackgroundAgentExecutionSnapshotParams;
 use codex_state::BackgroundAgentPendingInteractionCreateParams;
 use codex_state::BackgroundAgentPendingInteractionKind;
+use codex_state::BackgroundAgentPendingInteractionStatus as StateBackgroundAgentPendingInteractionStatus;
 use codex_state::BackgroundAgentRunCreateParams;
 use codex_state::BackgroundAgentRunStatus as StateBackgroundAgentRunStatus;
 use codex_state::BackgroundAgentStatusSnapshotParams;
@@ -60,6 +67,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -108,8 +116,25 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         Some(&json!("mock_provider"))
     );
     assert_eq!(
-        start.execution_snapshot.payload.get("permissionProfile"),
-        Some(&json!({"sandbox": "read-only"}))
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/type"),
+        Some(&json!("managed"))
+    );
+    assert_eq!(
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/network"),
+        Some(&json!("restricted"))
+    );
+    assert_eq!(
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/file_system/type"),
+        Some(&json!("restricted"))
     );
     assert_eq!(
         start.execution_snapshot.payload.get("approvalPolicy"),
@@ -206,6 +231,139 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         stale_cursor_error.error.message
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut params = start_params(
+        "verify frozen authority",
+        Some("frozen-authority".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some("/tmp/client-selected-cwd".to_string());
+    params.auth_profile_ref = Some("client-selected-auth-profile".to_string());
+    let context = params
+        .execution_context
+        .as_mut()
+        .expect("test params include execution context");
+    context.workspace_roots = Some(vec!["/tmp/client-root".to_string()]);
+    context.approval_policy = Some(AskForApproval::OnRequest);
+    context.permission_profile = Some(json!({"sandbox": "danger-full-access"}));
+    context.model = Some("client-model".to_string());
+    context.provider = Some("client-provider".to_string());
+    context.service_tier = Some("priority".to_string());
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let start = start_agent(&mut mcp, params).await?;
+
+    assert_ne!(
+        start.execution_snapshot.payload.get("cwd"),
+        Some(&json!("/tmp/client-selected-cwd"))
+    );
+    assert_ne!(
+        start.execution_snapshot.payload.get("workspaceRoots"),
+        Some(&json!(["/tmp/client-root"]))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("authProfileRef"),
+        Some(&JsonValue::Null)
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("approvalPolicy"),
+        Some(&json!("never"))
+    );
+    assert_eq!(
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/type"),
+        Some(&json!("managed"))
+    );
+    assert_eq!(
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/network"),
+        Some(&json!("restricted"))
+    );
+    assert_eq!(
+        start
+            .execution_snapshot
+            .payload
+            .pointer("/permissionProfile/file_system/type"),
+        Some(&json!("restricted"))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("model"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("provider"),
+        Some(&json!("mock_provider"))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("serviceTier"),
+        Some(&JsonValue::Null)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_unvalidated_rollout_path_metadata() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let mut missing_thread = start_params(
+        "resume an unowned rollout",
+        Some("missing-thread-rollout".to_string()),
+        codex_home.path(),
+    );
+    missing_thread.rollout_path = Some(
+        codex_home
+            .path()
+            .join("unowned-rollout.jsonl")
+            .display()
+            .to_string(),
+    );
+    let missing_thread_error = start_agent_error(&mut mcp, missing_thread).await?;
+    assert_eq!(missing_thread_error.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert_eq!(
+        missing_thread_error.error.message,
+        "agent/start rolloutPath requires threadId"
+    );
+
+    let mut unknown_thread = start_params(
+        "resume an unknown thread rollout",
+        Some("unknown-thread-rollout".to_string()),
+        codex_home.path(),
+    );
+    unknown_thread.thread_id = Some("00000000-0000-0000-0000-000000000321".to_string());
+    unknown_thread.rollout_path = Some(
+        codex_home
+            .path()
+            .join("different-rollout.jsonl")
+            .display()
+            .to_string(),
+    );
+    let unknown_thread_error = start_agent_error(&mut mcp, unknown_thread).await?;
+    assert_eq!(unknown_thread_error.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert_eq!(
+        unknown_thread_error.error.message,
+        "agent/start rolloutPath requires a known threadId"
+    );
+
+    let list = agent_list(&mut mcp).await?;
+    assert!(list.data.is_empty());
     Ok(())
 }
 
@@ -490,6 +648,84 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    let agent_id = "respond-validation-run".to_string();
+    seed_queued_agent_run(
+        state_db.as_ref(),
+        agent_id.as_str(),
+        None,
+        "wait for approval",
+    )
+    .await?;
+    state_db
+        .create_background_agent_pending_interaction(
+            &BackgroundAgentPendingInteractionCreateParams {
+                id: "approval-1".to_string(),
+                run_id: agent_id.clone(),
+                worker_request_id: Some("worker-request-1".to_string()),
+                kind: BackgroundAgentPendingInteractionKind::Approval,
+                request_payload_json: json!({ "command": "deploy" }),
+                no_client_policy: "deny".to_string(),
+                timeout_at: None,
+            },
+        )
+        .await?;
+
+    let error = agent_pending_interaction_respond_error(
+        &mut mcp,
+        AgentPendingInteractionRespondParams {
+            agent_id: agent_id.clone(),
+            interaction_id: "approval-1".to_string(),
+            response: json!({ "approved": true }),
+            terminal_status: AgentPendingInteractionTerminalStatus::Responded,
+        },
+    )
+    .await?;
+    assert_eq!(error.error.code, -32600);
+    assert!(
+        error
+            .error
+            .message
+            .contains("background agent pending interaction response is invalid for approval"),
+        "unexpected invalid response error: {}",
+        error.error.message
+    );
+    let pending = state_db
+        .get_background_agent_pending_interaction("approval-1")
+        .await?
+        .expect("interaction should still exist");
+    assert_eq!(
+        pending.status,
+        StateBackgroundAgentPendingInteractionStatus::Pending
+    );
+    assert_eq!(pending.response_payload_json, None);
+
+    let respond_id = mcp
+        .send_agent_pending_interaction_respond_request(AgentPendingInteractionRespondParams {
+            agent_id,
+            interaction_id: "approval-1".to_string(),
+            response: json!({ "decision": "approved" }),
+            terminal_status: AgentPendingInteractionTerminalStatus::Responded,
+        })
+        .await?;
+    let respond: AgentPendingInteractionRespondResponse =
+        read_response(&mut mcp, respond_id).await?;
+    assert!(respond.updated);
+    assert_eq!(
+        respond.interaction.expect("responded interaction").status,
+        AgentPendingInteractionStatus::Responded
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server =
@@ -679,6 +915,205 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     assert_eq!(
         Some(other_repo.display().to_string()),
         read_requested_repo.policy.current_base_repo_path
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "feature",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    assert_eq!(
+        WorktreeLifecycleStatus::Active,
+        created.worktree.lifecycle_status
+    );
+    assert!(Path::new(created.worktree.worktree_path.as_str()).exists());
+    assert!(
+        created
+            .worktree
+            .branch
+            .as_deref()
+            .is_some_and(|branch| branch.starts_with("codewith/feature-"))
+    );
+
+    let outside_root_path = codex_home.path().join("outside-root-worktree");
+    git(
+        codex_home.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "codewith/outside-root",
+            outside_root_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    state_db
+        .managed_worktrees()
+        .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
+            worktree_id: Some("outside-root".to_string()),
+            identity: Some("test:outside-root".to_string()),
+            mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+            base_repo_path: codex_home.path().to_path_buf(),
+            worktree_path: outside_root_path.clone(),
+            branch: Some("codewith/outside-root".to_string()),
+            base_sha: None,
+            head_sha: None,
+            status_snapshot_json: json!({"status": "outside-root"}),
+            dirty: false,
+            cleanup_policy: codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean,
+            owner_kind: codex_state::ManagedWorktreeOwnerKind::Manual,
+            owner_thread_id: None,
+            owner_agent_run_id: None,
+            cleanup_after: None,
+        })
+        .await?;
+
+    let manual_path = codex_home
+        .path()
+        .join(".codewith")
+        .join("worktrees")
+        .join("manual-discovered");
+    git(
+        codex_home.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "codewith/manual-discovered",
+            manual_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    let reconcile_request_id = mcp
+        .send_raw_request("worktree/reconcile", Some(json!({})))
+        .await?;
+    let reconciled: codex_app_server_protocol::WorktreeReconcileResponse =
+        read_response(&mut mcp, reconcile_request_id).await?;
+    assert_eq!(1, reconciled.discovered);
+    assert!(reconciled.updated >= 1);
+    assert!(reconciled.data.iter().any(|worktree| {
+        worktree.worktree_path == manual_path.to_string_lossy()
+            && worktree
+                .identity
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("discovered:"))
+    }));
+    assert!(reconciled.data.iter().any(|worktree| {
+        worktree.worktree_id == "outside-root"
+            && worktree.lifecycle_status == WorktreeLifecycleStatus::Active
+            && worktree.worktree_path == outside_root_path.to_string_lossy()
+    }));
+
+    let cleanup_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "forceDelete": true,
+            })),
+        )
+        .await?;
+    let cleanup: WorktreeCleanupResponse = read_response(&mut mcp, cleanup_request_id).await?;
+    let cleaned = cleanup
+        .worktree
+        .expect("cleanup response should include worktree tombstone");
+    assert_eq!(WorktreeLifecycleStatus::Deleted, cleaned.lifecycle_status);
+    assert!(!Path::new(cleaned.worktree_path.as_str()).exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "mergeable",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let worktree_path = std::path::PathBuf::from(created.worktree.worktree_path.as_str());
+    std::fs::write(worktree_path.join("feature.txt"), "merge candidate\n")?;
+    git(worktree_path.as_path(), &["add", "feature.txt"])?;
+    git(
+        worktree_path.as_path(),
+        &["commit", "-m", "add merge candidate"],
+    )?;
+
+    let refresh_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let refreshed: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, refresh_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        refreshed.candidate.status
+    );
+    let candidate_id = refreshed.candidate.candidate_id.clone();
+
+    let apply_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/apply",
+            Some(json!({
+                "candidateId": candidate_id.clone(),
+            })),
+        )
+        .await?;
+    let applied: WorktreeMergeCandidateApplyResponse =
+        read_response(&mut mcp, apply_request_id).await?;
+    assert_eq!(
+        Some(WorktreeMergeCandidateStatus::Applied),
+        applied.candidate.map(|candidate| candidate.status)
+    );
+    assert_eq!(
+        "merge candidate\n",
+        std::fs::read_to_string(codex_home.path().join("feature.txt"))?
+    );
+
+    let apply_again_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": candidate_id,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, apply_again_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/apply requires an open candidate",
+        apply_again_error.error.message
     );
 
     Ok(())
@@ -927,6 +1362,28 @@ async fn init_state_db(codex_home: &Path) -> Result<Arc<codex_state::StateRuntim
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     Ok(state_db)
+}
+
+fn init_git_repo(repo_path: &Path) -> Result<()> {
+    git(repo_path, &["init"])?;
+    git(repo_path, &["config", "user.email", "codewith@example.com"])?;
+    git(repo_path, &["config", "user.name", "Codewith Test"])?;
+    std::fs::write(repo_path.join("README.md"), "worktree test\n")?;
+    git(repo_path, &["add", "README.md"])?;
+    git(repo_path, &["commit", "-m", "initial"])?;
+    Ok(())
+}
+
+fn git(cwd: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git").current_dir(cwd).args(args).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 async fn create_managed_worktree(
@@ -1208,6 +1665,21 @@ async fn start_agent(mcp: &mut McpProcess, params: AgentStartParams) -> Result<A
 
 async fn start_agent_error(mcp: &mut McpProcess, params: AgentStartParams) -> Result<JSONRPCError> {
     let request_id = mcp.send_agent_start_request(params).await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(response)
+}
+
+async fn agent_pending_interaction_respond_error(
+    mcp: &mut McpProcess,
+    params: AgentPendingInteractionRespondParams,
+) -> Result<JSONRPCError> {
+    let request_id = mcp
+        .send_agent_pending_interaction_respond_request(params)
+        .await?;
     let response = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_error_message(RequestId::Integer(request_id)),

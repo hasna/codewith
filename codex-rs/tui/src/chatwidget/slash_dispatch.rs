@@ -106,9 +106,32 @@ enum BackgroundAgentSlashCommand {
 #[derive(Debug, PartialEq, Eq)]
 enum WorktreeSlashCommand {
     List,
-    Read { worktree_id: Option<String> },
-    Actions { worktree_id: String },
-    Use { worktree_id: String },
+    Reconcile,
+    Create {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+    Read {
+        worktree_id: Option<String>,
+    },
+    Actions {
+        worktree_id: String,
+    },
+    Use {
+        worktree_id: String,
+    },
+    Release {
+        worktree_id: String,
+    },
+    Cleanup {
+        worktree_id: String,
+        force_delete: bool,
+    },
+    Merge {
+        worktree_id: String,
+        target_ref: Option<String>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -149,9 +172,9 @@ const MONITOR_USAGE_HINT: &str =
 const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <peer-id> <message>|list|diagnostics|start [--worktree <id>] <prompt>|read|attach|detach|stop|delete] [id]";
 const BACKGROUND_AGENT_USAGE_HINT: &str = "Examples: /agent peers, /agent send <peer-id> hello, /agent start fix the flaky test, /agent start --worktree wt-123 fix tests";
 const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <peer-id> <message>";
-const WORKTREE_USAGE: &str = "Usage: /worktree [list|read|actions|use] [id]";
-const WORKTREE_USAGE_HINT: &str =
-    "Examples: /worktree, /worktree read <id>, /worktree actions <id>, /worktree use <id>";
+const WORKTREE_USAGE: &str =
+    "Usage: /worktree [list|create|reconcile|read|actions|use|release|cleanup|merge] [args]";
+const WORKTREE_USAGE_HINT: &str = "Examples: /worktree create feature, /worktree read <id>, /worktree use <id>, /worktree cleanup <id>, /worktree merge <id> [target]";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const EXTERNAL_AGENT_USAGE: &str =
     "Usage: /external-agent [inline|--inline] [plan|propose] [cursor|grok-build|claude] [task]";
@@ -284,10 +307,7 @@ fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
                 }
             }
             option if option.starts_with("--session=") => {
-                let value = option
-                    .strip_prefix("--session=")
-                    .expect("prefix checked")
-                    .to_string();
+                let value = option["--session=".len()..].to_string();
                 if session_name.replace(value).is_some() {
                     return Err(format!("Duplicate /tmux session target. {TMUX_USAGE}"));
                 }
@@ -301,10 +321,7 @@ fn parse_tmux_slash_args(input: &str) -> Result<TmuxSlashCommand, String> {
                 }
             }
             option if option.starts_with("--window=") => {
-                let value = option
-                    .strip_prefix("--window=")
-                    .expect("prefix checked")
-                    .to_string();
+                let value = option["--window=".len()..].to_string();
                 if window_name.replace(value).is_some() {
                     return Err(format!("Duplicate /tmux window target. {TMUX_USAGE}"));
                 }
@@ -1013,6 +1030,9 @@ impl ChatWidget {
             SlashCommand::Status | SlashCommand::Stats => {
                 self.dispatch_status_command(cmd.command());
             }
+            SlashCommand::Changelog => {
+                self.add_changelog_output();
+            }
             SlashCommand::Ide => {
                 self.handle_ide_command();
             }
@@ -1482,6 +1502,20 @@ impl ChatWidget {
                     WorktreeSlashCommand::List => {
                         self.app_event_tx.send(AppEvent::OpenWorktreeManager);
                     }
+                    WorktreeSlashCommand::Reconcile => {
+                        self.app_event_tx.send(AppEvent::ReconcileWorktrees);
+                    }
+                    WorktreeSlashCommand::Create {
+                        name,
+                        branch,
+                        start_point,
+                    } => {
+                        self.app_event_tx.send(AppEvent::CreateWorktree {
+                            name,
+                            branch,
+                            start_point,
+                        });
+                    }
                     WorktreeSlashCommand::Read { worktree_id } => {
                         self.app_event_tx.send(AppEvent::ReadWorktree {
                             worktree_id,
@@ -1499,6 +1533,33 @@ impl ChatWidget {
                             worktree_id,
                             base_repo_path: None,
                         });
+                    }
+                    WorktreeSlashCommand::Release { worktree_id } => {
+                        self.app_event_tx.send(AppEvent::ReleaseWorktree {
+                            worktree_id,
+                            base_repo_path: None,
+                        });
+                    }
+                    WorktreeSlashCommand::Cleanup {
+                        worktree_id,
+                        force_delete,
+                    } => {
+                        self.app_event_tx.send(AppEvent::CleanupWorktree {
+                            worktree_id,
+                            base_repo_path: None,
+                            force_delete,
+                        });
+                    }
+                    WorktreeSlashCommand::Merge {
+                        worktree_id,
+                        target_ref,
+                    } => {
+                        self.app_event_tx
+                            .send(AppEvent::RefreshWorktreeMergeCandidate {
+                                worktree_id,
+                                base_repo_path: None,
+                                target_ref,
+                            });
                     }
                 }
                 self.append_message_history_entry(format!("/worktree {trimmed}"));
@@ -2180,6 +2241,7 @@ impl ChatWidget {
             SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Stats
+            | SlashCommand::Changelog
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -2481,6 +2543,14 @@ fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, Monito
                 Err(worktree_usage_error("Usage: /worktree list"))
             }
         }
+        "reconcile" | "sync" => {
+            if rest.is_empty() {
+                Ok(WorktreeSlashCommand::Reconcile)
+            } else {
+                Err(worktree_usage_error("Usage: /worktree reconcile"))
+            }
+        }
+        "create" | "new" => parse_worktree_create_args(rest),
         "read" | "show" => Ok(WorktreeSlashCommand::Read {
             worktree_id: parse_optional_worktree_id(rest, "Usage: /worktree read [id]")?,
         }),
@@ -2490,7 +2560,134 @@ fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, Monito
         "use" | "switch" => Ok(WorktreeSlashCommand::Use {
             worktree_id: parse_required_worktree_id(rest, "Usage: /worktree use <id>")?,
         }),
+        "release" => Ok(WorktreeSlashCommand::Release {
+            worktree_id: parse_required_worktree_id(rest, "Usage: /worktree release <id>")?,
+        }),
+        "cleanup" | "clean" | "delete" | "remove" | "rm" => parse_worktree_cleanup_args(rest),
+        "merge" | "candidate" => parse_worktree_merge_args(rest),
         _ => Err(worktree_usage_error(WORKTREE_USAGE)),
+    }
+}
+
+fn parse_worktree_create_args(input: &str) -> Result<WorktreeSlashCommand, MonitorSlashParseError> {
+    let mut remaining = input.trim();
+    let mut branch = None;
+    let mut start_point = None;
+    let mut name = None;
+
+    while let Some((token, rest)) = split_external_agent_token(remaining) {
+        if let Some(value) = token.strip_prefix("--branch=") {
+            branch = Some(parse_required_option_value(
+                value,
+                "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+            )?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start-point=") {
+            start_point = Some(parse_required_option_value(
+                value,
+                "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+            )?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start=") {
+            start_point = Some(parse_required_option_value(
+                value,
+                "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+            )?);
+            remaining = rest;
+            continue;
+        }
+        match token {
+            "--branch" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(worktree_usage_error(
+                        "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+                    ));
+                };
+                branch = Some(value.to_string());
+                remaining = next_rest;
+            }
+            "--start-point" | "--start" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(worktree_usage_error(
+                        "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+                    ));
+                };
+                start_point = Some(value.to_string());
+                remaining = next_rest;
+            }
+            _ if name.is_none() => {
+                name = Some(token.to_string());
+                remaining = rest;
+            }
+            _ => {
+                return Err(worktree_usage_error(
+                    "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+                ));
+            }
+        }
+    }
+
+    Ok(WorktreeSlashCommand::Create {
+        name,
+        branch,
+        start_point,
+    })
+}
+
+fn parse_worktree_cleanup_args(
+    input: &str,
+) -> Result<WorktreeSlashCommand, MonitorSlashParseError> {
+    let mut force_delete = false;
+    let mut worktree_id = None;
+    for token in input.split_whitespace() {
+        match token {
+            "--force" | "-f" => force_delete = true,
+            _ if worktree_id.is_none() => worktree_id = Some(token.to_string()),
+            _ => {
+                return Err(worktree_usage_error(
+                    "Usage: /worktree cleanup [--force] <id>",
+                ));
+            }
+        }
+    }
+    let Some(worktree_id) = worktree_id else {
+        return Err(worktree_usage_error(
+            "Usage: /worktree cleanup [--force] <id>",
+        ));
+    };
+    Ok(WorktreeSlashCommand::Cleanup {
+        worktree_id,
+        force_delete,
+    })
+}
+
+fn parse_worktree_merge_args(input: &str) -> Result<WorktreeSlashCommand, MonitorSlashParseError> {
+    let mut parts = input.split_whitespace();
+    let Some(worktree_id) = parts.next() else {
+        return Err(worktree_usage_error("Usage: /worktree merge <id> [target]"));
+    };
+    let target_ref = parts.next().map(str::to_string);
+    if parts.next().is_some() {
+        return Err(worktree_usage_error("Usage: /worktree merge <id> [target]"));
+    }
+    Ok(WorktreeSlashCommand::Merge {
+        worktree_id: worktree_id.to_string(),
+        target_ref,
+    })
+}
+
+fn parse_required_option_value(
+    value: &str,
+    usage: &'static str,
+) -> Result<String, MonitorSlashParseError> {
+    if value.trim().is_empty() {
+        Err(worktree_usage_error(usage))
+    } else {
+        Ok(value.to_string())
     }
 }
 
@@ -2888,6 +3085,19 @@ mod external_agent_arg_tests {
             WorktreeSlashCommand::List
         );
         assert_eq!(
+            parse_worktree_slash_args("reconcile").expect("reconcile args"),
+            WorktreeSlashCommand::Reconcile
+        );
+        assert_eq!(
+            parse_worktree_slash_args("create feature --branch codewith/feature --start main")
+                .expect("create args"),
+            WorktreeSlashCommand::Create {
+                name: Some("feature".to_string()),
+                branch: Some("codewith/feature".to_string()),
+                start_point: Some("main".to_string()),
+            }
+        );
+        assert_eq!(
             parse_worktree_slash_args("read").expect("read args"),
             WorktreeSlashCommand::Read { worktree_id: None }
         );
@@ -2909,14 +3119,38 @@ mod external_agent_arg_tests {
                 worktree_id: "wt-789".to_string(),
             }
         );
+        assert_eq!(
+            parse_worktree_slash_args("release wt-999").expect("release args"),
+            WorktreeSlashCommand::Release {
+                worktree_id: "wt-999".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_worktree_slash_args("cleanup --force wt-999").expect("cleanup args"),
+            WorktreeSlashCommand::Cleanup {
+                worktree_id: "wt-999".to_string(),
+                force_delete: true,
+            }
+        );
+        assert_eq!(
+            parse_worktree_slash_args("merge wt-999 main").expect("merge args"),
+            WorktreeSlashCommand::Merge {
+                worktree_id: "wt-999".to_string(),
+                target_ref: Some("main".to_string()),
+            }
+        );
     }
 
     #[test]
     fn rejects_invalid_worktree_manager_commands() {
         assert!(parse_worktree_slash_args("list extra").is_err());
+        assert!(parse_worktree_slash_args("reconcile extra").is_err());
         assert!(parse_worktree_slash_args("actions").is_err());
         assert!(parse_worktree_slash_args("use").is_err());
         assert!(parse_worktree_slash_args("read one two").is_err());
+        assert!(parse_worktree_slash_args("cleanup").is_err());
+        assert!(parse_worktree_slash_args("merge").is_err());
+        assert!(parse_worktree_slash_args("create one two").is_err());
         assert!(parse_worktree_slash_args("unknown").is_err());
     }
 

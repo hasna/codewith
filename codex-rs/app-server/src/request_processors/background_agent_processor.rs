@@ -47,6 +47,8 @@ use codex_app_server_protocol::WorktreeDetachResponse;
 use codex_app_server_protocol::WorktreeLifecycleStatus;
 use codex_app_server_protocol::WorktreeListParams;
 use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidate;
+use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeMode;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreePolicy;
@@ -73,6 +75,10 @@ use codex_background_agent::LifecycleEffect;
 use codex_background_agent::PendingInteractionLedger;
 use codex_background_agent::lifecycle_effect_for;
 use codex_protocol::ThreadId;
+use codex_protocol::approvals::ElicitationAction;
+use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rollout::StateDbHandle;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
@@ -171,6 +177,12 @@ impl BackgroundAgentRequestProcessor {
             prompt_snapshot_ref.unwrap_or_else(|| format!("inline:{agent_id}:prompt"));
         let source = source.unwrap_or_else(|| "app-server".to_string());
         let thread_store_kind = thread_store_kind.unwrap_or_else(|| "background-agent".to_string());
+        validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            thread_id.as_deref(),
+            rollout_path.as_deref(),
+        )
+        .await?;
         let recovery_policy = execution_context
             .as_ref()
             .and_then(|context| context.recovery_policy.clone())
@@ -721,6 +733,11 @@ impl BackgroundAgentRequestProcessor {
                 "pending interaction does not belong to requested agent",
             ));
         }
+        validate_agent_pending_interaction_response(
+            existing_interaction.kind,
+            terminal_status,
+            &params.response,
+        )?;
         let updated = state_db
             .respond_pending_interaction(
                 params.interaction_id.as_str(),
@@ -981,6 +998,39 @@ fn worktree_assignment_target(
     }
 }
 
+async fn validate_agent_start_rollout_path(
+    state_db: &codex_state::StateRuntime,
+    thread_id: Option<&str>,
+    rollout_path: Option<&str>,
+) -> Result<(), JSONRPCErrorError> {
+    let Some(rollout_path) = rollout_path else {
+        return Ok(());
+    };
+    let Some(thread_id) = thread_id else {
+        return Err(invalid_params("agent/start rolloutPath requires threadId"));
+    };
+    let thread_id = ThreadId::from_string(thread_id)
+        .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+    let thread = state_db
+        .get_thread(thread_id)
+        .await
+        .map_err(|err| internal_error(format!("failed to load background thread: {err}")))?
+        .ok_or_else(|| invalid_params("agent/start rolloutPath requires a known threadId"))?;
+    let requested_rollout_path = Path::new(rollout_path);
+    let stored_rollout_path = thread.rollout_path.as_path();
+    let rollout_paths_match = requested_rollout_path == stored_rollout_path
+        || std::fs::canonicalize(requested_rollout_path)
+            .ok()
+            .zip(std::fs::canonicalize(stored_rollout_path).ok())
+            .is_some_and(|(requested, stored)| requested == stored);
+    if !rollout_paths_match {
+        return Err(invalid_params(
+            "agent/start rolloutPath must match threadId",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct AgentQuotaSnapshot {
     active_run_count: i64,
@@ -1227,6 +1277,46 @@ fn should_terminalize_unclaimed_agent_run(run: &BackgroundAgentRun) -> bool {
         )
 }
 
+fn validate_agent_pending_interaction_response(
+    kind: BackgroundAgentPendingInteractionKind,
+    terminal_status: BackgroundAgentPendingInteractionStatus,
+    response: &serde_json::Value,
+) -> Result<(), JSONRPCErrorError> {
+    if terminal_status != BackgroundAgentPendingInteractionStatus::Responded {
+        return Ok(());
+    }
+
+    let is_valid = match kind {
+        BackgroundAgentPendingInteractionKind::Approval => {
+            let decision = response
+                .get("decision")
+                .cloned()
+                .unwrap_or_else(|| response.clone());
+            serde_json::from_value::<ReviewDecision>(decision).is_ok()
+        }
+        BackgroundAgentPendingInteractionKind::UserInput => {
+            serde_json::from_value::<RequestUserInputResponse>(response.clone()).is_ok()
+        }
+        BackgroundAgentPendingInteractionKind::McpElicitation => response
+            .get("decision")
+            .cloned()
+            .and_then(|decision| serde_json::from_value::<ElicitationAction>(decision).ok())
+            .is_some(),
+        BackgroundAgentPendingInteractionKind::PermissionGrant => {
+            serde_json::from_value::<RequestPermissionsResponse>(response.clone()).is_ok()
+        }
+    };
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(invalid_request(format!(
+            "background agent pending interaction response is invalid for {}",
+            kind.as_str()
+        )))
+    }
+}
+
 async fn cancel_active_pending_interactions_for_run(
     state_db: &codex_state::StateRuntime,
     run_id: &str,
@@ -1455,7 +1545,7 @@ fn api_agent_pending_interaction_from_state(
     }
 }
 
-async fn api_worktree_from_state(
+pub(crate) async fn api_worktree_from_state(
     state_db: &codex_state::StateRuntime,
     value: codex_state::ManagedWorktree,
 ) -> Result<Worktree, JSONRPCErrorError> {
@@ -1492,6 +1582,25 @@ async fn api_worktree_from_state(
         deleted_at: value.deleted_at.map(|timestamp| timestamp.timestamp()),
         agent,
     })
+}
+
+pub(crate) fn api_worktree_merge_candidate_from_state(
+    value: codex_state::ManagedWorktreeMergeCandidate,
+) -> WorktreeMergeCandidate {
+    WorktreeMergeCandidate {
+        candidate_id: value.candidate_id,
+        worktree_id: value.worktree_id,
+        target_ref: value.target_ref,
+        target_sha: value.target_sha,
+        base_sha: value.base_sha,
+        head_sha: value.head_sha,
+        status: api_worktree_merge_candidate_status(value.status),
+        conflict_summary: value.conflict_summary,
+        created_at: value.created_at.timestamp(),
+        updated_at: value.updated_at.timestamp(),
+        applied_at: value.applied_at.map(|timestamp| timestamp.timestamp()),
+        dismissed_at: value.dismissed_at.map(|timestamp| timestamp.timestamp()),
+    }
 }
 
 fn api_worktree_mode(mode: codex_state::ManagedWorktreeMode) -> WorktreeMode {
@@ -1535,6 +1644,25 @@ fn api_worktree_owner_kind(owner_kind: codex_state::ManagedWorktreeOwnerKind) ->
         codex_state::ManagedWorktreeOwnerKind::SubSession => WorktreeOwnerKind::SubSession,
         codex_state::ManagedWorktreeOwnerKind::BackgroundAgent => {
             WorktreeOwnerKind::BackgroundAgent
+        }
+    }
+}
+
+fn api_worktree_merge_candidate_status(
+    status: codex_state::ManagedWorktreeMergeCandidateStatus,
+) -> WorktreeMergeCandidateStatus {
+    match status {
+        codex_state::ManagedWorktreeMergeCandidateStatus::Open => {
+            WorktreeMergeCandidateStatus::Open
+        }
+        codex_state::ManagedWorktreeMergeCandidateStatus::Blocked => {
+            WorktreeMergeCandidateStatus::Blocked
+        }
+        codex_state::ManagedWorktreeMergeCandidateStatus::Applied => {
+            WorktreeMergeCandidateStatus::Applied
+        }
+        codex_state::ManagedWorktreeMergeCandidateStatus::Dismissed => {
+            WorktreeMergeCandidateStatus::Dismissed
         }
     }
 }
@@ -1615,5 +1743,110 @@ fn api_lifecycle_effect_from_runtime(effect: LifecycleEffect) -> AgentLifecycleE
         LifecycleEffect::RequestWorkerStop => AgentLifecycleEffect::RequestWorkerStop,
         LifecycleEffect::MarkDeleteRequested => AgentLifecycleEffect::MarkDeleteRequested,
         LifecycleEffect::KeepWorkerRunning => AgentLifecycleEffect::KeepWorkerRunning,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn validate_agent_start_rollout_path_requires_matching_thread_metadata()
+    -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let state_db = codex_state::StateRuntime::init(
+            codex_home.path().to_path_buf(),
+            "mock_provider".to_string(),
+        )
+        .await?;
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000321")?;
+        let thread_id_string = thread_id.to_string();
+        let rollout_path = codex_home.path().join("owned-rollout.jsonl");
+        let now = Utc::now();
+
+        validate_agent_start_rollout_path(state_db.as_ref(), None, None)
+            .await
+            .expect("missing rolloutPath should be accepted");
+        let missing_thread_id = validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            None,
+            Some(rollout_path.to_string_lossy().as_ref()),
+        )
+        .await
+        .expect_err("rolloutPath without threadId should be rejected");
+        assert_eq!(
+            missing_thread_id.message,
+            "agent/start rolloutPath requires threadId"
+        );
+
+        let unknown_thread = validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            Some(thread_id_string.as_str()),
+            Some(rollout_path.to_string_lossy().as_ref()),
+        )
+        .await
+        .expect_err("unknown thread should be rejected");
+        assert_eq!(
+            unknown_thread.message,
+            "agent/start rolloutPath requires a known threadId"
+        );
+
+        state_db
+            .upsert_thread(&codex_state::ThreadMetadata {
+                id: thread_id,
+                rollout_path: rollout_path.clone(),
+                created_at: now,
+                updated_at: now,
+                source: "cli".to_string(),
+                thread_source: None,
+                agent_nickname: None,
+                agent_role: None,
+                agent_path: None,
+                model_provider: "mock_provider".to_string(),
+                model: Some("mock-model".to_string()),
+                reasoning_effort: None,
+                cwd: codex_home.path().to_path_buf(),
+                cli_version: "0.0.0".to_string(),
+                title: String::new(),
+                preview: Some("resume target".to_string()),
+                sandbox_policy: "read-only".to_string(),
+                approval_mode: "never".to_string(),
+                tokens_used: 0,
+                first_user_message: Some("resume target".to_string()),
+                archived_at: None,
+                git_sha: None,
+                git_branch: None,
+                git_origin_url: None,
+            })
+            .await?;
+
+        validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            Some(thread_id_string.as_str()),
+            Some(rollout_path.to_string_lossy().as_ref()),
+        )
+        .await
+        .expect("matching rolloutPath should be accepted");
+        let mismatched_thread = validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            Some(thread_id_string.as_str()),
+            Some(
+                codex_home
+                    .path()
+                    .join("different-rollout.jsonl")
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+        )
+        .await
+        .expect_err("mismatched rolloutPath should be rejected");
+        assert_eq!(
+            mismatched_thread.message,
+            "agent/start rolloutPath must match threadId"
+        );
+
+        Ok(())
     }
 }

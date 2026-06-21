@@ -1207,6 +1207,17 @@ impl App {
             AppEvent::OpenWorktreeManager => {
                 self.open_worktree_manager(app_server).await;
             }
+            AppEvent::ReconcileWorktrees => {
+                self.reconcile_worktrees(app_server).await;
+            }
+            AppEvent::CreateWorktree {
+                name,
+                branch,
+                start_point,
+            } => {
+                self.create_worktree(app_server, name, branch, start_point)
+                    .await;
+            }
             AppEvent::OpenWorktreeActions {
                 worktree_id,
                 base_repo_path,
@@ -1227,6 +1238,34 @@ impl App {
             } => {
                 self.use_worktree(app_server, worktree_id, base_repo_path)
                     .await;
+            }
+            AppEvent::ReleaseWorktree {
+                worktree_id,
+                base_repo_path,
+            } => {
+                self.release_worktree(app_server, worktree_id, base_repo_path)
+                    .await;
+            }
+            AppEvent::CleanupWorktree {
+                worktree_id,
+                base_repo_path,
+                force_delete,
+            } => {
+                self.cleanup_worktree(app_server, worktree_id, base_repo_path, force_delete)
+                    .await;
+            }
+            AppEvent::RefreshWorktreeMergeCandidate {
+                worktree_id,
+                base_repo_path,
+                target_ref,
+            } => {
+                self.refresh_worktree_merge_candidate(
+                    app_server,
+                    worktree_id,
+                    base_repo_path,
+                    target_ref,
+                )
+                .await;
             }
             AppEvent::ListActiveSessions => {
                 self.list_active_sessions(app_server).await;

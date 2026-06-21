@@ -1,14 +1,14 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 54
 expression: "render_bottom_popup(&chat, 120)"
 ---
-  Goals 1  Plans 2  Pending interactions 1
+  2 projects
 
-  Sessions (2)  [Projects (2)]  Questions (1)  Work Queue (2)  Goal Chains (2)
+  Sessions  [Projects]  Questions  Queue  Goals  Schedules
 
-  Search sessions, projects, questions, queues, and goal chains
-› open-codewith  1 session | 1 active | 0 idle | 1 waiting | 1 attention | /tmp/codewith/open-codewith | 1 goal | 1
-                 plan
-  workflows      1 session | 0 active | 1 idle | 0 waiting | 1 attention
+  Search
+› open-codewith  1 waiting
+  workflows      1 attention
 
   Press enter to confirm or esc to go back

@@ -1,20 +1,14 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 235
 expression: "render_bottom_popup(&chat, 120)"
 ---
-  Plans 2  Ready 2  Active 2  Blocked 1  Usage/budget 0
+  2 plans
 
-  Sessions (2)  Projects (2)  Questions (1)  Work Queue (2)  [Goal Chains (2)]
+  Sessions  Projects  Questions  Queue  [Goals]  Schedules
 
-  Search sessions, projects, questions, queues, and goal chains
-› Codewith orchestration / plan-111  Thread 11111111 | plan plan-11111111-1111-4111-8111-111111111111 | open-codewith
-                                     | 1 active | 0 blocked | 0 usage-limited | 0 budget-limited | 20K / 150K tokens
-    #1 overview (disabled)           active | not ready | plan active | auto ai-directed (disabled: Only ready goal-
-                                     chain nodes can be activated from mission control)
-    #1 questions                     pending | ready | plan active | auto ai-directed
-  Workflow builder / plan-222        blocked | 0/2 complete | 1 ready | auto ai-directed
-    #1 overview (disabled)           active | not ready | plan blocked | auto ai-directed (disabled: Only ready goal-
-                                     chain nodes can be activated from mission control)
-    #1 questions                     pending | ready | plan blocked | auto ai-directed
+  Search
+› Codewith orchestration  1 ready
+  Workflow builder        1 ready
 
   Press enter to confirm or esc to go back

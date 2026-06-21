@@ -10,6 +10,7 @@ use super::ThreadPendingInteraction;
 use super::ThreadPendingInteractionResponsePayload;
 use super::ThreadPendingInteractionStatus;
 use super::ThreadPendingInteractionTerminalStatus;
+use super::ThreadSchedule;
 use super::ThreadSortKey;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -64,6 +65,7 @@ pub struct MissionControlSession {
     pub session: LocalSession,
     pub goal: Option<ThreadGoal>,
     pub goal_plans: Vec<ThreadGoalPlan>,
+    pub schedules: Vec<ThreadSchedule>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -74,6 +76,7 @@ pub struct MissionControlCapabilities {
     pub durable_mailbox: bool,
     pub pending_interactions: bool,
     pub goals: bool,
+    pub scheduled_tasks: bool,
     pub remote_dispatch: bool,
     pub workflow_mutation: bool,
     pub shell_execution: bool,

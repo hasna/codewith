@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 250
+expression: "render_bottom_popup(&chat, 120)"
+---
+  1 schedule
+
+  Sessions  Projects  Questions  Queue  Goals  [Schedules]
+
+  Search
+› Check release blockers  active schedule
+
+  Press enter to confirm or esc to go back

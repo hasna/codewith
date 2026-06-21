@@ -1,25 +1,14 @@
 ---
 source: tui/src/chatwidget/tests/mission_control.rs
+assertion_line: 197
 expression: "render_bottom_popup(&chat, 60)"
 ---
-  Waiting 1  Answerable 1  More available
+  1 waiting  More available
 
-  Sessions (1)  Projects (1)  [Questions (1)]
-  Work Queue (1)  Goal Chains (1)
+  Sessions  Projects  [Questions]  Queue  Goals  Schedules
 
-  Search sessions, projects, questions, queues, and goal c
-› Mission Control With A Very Long Ope… Thread 33333333 |
-                                        interaction
-                                        interaction-1 |
-                                        Explain the
-                                        deployment
-                                        ordering for
-                                        ABCDEFGHIJKLMNOPQR
-                                        STUVWXYZ0123456789
-                                        ABCDEFGHIJKLMNOPQR
-                                        STUVWXYZ0123456789
-  More questions available              Narrow the search
-                                        or reopen for the
-                                        next page
+  Search
+› Mission Control With A Very Long Ope… question pending
+  More questions available              Narrow the search…
 
   Press enter to confirm or esc to go back

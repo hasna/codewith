@@ -182,6 +182,44 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         }
     );
 
+    let default_profile_thread_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            auth_profile: Some(None),
+            ..ThreadStartParams::default()
+        })
+        .await?;
+    let default_profile_thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(default_profile_thread_id)),
+    )
+    .await??;
+    let ThreadStartResponse {
+        thread: default_profile_thread,
+        ..
+    } = to_response(default_profile_thread_resp)?;
+    let claude_id = mcp
+        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
+            thread_id: default_profile_thread.id,
+            runtime_id: "claude".to_string(),
+            task: "inspect the auth wiring".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+        })
+        .await?;
+    let claude_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(claude_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<ThreadExternalAgentStartResponse>(claude_resp)?,
+        ThreadExternalAgentStartResponse {
+            status: ThreadExternalAgentStartStatus::Gated,
+            run_id: None,
+            message: "external-agent runtime `claude` requires an active Claude.ai auth profile"
+                .to_string(),
+        }
+    );
+
     Ok(())
 }
 

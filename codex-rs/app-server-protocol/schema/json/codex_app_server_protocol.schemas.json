@@ -979,6 +979,54 @@
             },
             "method": {
               "enum": [
+                "worktree/create"
+              ],
+              "title": "Worktree/createRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeCreateParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/createRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/reconcile"
+              ],
+              "title": "Worktree/reconcileRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeReconcileParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/reconcileRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "worktree/attach"
               ],
               "title": "Worktree/attachRequestMethod",
@@ -1018,6 +1066,150 @@
             "params"
           ],
           "title": "Worktree/detachRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/release"
+              ],
+              "title": "Worktree/releaseRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeReleaseParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/releaseRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/cleanup"
+              ],
+              "title": "Worktree/cleanupRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeCleanupParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/cleanupRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/mergeCandidate/list"
+              ],
+              "title": "Worktree/mergeCandidate/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeMergeCandidateListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/mergeCandidate/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/mergeCandidate/refresh"
+              ],
+              "title": "Worktree/mergeCandidate/refreshRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeMergeCandidateRefreshParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/mergeCandidate/refreshRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/mergeCandidate/apply"
+              ],
+              "title": "Worktree/mergeCandidate/applyRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeMergeCandidateApplyParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/mergeCandidate/applyRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "worktree/mergeCandidate/dismiss"
+              ],
+              "title": "Worktree/mergeCandidate/dismissRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorktreeMergeCandidateDismissParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Worktree/mergeCandidate/dismissRequest",
           "type": "object"
         },
         {
@@ -13551,6 +13743,9 @@
           "remoteDispatch": {
             "type": "boolean"
           },
+          "scheduledTasks": {
+            "type": "boolean"
+          },
           "shellExecution": {
             "type": "boolean"
           },
@@ -13565,6 +13760,7 @@
           "localSessions",
           "pendingInteractions",
           "remoteDispatch",
+          "scheduledTasks",
           "shellExecution",
           "workflowMutation"
         ],
@@ -13919,12 +14115,19 @@
             },
             "type": "array"
           },
+          "schedules": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadSchedule"
+            },
+            "type": "array"
+          },
           "session": {
             "$ref": "#/definitions/v2/LocalSession"
           }
         },
         "required": [
           "goalPlans",
+          "schedules",
           "session"
         ],
         "type": "object"
@@ -24943,6 +25146,25 @@
         "title": "WorktreeAttachResponse",
         "type": "object"
       },
+      "WorktreeCleanupParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "forceDelete": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "worktreeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktreeId"
+        ],
+        "title": "WorktreeCleanupParams",
+        "type": "object"
+      },
       "WorktreeCleanupPolicy": {
         "enum": [
           "retain",
@@ -24950,6 +25172,87 @@
           "forceDelete"
         ],
         "type": "string"
+      },
+      "WorktreeCleanupResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "worktree": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/Worktree"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorktreeCleanupResponse",
+        "type": "object"
+      },
+      "WorktreeCreateParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "baseRepoPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cleanupPolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorktreeCleanupPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startPoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "WorktreeCreateParams",
+        "type": "object"
+      },
+      "WorktreeCreateResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "policy": {
+            "$ref": "#/definitions/v2/WorktreePolicy"
+          },
+          "worktree": {
+            "$ref": "#/definitions/v2/Worktree"
+          }
+        },
+        "required": [
+          "policy",
+          "worktree"
+        ],
+        "title": "WorktreeCreateResponse",
+        "type": "object"
       },
       "WorktreeDetachParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -25061,6 +25364,221 @@
         "title": "WorktreeListResponse",
         "type": "object"
       },
+      "WorktreeMergeCandidate": {
+        "properties": {
+          "appliedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "baseSha": {
+            "type": "string"
+          },
+          "candidateId": {
+            "type": "string"
+          },
+          "conflictSummary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "dismissedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "headSha": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/WorktreeMergeCandidateStatus"
+          },
+          "targetRef": {
+            "type": "string"
+          },
+          "targetSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "worktreeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseSha",
+          "candidateId",
+          "createdAt",
+          "headSha",
+          "status",
+          "targetRef",
+          "updatedAt",
+          "worktreeId"
+        ],
+        "type": "object"
+      },
+      "WorktreeMergeCandidateApplyParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId"
+        ],
+        "title": "WorktreeMergeCandidateApplyParams",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateApplyResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorktreeMergeCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorktreeMergeCandidateApplyResponse",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateDismissParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId"
+        ],
+        "title": "WorktreeMergeCandidateDismissParams",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateDismissResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorktreeMergeCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorktreeMergeCandidateDismissResponse",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorktreeMergeCandidateStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "worktreeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktreeId"
+        ],
+        "title": "WorktreeMergeCandidateListParams",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/WorktreeMergeCandidate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "WorktreeMergeCandidateListResponse",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateRefreshParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "targetRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktreeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktreeId"
+        ],
+        "title": "WorktreeMergeCandidateRefreshParams",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateRefreshResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "candidate": {
+            "$ref": "#/definitions/v2/WorktreeMergeCandidate"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "title": "WorktreeMergeCandidateRefreshResponse",
+        "type": "object"
+      },
+      "WorktreeMergeCandidateStatus": {
+        "enum": [
+          "open",
+          "blocked",
+          "applied",
+          "dismissed"
+        ],
+        "type": "string"
+      },
       "WorktreeMode": {
         "enum": [
           "isolatedWorktree",
@@ -25152,6 +25670,103 @@
           "policy"
         ],
         "title": "WorktreeReadResponse",
+        "type": "object"
+      },
+      "WorktreeReconcileParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "baseRepoPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "WorktreeReconcileParams",
+        "type": "object"
+      },
+      "WorktreeReconcileResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/Worktree"
+            },
+            "type": "array"
+          },
+          "deleted": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "discovered": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/definitions/v2/WorktreePolicy"
+          },
+          "updated": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "deleted",
+          "discovered",
+          "policy",
+          "updated"
+        ],
+        "title": "WorktreeReconcileResponse",
+        "type": "object"
+      },
+      "WorktreeReleaseParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cleanupPolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorktreeCleanupPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "forceDelete": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "worktreeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktreeId"
+        ],
+        "title": "WorktreeReleaseParams",
+        "type": "object"
+      },
+      "WorktreeReleaseResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "worktree": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/Worktree"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorktreeReleaseResponse",
         "type": "object"
       },
       "WorktreeSessionMode": {

@@ -739,6 +739,62 @@ async fn external_subscription_profile_does_not_fall_back_to_openai_auth() -> an
 
 #[tokio::test]
 #[serial(codex_auth_env)]
+async fn running_session_switch_rejects_external_subscription_profile() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("root-key");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile_metadata(
+        dir.path(),
+        "claude",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        /*selected_auth_profile*/ None,
+    )
+    .await;
+
+    assert!(matches!(
+        manager
+            .prepare_auth_profile_switch(Some("claude".to_string()))
+            .await,
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
+    ));
+    assert!(matches!(
+        manager
+            .switch_auth_profile(Some("claude".to_string()))
+            .await,
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
+    ));
+    assert_eq!(manager.selected_auth_profile(), None);
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("root auth should stay selected")
+            .api_key(),
+        Some("root-key")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
 async fn scoped_root_auth_profile_from_profile_parent_uses_root_auth() -> anyhow::Result<()> {
     let _access_token_guard = remove_access_token_env_var();
     let dir = tempdir()?;

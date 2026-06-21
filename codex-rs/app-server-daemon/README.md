@@ -46,8 +46,9 @@ pidfile-backed detached process, and launches a detached updater loop.
 
 ## Installation and update cases
 
-The daemon assumes Codewith is installed through `install.sh` and always launches
-the standalone managed binary under `CODEWITH_HOME`.
+The managed daemon lifecycle assumes Codewith is installed through `install.sh`
+and launches the standalone managed binary under `CODEWITH_HOME`. Local TUI
+auto-start is a separate no-updater path described below.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
@@ -68,6 +69,18 @@ For installs created by `install.sh`:
   only then replaces its own process image
 - the updater loop is not reboot-persistent; it must be started again by
   rerunning `bootstrap` after a reboot
+
+### Local TUI auto-start
+
+Interactive local TUI sessions may use the daemon as a shared local app-server
+without enabling remote control or the updater. In that path, the TUI first
+reuses an already-running default control socket when one is present. If it
+needs to start a new pid-backed app-server, it provides its resolved current
+Codewith binary to the daemon lifecycle library and starts that process with
+remote control disabled. This lets npm, bun, and dev builds share one local
+app-server process even when the standalone managed install is not present. The
+standalone managed binary is still required for `bootstrap` and updater-managed
+remote-control flows.
 
 ### Out-of-band updates
 

@@ -382,6 +382,7 @@ mod tests {
                 SlashCommand::Mention,
                 SlashCommand::Status,
                 SlashCommand::Stats,
+                SlashCommand::Changelog,
             ]
         );
     }

@@ -178,10 +178,21 @@ impl ThreadScheduleRuntime {
         let prompt = self
             .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
             .await?;
-        let thread = self.load_or_resume_thread(thread_id).await?;
+        let claim_auth_profile = self
+            .claim_auth_profile(&state_db, thread_id, &claim.schedule)
+            .await;
+        let thread = self
+            .load_or_resume_thread(thread_id, claim_auth_profile.clone())
+            .await?;
         self.ensure_schedule_listener(thread_id, thread.clone())
             .await?;
-        let turn_id = thread
+        let thread_settings = codex_protocol::protocol::ThreadSettingsOverrides {
+            auth_profile: claim_auth_profile,
+            ..codex_protocol::protocol::ThreadSettingsOverrides::default()
+        };
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        thread_state.lock().await.begin_scheduled_run_submission();
+        let submit_result = thread
             .submit(Op::UserInput {
                 items: vec![CoreInputItem::Text {
                     text: scheduled_thread_prompt(
@@ -195,12 +206,18 @@ impl ThreadScheduleRuntime {
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
-                thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                thread_settings,
             })
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to submit scheduled prompt: {err}"))?;
+            .await;
+        let turn_id = match submit_result {
+            Ok(turn_id) => turn_id,
+            Err(err) => {
+                thread_state.lock().await.finish_scheduled_run_submission();
+                return Err(anyhow::anyhow!("failed to submit scheduled prompt: {err}"));
+            }
+        };
 
-        let run = state_db
+        let run = match state_db
             .thread_schedules()
             .mark_thread_schedule_run_started(
                 claim.schedule.schedule_id.as_str(),
@@ -208,16 +225,25 @@ impl ThreadScheduleRuntime {
                 claim.run.lease_id.as_str(),
                 turn_id.as_str(),
             )
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
+            .await
+        {
+            Ok(Some(run)) => run,
+            Ok(None) => {
+                thread_state.lock().await.finish_scheduled_run_submission();
+                return Err(anyhow::anyhow!(
                     "claimed schedule run {} disappeared before it could start",
                     claim.run.run_id
-                )
-            })?;
+                ));
+            }
+            Err(err) => {
+                thread_state.lock().await.finish_scheduled_run_submission();
+                return Err(err.into());
+            }
+        };
         {
-            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
-            thread_state.lock().await.track_scheduled_run(
+            let mut thread_state = thread_state.lock().await;
+            thread_state.finish_scheduled_run_submission();
+            thread_state.track_scheduled_run(
                 turn_id,
                 crate::thread_state::ScheduledThreadScheduleRun {
                     schedule_id: claim.schedule.schedule_id.clone(),
@@ -257,6 +283,54 @@ impl ThreadScheduleRuntime {
         }
     }
 
+    async fn claim_auth_profile(
+        &self,
+        state_db: &StateDbHandle,
+        thread_id: ThreadId,
+        schedule: &codex_state::ThreadSchedule,
+    ) -> Option<Option<String>> {
+        if schedule.auth_profile.is_some() {
+            return schedule.auth_profile.clone();
+        }
+        self.legacy_schedule_auth_profile_from_rollout(state_db, thread_id)
+            .await
+    }
+
+    async fn legacy_schedule_auth_profile_from_rollout(
+        &self,
+        state_db: &StateDbHandle,
+        thread_id: ThreadId,
+    ) -> Option<Option<String>> {
+        let rollout_path = match codex_rollout::find_thread_path_by_id_str(
+            &self.config.codex_home,
+            &thread_id.to_string(),
+            Some(state_db),
+        )
+        .await
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => return None,
+            Err(err) => {
+                warn!(
+                    "failed to locate rollout for legacy scheduled auth profile {thread_id}: {err}"
+                );
+                return None;
+            }
+        };
+        let initial_history =
+            match codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await {
+                Ok(history) => history,
+                Err(err) => {
+                    warn!(
+                        "failed to load rollout {} for legacy scheduled auth profile: {err}",
+                        rollout_path.display()
+                    );
+                    return None;
+                }
+            };
+        schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &initial_history)
+    }
+
     fn spawn_lease_heartbeat(
         &self,
         state_db: StateDbHandle,
@@ -291,7 +365,11 @@ impl ThreadScheduleRuntime {
         });
     }
 
-    async fn load_or_resume_thread(&self, thread_id: ThreadId) -> anyhow::Result<Arc<CodexThread>> {
+    async fn load_or_resume_thread(
+        &self,
+        thread_id: ThreadId,
+        schedule_auth_profile: Option<Option<String>>,
+    ) -> anyhow::Result<Arc<CodexThread>> {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             return Ok(thread);
         }
@@ -319,6 +397,7 @@ impl ThreadScheduleRuntime {
         apply_persisted_schedule_resume_metadata(
             state_db,
             thread_id,
+            schedule_auth_profile,
             &initial_history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -669,10 +748,17 @@ async fn finish_scheduled_run_state(
 async fn apply_persisted_schedule_resume_metadata(
     state_db: &StateDbHandle,
     thread_id: ThreadId,
+    schedule_auth_profile: Option<Option<String>>,
     initial_history: &InitialHistory,
     request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
     typesafe_overrides: &mut ConfigOverrides,
 ) {
+    if typesafe_overrides.auth_profile.is_none()
+        && let Some(auth_profile) =
+            schedule_resume_auth_profile(schedule_auth_profile, initial_history)
+    {
+        typesafe_overrides.auth_profile = Some(auth_profile);
+    }
     super::thread_processor::merge_persisted_auth_profile_from_history(
         typesafe_overrides,
         initial_history,
@@ -703,6 +789,39 @@ async fn apply_persisted_schedule_resume_metadata(
     if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
     {
         typesafe_overrides.approval_policy = Some(approval_policy);
+    }
+}
+
+fn schedule_resume_auth_profile(
+    schedule_auth_profile: Option<Option<String>>,
+    initial_history: &InitialHistory,
+) -> Option<Option<String>> {
+    if schedule_auth_profile.is_some() {
+        return schedule_auth_profile;
+    }
+
+    let history_auth_profile = initial_history.get_auth_profile();
+    if matches!(history_auth_profile, Some(None))
+        && let Some(Some(auth_profile)) = initial_session_auth_profile(initial_history)
+    {
+        return Some(Some(auth_profile));
+    }
+    history_auth_profile
+}
+
+fn initial_session_auth_profile(initial_history: &InitialHistory) -> Option<Option<String>> {
+    match initial_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == resumed.conversation_id => {
+                meta_line.meta.auth_profile.clone()
+            }
+            _ => None,
+        }),
+        InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => meta_line.meta.auth_profile.clone(),
+            _ => None,
+        }),
     }
 }
 
@@ -884,10 +1003,13 @@ fn looks_like_jwt(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::TurnCompleteEvent;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
 
@@ -909,6 +1031,50 @@ mod tests {
                 },
                 git: None,
             })],
+            rollout_path: None,
+        })
+    }
+
+    fn resumed_history_with_session_and_turn_auth_profile(
+        thread_id: ThreadId,
+        session_auth_profile: Option<Option<&str>>,
+        turn_auth_profile: Option<Option<&str>>,
+    ) -> InitialHistory {
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![
+                RolloutItem::SessionMeta(SessionMetaLine {
+                    meta: SessionMeta {
+                        id: thread_id,
+                        auth_profile: session_auth_profile
+                            .map(|profile| profile.map(str::to_string)),
+                        ..SessionMeta::default()
+                    },
+                    git: None,
+                }),
+                RolloutItem::TurnContext(TurnContextItem {
+                    thread_id: Some(thread_id),
+                    turn_id: Some("turn-1".to_string()),
+                    cwd: PathBuf::from("/tmp"),
+                    workspace_roots: None,
+                    current_date: None,
+                    timezone: None,
+                    approval_policy: AskForApproval::OnRequest,
+                    sandbox_policy: SandboxPolicy::DangerFullAccess,
+                    permission_profile: None,
+                    network: None,
+                    file_system_sandbox_policy: None,
+                    model: "gpt-5.5".to_string(),
+                    model_provider_id: None,
+                    personality: None,
+                    collaboration_mode: None,
+                    multi_agent_version: None,
+                    auth_profile: turn_auth_profile.map(|profile| profile.map(str::to_string)),
+                    realtime_active: None,
+                    effort: None,
+                    summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                }),
+            ],
             rollout_path: None,
         })
     }
@@ -997,6 +1163,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
+            None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1038,6 +1205,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
+            None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1045,6 +1213,70 @@ mod tests {
         .await;
 
         assert_eq!(Some(None), typesafe_overrides.auth_profile);
+    }
+
+    #[tokio::test]
+    async fn scheduled_resume_metadata_uses_schedule_auth_profile_over_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let history = resumed_history_with_auth_profile(thread_id, Some(None));
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            Some(Some("account002".to_string())),
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(Some("account002".to_string())),
+            typesafe_overrides.auth_profile
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_scheduled_resume_metadata_prefers_session_auth_profile_over_root_turn() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let history = resumed_history_with_session_and_turn_auth_profile(
+            thread_id,
+            Some(Some("account002")),
+            Some(None),
+        );
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            None,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(Some("account002".to_string())),
+            typesafe_overrides.auth_profile
+        );
     }
 
     #[test]

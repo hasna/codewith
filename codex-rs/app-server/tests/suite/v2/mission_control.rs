@@ -2,6 +2,8 @@ use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::to_response;
+use chrono::DateTime;
+use chrono::Utc;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LocalSessionStatus;
 use codex_app_server_protocol::MissionControlDeliveryPolicy;
@@ -65,6 +67,19 @@ async fn mission_control_overview_lists_sessions_goal_plans_and_pending_interact
             }],
         })
         .await?;
+    state_db
+        .thread_schedules()
+        .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+            thread_id: parsed_thread_id,
+            prompt: "Check release blockers".to_string(),
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            schedule: codex_state::ThreadScheduleSpec::Once,
+            timezone: "UTC".to_string(),
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at: DateTime::<Utc>::from_timestamp(1_900, 0),
+            expires_at: None,
+        })
+        .await?;
 
     let set_goal_id = mcp
         .send_raw_request(
@@ -105,6 +120,7 @@ async fn mission_control_overview_lists_sessions_goal_plans_and_pending_interact
     assert_eq!(overview.capabilities.durable_mailbox, true);
     assert_eq!(overview.capabilities.pending_interactions, true);
     assert_eq!(overview.capabilities.goals, true);
+    assert_eq!(overview.capabilities.scheduled_tasks, true);
     assert_eq!(overview.capabilities.remote_dispatch, false);
     assert_eq!(overview.capabilities.workflow_mutation, false);
     assert_eq!(overview.capabilities.shell_execution, false);
@@ -125,6 +141,12 @@ async fn mission_control_overview_lists_sessions_goal_plans_and_pending_interact
     assert_eq!(
         session.goal_plans[0].nodes[0].status,
         ThreadGoalPlanNodeStatus::Blocked
+    );
+    assert_eq!(session.schedules.len(), 1);
+    assert_eq!(session.schedules[0].prompt, "Check release blockers");
+    assert_eq!(
+        session.schedules[0].status,
+        codex_app_server_protocol::ThreadScheduleStatus::Active
     );
 
     assert_eq!(overview.pending_interactions.len(), 1);

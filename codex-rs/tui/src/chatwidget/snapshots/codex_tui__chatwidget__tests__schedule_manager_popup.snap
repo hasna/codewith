@@ -7,9 +7,8 @@ expression: "render_bottom_popup(&chat, 100)"
   Select a scheduled prompt to manage
 
   Search schedules
-› active · once              id sch_active · next 2023-11-14 22:18 · prompt check whether CI is
-                             green and write the next action · tz UTC · Press Enter to manage.
-  paused · once
-  expired · once
+› check whether CI is green… active · once · sch_acti
+  check whether CI is green… paused · once · sch_paus
+  check whether CI is green… expired · once · sch_expi
 
   Press enter to confirm or esc to go back

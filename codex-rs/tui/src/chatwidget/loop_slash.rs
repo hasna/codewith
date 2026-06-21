@@ -184,13 +184,7 @@ fn parse_manage_command(
 ) -> Result<Option<LoopManageCommand>, LoopSlashParseError> {
     let (command, rest) = split_first_token(args);
     let rest = rest.trim();
-    let schedule_id = || {
-        if rest.is_empty() {
-            None
-        } else {
-            Some(rest.to_string())
-        }
-    };
+    let schedule_id = || schedule_id_arg(rest);
     let command = match command.to_ascii_lowercase().as_str() {
         "list" | "ls" | "status" => {
             reject_extra_manage_args(command, rest, kind)?;
@@ -217,6 +211,31 @@ fn parse_manage_command(
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+fn schedule_id_arg(rest: &str) -> Option<String> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    let compact = rest.split_whitespace().collect::<String>();
+    if compact != rest && looks_like_uuid(&compact) {
+        Some(compact)
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value
+            .char_indices()
+            .all(|(idx, ch)| matches!(idx, 8 | 13 | 18 | 23) == (ch == '-'))
+        && value
+            .chars()
+            .filter(|ch| *ch != '-')
+            .all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn reject_extra_manage_args(
@@ -1034,6 +1053,12 @@ mod tests {
             parse_loop_slash_args("stats sched-1"),
             Ok(LoopSlashCommand::Manage(LoopManageCommand::Stats {
                 schedule_id: Some("sched-1".to_string()),
+            }))
+        );
+        assert_eq!(
+            parse_loop_slash_args("run 0f4a4ce9-66ac-478c-\n  8897-43c2fe8c31df"),
+            Ok(LoopSlashCommand::Manage(LoopManageCommand::RunNow {
+                schedule_id: Some("0f4a4ce9-66ac-478c-8897-43c2fe8c31df".to_string()),
             }))
         );
     }

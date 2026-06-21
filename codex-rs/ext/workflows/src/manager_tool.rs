@@ -28,8 +28,17 @@ pub const MANAGE_WORKFLOW_TOOL_NAME: &str = "manage_workflow";
 
 pub(crate) struct ManageWorkflowTool {
     enabled: Arc<AtomicBool>,
-    state_db: Arc<StateRuntime>,
-    thread_id: ThreadId,
+    runtime: ManageWorkflowRuntime,
+}
+
+enum ManageWorkflowRuntime {
+    Available {
+        state_db: Arc<StateRuntime>,
+        thread_id: ThreadId,
+    },
+    Unavailable {
+        reason: &'static str,
+    },
 }
 
 impl ManageWorkflowTool {
@@ -40,8 +49,17 @@ impl ManageWorkflowTool {
     ) -> Self {
         Self {
             enabled,
-            state_db,
-            thread_id,
+            runtime: ManageWorkflowRuntime::Available {
+                state_db,
+                thread_id,
+            },
+        }
+    }
+
+    pub(crate) fn unavailable(enabled: Arc<AtomicBool>, reason: &'static str) -> Self {
+        Self {
+            enabled,
+            runtime: ManageWorkflowRuntime::Unavailable { reason },
         }
     }
 }
@@ -192,15 +210,25 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
 }
 
 impl ManageWorkflowTool {
+    fn runtime(&self) -> Result<(&StateRuntime, ThreadId), FunctionCallError> {
+        match &self.runtime {
+            ManageWorkflowRuntime::Available {
+                state_db,
+                thread_id,
+            } => Ok((state_db.as_ref(), *thread_id)),
+            ManageWorkflowRuntime::Unavailable { reason } => Err(respond(*reason)),
+        }
+    }
+
     async fn list_workflows(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, thread_id) = self.runtime()?;
         let cursor = parse_list_cursor(args.cursor.as_deref())?;
         let limit = args
             .limit
             .unwrap_or(codex_state::DEFAULT_THREAD_WORKFLOW_LIST_LIMIT);
-        let page = self
-            .state_db
+        let page = state_db
             .workflows()
-            .list_thread_workflow_specs_page(self.thread_id, cursor, limit)
+            .list_thread_workflow_specs_page(thread_id, cursor, limit)
             .await
             .map_err(|_| respond("failed to list workflows for current thread"))?;
         Ok(json!({
@@ -211,12 +239,12 @@ impl ManageWorkflowTool {
     }
 
     async fn create_workflow(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, thread_id) = self.runtime()?;
         let yaml = required_field(args.yaml, "yaml", "create")?;
-        let workflow = self
-            .state_db
+        let workflow = state_db
             .workflows()
             .save_workflow_spec_yaml(codex_state::WorkflowSpecCreateParams {
-                source_thread_id: Some(self.thread_id),
+                source_thread_id: Some(thread_id),
                 source_yaml: yaml,
             })
             .await
@@ -228,12 +256,12 @@ impl ManageWorkflowTool {
     }
 
     async fn read_workflow(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, thread_id) = self.runtime()?;
         let workflow_record_id =
             required_field(args.workflow_record_id, "workflow_record_id", "read")?;
-        let workflow = self
-            .state_db
+        let workflow = state_db
             .workflows()
-            .get_thread_workflow_spec(self.thread_id, workflow_record_id.as_str())
+            .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
             .await
             .map_err(|_| respond("failed to read workflow for current thread"))?
             .map(workflow_json);
@@ -244,13 +272,13 @@ impl ManageWorkflowTool {
     }
 
     async fn start_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, thread_id) = self.runtime()?;
         let workflow_record_id =
             required_field(args.workflow_record_id, "workflow_record_id", "start")?;
         let idempotency_key = normalize_optional_string(args.idempotency_key);
-        if self
-            .state_db
+        if state_db
             .workflows()
-            .get_thread_workflow_spec(self.thread_id, workflow_record_id.as_str())
+            .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
             .await
             .map_err(|_| respond("failed to read workflow for current thread"))?
             .is_none()
@@ -262,23 +290,21 @@ impl ManageWorkflowTool {
                 "error": "workflow not found for current thread",
             }));
         }
-        let snapshot = self
-            .state_db
+        let snapshot = state_db
             .workflows()
             .create_workflow_run(codex_state::WorkflowRunCreateParams {
                 workflow_record_id,
-                source_thread_id: Some(self.thread_id),
+                source_thread_id: Some(thread_id),
                 idempotency_key: idempotency_key.clone(),
             })
             .await
             .map_err(|_| respond("failed to start workflow run"))?;
         let run_id = snapshot.run.run_id.clone();
         let run = run_snapshot_json(&snapshot);
-        let goal_plan = self
-            .state_db
+        let goal_plan = state_db
             .project_workflow_run_to_goal_plan(codex_state::WorkflowGoalPlanProjectionParams {
                 workflow_run_id: run_id,
-                thread_id: self.thread_id,
+                thread_id,
                 idempotency_key,
             })
             .await
@@ -292,14 +318,14 @@ impl ManageWorkflowTool {
     }
 
     async fn list_runs(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, thread_id) = self.runtime()?;
         let cursor = parse_list_cursor(args.cursor.as_deref())?;
         let limit = args
             .limit
             .unwrap_or(codex_state::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT);
-        let page = self
-            .state_db
+        let page = state_db
             .workflows()
-            .list_thread_workflow_runs_page(self.thread_id, cursor, limit)
+            .list_thread_workflow_runs_page(thread_id, cursor, limit)
             .await
             .map_err(|_| respond("failed to list workflow runs for current thread"))?;
         Ok(json!({
@@ -319,12 +345,12 @@ impl ManageWorkflowTool {
     }
 
     async fn pause_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, _) = self.runtime()?;
         let run_id = required_field(args.run_id, "run_id", "pause")?;
         if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
             return Ok(not_found_run_response("pause"));
         }
-        let snapshot = self
-            .state_db
+        let snapshot = state_db
             .pause_workflow_run(codex_state::WorkflowRunPauseParams {
                 run_id,
                 reason: normalize_optional_string(args.reason)
@@ -339,12 +365,12 @@ impl ManageWorkflowTool {
     }
 
     async fn resume_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, _) = self.runtime()?;
         let run_id = required_field(args.run_id, "run_id", "resume")?;
         if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
             return Ok(not_found_run_response("resume"));
         }
-        let snapshot = self
-            .state_db
+        let snapshot = state_db
             .resume_workflow_run(codex_state::WorkflowRunResumeParams { run_id })
             .await
             .map_err(|_| respond("failed to resume workflow run"))?;
@@ -355,12 +381,12 @@ impl ManageWorkflowTool {
     }
 
     async fn cancel_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
+        let (state_db, _) = self.runtime()?;
         let run_id = required_field(args.run_id, "run_id", "cancel")?;
         if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
             return Ok(not_found_run_response("cancel"));
         }
-        let snapshot = self
-            .state_db
+        let snapshot = state_db
             .request_workflow_run_cancel(codex_state::WorkflowRunCancelParams {
                 run_id,
                 reason: normalize_optional_string(args.reason)
@@ -378,13 +404,13 @@ impl ManageWorkflowTool {
         &self,
         run_id: &str,
     ) -> Result<Option<codex_state::WorkflowRunSnapshot>, FunctionCallError> {
-        let snapshot = self
-            .state_db
+        let (state_db, thread_id) = self.runtime()?;
+        let snapshot = state_db
             .workflows()
             .get_workflow_run_snapshot(run_id)
             .await
             .map_err(|_| respond("failed to read workflow run"))?
-            .filter(|snapshot| snapshot.run.source_thread_id == Some(self.thread_id));
+            .filter(|snapshot| snapshot.run.source_thread_id == Some(thread_id));
         Ok(snapshot)
     }
 }
@@ -460,6 +486,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use codex_extension_api::ConversationHistory;
+    use codex_extension_api::FunctionCallError;
     use codex_extension_api::NoopTurnItemEmitter;
     use codex_extension_api::ToolExecutor;
     use codex_extension_api::ToolPayload;
@@ -594,6 +621,40 @@ mod tests {
         assert!(!spec.strict);
         assert_eq!(spec.parameters.required, Some(vec!["action".to_string()]));
         assert_eq!(spec.parameters.additional_properties, Some(false.into()));
+    }
+
+    #[tokio::test]
+    async fn unavailable_manage_workflow_reports_model_facing_reason() {
+        let tool = ManageWorkflowTool::unavailable(
+            Arc::new(AtomicBool::new(true)),
+            "workflow management requires a saved thread",
+        );
+        let payload = ToolPayload::Function {
+            arguments: json!({ "action": "list" }).to_string(),
+        };
+
+        let result = tool
+            .handle(codex_tools::ToolCall {
+                turn_id: "turn".to_string(),
+                call_id: "call-workflow".to_string(),
+                tool_name: codex_tools::ToolName::plain(MANAGE_WORKFLOW_TOOL_NAME),
+                model: "test-model".to_string(),
+                truncation_policy: TruncationPolicy::Bytes(1024 * 64),
+                conversation_history: ConversationHistory::default(),
+                turn_item_emitter: Arc::new(NoopTurnItemEmitter),
+                payload,
+            })
+            .await;
+
+        match result {
+            Err(err) => assert_eq!(
+                err,
+                FunctionCallError::RespondToModel(
+                    "workflow management requires a saved thread".to_string()
+                )
+            ),
+            Ok(_) => panic!("unavailable workflow manager should return a model-facing error"),
+        }
     }
 
     async fn call_tool(tool: &ManageWorkflowTool, args: Value) -> Value {

@@ -1,5 +1,8 @@
 use super::background_agent_processor::BackgroundAgentRequestProcessor;
+use super::background_agent_processor::api_worktree_from_state;
+use super::background_agent_processor::api_worktree_merge_candidate_from_state;
 use super::thread_processor::ThreadRequestProcessor;
+use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use anyhow::Context;
 use chrono::DateTime;
@@ -19,13 +22,30 @@ use codex_app_server_protocol::AgentStopParams;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::WorktreeAttachParams;
+use codex_app_server_protocol::WorktreeCleanupParams;
 use codex_app_server_protocol::WorktreeCleanupPolicy;
+use codex_app_server_protocol::WorktreeCleanupResponse;
+use codex_app_server_protocol::WorktreeCreateParams;
+use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachParams;
 use codex_app_server_protocol::WorktreeListParams;
 use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateApplyParams;
+use codex_app_server_protocol::WorktreeMergeCandidateApplyResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateDismissParams;
+use codex_app_server_protocol::WorktreeMergeCandidateDismissResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateListParams;
+use codex_app_server_protocol::WorktreeMergeCandidateListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateRefreshParams;
+use codex_app_server_protocol::WorktreeMergeCandidateRefreshResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreePolicy;
 use codex_app_server_protocol::WorktreeReadParams;
 use codex_app_server_protocol::WorktreeReadResponse;
+use codex_app_server_protocol::WorktreeReconcileParams;
+use codex_app_server_protocol::WorktreeReconcileResponse;
+use codex_app_server_protocol::WorktreeReleaseParams;
+use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_app_server_protocol::WorktreeSessionMode;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
@@ -55,10 +75,15 @@ use codex_core::config::ConfigOverrides;
 use codex_core::config::WorktreeCleanupMode as CoreWorktreeCleanupMode;
 use codex_core::config::WorktreeSessionMode as CoreWorktreeSessionMode;
 use codex_exec_server::LOCAL_FS;
+use codex_git_utils::GitWorktreeAddOptions;
 use codex_git_utils::GitWorktreeStatusSnapshot;
+use codex_git_utils::add_linked_git_worktree;
+use codex_git_utils::fast_forward_merge_ref;
 use codex_git_utils::get_git_worktree_status_snapshot;
 use codex_git_utils::list_git_worktrees;
+use codex_git_utils::merge_tree_dry_run;
 use codex_git_utils::remove_linked_git_worktree;
+use codex_git_utils::resolve_git_ref;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
@@ -94,6 +119,7 @@ use tokio_util::task::TaskTracker;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
+use uuid::Uuid;
 
 const BACKGROUND_AGENT_SUPERVISOR_PREFIX: &str = "app-server-background-agent";
 const BACKGROUND_AGENT_THREAD_STORE_KIND: &str = "thread-store";
@@ -418,6 +444,299 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn worktree_create(
+        &self,
+        params: WorktreeCreateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
+            .await?
+            .ok_or_else(|| invalid_params("worktree/create requires a git repository"))?;
+        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
+        ensure_worktree_policy_enabled(&policy)?;
+        let attach_thread_id = params
+            .thread_id
+            .as_deref()
+            .map(codex_protocol::ThreadId::from_string)
+            .transpose()
+            .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+        if attach_thread_id.is_some() && policy.main_sessions == WorktreeSessionMode::Off {
+            return Err(invalid_params(
+                "main-session worktrees are disabled in config",
+            ));
+        }
+
+        let worktree_id = Uuid::new_v4().to_string();
+        let branch = worktree_branch_name(
+            params.branch.as_deref(),
+            params.name.as_deref(),
+            worktree_id.as_str(),
+        )?;
+        let start_point = params
+            .start_point
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("HEAD")
+            .to_string();
+        let worktree_root = self.worktree_root_path(base_repo_path.as_path())?;
+        std::fs::create_dir_all(worktree_root.as_path()).map_err(|err| {
+            internal_error(format!(
+                "failed to create worktree root {}: {err}",
+                worktree_root.display()
+            ))
+        })?;
+        let worktree_path = worktree_root.join(worktree_path_name(
+            params.name.as_deref().or(Some(branch.as_str())),
+            worktree_id.as_str(),
+        ));
+        let base_sha = run_git_worktree_task("failed to resolve worktree start point", {
+            let base_repo_path = base_repo_path.clone();
+            let start_point = start_point.clone();
+            move || resolve_git_ref(base_repo_path.as_path(), start_point.as_str())
+        })
+        .await?
+        .ok_or_else(|| {
+            invalid_params(format!(
+                "worktree/create startPoint `{start_point}` does not resolve to a commit"
+            ))
+        })?;
+        let entry = run_git_worktree_task("failed to create git worktree", {
+            let base_repo_path = base_repo_path.clone();
+            let worktree_path = worktree_path.clone();
+            let branch = branch.clone();
+            let start_point = start_point.clone();
+            move || {
+                add_linked_git_worktree(
+                    base_repo_path.as_path(),
+                    GitWorktreeAddOptions {
+                        worktree_path,
+                        branch,
+                        start_point,
+                    },
+                )
+            }
+        })
+        .await?;
+        let status_snapshot = run_git_worktree_task("failed to inspect created worktree", {
+            let worktree_path = worktree_path.clone();
+            move || get_git_worktree_status_snapshot(worktree_path.as_path())
+        })
+        .await?;
+        let cleanup_policy = params
+            .cleanup_policy
+            .map(state_worktree_cleanup_policy)
+            .unwrap_or_else(|| state_worktree_cleanup_policy(policy.cleanup_default));
+        let create_result = state_db
+            .managed_worktrees()
+            .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
+                worktree_id: Some(worktree_id.clone()),
+                identity: Some(format!("manual:{worktree_id}")),
+                mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+                base_repo_path: base_repo_path.clone(),
+                worktree_path: worktree_path.clone(),
+                branch: status_snapshot
+                    .branch
+                    .clone()
+                    .or_else(|| entry.branch.as_deref().map(short_branch_name)),
+                base_sha: Some(base_sha),
+                head_sha: status_snapshot
+                    .head_sha
+                    .clone()
+                    .or_else(|| entry.head_sha.clone()),
+                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                dirty: status_snapshot.dirty,
+                cleanup_policy,
+                owner_kind: codex_state::ManagedWorktreeOwnerKind::Manual,
+                owner_thread_id: None,
+                owner_agent_run_id: None,
+                cleanup_after: None,
+            })
+            .await;
+        let mut worktree = match create_result {
+            Ok(worktree) => worktree,
+            Err(err) => {
+                let _ = run_git_worktree_task("failed to roll back created git worktree", {
+                    let base_repo_path = base_repo_path.clone();
+                    let worktree_path = worktree_path.clone();
+                    move || {
+                        remove_linked_git_worktree(
+                            base_repo_path.as_path(),
+                            worktree_path.as_path(),
+                            /*force*/ true,
+                        )
+                    }
+                })
+                .await;
+                return Err(invalid_params(format!(
+                    "failed to record managed worktree: {err}"
+                )));
+            }
+        };
+        if let Some(thread_id) = attach_thread_id {
+            let target = codex_state::ManagedWorktreeAssignmentTarget::Thread(thread_id);
+            worktree = state_db
+                .managed_worktrees()
+                .attach_managed_worktree(codex_state::ManagedWorktreeAttachParams {
+                    worktree_id: worktree.worktree_id.clone(),
+                    target,
+                })
+                .await
+                .map_err(|err| invalid_params(format!("failed to attach worktree: {err}")))?;
+        }
+        Ok(Some(
+            WorktreeCreateResponse {
+                worktree: api_worktree_from_state(state_db.as_ref(), worktree).await?,
+                policy,
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn worktree_reconcile(
+        &self,
+        params: WorktreeReconcileParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
+            .await?
+            .ok_or_else(|| invalid_params("worktree/reconcile requires a git repository"))?;
+        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
+        ensure_worktree_policy_enabled(&policy)?;
+        let worktree_root = self.worktree_root_path(base_repo_path.as_path())?;
+        let git_entries = run_git_worktree_task("failed to list git worktrees", {
+            let base_repo_path = base_repo_path.clone();
+            move || list_git_worktrees(base_repo_path.as_path())
+        })
+        .await?;
+        let mut state_worktrees =
+            load_all_managed_worktrees(state_db.as_ref(), base_repo_path.as_path()).await?;
+        let codewith_entries = git_entries
+            .into_iter()
+            .filter(|entry| {
+                !entry.is_main && path_is_inside(entry.path.as_path(), worktree_root.as_path())
+            })
+            .collect::<Vec<_>>();
+        let mut discovered = 0_u32;
+        let mut updated = 0_u32;
+        for entry in &codewith_entries {
+            let status_snapshot = run_git_worktree_task("failed to inspect git worktree", {
+                let worktree_path = entry.path.clone();
+                move || get_git_worktree_status_snapshot(worktree_path.as_path())
+            })
+            .await?;
+            if let Some(existing) = state_worktrees.iter().find(|worktree| {
+                paths_match(worktree.worktree_path.as_path(), entry.path.as_path())
+            }) {
+                state_db
+                    .managed_worktrees()
+                    .update_managed_worktree_status(
+                        codex_state::ManagedWorktreeStatusUpdateParams {
+                            worktree_id: existing.worktree_id.clone(),
+                            branch: status_snapshot
+                                .branch
+                                .clone()
+                                .or_else(|| entry.branch.as_deref().map(short_branch_name)),
+                            head_sha: status_snapshot
+                                .head_sha
+                                .clone()
+                                .or_else(|| entry.head_sha.clone()),
+                            status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                            dirty: status_snapshot.dirty,
+                        },
+                    )
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!("failed to update managed worktree: {err}"))
+                    })?;
+                updated += 1;
+            } else {
+                let worktree_id = Uuid::new_v4().to_string();
+                state_db
+                    .managed_worktrees()
+                    .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
+                        worktree_id: Some(worktree_id.clone()),
+                        identity: Some(format!("discovered:{worktree_id}")),
+                        mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+                        base_repo_path: base_repo_path.clone(),
+                        worktree_path: entry.path.clone(),
+                        branch: status_snapshot
+                            .branch
+                            .clone()
+                            .or_else(|| entry.branch.as_deref().map(short_branch_name)),
+                        base_sha: None,
+                        head_sha: status_snapshot
+                            .head_sha
+                            .clone()
+                            .or_else(|| entry.head_sha.clone()),
+                        status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                        dirty: status_snapshot.dirty,
+                        cleanup_policy: state_worktree_cleanup_policy(policy.cleanup_default),
+                        owner_kind: codex_state::ManagedWorktreeOwnerKind::Manual,
+                        owner_thread_id: None,
+                        owner_agent_run_id: None,
+                        cleanup_after: None,
+                    })
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!("failed to record discovered worktree: {err}"))
+                    })?;
+                discovered += 1;
+            }
+        }
+
+        state_worktrees =
+            load_all_managed_worktrees(state_db.as_ref(), base_repo_path.as_path()).await?;
+        let mut deleted = 0_u32;
+        for worktree in state_worktrees {
+            if worktree.mode != codex_state::ManagedWorktreeMode::IsolatedWorktree
+                || worktree.lifecycle_status == codex_state::ManagedWorktreeLifecycleStatus::Deleted
+                || !path_is_inside(worktree.worktree_path.as_path(), worktree_root.as_path())
+                || codewith_entries.iter().any(|entry| {
+                    paths_match(entry.path.as_path(), worktree.worktree_path.as_path())
+                })
+            {
+                continue;
+            }
+            if state_db
+                .managed_worktrees()
+                .mark_managed_worktree_deleted(worktree.worktree_id.as_str())
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to mark missing worktree deleted: {err}"))
+                })?
+                .is_some()
+            {
+                deleted += 1;
+            }
+        }
+
+        let response = self
+            .background_agent_state_processor()
+            .worktree_list_inner(
+                WorktreeListParams {
+                    base_repo_path: Some(base_repo_path.display().to_string()),
+                    include_deleted: Some(true),
+                    cursor: None,
+                    limit: Some(codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT),
+                },
+                policy.clone(),
+            )
+            .await?;
+        Ok(Some(
+            WorktreeReconcileResponse {
+                data: response.data,
+                policy,
+                discovered,
+                updated,
+                deleted,
+            }
+            .into(),
+        ))
+    }
+
     pub(crate) async fn worktree_attach(
         &self,
         params: WorktreeAttachParams,
@@ -466,6 +785,333 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn worktree_release(
+        &self,
+        params: WorktreeReleaseParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let policy = self.worktree_policy(/*current_base_repo_path*/ None);
+        ensure_worktree_policy_enabled(&policy)?;
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Ok(Some(WorktreeReleaseResponse { worktree: None }.into()));
+        };
+        let status_snapshot = status_snapshot_for_release(&worktree, params.force_delete).await?;
+        let cleanup_policy = params
+            .cleanup_policy
+            .map(state_worktree_cleanup_policy)
+            .unwrap_or(worktree.cleanup_policy);
+        let released = state_db
+            .managed_worktrees()
+            .release_managed_worktree(codex_state::ManagedWorktreeReleaseParams {
+                worktree_id: worktree.worktree_id,
+                cleanup_policy,
+                force_delete: params.force_delete.unwrap_or(false),
+                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                dirty: status_snapshot.dirty,
+            })
+            .await
+            .map_err(|err| invalid_params(format!("failed to release worktree: {err}")))?;
+        let worktree = match released {
+            Some(worktree) => Some(api_worktree_from_state(state_db.as_ref(), worktree).await?),
+            None => None,
+        };
+        Ok(Some(WorktreeReleaseResponse { worktree }.into()))
+    }
+
+    pub(crate) async fn worktree_cleanup(
+        &self,
+        params: WorktreeCleanupParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let policy = self.worktree_policy(/*current_base_repo_path*/ None);
+        ensure_worktree_policy_enabled(&policy)?;
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Ok(Some(WorktreeCleanupResponse { worktree: None }.into()));
+        };
+        let force_delete = params.force_delete.unwrap_or(false);
+        let status_snapshot = status_snapshot_for_release(&worktree, Some(force_delete)).await?;
+        let cleanup_policy = if force_delete {
+            codex_state::ManagedWorktreeCleanupPolicy::ForceDelete
+        } else {
+            codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean
+        };
+        let released = state_db
+            .managed_worktrees()
+            .release_managed_worktree(codex_state::ManagedWorktreeReleaseParams {
+                worktree_id: worktree.worktree_id.clone(),
+                cleanup_policy,
+                force_delete,
+                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                dirty: status_snapshot.dirty,
+            })
+            .await
+            .map_err(|err| invalid_params(format!("failed to queue worktree cleanup: {err}")))?;
+        if let Some(candidate) = released
+            && candidate.lifecycle_status
+                == codex_state::ManagedWorktreeLifecycleStatus::CleanupPending
+        {
+            cleanup_managed_worktree_candidate(&state_db, candidate)
+                .await
+                .map_err(|err| internal_error(format!("failed to clean up worktree: {err}")))?;
+        }
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let worktree = match worktree {
+            Some(worktree) => Some(api_worktree_from_state(state_db.as_ref(), worktree).await?),
+            None => None,
+        };
+        Ok(Some(WorktreeCleanupResponse { worktree }.into()))
+    }
+
+    pub(crate) async fn worktree_merge_candidate_list(
+        &self,
+        params: WorktreeMergeCandidateListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let status = params.status.map(state_worktree_merge_candidate_status);
+        let candidates = state_db
+            .managed_worktrees()
+            .list_merge_candidates(
+                params.worktree_id.as_str(),
+                status,
+                params
+                    .limit
+                    .unwrap_or(codex_state::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT),
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to list merge candidates: {err}")))?;
+        Ok(Some(
+            WorktreeMergeCandidateListResponse {
+                data: candidates
+                    .into_iter()
+                    .map(api_worktree_merge_candidate_from_state)
+                    .collect(),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn worktree_merge_candidate_refresh(
+        &self,
+        params: WorktreeMergeCandidateRefreshParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let mut worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
+            .ok_or_else(|| invalid_params("worktree/mergeCandidate/refresh worktree not found"))?;
+        if worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/refresh requires an active worktree",
+            ));
+        }
+        let status_snapshot = run_git_worktree_task("failed to inspect worktree", {
+            let worktree_path = worktree.worktree_path.clone();
+            move || get_git_worktree_status_snapshot(worktree_path.as_path())
+        })
+        .await?;
+        if status_snapshot.dirty {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/refresh requires a clean worktree",
+            ));
+        }
+        if let Some(updated_worktree) = state_db
+            .managed_worktrees()
+            .update_managed_worktree_status(codex_state::ManagedWorktreeStatusUpdateParams {
+                worktree_id: worktree.worktree_id.clone(),
+                branch: status_snapshot
+                    .branch
+                    .clone()
+                    .or_else(|| worktree.branch.clone()),
+                head_sha: status_snapshot
+                    .head_sha
+                    .clone()
+                    .or_else(|| worktree.head_sha.clone()),
+                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                dirty: status_snapshot.dirty,
+            })
+            .await
+            .map_err(|err| internal_error(format!("failed to update managed worktree: {err}")))?
+        {
+            worktree = updated_worktree;
+        }
+        let target_ref = params
+            .target_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("HEAD")
+            .to_string();
+        let target_sha = run_git_worktree_task("failed to resolve merge target", {
+            let base_repo_path = worktree.base_repo_path.clone();
+            let target_ref = target_ref.clone();
+            move || resolve_git_ref(base_repo_path.as_path(), target_ref.as_str())
+        })
+        .await?
+        .ok_or_else(|| {
+            invalid_params(format!(
+                "worktree/mergeCandidate/refresh targetRef `{target_ref}` does not resolve"
+            ))
+        })?;
+        let head_ref = worktree
+            .branch
+            .clone()
+            .or_else(|| worktree.head_sha.clone())
+            .ok_or_else(|| invalid_params("worktree has no branch or head SHA to merge"))?;
+        let dry_run = run_git_worktree_task("failed to dry-run worktree merge", {
+            let base_repo_path = worktree.base_repo_path.clone();
+            let target_ref = target_ref.clone();
+            let head_ref = head_ref.clone();
+            move || {
+                merge_tree_dry_run(
+                    base_repo_path.as_path(),
+                    target_ref.as_str(),
+                    head_ref.as_str(),
+                )
+            }
+        })
+        .await?;
+        let candidate = state_db
+            .managed_worktrees()
+            .record_merge_candidate(codex_state::ManagedWorktreeMergeCandidateRecordParams {
+                candidate_id: None,
+                worktree_id: worktree.worktree_id,
+                target_ref,
+                target_sha: Some(target_sha.clone()),
+                base_sha: worktree.base_sha.unwrap_or(target_sha),
+                head_sha: worktree.head_sha.unwrap_or_else(|| head_ref.clone()),
+                status: if dry_run.clean {
+                    codex_state::ManagedWorktreeMergeCandidateStatus::Open
+                } else {
+                    codex_state::ManagedWorktreeMergeCandidateStatus::Blocked
+                },
+                conflict_summary: (!dry_run.conflicted_paths.is_empty())
+                    .then(|| dry_run.conflicted_paths.join(", ")),
+                test_summary_json: None,
+            })
+            .await
+            .map_err(|err| internal_error(format!("failed to record merge candidate: {err}")))?;
+        Ok(Some(
+            WorktreeMergeCandidateRefreshResponse {
+                candidate: api_worktree_merge_candidate_from_state(candidate),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn worktree_merge_candidate_apply(
+        &self,
+        params: WorktreeMergeCandidateApplyParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let candidate = state_db
+            .managed_worktrees()
+            .get_merge_candidate(params.candidate_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read merge candidate: {err}")))?;
+        let Some(candidate) = candidate else {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        };
+        if candidate.status != codex_state::ManagedWorktreeMergeCandidateStatus::Open {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires an open candidate",
+            ));
+        }
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(candidate.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
+            .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        if candidate.target_ref != "HEAD" {
+            let target_branch = short_branch_name(candidate.target_ref.as_str());
+            let status_snapshot =
+                run_git_worktree_task("failed to inspect merge target checkout", {
+                    let base_repo_path = worktree.base_repo_path.clone();
+                    move || get_git_worktree_status_snapshot(base_repo_path.as_path())
+                })
+                .await?;
+            if status_snapshot.branch.as_deref() != Some(target_branch.as_str()) {
+                return Err(invalid_params(format!(
+                    "worktree/mergeCandidate/apply requires the base repo checkout to be on targetRef `{}`",
+                    candidate.target_ref
+                )));
+            }
+        }
+        if let Some(target_sha) = candidate.target_sha.as_deref() {
+            let current_target_sha =
+                run_git_worktree_task("failed to resolve current merge target", {
+                    let base_repo_path = worktree.base_repo_path.clone();
+                    move || resolve_git_ref(base_repo_path.as_path(), "HEAD")
+                })
+                .await?
+                .ok_or_else(|| {
+                    invalid_params("worktree/mergeCandidate/apply target HEAD does not resolve")
+                })?;
+            if current_target_sha != target_sha {
+                return Err(invalid_params(format!(
+                    "worktree/mergeCandidate/apply target changed from {target_sha} to {current_target_sha}; refresh before applying"
+                )));
+            }
+        }
+        run_git_worktree_task("failed to fast-forward merge candidate", {
+            let base_repo_path = worktree.base_repo_path.clone();
+            let head_sha = candidate.head_sha.clone();
+            move || fast_forward_merge_ref(base_repo_path.as_path(), head_sha.as_str())
+        })
+        .await?;
+        let candidate = state_db
+            .managed_worktrees()
+            .mark_merge_candidate_status(
+                params.candidate_id.as_str(),
+                codex_state::ManagedWorktreeMergeCandidateStatus::Applied,
+            )
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to mark merge candidate applied: {err}"))
+            })?
+            .map(api_worktree_merge_candidate_from_state);
+        Ok(Some(
+            WorktreeMergeCandidateApplyResponse { candidate }.into(),
+        ))
+    }
+
+    pub(crate) async fn worktree_merge_candidate_dismiss(
+        &self,
+        params: WorktreeMergeCandidateDismissParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let state_db = self.worktree_state_db()?;
+        let candidate = state_db
+            .managed_worktrees()
+            .mark_merge_candidate_status(
+                params.candidate_id.as_str(),
+                codex_state::ManagedWorktreeMergeCandidateStatus::Dismissed,
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to dismiss merge candidate: {err}")))?
+            .map(api_worktree_merge_candidate_from_state);
+        Ok(Some(
+            WorktreeMergeCandidateDismissResponse { candidate }.into(),
+        ))
+    }
+
     async fn resolve_worktree_base_repo_path(
         &self,
         requested_base_repo_path: Option<&str>,
@@ -506,6 +1152,31 @@ impl ThreadRequestProcessor {
             current_base_repo_path: current_base_repo_path
                 .map(|path| path.to_string_lossy().into_owned()),
         }
+    }
+
+    fn worktree_root_path(&self, base_repo_path: &Path) -> Result<PathBuf, JSONRPCErrorError> {
+        let Some(root) = self
+            .config
+            .worktrees
+            .root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(base_repo_path.join(".codewith").join("worktrees"));
+        };
+        let root = PathBuf::from(root);
+        if root.is_absolute() {
+            Ok(root)
+        } else {
+            Ok(base_repo_path.join(root))
+        }
+    }
+
+    fn worktree_state_db(&self) -> Result<StateDbHandle, JSONRPCErrorError> {
+        self.state_db
+            .clone()
+            .ok_or_else(|| internal_error("managed worktree state store is unavailable"))
     }
 
     async fn cancel_background_agent_worker(&self, run_id: &str) {
@@ -558,37 +1229,21 @@ impl ThreadRequestProcessor {
                 recovery_policy: Some("abort_mid_turn_resume_at_safe_boundary".to_string()),
             })
         });
-        if params.cwd.is_none() {
-            params.cwd = Some(self.config.cwd.display().to_string());
-        }
-        if context.workspace_roots.is_none() {
-            context.workspace_roots = Some(
-                self.config
-                    .workspace_roots
-                    .iter()
-                    .map(|root| root.display().to_string())
-                    .collect(),
-            );
-        }
-        if context.approval_policy.is_none() {
-            context.approval_policy = Some(self.config.permissions.approval_policy.value().into());
-        }
-        if context.permission_profile.is_none() {
-            context.permission_profile =
-                serde_json::to_value(self.config.permissions.effective_permission_profile()).ok();
-        }
-        if context.model.is_none() {
-            context.model = self.config.model.clone();
-        }
-        if context.provider.is_none() {
-            context.provider = Some(self.config.model_provider_id.clone());
-        }
-        if context.service_tier.is_none() {
-            context.service_tier = self.config.service_tier.clone();
-        }
-        if params.auth_profile_ref.is_none() {
-            params.auth_profile_ref = self.config.selected_auth_profile.clone();
-        }
+        params.cwd = Some(self.config.cwd.display().to_string());
+        context.workspace_roots = Some(
+            self.config
+                .workspace_roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect(),
+        );
+        context.approval_policy = Some(self.config.permissions.approval_policy.value().into());
+        context.permission_profile =
+            serde_json::to_value(self.config.permissions.effective_permission_profile()).ok();
+        context.model = self.config.model.clone();
+        context.provider = Some(self.config.model_provider_id.clone());
+        context.service_tier = self.config.service_tier.clone();
+        params.auth_profile_ref = self.config.selected_auth_profile.clone();
     }
 
     fn spawn_background_agent_reconcile(&self, only_run_id: Option<String>) {
@@ -908,6 +1563,176 @@ fn paths_match(left: &Path, right: &Path) -> bool {
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
+    }
+}
+
+fn ensure_worktree_policy_enabled(policy: &WorktreePolicy) -> Result<(), JSONRPCErrorError> {
+    if policy.enabled {
+        Ok(())
+    } else {
+        Err(invalid_params("managed worktrees are disabled in config"))
+    }
+}
+
+fn state_worktree_cleanup_policy(
+    policy: WorktreeCleanupPolicy,
+) -> codex_state::ManagedWorktreeCleanupPolicy {
+    match policy {
+        WorktreeCleanupPolicy::Retain => codex_state::ManagedWorktreeCleanupPolicy::Retain,
+        WorktreeCleanupPolicy::DeleteIfClean => {
+            codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean
+        }
+        WorktreeCleanupPolicy::ForceDelete => {
+            codex_state::ManagedWorktreeCleanupPolicy::ForceDelete
+        }
+    }
+}
+
+fn state_worktree_merge_candidate_status(
+    status: WorktreeMergeCandidateStatus,
+) -> codex_state::ManagedWorktreeMergeCandidateStatus {
+    match status {
+        WorktreeMergeCandidateStatus::Open => {
+            codex_state::ManagedWorktreeMergeCandidateStatus::Open
+        }
+        WorktreeMergeCandidateStatus::Blocked => {
+            codex_state::ManagedWorktreeMergeCandidateStatus::Blocked
+        }
+        WorktreeMergeCandidateStatus::Applied => {
+            codex_state::ManagedWorktreeMergeCandidateStatus::Applied
+        }
+        WorktreeMergeCandidateStatus::Dismissed => {
+            codex_state::ManagedWorktreeMergeCandidateStatus::Dismissed
+        }
+    }
+}
+
+fn worktree_branch_name(
+    requested_branch: Option<&str>,
+    requested_name: Option<&str>,
+    worktree_id: &str,
+) -> Result<String, JSONRPCErrorError> {
+    if let Some(branch) = requested_branch
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+    {
+        if branch.chars().any(char::is_whitespace) {
+            return Err(invalid_params(
+                "worktree/create branch must not contain whitespace",
+            ));
+        }
+        return Ok(branch.to_string());
+    }
+    Ok(format!(
+        "codewith/{}-{}",
+        sanitize_worktree_component(requested_name.unwrap_or("worktree")),
+        short_worktree_id(worktree_id)
+    ))
+}
+
+fn worktree_path_name(requested_name: Option<&str>, worktree_id: &str) -> String {
+    format!(
+        "{}-{}",
+        sanitize_worktree_component(requested_name.unwrap_or("worktree")),
+        short_worktree_id(worktree_id)
+    )
+}
+
+fn sanitize_worktree_component(value: &str) -> String {
+    let mut component = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while component.contains("--") {
+        component = component.replace("--", "-");
+    }
+    let component = component.trim_matches(['-', '.', '_']).to_string();
+    if component.is_empty() {
+        "worktree".to_string()
+    } else {
+        component
+    }
+}
+
+fn short_worktree_id(worktree_id: &str) -> String {
+    worktree_id.chars().take(8).collect()
+}
+
+fn short_branch_name(branch: &str) -> String {
+    branch
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch)
+        .to_string()
+}
+
+fn path_is_inside(path: &Path, root: &Path) -> bool {
+    if let (Ok(path), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        return path.starts_with(root);
+    }
+    path.starts_with(root)
+}
+
+async fn run_git_worktree_task<T, F>(label: &'static str, task: F) -> Result<T, JSONRPCErrorError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, codex_git_utils::GitToolingError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|err| internal_error(format!("{label}: {err}")))?
+        .map_err(|err| invalid_params(format!("{label}: {err}")))
+}
+
+async fn load_all_managed_worktrees(
+    state_db: &codex_state::StateRuntime,
+    base_repo_path: &Path,
+) -> Result<Vec<codex_state::ManagedWorktree>, JSONRPCErrorError> {
+    let mut cursor = None;
+    let mut worktrees = Vec::new();
+    loop {
+        let page = state_db
+            .managed_worktrees()
+            .list_managed_worktrees_page(
+                Some(base_repo_path),
+                /*include_deleted*/ false,
+                cursor.as_deref(),
+                codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT,
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to list managed worktrees: {err}")))?;
+        worktrees.extend(page.data);
+        let Some(next_cursor) = page.next_cursor else {
+            return Ok(worktrees);
+        };
+        cursor = Some(next_cursor);
+    }
+}
+
+async fn status_snapshot_for_release(
+    worktree: &codex_state::ManagedWorktree,
+    force_delete: Option<bool>,
+) -> Result<GitWorktreeStatusSnapshot, JSONRPCErrorError> {
+    match run_git_worktree_task("failed to inspect worktree", {
+        let worktree_path = worktree.worktree_path.clone();
+        move || get_git_worktree_status_snapshot(worktree_path.as_path())
+    })
+    .await
+    {
+        Ok(status_snapshot) => Ok(status_snapshot),
+        Err(err) if force_delete.unwrap_or(false) => Ok(GitWorktreeStatusSnapshot {
+            dirty: true,
+            branch: worktree.branch.clone(),
+            head_sha: worktree.head_sha.clone(),
+            records: vec![format!("status probe failed before force cleanup: {err:?}")],
+        }),
+        Err(err) => Err(err),
     }
 }
 
@@ -2158,6 +2983,17 @@ async fn heartbeat_and_continue(
         "agent.cancelled",
         json!({"reason": "desired_state_changed"}),
     )
+    .await?;
+    retry_transient_sqlite_busy("finish background agent desired-state stop lease", || {
+        context.state_db.finish_background_agent_process_lease(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+            /*exit_code*/ Some(1),
+            /*exit_signal*/ None,
+            Some("background agent stopped"),
+        )
+    })
     .await?;
     Ok(false)
 }

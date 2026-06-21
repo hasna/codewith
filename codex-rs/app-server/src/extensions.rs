@@ -49,6 +49,11 @@ where
             state_db.clone(),
             thread_manager.clone(),
             |config: &Config| config.features.enabled(codex_features::Feature::Goals),
+            |config: &Config| {
+                config
+                    .features
+                    .enabled(codex_features::Feature::ScheduledTasks)
+            },
         );
         codex_goal_extension::install_with_backend(
             &mut builder,

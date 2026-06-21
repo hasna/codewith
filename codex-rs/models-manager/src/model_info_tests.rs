@@ -2,6 +2,22 @@ use super::*;
 use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
+fn assert_effort_estimate_guidance(text: &str, label: &str) {
+    for expected in [
+        "## Effort estimates",
+        "`Human time`",
+        "`AI-agent time`",
+        "provider/model",
+        "50 output tokens/sec",
+        "wall-clock delivery time",
+    ] {
+        assert!(
+            text.contains(expected),
+            "{label} missing effort estimate guidance string {expected:?}"
+        );
+    }
+}
+
 #[test]
 fn reasoning_summaries_override_true_enables_support() {
     let model = model_info_from_slug("unknown-model");
@@ -22,6 +38,7 @@ fn fallback_model_instructions_name_selected_model() {
     let model = model_info_from_slug("openrouter/example-model");
 
     assert!(model.base_instructions.contains("openrouter/example-model"));
+    assert_effort_estimate_guidance(&model.base_instructions, "fallback base instructions");
     assert!(!model.base_instructions.contains("based on GPT-5"));
 }
 
@@ -248,6 +265,7 @@ fn personality_template_does_not_claim_gpt_5_base() {
 
     assert!(!template.contains("based on GPT-5"));
     assert!(template.contains("selected model"));
+    assert_effort_estimate_guidance(&template, "personality template");
 }
 
 #[test]
@@ -262,6 +280,24 @@ fn bundled_catalog_instructions_do_not_claim_gpt_5_base() {
         {
             assert!(!template.contains("based on GPT-5"));
             assert!(!template.contains("You are Codex"));
+        }
+    }
+}
+
+#[test]
+fn bundled_catalog_instructions_include_effort_estimate_guidance() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+
+    for model in response.models {
+        assert_effort_estimate_guidance(
+            &model.base_instructions,
+            &format!("{} base instructions", model.slug),
+        );
+
+        if let Some(messages) = model.model_messages
+            && let Some(template) = messages.instructions_template
+        {
+            assert_effort_estimate_guidance(&template, &format!("{} template", model.slug));
         }
     }
 }

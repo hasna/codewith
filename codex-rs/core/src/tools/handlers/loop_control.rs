@@ -162,7 +162,8 @@ impl ToolExecutor<ToolInvocation> for ManageLoopHandler {
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
-        let response = manage_loop(state_db, session.thread_id(), args).await?;
+        let auth_profile = session.selected_auth_profile().await;
+        let response = manage_loop(state_db, session.thread_id(), auth_profile, args).await?;
         loop_response(response).map(boxed_tool_output)
     }
 }
@@ -172,6 +173,7 @@ impl CoreToolRuntime for ManageLoopHandler {}
 async fn manage_loop(
     state_db: Arc<codex_state::StateRuntime>,
     thread_id: ThreadId,
+    auth_profile: Option<String>,
     args: ManageLoopArgs,
 ) -> Result<ManageLoopResponse, FunctionCallError> {
     let action = match args.action {
@@ -195,7 +197,7 @@ async fn manage_loop(
     };
 
     match action {
-        LoopAction::Create => create_loop(state_db, thread_id, args).await,
+        LoopAction::Create => create_loop(state_db, thread_id, auth_profile, args).await,
         LoopAction::List => {
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             Ok(ManageLoopResponse {
@@ -323,6 +325,7 @@ async fn manage_loop(
 async fn create_loop(
     state_db: Arc<codex_state::StateRuntime>,
     thread_id: ThreadId,
+    auth_profile: Option<String>,
     args: ManageLoopArgs,
 ) -> Result<ManageLoopResponse, FunctionCallError> {
     ensure_schedule_capacity(&state_db, thread_id).await?;
@@ -358,16 +361,19 @@ async fn create_loop(
 
     let schedule = state_db
         .thread_schedules()
-        .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
-            thread_id,
-            prompt,
-            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-            schedule,
-            timezone,
-            status: codex_state::ThreadScheduleStatus::Active,
-            next_run_at,
-            expires_at,
-        })
+        .create_thread_schedule_for_auth_profile(
+            codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt,
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule,
+                timezone,
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at,
+                expires_at,
+            },
+            auth_profile,
+        )
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
     let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
@@ -835,6 +841,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Interval {
@@ -969,7 +976,7 @@ mod tests {
             .await
             .expect("second run should fail");
 
-        let response = manage_loop(runtime, thread_id, loop_args(LoopAction::List))
+        let response = manage_loop(runtime, thread_id, None, loop_args(LoopAction::List))
             .await
             .expect("loop list should succeed");
 
@@ -1000,6 +1007,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Cron {
@@ -1056,6 +1064,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Start)
             },
@@ -1086,6 +1095,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
+            None,
             ManageLoopArgs {
                 prompt: Some("Ask once".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Once),
@@ -1122,6 +1132,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Stop)
             },
@@ -1202,6 +1213,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 schedule_id: Some(first.schedule_id.clone()),
                 ..loop_args(LoopAction::Clear)
@@ -1284,6 +1296,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 schedule_id: Some(schedule.schedule_id.clone()),
                 ..loop_args(LoopAction::Resume)
@@ -1325,6 +1338,7 @@ mod tests {
         let err = manage_loop(
             runtime.clone(),
             thread_id,
+            None,
             ManageLoopArgs {
                 schedule_id: Some(other_schedule.schedule_id.clone()),
                 ..loop_args(LoopAction::Stop)
@@ -1368,6 +1382,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
+            None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Clear)
             },

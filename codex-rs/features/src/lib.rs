@@ -1285,7 +1285,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Workflows,
         key: "workflows",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "Workflows",
+            menu_description: "Show workflow commands for drafting, saving, and running thread workflow specs.",
+            announcement: "NEW: Workflows are now available in /experimental.",
+        },
         default_enabled: false,
     },
 ];

@@ -59,7 +59,8 @@ pub(crate) async fn run() -> Result<()> {
     }
     loop {
         match update_once(&running_updater_identity, &mut terminate).await {
-            Ok(UpdateLoopControl::Continue) | Err(_) => {}
+            Ok(UpdateLoopControl::Continue) => {}
+            Err(err) => eprintln!("{}", update_failure_diagnostic(&err)),
             Ok(UpdateLoopControl::Stop) => return Ok(()),
         }
         if sleep_or_terminate(UPDATE_INTERVAL, &mut terminate).await {
@@ -138,6 +139,11 @@ fn update_modes_for_identities(
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
     }
+}
+
+#[cfg(unix)]
+fn update_failure_diagnostic(err: &anyhow::Error) -> String {
+    format!("Codewith app-server daemon updater failed: {err:#}")
 }
 
 #[cfg(unix)]

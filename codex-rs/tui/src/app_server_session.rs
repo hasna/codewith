@@ -195,12 +195,25 @@ use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::WorktreeAttachParams;
 use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupParams;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
+use codex_app_server_protocol::WorktreeCleanupResponse;
+use codex_app_server_protocol::WorktreeCreateParams;
+use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachParams;
 use codex_app_server_protocol::WorktreeDetachResponse;
 use codex_app_server_protocol::WorktreeListParams;
 use codex_app_server_protocol::WorktreeListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateListParams;
+use codex_app_server_protocol::WorktreeMergeCandidateListResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateRefreshParams;
+use codex_app_server_protocol::WorktreeMergeCandidateRefreshResponse;
 use codex_app_server_protocol::WorktreeReadParams;
 use codex_app_server_protocol::WorktreeReadResponse;
+use codex_app_server_protocol::WorktreeReconcileParams;
+use codex_app_server_protocol::WorktreeReconcileResponse;
+use codex_app_server_protocol::WorktreeReleaseParams;
+use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -1606,6 +1619,45 @@ impl AppServerSession {
             .wrap_err("worktree/read failed in TUI")
     }
 
+    pub(crate) async fn worktree_create(
+        &mut self,
+        base_repo_path: Option<String>,
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+        cleanup_policy: Option<WorktreeCleanupPolicy>,
+    ) -> Result<WorktreeCreateResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeCreate {
+                request_id,
+                params: WorktreeCreateParams {
+                    base_repo_path,
+                    name,
+                    branch,
+                    start_point,
+                    cleanup_policy,
+                    thread_id: None,
+                },
+            })
+            .await
+            .wrap_err("worktree/create failed in TUI")
+    }
+
+    pub(crate) async fn worktree_reconcile(
+        &mut self,
+        base_repo_path: Option<String>,
+    ) -> Result<WorktreeReconcileResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeReconcile {
+                request_id,
+                params: WorktreeReconcileParams { base_repo_path },
+            })
+            .await
+            .wrap_err("worktree/reconcile failed in TUI")
+    }
+
     pub(crate) async fn worktree_attach(
         &mut self,
         worktree_id: String,
@@ -1644,6 +1696,80 @@ impl AppServerSession {
             })
             .await
             .wrap_err("worktree/detach failed in TUI")
+    }
+
+    pub(crate) async fn worktree_release(
+        &mut self,
+        worktree_id: String,
+        cleanup_policy: Option<WorktreeCleanupPolicy>,
+        force_delete: Option<bool>,
+    ) -> Result<WorktreeReleaseResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeRelease {
+                request_id,
+                params: WorktreeReleaseParams {
+                    worktree_id,
+                    cleanup_policy,
+                    force_delete,
+                },
+            })
+            .await
+            .wrap_err("worktree/release failed in TUI")
+    }
+
+    pub(crate) async fn worktree_cleanup(
+        &mut self,
+        worktree_id: String,
+        force_delete: Option<bool>,
+    ) -> Result<WorktreeCleanupResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeCleanup {
+                request_id,
+                params: WorktreeCleanupParams {
+                    worktree_id,
+                    force_delete,
+                },
+            })
+            .await
+            .wrap_err("worktree/cleanup failed in TUI")
+    }
+
+    pub(crate) async fn worktree_merge_candidate_list(
+        &mut self,
+        worktree_id: String,
+    ) -> Result<WorktreeMergeCandidateListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeMergeCandidateList {
+                request_id,
+                params: WorktreeMergeCandidateListParams {
+                    worktree_id,
+                    status: None,
+                    limit: Some(20),
+                },
+            })
+            .await
+            .wrap_err("worktree/mergeCandidate/list failed in TUI")
+    }
+
+    pub(crate) async fn worktree_merge_candidate_refresh(
+        &mut self,
+        worktree_id: String,
+        target_ref: Option<String>,
+    ) -> Result<WorktreeMergeCandidateRefreshResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorktreeMergeCandidateRefresh {
+                request_id,
+                params: WorktreeMergeCandidateRefreshParams {
+                    worktree_id,
+                    target_ref,
+                },
+            })
+            .await
+            .wrap_err("worktree/mergeCandidate/refresh failed in TUI")
     }
 
     pub(crate) async fn thread_monitor_read(
