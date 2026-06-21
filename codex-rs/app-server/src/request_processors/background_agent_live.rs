@@ -946,6 +946,27 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        }
         let status = params.status.map(state_worktree_merge_candidate_status);
         let candidates = state_db
             .managed_worktrees()
@@ -1039,12 +1060,12 @@ impl ThreadRequestProcessor {
             .ok_or_else(|| invalid_params("worktree has no head SHA to merge"))?;
         let dry_run = run_git_worktree_task("failed to dry-run worktree merge", {
             let base_repo_path = worktree.base_repo_path.clone();
-            let target_ref = target_ref.clone();
+            let target_sha = target_sha.clone();
             let head_sha = head_sha.clone();
             move || {
                 merge_tree_dry_run(
                     base_repo_path.as_path(),
-                    target_ref.as_str(),
+                    target_sha.as_str(),
                     head_sha.as_str(),
                 )
             }
@@ -1083,6 +1104,7 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateApplyParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
         let candidate = state_db
             .managed_worktrees()
             .get_merge_candidate(params.candidate_id.as_str())
@@ -1104,6 +1126,16 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
             .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        }
         if worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active {
             return Err(invalid_params(
                 "worktree/mergeCandidate/apply requires an active worktree",
@@ -1186,12 +1218,45 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateDismissParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
         let candidate = state_db
             .managed_worktrees()
-            .mark_merge_candidate_status(
-                params.candidate_id.as_str(),
-                codex_state::ManagedWorktreeMergeCandidateStatus::Dismissed,
-            )
+            .get_merge_candidate(params.candidate_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read merge candidate: {err}")))?;
+        let Some(candidate) = candidate else {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        };
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(candidate.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
+            .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        }
+        if !matches!(
+            candidate.status,
+            codex_state::ManagedWorktreeMergeCandidateStatus::Open
+                | codex_state::ManagedWorktreeMergeCandidateStatus::Blocked
+        ) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+            ));
+        }
+        let candidate = state_db
+            .managed_worktrees()
+            .dismiss_merge_candidate(params.candidate_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to dismiss merge candidate: {err}")))?
             .map(api_worktree_merge_candidate_from_state);
@@ -1589,6 +1654,24 @@ async fn cleanup_managed_worktree_candidate(
     state_db: &StateDbHandle,
     worktree: codex_state::ManagedWorktree,
 ) -> anyhow::Result<()> {
+    if let Some(agent_run_id) = worktree.owner_agent_run_id.as_deref()
+        && let Some(run) = state_db.get_run(agent_run_id).await?
+        && !is_terminal_background_agent_status(run.status)
+    {
+        record_managed_worktree_cleanup_failure(
+            state_db,
+            worktree.worktree_id.as_str(),
+            format!(
+                "background agent run {} is still {}; stop or wait for it to finish before cleanup",
+                run.id,
+                run.status.as_str()
+            ),
+            stored_status_snapshot_for_cleanup(&worktree),
+            /*force_delete_required*/ false,
+        )
+        .await?;
+        return Ok(());
+    }
     let base_repo_path = worktree.base_repo_path.clone();
     let worktree_path = worktree.worktree_path.clone();
     let status_result = tokio::task::spawn_blocking({
@@ -1796,8 +1879,6 @@ async fn release_background_agent_worktree_lease_if_present(
             ))
         })?;
     if let Some(run) = run
-        && run.desired_state == BackgroundAgentDesiredState::Running
-        && run.status != BackgroundAgentRunStatus::Orphaned
         && !is_terminal_background_agent_status(run.status)
     {
         return Err(invalid_params(format!(
@@ -1965,6 +2046,13 @@ async fn load_all_managed_worktrees(
     }
 }
 
+fn worktree_matches_base_repo(
+    worktree: &codex_state::ManagedWorktree,
+    base_repo_path: &Path,
+) -> bool {
+    worktree.base_repo_path.as_path() == base_repo_path
+}
+
 async fn status_snapshot_for_release(
     worktree: &codex_state::ManagedWorktree,
     force_delete: Option<bool>,
@@ -1996,6 +2084,50 @@ fn status_snapshot_has_merge_target_changes(status_snapshot: &GitWorktreeStatusS
         }
         !record.trim().is_empty()
     })
+}
+
+fn stored_status_snapshot_for_cleanup(
+    worktree: &codex_state::ManagedWorktree,
+) -> GitWorktreeStatusSnapshot {
+    let records = worktree
+        .status_snapshot_json
+        .get("records")
+        .and_then(Value::as_array)
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|records| !records.is_empty())
+        .unwrap_or_else(|| {
+            vec![format!(
+                "cleanup blocked for owner background agent {:?}",
+                worktree.owner_agent_run_id
+            )]
+        });
+    GitWorktreeStatusSnapshot {
+        dirty: worktree
+            .status_snapshot_json
+            .get("dirty")
+            .and_then(Value::as_bool)
+            .unwrap_or(worktree.dirty),
+        branch: worktree
+            .status_snapshot_json
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.branch.clone()),
+        head_sha: worktree
+            .status_snapshot_json
+            .get("headSha")
+            .or_else(|| worktree.status_snapshot_json.get("head_sha"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.head_sha.clone()),
+        records,
+    }
 }
 
 async fn record_managed_worktree_cleanup_failure(

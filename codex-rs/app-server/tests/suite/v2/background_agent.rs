@@ -1050,6 +1050,20 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let other_repo = codex_home.path().join("other-repo");
     std::fs::create_dir_all(other_repo.join(".git"))?;
     create_managed_worktree(state_db.as_ref(), "wt-other", other_repo.as_path()).await?;
+    state_db
+        .managed_worktrees()
+        .record_merge_candidate(codex_state::ManagedWorktreeMergeCandidateRecordParams {
+            candidate_id: Some("candidate-other-repo".to_string()),
+            worktree_id: "wt-other".to_string(),
+            target_ref: "HEAD".to_string(),
+            target_sha: Some("target-sha".to_string()),
+            base_sha: "base-sha".to_string(),
+            head_sha: "head-sha".to_string(),
+            status: codex_state::ManagedWorktreeMergeCandidateStatus::Open,
+            conflict_summary: None,
+            test_summary_json: None,
+        })
+        .await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let list_request_id = mcp
@@ -1099,6 +1113,46 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
         Some(other_repo.display().to_string()),
         read_requested_repo.policy.current_base_repo_path
     );
+
+    let list_other_candidates_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/list",
+            Some(json!({
+                "worktreeId": "wt-other",
+                "status": "open",
+            })),
+        )
+        .await?;
+    let other_candidates: WorktreeMergeCandidateListResponse =
+        read_response(&mut mcp, list_other_candidates_request_id).await?;
+    assert_eq!(
+        Vec::<String>::new(),
+        worktree_ids_from_candidates(&other_candidates)
+    );
+
+    let apply_other_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/apply",
+            Some(json!({
+                "candidateId": "candidate-other-repo",
+            })),
+        )
+        .await?;
+    let apply_other: WorktreeMergeCandidateApplyResponse =
+        read_response(&mut mcp, apply_other_request_id).await?;
+    assert_eq!(None, apply_other.candidate);
+
+    let dismiss_other_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/dismiss",
+            Some(json!({
+                "candidateId": "candidate-other-repo",
+            })),
+        )
+        .await?;
+    let dismiss_other: WorktreeMergeCandidateDismissResponse =
+        read_response(&mut mcp, dismiss_other_request_id).await?;
+    assert_eq!(None, dismiss_other.candidate);
 
     Ok(())
 }
@@ -1388,6 +1442,20 @@ async fn worktree_release_and_cleanup_reject_active_background_agent_lease() -> 
         StateBackgroundAgentRunStatus::Running,
     )
     .await?;
+    create_background_agent_git_worktree_lease(
+        state_db.as_ref(),
+        "agent-run-stopping-lease",
+        "lease-stopping",
+        codex_home.path(),
+        StateBackgroundAgentRunStatus::Stopping,
+    )
+    .await?;
+    state_db
+        .set_background_agent_desired_state(
+            "agent-run-stopping-lease",
+            StateBackgroundAgentDesiredState::Stopped,
+        )
+        .await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let release_error = raw_request_error(
@@ -1433,6 +1501,205 @@ async fn worktree_release_and_cleanup_reject_active_background_agent_lease() -> 
     assert_eq!(None, lease.released_at);
     assert_eq!(None, lease.deleted_at);
     assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    let stopping_release_error = raw_request_error(
+        &mut mcp,
+        "worktree/release",
+        json!({
+            "worktreeId": "lease-stopping",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, stopping_release_error.error.code);
+    assert!(
+        stopping_release_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected stopping release error: {}",
+        stopping_release_error.error.message
+    );
+    let stopping_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/cleanup",
+        json!({
+            "worktreeId": "lease-stopping",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, stopping_cleanup_error.error.code);
+    assert!(
+        stopping_cleanup_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected stopping cleanup error: {}",
+        stopping_cleanup_error.error.message
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-stopping")
+        .await?
+        .expect("stopping lease should remain");
+    assert_eq!(None, lease.released_at);
+    assert_eq!(None, lease.deleted_at);
+    assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-active-lease",
+            StateBackgroundAgentRunStatus::Orphaned,
+            Some("supervisor heartbeat stale"),
+        )
+        .await?;
+    let orphan_release_error = raw_request_error(
+        &mut mcp,
+        "worktree/release",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, orphan_release_error.error.code);
+    assert!(
+        orphan_release_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected orphan release error: {}",
+        orphan_release_error.error.message
+    );
+    let orphan_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/cleanup",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, orphan_cleanup_error.error.code);
+    assert!(
+        orphan_cleanup_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected orphan cleanup error: {}",
+        orphan_cleanup_error.error.message
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-active")
+        .await?
+        .expect("orphaned lease should remain");
+    assert_eq!(None, lease.released_at);
+    assert_eq!(None, lease.deleted_at);
+    assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    seed_queued_agent_run(
+        state_db.as_ref(),
+        "agent-run-cleanup-guard",
+        None,
+        "guard nonterminal owner cleanup",
+    )
+    .await?;
+    state_db
+        .set_background_agent_desired_state(
+            "agent-run-cleanup-guard",
+            StateBackgroundAgentDesiredState::Stopped,
+        )
+        .await?;
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-cleanup-guard",
+            StateBackgroundAgentRunStatus::Stopping,
+            Some("stop requested"),
+        )
+        .await?;
+    let base_sha_output = Command::new("git")
+        .current_dir(codex_home.path())
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !base_sha_output.status.success() {
+        anyhow::bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&base_sha_output.stderr)
+        );
+    }
+    let base_sha = String::from_utf8(base_sha_output.stdout)?
+        .trim()
+        .to_string();
+    let worktree_path = codex_home
+        .path()
+        .join(".codewith")
+        .join("worktrees")
+        .join("cleanup-guard");
+    let worktree_parent = worktree_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("worktree path has no parent"))?;
+    std::fs::create_dir_all(worktree_parent)?;
+    git(
+        codex_home.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "codewith/cleanup-guard",
+            worktree_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    state_db
+        .managed_worktrees()
+        .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
+            worktree_id: Some("cleanup-guard".to_string()),
+            identity: Some("test:cleanup-guard".to_string()),
+            mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+            base_repo_path: codex_home.path().to_path_buf(),
+            worktree_path: worktree_path.clone(),
+            branch: Some("codewith/cleanup-guard".to_string()),
+            base_sha: Some(base_sha.clone()),
+            head_sha: Some(base_sha),
+            status_snapshot_json: json!({"dirty": false, "source": "seed"}),
+            dirty: false,
+            cleanup_policy: codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean,
+            owner_kind: codex_state::ManagedWorktreeOwnerKind::BackgroundAgent,
+            owner_thread_id: None,
+            owner_agent_run_id: Some("agent-run-cleanup-guard".to_string()),
+            cleanup_after: None,
+        })
+        .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let cleanup_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": "cleanup-guard",
+                "forceDelete": true,
+            })),
+        )
+        .await?;
+    let cleanup: WorktreeCleanupResponse = read_response(&mut mcp, cleanup_request_id).await?;
+    assert_eq!(
+        WorktreeLifecycleStatus::CleanupPending,
+        cleanup
+            .worktree
+            .expect("cleanup response should include worktree")
+            .lifecycle_status
+    );
+    assert!(worktree_path.exists());
 
     Ok(())
 }
@@ -1531,7 +1798,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     git(repo_path.as_path(), &["commit", "-m", "ignore worktrees"])?;
     let base_repo_path = repo_path.display().to_string();
 
-    let mut mcp = init_mcp(codex_home.path()).await?;
+    let mut mcp = init_mcp_with_cwd(codex_home.path(), repo_path.as_path()).await?;
     let create_request_id = mcp
         .send_raw_request(
             "worktree/create",
@@ -1717,6 +1984,20 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     assert_eq!(
         "worktree/mergeCandidate/apply requires an open candidate",
         apply_again_error.error.message
+    );
+
+    let dismiss_applied_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/dismiss",
+        json!({
+            "candidateId": candidate_id.clone(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, dismiss_applied_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+        dismiss_applied_error.error.message
     );
 
     Ok(())
@@ -1958,6 +2239,12 @@ async fn init_mcp(codex_home: &Path) -> Result<McpProcess> {
     Ok(mcp)
 }
 
+async fn init_mcp_with_cwd(codex_home: &Path, cwd: &Path) -> Result<McpProcess> {
+    let mut mcp = McpProcess::new_with_cwd(codex_home, cwd).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    Ok(mcp)
+}
+
 async fn init_state_db(codex_home: &Path) -> Result<Arc<codex_state::StateRuntime>> {
     let state_db =
         codex_state::StateRuntime::init(codex_home.to_path_buf(), "mock_provider".into()).await?;
@@ -2156,6 +2443,14 @@ fn worktree_ids(response: &WorktreeListResponse) -> Vec<String> {
         .data
         .iter()
         .map(|worktree| worktree.worktree_id.clone())
+        .collect()
+}
+
+fn worktree_ids_from_candidates(response: &WorktreeMergeCandidateListResponse) -> Vec<String> {
+    response
+        .data
+        .iter()
+        .map(|candidate| candidate.worktree_id.clone())
         .collect()
 }
 
