@@ -2367,6 +2367,10 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::CreateAgentThread => {
+                self.create_agent_thread_from_picker(tui, app_server)
+                    .await?;
+            }
             AppEvent::OpenAgentRenamePrompt {
                 thread_id,
                 current_name,

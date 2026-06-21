@@ -23153,6 +23153,13 @@
               "null"
             ]
           },
+          "parentThreadId": {
+            "description": "Optional parent thread id when starting a fresh subagent child thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "personality": {
             "anyOf": [
               {

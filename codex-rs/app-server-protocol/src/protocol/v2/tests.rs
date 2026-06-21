@@ -3715,6 +3715,27 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn thread_start_params_accept_parent_thread_id_for_subagents() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "threadSource": "subagent",
+        "parentThreadId": "00000000-0000-0000-0000-000000000123",
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+    assert_eq!(
+        params.parent_thread_id,
+        Some("00000000-0000-0000-0000-000000000123".to_string())
+    );
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(
+        serialized.get("parentThreadId").and_then(JsonValue::as_str),
+        Some("00000000-0000-0000-0000-000000000123")
+    );
+}
+
+#[test]
 fn thread_lifecycle_responses_default_missing_optional_fields() {
     let response = json!({
         "thread": {
