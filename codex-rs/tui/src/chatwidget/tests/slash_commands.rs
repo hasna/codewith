@@ -2624,6 +2624,24 @@ async fn slash_logout_requests_app_server_logout() {
 
     chat.dispatch_command(SlashCommand::Logout);
 
+    assert!(
+        rx.try_recv().is_err(),
+        "logout should wait for confirmation"
+    );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("slash_logout_confirmation_popup", popup.clone());
+    assert!(
+        popup.contains("Log out of Codewith?"),
+        "expected logout confirmation popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("No, keep working"),
+        "expected non-destructive default option, got:\n{popup}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
     assert_matches!(rx.try_recv(), Ok(AppEvent::Logout));
 }
 
@@ -3664,6 +3682,22 @@ async fn slash_fork_requests_current_fork() {
     chat.dispatch_command(SlashCommand::Fork);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
+}
+
+#[tokio::test]
+async fn slash_fork_with_thread_but_no_rollout_shows_starting_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command(SlashCommand::Fork);
+
+    assert!(rx.try_recv().is_err(), "fork should not call app-server");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected fork startup error");
+    assert_chatwidget_snapshot!(
+        "slash_fork_with_thread_but_no_rollout_shows_starting_error",
+        lines_to_single_string(&cells[0])
+    );
 }
 
 #[tokio::test]
