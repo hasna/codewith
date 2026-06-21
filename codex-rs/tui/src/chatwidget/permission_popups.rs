@@ -154,6 +154,7 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some("Update Model Permissions".to_string()),
+            subtitle: Some(permissions_saved_subtitle(&self.config).to_string()),
             footer_note,
             footer_hint: Some(standard_popup_hint_line()),
             items,
