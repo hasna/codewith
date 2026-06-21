@@ -240,7 +240,7 @@ impl App {
                                 .to_string(),
                         );
                         tui.frame_requester().schedule_frame();
-                        return Ok(());
+                        return Ok(AppRunControl::Continue);
                     }
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;

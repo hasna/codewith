@@ -216,9 +216,7 @@ impl App {
     }
 
     fn connectors_list_thread_id(&self) -> Option<String> {
-        if self.chat_widget.rollout_path().is_none() {
-            return None;
-        }
+        self.chat_widget.rollout_path()?;
 
         self.current_displayed_thread_id()
             .map(|thread_id| thread_id.to_string())

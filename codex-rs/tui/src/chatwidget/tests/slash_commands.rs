@@ -3691,13 +3691,13 @@ async fn slash_fork_with_thread_but_no_rollout_shows_starting_error() {
 
     chat.dispatch_command(SlashCommand::Fork);
 
-    assert!(rx.try_recv().is_err(), "fork should not call app-server");
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1, "expected fork startup error");
     assert_chatwidget_snapshot!(
         "slash_fork_with_thread_but_no_rollout_shows_starting_error",
         lines_to_single_string(&cells[0])
     );
+    assert!(rx.try_recv().is_err(), "fork should not call app-server");
 }
 
 #[tokio::test]
