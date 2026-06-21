@@ -335,6 +335,12 @@ impl GoalService {
         Ok(cleared)
     }
 
+    pub fn suppress_next_idle_continuation(&self, thread_id: ThreadId, goal_id: &str) {
+        if let Some(runtime) = self.runtime_for_thread(thread_id) {
+            runtime.suppress_next_idle_continuation(goal_id);
+        }
+    }
+
     pub async fn activate_thread_goal_plan_node(
         &self,
         state_db: &codex_state::StateRuntime,

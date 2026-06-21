@@ -464,6 +464,7 @@ impl MessageProcessor {
             Arc::clone(&thread_list_state_permit),
             Arc::clone(&skills_watcher),
             state_db.clone(),
+            Arc::clone(&goal_service),
         );
         thread_schedule_runtime.start();
         let thread_schedule_processor = ThreadScheduleRequestProcessor::new(

@@ -2,6 +2,10 @@ use super::*;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_from_state;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_run_from_state;
 use chrono_tz::Tz;
+use codex_goal_extension::GoalObjectiveUpdate;
+use codex_goal_extension::GoalService;
+use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTokenBudgetUpdate;
 use croner::Cron;
 use std::str::FromStr;
 
@@ -26,6 +30,7 @@ pub(crate) struct ThreadScheduleRuntime {
     thread_list_state_permit: Arc<Semaphore>,
     skills_watcher: Arc<SkillsWatcher>,
     state_db: Option<StateDbHandle>,
+    goal_service: Arc<GoalService>,
     cancel_token: CancellationToken,
     tasks: TaskTracker,
 }
@@ -44,6 +49,7 @@ impl ThreadScheduleRuntime {
         thread_list_state_permit: Arc<Semaphore>,
         skills_watcher: Arc<SkillsWatcher>,
         state_db: Option<StateDbHandle>,
+        goal_service: Arc<GoalService>,
     ) -> Self {
         Self {
             auth_manager,
@@ -57,6 +63,7 @@ impl ThreadScheduleRuntime {
             thread_list_state_permit,
             skills_watcher,
             state_db,
+            goal_service,
             cancel_token: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }
@@ -178,6 +185,7 @@ impl ThreadScheduleRuntime {
         let prompt = self
             .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
             .await?;
+        let scheduled_goal_objective = scheduled_goal_objective(&prompt).map(str::to_string);
         let claim_auth_profile = self
             .claim_auth_profile(&state_db, thread_id, &claim.schedule)
             .await;
@@ -186,20 +194,36 @@ impl ThreadScheduleRuntime {
             .await?;
         self.ensure_schedule_listener(thread_id, thread.clone())
             .await?;
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let listener_command_tx = {
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let turn_prompt = if let Some(objective) = scheduled_goal_objective.as_deref() {
+            self.prepare_scheduled_goal(
+                thread_id,
+                &state_db,
+                objective,
+                listener_command_tx.clone(),
+            )
+            .await?;
+            scheduled_goal_thread_prompt(
+                objective,
+                claim.run.run_id.as_str(),
+                claim.run.scheduled_for,
+            )
+        } else {
+            scheduled_thread_prompt(&prompt, claim.run.run_id.as_str(), claim.run.scheduled_for)
+        };
         let thread_settings = codex_protocol::protocol::ThreadSettingsOverrides {
             auth_profile: claim_auth_profile,
             ..codex_protocol::protocol::ThreadSettingsOverrides::default()
         };
-        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
         thread_state.lock().await.begin_scheduled_run_submission();
         let submit_result = thread
             .submit(Op::UserInput {
                 items: vec![CoreInputItem::Text {
-                    text: scheduled_thread_prompt(
-                        &prompt,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                    ),
+                    text: turn_prompt,
                     text_elements: Vec::new(),
                 }],
                 environments: None,
@@ -259,6 +283,51 @@ impl ThreadScheduleRuntime {
             claim.run.lease_id.clone(),
         );
         self.emit_schedule_run_updated(thread_id, run).await;
+        Ok(())
+    }
+
+    async fn prepare_scheduled_goal(
+        &self,
+        thread_id: ThreadId,
+        state_db: &StateDbHandle,
+        objective: &str,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) -> anyhow::Result<()> {
+        if !self.config.features.enabled(Feature::Goals) {
+            anyhow::bail!("goals feature is disabled");
+        }
+
+        let outcome = self
+            .goal_service
+            .set_thread_goal(
+                state_db,
+                GoalSetRequest {
+                    thread_id,
+                    objective: GoalObjectiveUpdate::Set(objective),
+                    status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    auto_execute: thread_goal_processor::goal_auto_execute_from_config(
+                        &self.config,
+                    ),
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to set scheduled goal: {err}"))?;
+        let goal = ThreadGoal::from(outcome.goal.clone());
+        let goal_id = goal.goal_id.clone();
+        self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
+            .await;
+        if let Some(plan_update) = outcome.plan_update.clone() {
+            let plan = thread_goal_processor::api_thread_goal_plan_from_state(plan_update.snapshot);
+            self.emit_thread_goal_plan_updated_ordered(thread_id, plan, listener_command_tx)
+                .await;
+        }
+
+        self.goal_service
+            .suppress_next_idle_continuation(thread_id, goal_id.as_str());
+        outcome.apply_runtime_effects(&self.goal_service).await;
+        self.goal_service
+            .suppress_next_idle_continuation(thread_id, goal_id.as_str());
         Ok(())
     }
 
@@ -472,6 +541,64 @@ impl ThreadScheduleRuntime {
         }
     }
 
+    async fn emit_thread_goal_updated_ordered(
+        &self,
+        thread_id: ThreadId,
+        goal: ThreadGoal,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        if let Some(listener_command_tx) = listener_command_tx {
+            let command = ThreadListenerCommand::EmitThreadGoalUpdated {
+                turn_id: None,
+                goal: goal.clone(),
+            };
+            if listener_command_tx.send(command).is_ok() {
+                return;
+            }
+            warn!(
+                "failed to enqueue scheduled goal update for {thread_id}: listener command channel is closed"
+            );
+        }
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadGoalUpdated(
+                ThreadGoalUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    goal,
+                },
+            ))
+            .await;
+    }
+
+    async fn emit_thread_goal_plan_updated_ordered(
+        &self,
+        thread_id: ThreadId,
+        plan: ThreadGoalPlan,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        if let Some(listener_command_tx) = listener_command_tx {
+            let command = ThreadListenerCommand::EmitThreadGoalPlanUpdated {
+                turn_id: None,
+                plan: plan.clone(),
+            };
+            if listener_command_tx.send(command).is_ok() {
+                return;
+            }
+            warn!(
+                "failed to enqueue scheduled goal plan update for {thread_id}: listener command channel is closed"
+            );
+        }
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                ThreadGoalPlanUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    plan,
+                },
+            ))
+            .await;
+    }
+
     async fn emit_schedule_updated(
         &self,
         thread_id: ThreadId,
@@ -522,6 +649,37 @@ This is a distinct run even if the scheduled prompt matches earlier runs. Execut
 
 Scheduled prompt:
 {prompt}"
+    )
+}
+
+fn scheduled_goal_objective(prompt: &str) -> Option<&str> {
+    let trimmed = prompt.trim_start();
+    let rest = trimmed.strip_prefix("/goal")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim())
+}
+
+fn scheduled_goal_thread_prompt(
+    objective: &str,
+    run_id: &str,
+    scheduled_for: Option<DateTime<Utc>>,
+) -> String {
+    let scheduled_for = scheduled_for
+        .map(|scheduled_for| scheduled_for.to_rfc3339())
+        .unwrap_or_else(|| "immediate".to_string());
+    format!(
+        "\
+You are running one new scheduled Codewith goal objective.
+
+Run id: {run_id}
+Scheduled for: {scheduled_for}
+
+The active thread goal has already been persisted for this scheduled run. Work on only the goal objective below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not create new goals, loops, schedules, monitors, timers, or follow-up runs; Codewith manages scheduling. If the objective mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+
+Goal objective:
+{objective}"
     )
 }
 
@@ -1344,6 +1502,44 @@ mod tests {
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
+    }
+
+    #[test]
+    fn scheduled_goal_objective_accepts_explicit_goal_command() {
+        assert_eq!(
+            Some("improve benchmark coverage"),
+            scheduled_goal_objective("  /goal improve benchmark coverage")
+        );
+        assert_eq!(
+            Some("ship the release notes"),
+            scheduled_goal_objective("/goal\n\nship the release notes")
+        );
+    }
+
+    #[test]
+    fn scheduled_goal_objective_requires_goal_command_boundary() {
+        assert_eq!(None, scheduled_goal_objective("please run /goal later"));
+        assert_eq!(None, scheduled_goal_objective("/goalkeeper report"));
+        assert_eq!(Some(""), scheduled_goal_objective("/goal"));
+    }
+
+    #[test]
+    fn scheduled_goal_thread_prompt_tells_model_not_to_spawn_followups() {
+        let prompt = scheduled_goal_thread_prompt(
+            "finish release readiness checks every hour",
+            "run-123",
+            Some(at(1_700_000_000)),
+        );
+
+        assert!(prompt.contains("one new scheduled Codewith goal objective"));
+        assert!(prompt.contains("Run id: run-123"));
+        assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
+        assert!(prompt.contains("active thread goal has already been persisted"));
+        assert!(prompt.contains("Produce exactly one visible final response"));
+        assert!(prompt.contains("Do not create new goals, loops, schedules"));
+        assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
+        assert!(prompt.ends_with("finish release readiness checks every hour"));
+        assert!(!prompt.contains("/goal finish release readiness checks"));
     }
 
     #[test]
