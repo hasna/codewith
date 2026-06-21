@@ -63,6 +63,7 @@ use codex_background_agent::BackgroundAgentRunStatus;
 use codex_background_agent::BackgroundAgentStatusEventForSupervisorParams;
 use codex_background_agent::BackgroundAgentStatusSnapshotParams;
 use codex_background_agent::BackgroundAgentThreadBindingParams;
+use codex_background_agent::BackgroundAgentWorkspaceCleanup;
 use codex_background_agent::PendingInteractionLedger;
 use codex_background_agent::daemon::background_agent_daemon_state_dir;
 use codex_background_agent::process_lifecycle::WorkerProcessCommand;
@@ -801,17 +802,68 @@ impl ThreadRequestProcessor {
             return Ok(Some(WorktreeReleaseResponse { worktree: None }.into()));
         };
         let status_snapshot = status_snapshot_for_release(&worktree, params.force_delete).await?;
+        let force_delete = params.force_delete.unwrap_or(false);
         let cleanup_policy = params
             .cleanup_policy
             .map(state_worktree_cleanup_policy)
             .unwrap_or(worktree.cleanup_policy);
+        let status_snapshot_json = git_status_snapshot_json(status_snapshot.clone());
+        let worktree_id = worktree.worktree_id.clone();
+        let background_agent_lease = state_db
+            .get_background_agent_worktree_lease(worktree_id.as_str())
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to read background agent worktree lease: {err}"
+                ))
+            })?;
+        if background_agent_lease
+            .as_ref()
+            .is_some_and(|lease| lease.released_at.is_none() && lease.deleted_at.is_none())
+        {
+            state_db
+                .update_background_agent_worktree_lease_status(
+                    worktree_id.as_str(),
+                    status_snapshot.dirty,
+                    &status_snapshot_json,
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to update background agent worktree lease: {err}"
+                    ))
+                })?;
+            state_db
+                .release_background_agent_worktree_lease(
+                    worktree_id.as_str(),
+                    background_agent_workspace_cleanup(cleanup_policy, force_delete),
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to release background agent worktree lease: {err}"
+                    ))
+                })?;
+            let worktree = state_db
+                .managed_worktrees()
+                .get_managed_worktree(worktree_id.as_str())
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to read released worktree: {err}"))
+                })?;
+            let worktree = match worktree {
+                Some(worktree) => Some(api_worktree_from_state(state_db.as_ref(), worktree).await?),
+                None => None,
+            };
+            return Ok(Some(WorktreeReleaseResponse { worktree }.into()));
+        }
         let released = state_db
             .managed_worktrees()
             .release_managed_worktree(codex_state::ManagedWorktreeReleaseParams {
                 worktree_id: worktree.worktree_id,
                 cleanup_policy,
-                force_delete: params.force_delete.unwrap_or(false),
-                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                force_delete,
+                status_snapshot_json,
                 dirty: status_snapshot.dirty,
             })
             .await
@@ -1584,6 +1636,26 @@ fn state_worktree_cleanup_policy(
         }
         WorktreeCleanupPolicy::ForceDelete => {
             codex_state::ManagedWorktreeCleanupPolicy::ForceDelete
+        }
+    }
+}
+
+fn background_agent_workspace_cleanup(
+    policy: codex_state::ManagedWorktreeCleanupPolicy,
+    force_delete: bool,
+) -> BackgroundAgentWorkspaceCleanup {
+    if force_delete {
+        return BackgroundAgentWorkspaceCleanup::ForceDelete;
+    }
+    match policy {
+        codex_state::ManagedWorktreeCleanupPolicy::Retain => {
+            BackgroundAgentWorkspaceCleanup::Retain
+        }
+        codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean => {
+            BackgroundAgentWorkspaceCleanup::DeleteIfClean
+        }
+        codex_state::ManagedWorktreeCleanupPolicy::ForceDelete => {
+            BackgroundAgentWorkspaceCleanup::ForceDelete
         }
     }
 }

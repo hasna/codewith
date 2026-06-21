@@ -52,6 +52,7 @@ use codex_app_server_protocol::WorktreeMergeCandidateRefreshResponse;
 use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
+use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_state::BackgroundAgentDesiredState as StateBackgroundAgentDesiredState;
@@ -1036,6 +1037,104 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
         .expect("cleanup response should include worktree tombstone");
     assert_eq!(WorktreeLifecycleStatus::Deleted, cleaned.lifecycle_status);
     assert!(!Path::new(cleaned.worktree_path.as_str()).exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    seed_queued_agent_run(
+        state_db.as_ref(),
+        "agent-run-release",
+        None,
+        "release a leased background-agent worktree",
+    )
+    .await?;
+    let worktree_path = codex_home
+        .path()
+        .join(".codewith")
+        .join("worktrees")
+        .join("agent-run-release");
+    std::fs::create_dir_all(worktree_path.parent().expect("worktree parent"))?;
+    git(
+        codex_home.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "codewith/agent-run-release",
+            worktree_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    state_db
+        .create_background_agent_worktree_lease(
+            &codex_state::BackgroundAgentWorktreeLeaseCreateParams {
+                id: "lease-release".to_string(),
+                run_id: "agent-run-release".to_string(),
+                identity: "test:lease-release".to_string(),
+                mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
+                base_repo_path: codex_home.path().to_string_lossy().to_string(),
+                worktree_path: worktree_path.to_string_lossy().to_string(),
+                branch: Some("codewith/agent-run-release".to_string()),
+                head_sha: None,
+                status_snapshot_json: json!({"dirty": false, "source": "seed"}),
+                dirty: false,
+                cleanup_after: None,
+            },
+        )
+        .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let release_request_id = mcp
+        .send_raw_request(
+            "worktree/release",
+            Some(json!({
+                "worktreeId": "lease-release",
+                "cleanupPolicy": "deleteIfClean",
+                "forceDelete": false,
+            })),
+        )
+        .await?;
+    let released: WorktreeReleaseResponse = read_response(&mut mcp, release_request_id).await?;
+    let released_worktree = released
+        .worktree
+        .expect("release response should include the managed worktree");
+    assert_eq!("lease-release", released_worktree.worktree_id);
+    assert_eq!(
+        WorktreeLifecycleStatus::CleanupPending,
+        released_worktree.lifecycle_status
+    );
+    assert_eq!(
+        WorktreeOwnerKind::BackgroundAgent,
+        released_worktree.owner_kind
+    );
+    assert_eq!(
+        Some("agent-run-release".to_string()),
+        released_worktree.owner_agent_run_id
+    );
+
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-release")
+        .await?
+        .expect("background-agent lease should still be readable after release");
+    assert!(lease.released_at.is_some());
+    assert_eq!(Some(&json!(false)), lease.status_snapshot_json.get("dirty"));
+    let worktree = state_db
+        .managed_worktrees()
+        .get_managed_worktree("lease-release")
+        .await?
+        .expect("managed worktree mirror should still exist");
+    assert_eq!(
+        codex_state::ManagedWorktreeLifecycleStatus::CleanupPending,
+        worktree.lifecycle_status
+    );
+    assert!(worktree.released_at.is_some());
 
     Ok(())
 }

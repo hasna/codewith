@@ -237,7 +237,7 @@ impl ThreadScheduleRuntime {
             }
             Err(err) => {
                 thread_state.lock().await.finish_scheduled_run_submission();
-                return Err(err.into());
+                return Err(err);
             }
         };
         {

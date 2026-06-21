@@ -589,6 +589,8 @@ WHERE worktree_id = ?
         validate_detach_params(&params)?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
+        ensure_not_active_background_agent_worktree_lease(&mut tx, params.worktree_id.as_str())
+            .await?;
         match &params.target {
             ManagedWorktreeAssignmentTarget::Thread(thread_id) => {
                 sqlx::query(
@@ -723,6 +725,8 @@ WHERE worktree_id = ?
             tx.commit().await?;
             return Ok(None);
         };
+        ensure_not_active_background_agent_worktree_lease(&mut tx, params.worktree_id.as_str())
+            .await?;
         let active_assignment_count: i64 = sqlx::query_scalar(
             r#"
 SELECT COUNT(*)
@@ -1228,6 +1232,28 @@ fn validate_status_update_params(params: &ManagedWorktreeStatusUpdateParams) -> 
 fn validate_release_params(params: &ManagedWorktreeReleaseParams) -> anyhow::Result<()> {
     if params.worktree_id.trim().is_empty() {
         anyhow::bail!("managed worktree id cannot be empty");
+    }
+    Ok(())
+}
+
+async fn ensure_not_active_background_agent_worktree_lease(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    worktree_id: &str,
+) -> anyhow::Result<()> {
+    let active_lease: Option<(String,)> = sqlx::query_as(
+        r#"
+SELECT run_id
+FROM background_agent_worktree_leases
+WHERE id = ? AND released_at IS NULL AND deleted_at IS NULL
+        "#,
+    )
+    .bind(worktree_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some((run_id,)) = active_lease {
+        anyhow::bail!(
+            "managed worktree {worktree_id} is owned by active background agent worktree lease for run {run_id}; release the background agent worktree lease first"
+        );
     }
     Ok(())
 }
@@ -1811,6 +1837,110 @@ WHERE worktree_id = ?
             "#,
         )
         .bind("wt-a")
+        .fetch_one(runtime.pool.as_ref())
+        .await?;
+        assert_eq!((1,), active_assignment_count);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_background_agent_lease_blocks_generic_detach_and_release() -> anyhow::Result<()>
+    {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        runtime
+            .create_background_agent_run(&crate::BackgroundAgentRunCreateParams {
+                id: "run-1".to_string(),
+                idempotency_key: Some("idem-1".to_string()),
+                request_id: Some("req-1".to_string()),
+                source: "cli".to_string(),
+                prompt_snapshot_ref: "prompt://run-1".to_string(),
+                input_snapshot_ref: None,
+                thread_id: None,
+                thread_store_kind: "background-agent".to_string(),
+                thread_store_id: None,
+                rollout_path: None,
+                parent_thread_id: None,
+                parent_agent_run_id: None,
+                spawn_linkage_json: None,
+                auth_profile_ref: None,
+                status_reason: Some("worktree owner".to_string()),
+                config_fingerprint: None,
+                version_fingerprint: None,
+            })
+            .await?;
+        runtime
+            .create_background_agent_worktree_lease(
+                &crate::BackgroundAgentWorktreeLeaseCreateParams {
+                    id: "lease-1".to_string(),
+                    run_id: "run-1".to_string(),
+                    identity: "bg-run-1".to_string(),
+                    mode: crate::BackgroundAgentWorkspaceMode::IsolatedWorktree,
+                    base_repo_path: "/repo".to_string(),
+                    worktree_path: "/repo/.git/worktrees/run-1".to_string(),
+                    branch: Some("codewith/bg-run-1".to_string()),
+                    head_sha: Some("abc123".to_string()),
+                    status_snapshot_json: json!({"dirty": false}),
+                    dirty: false,
+                    cleanup_after: None,
+                },
+            )
+            .await?;
+
+        let detach_err = store
+            .detach_managed_worktree(ManagedWorktreeDetachParams {
+                worktree_id: "lease-1".to_string(),
+                target: ManagedWorktreeAssignmentTarget::AgentRun("run-1".to_string()),
+            })
+            .await
+            .expect_err("generic detach should not clear an active background-agent lease");
+        assert!(
+            detach_err
+                .to_string()
+                .contains("active background agent worktree lease"),
+            "unexpected detach error: {detach_err}"
+        );
+        let release_err = store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: "lease-1".to_string(),
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::DeleteIfClean,
+                force_delete: false,
+                status_snapshot_json: json!({"dirty": false}),
+                dirty: false,
+            })
+            .await
+            .expect_err("generic release should not bypass background-agent lease release");
+        assert!(
+            release_err
+                .to_string()
+                .contains("active background agent worktree lease"),
+            "unexpected release error: {release_err}"
+        );
+
+        let lease = runtime
+            .get_background_agent_worktree_lease("lease-1")
+            .await?
+            .expect("lease should remain active");
+        assert_eq!(lease.released_at, None);
+        let worktree = store
+            .get_managed_worktree("lease-1")
+            .await?
+            .expect("managed worktree should still exist");
+        assert_eq!(
+            crate::ManagedWorktreeOwnerKind::BackgroundAgent,
+            worktree.owner_kind
+        );
+        assert_eq!(Some("run-1"), worktree.owner_agent_run_id.as_deref());
+        let active_assignment_count: (i64,) = sqlx::query_as(
+            r#"
+SELECT COUNT(*)
+FROM managed_worktree_assignments
+WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
+            "#,
+        )
+        .bind("lease-1")
+        .bind("run-1")
         .fetch_one(runtime.pool.as_ref())
         .await?;
         assert_eq!((1,), active_assignment_count);

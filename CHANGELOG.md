@@ -72,6 +72,9 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
   responses, and model-facing unavailable states for unsaved threads.
 - Hardened app-server daemon startup so embedded/local daemon starts can use the
   active Codewith binary while managed installs still use the managed binary.
+- Hardened background-agent managed worktree release so active background-agent
+  leases use the lease release path and cannot be bypassed by generic worktree
+  detach or release.
 - Preserved usage accounting when resuming blocked or usage-limited goals.
 - Kept usage self-heal retry tests active even when retry behavior is gated by
   config defaults.
