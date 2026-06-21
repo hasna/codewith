@@ -215,8 +215,11 @@ impl ThreadRequestProcessor {
             let mut interval = tokio::time::interval(BACKGROUND_AGENT_RECONCILE_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                if let Err(err) =
-                    reconcile_background_agent_worker_processes(context.clone(), None).await
+                if let Err(err) = reconcile_background_agent_worker_processes(
+                    context.clone(),
+                    /*only_run_id*/ None,
+                )
+                .await
                 {
                     warn!("background agent process reconcile failed: {err}");
                 }
@@ -2215,7 +2218,13 @@ async fn run_background_agent_worker(
     if !bound {
         return Err(background_agent_ownership_lost(run.id.as_str(), generation));
     }
-    ensure_background_agent_worker_current(&context, run.id.as_str(), generation, false).await?;
+    ensure_background_agent_worker_current(
+        &context,
+        run.id.as_str(),
+        generation,
+        /*allow_terminal_current*/ false,
+    )
+    .await?;
     retry_transient_sqlite_busy("create background agent execution snapshot", || {
         context
             .state_db
@@ -2631,7 +2640,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2647,7 +2656,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2663,7 +2672,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2887,7 +2896,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(0),
-                    None,
+                    /*exit_signal*/ None,
                     Some("completed"),
                 )
                 .await?;
@@ -2924,7 +2933,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("turn aborted"),
                 )
                 .await?;
@@ -2948,7 +2957,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("worker shutdown completed"),
                 )
                 .await?;
@@ -2962,7 +2971,7 @@ async fn handle_background_agent_event(
                 generation,
                 event_type,
                 &json!({}),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -3216,7 +3225,7 @@ async fn stop_background_thread(
             context.supervisor_id.as_str(),
             generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some(reason),
         )
         .await?;
@@ -3379,7 +3388,7 @@ async fn count_active_pending_interactions_for_run(
 ) -> anyhow::Result<i64> {
     let interactions = context
         .state_db
-        .list_pending_interactions(run_id, None)
+        .list_pending_interactions(run_id, /*status*/ None)
         .await?;
     Ok(interactions
         .into_iter()
@@ -3430,7 +3439,7 @@ async fn mark_background_agent_worker_failed(
                 context.supervisor_id.as_str(),
                 run.generation,
                 Some(1),
-                None,
+                /*exit_signal*/ None,
                 Some("worker stopped"),
             )
             .await?;
@@ -3453,7 +3462,7 @@ async fn mark_background_agent_worker_failed(
             context.supervisor_id.as_str(),
             run.generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some("worker failed"),
         )
         .await?;

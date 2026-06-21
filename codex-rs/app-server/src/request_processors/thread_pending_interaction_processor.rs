@@ -234,7 +234,7 @@ pub(crate) struct RedactedResponsePayload {
     pub(crate) redactions: Vec<String>,
 }
 
-pub(super) async fn read_pending_interaction(
+pub(crate) async fn read_pending_interaction(
     state_db: &codex_state::StateRuntime,
     interaction_id: &str,
     thread_id: Option<ThreadId>,
@@ -726,7 +726,7 @@ fn state_pending_interaction_status_to_api(
     }
 }
 
-pub(super) fn api_pending_interaction_terminal_status_to_state(
+pub(crate) fn api_pending_interaction_terminal_status_to_state(
     status: ThreadPendingInteractionTerminalStatus,
 ) -> codex_state::PendingInteractionStatus {
     match status {

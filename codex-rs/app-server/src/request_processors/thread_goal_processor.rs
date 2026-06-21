@@ -165,13 +165,15 @@ impl ThreadGoalRequestProcessor {
             .await;
         if let Some(plan_update) = outcome.plan_update.clone() {
             let plan = api_thread_goal_plan_from_state(plan_update.snapshot);
-            self.emit_thread_goal_plan_updated_ordered(thread_id, plan, None)
-                .await;
+            self.emit_thread_goal_plan_updated_ordered(
+                thread_id, plan, /*listener_command_tx*/ None,
+            )
+            .await;
             if let Some(activated_goal) = plan_update.activated_goal {
                 self.emit_thread_goal_updated_ordered(
                     thread_id,
                     api_thread_goal_from_state(activated_goal),
-                    None,
+                    /*listener_command_tx*/ None,
                 )
                 .await;
             }
