@@ -1398,7 +1398,6 @@ async fn reconcile_background_agents(
         {
             stop_tracked_background_agent_worker_process(
                 &context.state_db,
-                context.supervisor_id.as_str(),
                 &context.active_worker_processes,
                 &run,
                 &handle,
@@ -1477,7 +1476,6 @@ async fn reconcile_background_agent_worker_processes(
         {
             stop_tracked_background_agent_worker_process(
                 &context.state_db,
-                context.supervisor_id.as_str(),
                 &context.active_worker_processes,
                 &run,
                 &handle,
@@ -1530,7 +1528,6 @@ async fn reconcile_background_agent_worker_processes(
 
 async fn stop_tracked_background_agent_worker_process(
     state_db: &StateDbHandle,
-    supervisor_id: &str,
     active_worker_processes: &Arc<Mutex<HashMap<String, WorkerProcessHandle>>>,
     run: &BackgroundAgentRun,
     handle: &WorkerProcessHandle,
@@ -1553,6 +1550,28 @@ async fn stop_tracked_background_agent_worker_process(
     if run.desired_state == BackgroundAgentDesiredState::Running {
         return Ok(());
     }
+    finalize_stopped_background_agent_process_for_run(
+        state_db,
+        run,
+        json!({
+            "reason": "worker_process_stopped_after_desired_state_change",
+            "stopReport": stop_report,
+        }),
+    )
+    .await
+}
+
+async fn finalize_stopped_background_agent_process_for_run(
+    state_db: &StateDbHandle,
+    run: &BackgroundAgentRun,
+    payload_json: Value,
+) -> anyhow::Result<()> {
+    if run.desired_state == BackgroundAgentDesiredState::Running {
+        return Ok(());
+    }
+    let Some(supervisor_id) = run.supervisor_id.as_deref() else {
+        return Ok(());
+    };
     let status_reason =
         if run.retention_state == codex_state::BackgroundAgentRetentionState::DeleteRequested {
             "worker process stopped after delete request"
@@ -1565,10 +1584,7 @@ async fn stop_tracked_background_agent_worker_process(
             supervisor_id,
             run.generation,
             status_reason,
-            &json!({
-                "reason": "worker_process_stopped_after_desired_state_change",
-                "stopReport": stop_report,
-            }),
+            &payload_json,
         )
         .await?;
     Ok(())
@@ -2030,6 +2046,23 @@ async fn prune_finished_background_agent_worker_processes(
         match controller.status(&handle).await {
             Ok(WorkerProcessStatus::Running) => {}
             Ok(WorkerProcessStatus::Missing | WorkerProcessStatus::StalePidRecord) => {
+                if let Some(run) = context
+                    .state_db
+                    .get_background_agent_run(run_id.as_str())
+                    .await?
+                {
+                    finalize_stopped_background_agent_process_for_run(
+                        &context.state_db,
+                        &run,
+                        json!({
+                            "reason": "worker_process_missing_after_desired_state_change",
+                            "pid": handle.pid,
+                            "pgid": handle.pgid,
+                            "stderrLogPath": handle.stderr_log_path.display().to_string(),
+                        }),
+                    )
+                    .await?;
+                }
                 context
                     .state_db
                     .fail_unclaimed_background_agent_process_spawn(
@@ -4063,7 +4096,7 @@ mod tests {
                 .await?;
         seed_queued_run(state_db.as_ref(), "stopping-run").await?;
         let generation = state_db
-            .claim_background_agent_supervisor("stopping-run", "process-supervisor-test", "lease-1")
+            .claim_background_agent_supervisor("stopping-run", "worker-supervisor", "lease-1")
             .await?
             .expect("run should be claimed");
         let controller = WorkerProcessController::default();
@@ -4078,7 +4111,7 @@ mod tests {
         state_db
             .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
                 run_id: "stopping-run",
-                supervisor_id: "process-supervisor-test",
+                supervisor_id: "worker-supervisor",
                 generation,
                 pid: Some(i64::from(old_handle.pid)),
                 pgid: old_handle.pgid.map(i64::from),
@@ -4136,6 +4169,107 @@ mod tests {
         );
         let snapshot = state_db
             .get_background_agent_status_snapshot("stopping-run")
+            .await?
+            .expect("status snapshot should exist");
+        assert_eq!(snapshot.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(snapshot.last_event_seq, run.last_event_seq);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_supervisor_finalizes_missing_stopped_handle_during_prune() -> anyhow::Result<()>
+    {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "missing-stopping-run").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor(
+                "missing-stopping-run",
+                "worker-supervisor",
+                "lease-1",
+            )
+            .await?
+            .expect("run should be claimed");
+        let controller = WorkerProcessController::default();
+        let old_handle = controller
+            .spawn(WorkerProcessCommand::new(
+                "/bin/true",
+                temp.path().join("missing-stopping.stderr.log"),
+            ))
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if controller.status(&old_handle).await? != WorkerProcessStatus::Running {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("timed out waiting for worker process to exit");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let old_stderr_log_path = old_handle.stderr_log_path.to_string_lossy().to_string();
+        state_db
+            .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                run_id: "missing-stopping-run",
+                supervisor_id: "worker-supervisor",
+                generation,
+                pid: Some(i64::from(old_handle.pid)),
+                pgid: old_handle.pgid.map(i64::from),
+                job_id: Some("old-worker"),
+                start_token: old_handle.start_token.as_deref(),
+                stderr_log_path: Some(old_stderr_log_path.as_str()),
+            })
+            .await?;
+        state_db
+            .set_background_agent_desired_state(
+                "missing-stopping-run",
+                BackgroundAgentDesiredState::Stopped,
+            )
+            .await?;
+        state_db
+            .update_background_agent_run_status(
+                "missing-stopping-run",
+                BackgroundAgentRunStatus::Stopping,
+                Some("stop requested"),
+            )
+            .await?;
+        let active_worker_processes = Arc::new(Mutex::new(HashMap::from([(
+            "missing-stopping-run".to_string(),
+            old_handle,
+        )])));
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "process-supervisor-test".to_string(),
+            active_worker_processes: Arc::clone(&active_worker_processes),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+        };
+
+        reconcile_background_agent_worker_processes(
+            context,
+            Some("missing-stopping-run".to_string()),
+        )
+        .await?;
+
+        assert!(
+            !active_worker_processes
+                .lock()
+                .await
+                .contains_key("missing-stopping-run")
+        );
+        let run = state_db
+            .get_background_agent_run("missing-stopping-run")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process stopped after stop request")
+        );
+        let snapshot = state_db
+            .get_background_agent_status_snapshot("missing-stopping-run")
             .await?
             .expect("status snapshot should exist");
         assert_eq!(snapshot.status, BackgroundAgentRunStatus::Cancelled);
