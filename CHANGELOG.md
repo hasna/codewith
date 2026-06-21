@@ -38,6 +38,44 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.43] - 2026-06-21
+
+Tag: `rust-v0.1.43`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.43>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
+
+### Added
+
+- Added `/tmux --session <name> --window <name>` handoff support so an active
+  Codewith TUI can move into a specific existing tmux session and window, while
+  preserving the existing automatic session creation behavior when no target is
+  supplied.
+- Added workflow run management surfaces for creating, listing, starting,
+  pausing, resuming, and cancelling workflow runs from the TUI and model-visible
+  workflow management tool.
+- Added `/changelog` in the TUI so release notes are available inside the
+  product.
+- Added Mission Control schedule visibility and schedule-aware empty states.
+
+### Changed
+
+- Promoted workflows into the experimental feature menu while keeping them
+  disabled by default.
+- Updated model instruction templates and catalog metadata to ask models for
+  effort estimates when planning work.
+- Improved loop and schedule manager rows so prompts are the primary label and
+  status/spec details stay in row descriptions.
+
+### Fixed
+
+- Hardened workflow lifecycle handling around run control, boxed display
+  responses, and model-facing unavailable states for unsaved threads.
+- Hardened app-server daemon startup so embedded/local daemon starts can use the
+  active Codewith binary while managed installs still use the managed binary.
+- Preserved usage accounting when resuming blocked or usage-limited goals.
+- Kept usage self-heal retry tests active even when retry behavior is gated by
+  config defaults.
+
 ## [0.1.42] - 2026-06-20
 
 Tag: `rust-v0.1.42`
