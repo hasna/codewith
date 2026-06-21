@@ -2107,6 +2107,8 @@ mod tests {
         workflow_id: &str,
         include_second: bool,
     ) -> String {
+        let marker_command = format!("touch {}", marker.display());
+        let marker_command = format!("'{}'", marker_command.replace('\'', "''"));
         let second_step = if include_second {
             r#"
   - id: "adversarial_review"
@@ -2195,7 +2197,7 @@ steps:
           timeout_seconds: 30
           output_limit_bytes: 2048
           commands:
-            - "touch {}"
+            - {marker_command}
           expected_exit_code: 0
 {second_step}artifacts:
   retention: "until_workflow_complete"
@@ -2205,7 +2207,6 @@ cleanup:
   on_cancel: []
   on_complete: []
 "#,
-            marker.display()
         )
     }
 
@@ -2989,14 +2990,16 @@ WHERE plan_id = ? AND key = ?
             .expect("admission should succeed")
             .expect("run should be owned");
         let branch_run_id = admitted.admitted[0].background_agent_run_id.clone();
+        let repo = unique_temp_dir().join("repo");
+        let worktree = repo.join(".git").join("worktrees").join("branch-lease");
         runtime
             .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
                 id: "branch-lease".to_string(),
                 run_id: branch_run_id.clone(),
                 identity: "branch-lease".to_string(),
                 mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: "/repo".to_string(),
-                worktree_path: "/repo/.git/worktrees/branch-lease".to_string(),
+                base_repo_path: repo.to_string_lossy().into_owned(),
+                worktree_path: worktree.to_string_lossy().into_owned(),
                 branch: Some("codewith/branch-lease".to_string()),
                 head_sha: Some("abc123".to_string()),
                 status_snapshot_json: json!({"dirty": true, "paths": ["src/user-work.rs"]}),

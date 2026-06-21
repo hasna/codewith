@@ -4,7 +4,15 @@
 //! CLI dispatch path while preserving the TUI startup error as the boundary type.
 
 use codex_tui::LocalStateDbStartupError;
+#[cfg(target_os = "linux")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+
+const MAX_LOCK_HOLDERS_TO_PRINT: usize = 12;
 
 pub(crate) fn startup_error(err: &std::io::Error) -> Option<&LocalStateDbStartupError> {
     err.get_ref()
@@ -13,7 +21,9 @@ pub(crate) fn startup_error(err: &std::io::Error) -> Option<&LocalStateDbStartup
 
 pub(crate) fn is_locked(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
-    detail.contains("database is locked") || detail.contains("database is busy")
+    detail.contains("database is locked")
+        || detail.contains("database is busy")
+        || detail.contains("timed out waiting for codewith state startup lock")
 }
 
 pub(crate) fn confirm_repair(startup_error: &LocalStateDbStartupError) -> std::io::Result<bool> {
@@ -48,10 +58,7 @@ pub(crate) async fn repair_files(
         Err(err) => return Err(err),
     }
 
-    for path in codex_state::runtime_db_paths(sqlite_home)
-        .into_iter()
-        .flat_map(|db| sqlite_paths(db.path.as_path()))
-    {
+    for path in repair_candidate_paths(sqlite_home, startup_error.detail()).await? {
         if tokio::fs::try_exists(path.as_path()).await? {
             backups.push(backup_path(path.as_path(), &repair_suffix).await?);
         }
@@ -64,6 +71,23 @@ pub(crate) async fn repair_files(
     }
 
     Ok(backups)
+}
+
+async fn repair_candidate_paths(sqlite_home: &Path, detail: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = codex_state::runtime_db_paths(sqlite_home)
+        .into_iter()
+        .flat_map(|db| sqlite_paths(db.path.as_path()))
+        .collect();
+    if detail.contains("failed to acquire state runtime startup lock") {
+        let startup_lock_path = codex_state::state_runtime_startup_lock_path(sqlite_home);
+        match tokio::fs::metadata(startup_lock_path.as_path()).await {
+            Ok(metadata) if !metadata.is_file() => paths.push(startup_lock_path),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(paths)
 }
 
 pub(crate) fn print_repair_backups(backups: &[PathBuf]) {
@@ -84,10 +108,318 @@ pub(crate) fn print_diagnostic_guidance(startup_error: &LocalStateDbStartupError
 pub(crate) fn print_locked_guidance(startup_error: &LocalStateDbStartupError) {
     eprintln!("Codewith couldn't start because another Codewith process is using its local data.");
     eprintln!("Quit any other copies of Codewith that may still be running, then try again.");
+    let lock_holders = lock_holders_for_runtime_dbs(startup_error.state_db_path());
+    if !lock_holders.is_empty() {
+        eprintln!("Local processes currently using that local data:");
+        for holder in lock_holders.iter().take(MAX_LOCK_HOLDERS_TO_PRINT) {
+            eprintln!("  {}", holder.summary());
+        }
+        let hidden_count = lock_holders.len().saturating_sub(MAX_LOCK_HOLDERS_TO_PRINT);
+        if hidden_count > 0 {
+            eprintln!("  ... and {hidden_count} more");
+        }
+    }
+    print_lock_scope_guidance(!lock_holders.is_empty());
     print_technical_details(startup_error);
 }
 
-fn sqlite_paths(db_path: &std::path::Path) -> Vec<PathBuf> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LockHolder {
+    pid: u32,
+    state: Option<String>,
+    databases: BTreeSet<String>,
+    command: String,
+}
+
+impl LockHolder {
+    fn summary(&self) -> String {
+        let databases = self
+            .databases
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let databases = if databases.is_empty() {
+            String::new()
+        } else {
+            format!(" ({databases})")
+        };
+        match self.state.as_deref() {
+            Some(state) => format!(
+                "pid {} [{}]{} {}",
+                self.pid,
+                truncate_for_display(state),
+                databases,
+                self.command
+            ),
+            None => format!("pid {}{} {}", self.pid, databases, self.command),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn lock_holders_for_runtime_dbs(state_db_path: &Path) -> Vec<LockHolder> {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(sqlite_home) = state_db_path.parent() else {
+        return Vec::new();
+    };
+    let mut targets = BTreeMap::new();
+    let startup_lock_path = codex_state::state_runtime_startup_lock_path(sqlite_home);
+    if let Ok(metadata) = fs::metadata(startup_lock_path.as_path()) {
+        targets.insert(
+            (metadata.dev(), metadata.ino()),
+            "state startup lock".to_string(),
+        );
+    }
+    for db in codex_state::runtime_db_paths(sqlite_home) {
+        for path in sqlite_paths(db.path.as_path()) {
+            if let Ok(metadata) = fs::metadata(path.as_path()) {
+                targets.insert((metadata.dev(), metadata.ino()), db.label.to_string());
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(proc_entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut holders = BTreeMap::new();
+    for proc_entry in proc_entries.flatten() {
+        let Some(pid) = proc_entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let fd_dir = proc_entry.path().join("fd");
+        let Ok(fd_entries) = fs::read_dir(fd_dir) else {
+            continue;
+        };
+        let mut databases = BTreeSet::new();
+        for fd_entry in fd_entries.flatten() {
+            if let Ok(metadata) = fs::metadata(fd_entry.path())
+                && let Some(label) = targets.get(&(metadata.dev(), metadata.ino()))
+            {
+                databases.insert(label.clone());
+            }
+        }
+        if !databases.is_empty() {
+            holders.insert(pid, lock_holder_for_pid(pid, databases));
+        }
+    }
+    holders.into_values().collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lock_holders_for_runtime_dbs(_state_db_path: &Path) -> Vec<LockHolder> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn print_lock_scope_guidance(found_local_holders: bool) {
+    if found_local_holders {
+        eprintln!(
+            "This list only includes processes on this Linux host. If CODEWITH_HOME or CODEX_SQLITE_HOME is shared across hosts, check the other hosts too."
+        );
+    } else {
+        eprintln!(
+            "No local Linux process was found holding the runtime DB files. If CODEWITH_HOME or CODEX_SQLITE_HOME is shared across hosts, the lock may be held on another host."
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn print_lock_scope_guidance(_found_local_holders: bool) {
+    eprintln!(
+        "Codewith cannot list lock holders automatically on this platform. If CODEWITH_HOME or CODEX_SQLITE_HOME is shared across hosts, check those hosts too."
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn lock_holder_for_pid(pid: u32, databases: BTreeSet<String>) -> LockHolder {
+    LockHolder {
+        pid,
+        state: linux_process_state(pid),
+        databases,
+        command: linux_process_command(pid),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_state(pid: u32) -> Option<String> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("State:"))
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_command(pid: u32) -> String {
+    let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok();
+    if let Some(cmdline) = cmdline
+        && let Some(command) = summarize_cmdline(&cmdline)
+    {
+        return command;
+    }
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|command| truncate_for_display(command.trim()))
+        .filter(|command| !command.is_empty())
+        .unwrap_or_else(|| "<unknown command>".to_string())
+}
+
+fn summarize_cmdline(cmdline: &[u8]) -> Option<String> {
+    let args: Vec<String> = cmdline
+        .split(|byte| *byte == b'\0')
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect();
+    if args.is_empty() {
+        return None;
+    }
+
+    let mut summary = Vec::new();
+    summary.push(command_name(args[0].as_str()));
+    let mut index = 1;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "exec" || arg == "resume" || arg == "app-server" {
+            summary.push(arg.to_string());
+            index += 1;
+            continue;
+        }
+        if matches!(
+            arg,
+            "--no-alt-screen"
+                | "--dangerously-bypass-approvals-and-sandbox"
+                | "--last"
+                | "--all"
+                | "--include-non-interactive"
+        ) {
+            summary.push(arg.to_string());
+            index += 1;
+            continue;
+        }
+        if matches!(
+            arg,
+            "--auth-profile"
+                | "--cd"
+                | "-C"
+                | "--sandbox"
+                | "--ask-for-approval"
+                | "--listen"
+                | "--output-last-message"
+                | "--model"
+                | "-m"
+        ) {
+            summary.push(arg.to_string());
+            if let Some(value) = args.get(index + 1) {
+                summary.push(truncate_for_display(value));
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if arg == "-c" || arg == "--config" {
+            summary.push(arg.to_string());
+            if args.get(index + 1).is_some() {
+                summary.push("<redacted>".to_string());
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some((flag, value)) = arg.split_once('=') {
+            if flag_contains_sensitive_name(flag) {
+                summary.push(format!("{flag}=<redacted>"));
+            } else if is_safe_inline_flag(flag) {
+                summary.push(format!("{flag}={}", truncate_for_display(value)));
+            } else {
+                summary.push(flag.to_string());
+            }
+            index += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            summary.push(arg.to_string());
+            index += 1;
+            continue;
+        }
+        summary.push("...".to_string());
+        break;
+    }
+    Some(truncate_for_display(summary.join(" ").as_str()))
+}
+
+fn command_name(command: &str) -> String {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(command)
+        .to_string()
+}
+
+fn flag_contains_sensitive_name(flag: &str) -> bool {
+    let flag = flag.to_ascii_lowercase();
+    flag.contains("api-key")
+        || flag.contains("apikey")
+        || flag.contains("token")
+        || flag.contains("secret")
+        || flag.contains("password")
+        || flag.contains("credential")
+}
+
+fn is_safe_inline_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--auth-profile"
+            | "--cd"
+            | "--sandbox"
+            | "--ask-for-approval"
+            | "--listen"
+            | "--output-last-message"
+            | "--model"
+    )
+}
+
+fn truncate_for_display(value: &str) -> String {
+    const MAX_DISPLAY_CHARS: usize = 220;
+    let sanitized = sanitize_for_display(value);
+    let mut iter = sanitized.chars();
+    let truncated: String = iter.by_ref().take(MAX_DISPLAY_CHARS).collect();
+    if iter.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+fn sanitize_for_display(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '\n' | '\r' | '\t') {
+                ' '
+            } else if ch.is_control() {
+                '?'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+fn sqlite_paths(db_path: &Path) -> Vec<PathBuf> {
     let mut wal_path = db_path.as_os_str().to_os_string();
     wal_path.push("-wal");
     let mut shm_path = db_path.as_os_str().to_os_string();
@@ -176,10 +508,87 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn repair_replaces_blocking_startup_lock_directory() -> std::io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let state_path = codex_state::state_db_path(temp_dir.path());
+        let startup_lock_path = codex_state::state_runtime_startup_lock_path(temp_dir.path());
+        tokio::fs::create_dir(startup_lock_path.as_path()).await?;
+        let startup_error = LocalStateDbStartupError::new(
+            state_path,
+            format!(
+                "failed to acquire state runtime startup lock at {}: Is a directory",
+                temp_dir.path().display()
+            ),
+        );
+
+        let backups = repair_files(&startup_error).await?;
+
+        assert_eq!(backups.len(), 1);
+        assert!(!tokio::fs::try_exists(startup_lock_path.as_path()).await?);
+        assert!(tokio::fs::metadata(backups[0].as_path()).await?.is_dir());
+        Ok(())
+    }
+
     #[test]
     fn lock_failures_skip_repair() {
         assert!(is_locked("database is locked"));
         assert!(is_locked("database is busy"));
+        assert!(is_locked(
+            "failed to acquire state runtime startup lock at /tmp/home: timed out waiting for Codewith state startup lock at /tmp/home/.state-runtime-startup.lock after 60s"
+        ));
         assert!(!is_locked("database disk image is malformed"));
+        assert!(!is_locked(
+            "failed to acquire state runtime startup lock at /tmp/home: File exists"
+        ));
+    }
+
+    #[test]
+    fn command_summary_omits_freeform_prompt_args() {
+        let summary = summarize_cmdline(
+            b"/home/hasna/.bun/bin/codewith\0exec\0--auth-profile\0account001\0-C\0/repo\0please do sensitive work\0",
+        )
+        .expect("summary");
+
+        assert_eq!(
+            summary,
+            "codewith exec --auth-profile account001 -C /repo ..."
+        );
+    }
+
+    #[test]
+    fn command_summary_redacts_config_and_sensitive_inline_values() {
+        let summary = summarize_cmdline(
+            b"/bin/codewith\0-c\0api_key=secret\0--api-key=secret\0--auth-profile=account002\0",
+        )
+        .expect("summary");
+
+        assert_eq!(
+            summary,
+            "codewith -c <redacted> --api-key=<redacted> --auth-profile=account002"
+        );
+    }
+
+    #[test]
+    fn command_summary_sanitizes_control_characters() {
+        let summary = summarize_cmdline(b"/bin/codewith\0--auth-profile\0account001\n\x1b[31m\0")
+            .expect("summary");
+
+        assert_eq!(summary, "codewith --auth-profile account001 ?[31m");
+    }
+
+    #[test]
+    fn lock_holder_summary_includes_state_and_database_labels() {
+        let holder = LockHolder {
+            pid: 123,
+            state: Some("T (stopped)".to_string()),
+            databases: BTreeSet::from(["state DB".to_string(), "log DB".to_string()]),
+            command: "codewith --auth-profile account001".to_string(),
+        };
+
+        assert_eq!(
+            holder.summary(),
+            "pid 123 [T (stopped)] (log DB, state DB) codewith --auth-profile account001"
+        );
     }
 }
