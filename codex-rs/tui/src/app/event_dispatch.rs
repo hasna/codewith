@@ -488,6 +488,16 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::OpenPullRequestOverview => {
+                self.chat_widget.open_pull_request_overview();
+            }
+            AppEvent::PullRequestOverviewLoaded {
+                request_id,
+                overview,
+            } => {
+                self.chat_widget
+                    .show_pull_request_overview(request_id, overview);
+            }
             AppEvent::OpenAppLink {
                 app_id,
                 title,
@@ -2487,6 +2497,12 @@ impl App {
             }
             AppEvent::OpenPermissionsPopup => {
                 self.chat_widget.open_permissions_popup();
+            }
+            AppEvent::DispatchSlashCommand(command) => {
+                self.chat_widget.run_slash_command(command);
+            }
+            AppEvent::ShowStatusReport => {
+                self.chat_widget.show_status_report();
             }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;

@@ -515,6 +515,12 @@ impl ChatWidget {
             .eq_ignore_ascii_case(MINIMAX_PROVIDER_ID)
     }
 
+    /// Append the detailed text status report to the transcript. Reached from
+    /// the `/status` panel's "Full report" drill-down row.
+    pub(crate) fn show_status_report(&mut self) {
+        self.dispatch_status_command("/status");
+    }
+
     fn dispatch_status_command(&mut self, command_label: &'static str) {
         let rate_limit_request_id = if self.should_prefetch_rate_limits() {
             Some(self.next_status_request_id())
@@ -647,6 +653,12 @@ impl ChatWidget {
         }
     }
 
+    /// Run a slash command on behalf of an interactive surface (e.g. an
+    /// actionable row in the `/status` panel). Equivalent to the user typing it.
+    pub(crate) fn run_slash_command(&mut self, cmd: SlashCommand) {
+        self.dispatch_command(cmd);
+    }
+
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
@@ -760,6 +772,10 @@ impl ChatWidget {
             }
             SlashCommand::Review => {
                 self.open_review_popup();
+            }
+            SlashCommand::Pr => {
+                self.app_event_tx.send(AppEvent::OpenPullRequestOverview);
+                self.append_message_history_entry("/pr".to_string());
             }
             SlashCommand::Rename => {
                 self.session_telemetry
@@ -892,11 +908,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
                 self.append_message_history_entry(format!("/{}", cmd.command()));
             }
-            SlashCommand::Agent => {
-                self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
-                self.append_message_history_entry("/agent".to_string());
-            }
-            SlashCommand::BackgroundAgent => {
+            SlashCommand::Agent | SlashCommand::BackgroundAgent => {
                 self.app_event_tx.send(AppEvent::OpenBackgroundAgentManager);
                 self.append_message_history_entry("/agent".to_string());
             }
@@ -1028,7 +1040,7 @@ impl ChatWidget {
                 self.add_hooks_output();
             }
             SlashCommand::Status | SlashCommand::Stats => {
-                self.dispatch_status_command(cmd.command());
+                self.open_status_panel();
             }
             SlashCommand::Changelog => {
                 self.add_changelog_output();
@@ -1053,15 +1065,6 @@ impl ChatWidget {
             }
             SlashCommand::Ps => {
                 self.open_background_terminal_manager();
-            }
-            SlashCommand::Stop => {
-                self.stop_background_terminals();
-            }
-            SlashCommand::MemoryDrop => {
-                self.add_app_server_stub_message("Memory maintenance");
-            }
-            SlashCommand::MemoryUpdate => {
-                self.add_app_server_stub_message("Memory maintenance");
             }
             SlashCommand::Mcp => {
                 self.open_mcp_control_center();
@@ -2244,9 +2247,6 @@ impl ChatWidget {
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
-            | SlashCommand::Stop
-            | SlashCommand::MemoryDrop
-            | SlashCommand::MemoryUpdate
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
@@ -2268,6 +2268,7 @@ impl ChatWidget {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Review
+            | SlashCommand::Pr
             | SlashCommand::Model
             | SlashCommand::Profile
             | SlashCommand::Provider
