@@ -792,7 +792,7 @@ async fn apply_persisted_schedule_resume_metadata(
     }
 }
 
-fn schedule_resume_auth_profile(
+pub(super) fn schedule_resume_auth_profile(
     schedule_auth_profile: Option<Option<String>>,
     initial_history: &InitialHistory,
 ) -> Option<Option<String>> {

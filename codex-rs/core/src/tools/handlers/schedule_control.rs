@@ -375,12 +375,29 @@ async fn set_schedule_status(
             "next_run_at is required for one-time schedules",
         ));
     }
-    let schedule = state_db
-        .thread_schedules()
-        .set_thread_schedule_status(schedule_id.as_str(), status)
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
-        .ok_or_else(|| missing_schedule_error(schedule_id.as_str()))?;
+    if status == codex_state::ThreadScheduleStatus::Active {
+        validate_schedule_expiry(existing.next_run_at, existing.expires_at)?;
+    }
+    let schedule = match args.action {
+        ScheduleAction::Resume => {
+            state_db
+                .thread_schedules()
+                .resume_thread_schedule(schedule_id.as_str())
+                .await
+        }
+        ScheduleAction::Pause => {
+            state_db
+                .thread_schedules()
+                .set_thread_schedule_status(schedule_id.as_str(), status)
+                .await
+        }
+        ScheduleAction::Create
+        | ScheduleAction::List
+        | ScheduleAction::Update
+        | ScheduleAction::Delete => unreachable!("action matched above"),
+    }
+    .map_err(|err| FunctionCallError::RespondToModel(format_schedule_error(err)))?
+    .ok_or_else(|| missing_schedule_error(schedule_id.as_str()))?;
     if schedule.thread_id != thread_id {
         return Err(missing_schedule_error(schedule_id.as_str()));
     }
@@ -965,6 +982,76 @@ mod tests {
             error,
             model_error("next_run_at is required for one-time schedules")
         );
+    }
+
+    #[tokio::test]
+    async fn resume_resets_failure_count() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 16);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(
+                at(/*seconds*/ 1_700_000_301),
+                "lease-1",
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .expect("schedule claim should succeed")
+            .expect("schedule should be due");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                schedule.schedule_id.as_str(),
+                claim.run.run_id.as_str(),
+                claim.run.lease_id.as_str(),
+                at(/*seconds*/ 1_700_000_302),
+                Some(at(/*seconds*/ 1_700_000_600)),
+                "transient failure".to_string(),
+            )
+            .await
+            .expect("schedule failure should be recorded");
+        runtime
+            .thread_schedules()
+            .set_thread_schedule_status(
+                schedule.schedule_id.as_str(),
+                codex_state::ThreadScheduleStatus::Paused,
+            )
+            .await
+            .expect("schedule should pause")
+            .expect("schedule should exist");
+
+        let before_resume = runtime
+            .thread_schedules()
+            .get_thread_schedule(schedule.schedule_id.as_str())
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(1, before_resume.failure_count);
+
+        let response = manage_schedule(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageScheduleArgs {
+                action: ScheduleAction::Resume,
+                schedule_id: Some(schedule.schedule_id),
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("schedule should resume");
+
+        let affected = response
+            .affected_schedule
+            .expect("resumed schedule should be returned");
+        assert_eq!("active", affected.status);
+        assert_eq!(0, affected.failure_count);
     }
 
     #[tokio::test]

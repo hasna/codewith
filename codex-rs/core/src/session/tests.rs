@@ -3811,6 +3811,17 @@ async fn build_test_config(codex_home: &Path) -> Config {
         .expect("load default test config")
 }
 
+fn api_key_auth_dot_json_for_tests(api_key: &str) -> codex_login::AuthDotJson {
+    codex_login::AuthDotJson {
+        auth_mode: Some(codex_app_server_protocol::AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+    }
+}
+
 fn session_telemetry(
     conversation_id: ThreadId,
     config: &Config,
@@ -5176,6 +5187,55 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
     assert_eq!(turn_cwd, absolute_cwd);
     assert_eq!(turn_context.config.cwd, absolute_cwd);
     assert_eq!(turn_context.environments.turn_environments.len(), 1);
+}
+
+#[tokio::test]
+async fn user_input_auth_profile_override_switches_auth_manager() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    assert_eq!(None, session.services.auth_manager.selected_auth_profile());
+
+    session
+        .new_turn_with_sub_id(
+            "auth-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("work"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(
+        Some("work-key"),
+        session
+            .services
+            .auth_manager
+            .auth_cached()
+            .expect("work auth should be cached")
+            .api_key()
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -7386,7 +7446,8 @@ where
     let state_db = None;
     let config = Arc::new(config);
     let thread_id = ThreadId::default();
-    let auth_manager = AuthManager::from_auth_for_testing(auth);
+    let auth_manager =
+        AuthManager::from_auth_for_testing_with_home(auth, config.codex_home.to_path_buf());
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         auth_manager.clone(),
