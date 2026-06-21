@@ -376,6 +376,13 @@ async fn set_schedule_status(
         ));
     }
     if status == codex_state::ThreadScheduleStatus::Active {
+        if let Some(expires_at) = existing.expires_at
+            && expires_at <= Utc::now()
+        {
+            return Err(model_error(
+                "schedule expires_at must be in the future to resume",
+            ));
+        }
         validate_schedule_expiry(existing.next_run_at, existing.expires_at)?;
     }
     let schedule = match args.action {
@@ -1052,6 +1059,53 @@ mod tests {
             .expect("resumed schedule should be returned");
         assert_eq!("active", affected.status);
         assert_eq!(0, affected.failure_count);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_schedule_with_past_expiry() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_once_schedule(&runtime, thread_id, "check CI").await;
+        runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                schedule.schedule_id.as_str(),
+                codex_state::ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(codex_state::ThreadScheduleStatus::Paused),
+                    next_run_at: None,
+                    expires_at: Some(Some(at(/*seconds*/ 1_700_000_600))),
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+
+        let error = manage_schedule(
+            runtime,
+            thread_id,
+            None,
+            ManageScheduleArgs {
+                action: ScheduleAction::Resume,
+                schedule_id: Some(schedule.schedule_id),
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect_err("expired schedule should not resume");
+
+        assert_eq!(
+            error,
+            model_error("schedule expires_at must be in the future to resume")
+        );
     }
 
     #[tokio::test]

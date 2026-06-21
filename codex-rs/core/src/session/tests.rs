@@ -1,6 +1,7 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+use crate::codex_thread::TryStartUserInputTurnIfIdleError;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::test_config;
@@ -5239,6 +5240,52 @@ async fn user_input_auth_profile_override_switches_auth_manager() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn user_input_external_subscription_profile_override_updates_selection_without_openai_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "claude",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    let turn_context = session
+        .new_turn_with_sub_id(
+            "external-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("claude".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("claude"),
+        turn_context.config.selected_auth_profile.as_deref()
+    );
+    assert_eq!(
+        Some("claude"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(None, session.services.auth_manager.auth_cached());
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let mut config = build_test_config(codex_home.path()).await;
@@ -9585,6 +9632,71 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_active_turn_without_switching_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (sess, tc, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-turn".to_string(),
+            vec![UserInput::Text {
+                text: "scheduled".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("active turn should reject scheduled idle-only input");
+
+    assert!(matches!(
+        err,
+        TryStartUserInputTurnIfIdleError::Rejected(TryStartTurnIfIdleRejectionReason::Busy)
+    ));
+    assert_eq!(None, sess.services.auth_manager.selected_auth_profile());
+    assert_eq!(
+        Some("root-key"),
+        sess.services
+            .auth_manager
+            .auth_cached()
+            .expect("root auth should remain cached")
+            .api_key()
+    );
+    assert_eq!(
+        Vec::<TurnInput>::new(),
+        sess.input_queue.get_pending_input(&sess.active_turn).await
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    Ok(())
 }
 
 #[tokio::test]

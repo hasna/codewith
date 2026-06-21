@@ -1837,18 +1837,14 @@ impl AuthManager {
         if let Some(name) = selected_auth_profile.as_deref() {
             let metadata = super::profile::load_auth_profile_metadata(&self.codex_home, name)?;
             if metadata.subscription_provider
-                != super::profile::AuthProfileSubscriptionProvider::ChatGpt
+                == super::profile::AuthProfileSubscriptionProvider::ChatGpt
             {
-                return Err(super::AuthProfileError::NonChatGptProfile {
-                    name: name.to_string(),
-                    provider: metadata.subscription_provider,
-                });
+                super::profile::load_auth_profile(
+                    &self.codex_home,
+                    self.auth_credentials_store_mode,
+                    name,
+                )?;
             }
-            super::profile::load_auth_profile(
-                &self.codex_home,
-                self.auth_credentials_store_mode,
-                name,
-            )?;
         }
 
         let auth_storage_home =
