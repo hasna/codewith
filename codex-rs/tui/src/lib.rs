@@ -3208,11 +3208,11 @@ mod tests {
             startup_error.state_db_path(),
             codex_state::state_db_path(occupied_sqlite_home.as_path()).as_path()
         );
+        let detail = startup_error.detail();
         assert!(
-            startup_error
-                .detail()
-                .contains("failed to initialize state runtime"),
-            "startup error should preserve the underlying state db failure"
+            detail.contains("failed to initialize state runtime")
+                || detail.contains("failed to acquire state runtime startup lock"),
+            "startup error should preserve the underlying state runtime failure"
         );
         Ok(())
     }

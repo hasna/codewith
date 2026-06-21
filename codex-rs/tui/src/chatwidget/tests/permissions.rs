@@ -973,11 +973,7 @@ async fn permissions_selection_event_full_access_to_default() {
         .expect("set permission profile");
 
     chat.open_permissions_popup();
-    let popup = render_bottom_popup(&chat, /*width*/ 120);
-    chat.handle_key_event(KeyEvent::from(KeyCode::Up));
-    if popup.contains("Approve for me") {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Up));
-    }
+    select_permissions_popup_row(&mut chat, ASK_FOR_APPROVAL_LABEL);
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let events = drain_app_events(&mut rx);
@@ -990,6 +986,23 @@ async fn permissions_selection_event_full_access_to_default() {
             }) if display_label == ASK_FOR_APPROVAL_LABEL
         )),
         "expected default permissions selection event, got: {events:?}"
+    );
+}
+
+fn select_permissions_popup_row(chat: &mut ChatWidget, label: &str) {
+    for _ in 0..12 {
+        let popup = render_bottom_popup(chat, /*width*/ 120);
+        if popup
+            .lines()
+            .any(|line| line.starts_with('›') && line.contains(label))
+        {
+            return;
+        }
+        chat.handle_key_event(KeyEvent::from(KeyCode::Up));
+    }
+    panic!(
+        "permissions popup did not select `{label}`:\n{}",
+        render_bottom_popup(chat, /*width*/ 120)
     );
 }
 

@@ -1,4 +1,8 @@
 use super::*;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::TimeZone;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -44,7 +48,7 @@ async fn worktree_manager_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_manager",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -86,7 +90,7 @@ async fn worktree_read_selector_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_read_selector",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -132,7 +136,7 @@ async fn worktree_actions_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_actions",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -178,7 +182,7 @@ async fn worktree_read_detail_snapshot() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert_chatwidget_snapshot!("worktree_read_detail", combined);
+    assert_chatwidget_snapshot!("worktree_read_detail", normalize_snapshot_paths(combined));
 }
 
 fn test_worktree(
@@ -209,16 +213,36 @@ fn test_worktree(
         status_snapshot: json!({"status": "ready", "phase": "review"}),
         dirty: lifecycle_status == WorktreeLifecycleStatus::CleanupPending,
         cleanup_policy,
-        cleanup_after: Some(1_781_776_000),
+        cleanup_after: Some(local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40)),
         force_delete_requested: cleanup_policy == WorktreeCleanupPolicy::ForceDelete,
         owner_kind,
         owner_thread_id: owner_thread_id.map(str::to_string),
         owner_agent_run_id: owner_agent_run_id.map(str::to_string),
-        created_at: 1_781_775_000,
-        updated_at: 1_781_776_000,
-        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active).then_some(1_781_776_100),
-        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted).then_some(1_781_776_200),
+        created_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 30, 0),
+        updated_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40),
+        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active)
+            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 48, 20)),
+        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted)
+            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 50, 0)),
         agent: owner_agent_run_id.map(test_agent),
+    }
+}
+
+fn local_timestamp_for_snapshot(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> i64 {
+    let naive = NaiveDate::from_ymd_opt(year, month, day)
+        .expect("valid date")
+        .and_hms_opt(hour, minute, second)
+        .expect("valid time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt.timestamp(),
+        LocalResult::None => naive.and_utc().timestamp(),
     }
 }
 

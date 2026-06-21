@@ -1401,10 +1401,15 @@ WHERE owner_agent_run_id = ?
 }
 
 pub(crate) fn path_to_db_string(path: &Path) -> String {
-    normalize_path_for_db(path).to_string_lossy().into_owned()
+    path_to_string(&normalize_path_for_db(path))
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1417,6 +1422,27 @@ fn normalize_path_for_db(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn path_to_string(path: &Path) -> String {
+    let path = path.to_string_lossy().into_owned();
+    strip_windows_verbatim_prefix(path)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    path
 }
 
 pub(crate) fn managed_worktree_from_row(

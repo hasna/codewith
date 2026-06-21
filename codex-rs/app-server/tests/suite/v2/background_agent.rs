@@ -1056,7 +1056,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let list_response: WorktreeListResponse = read_response(&mut mcp, list_request_id).await?;
     assert_eq!(vec!["wt-current".to_string()], worktree_ids(&list_response));
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         list_response.policy.current_base_repo_path
     );
 
@@ -1071,7 +1071,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let read_other: WorktreeReadResponse = read_response(&mut mcp, read_other_request_id).await?;
     assert_eq!(None, read_other.worktree);
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         read_other.policy.current_base_repo_path
     );
 
@@ -1080,7 +1080,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             "worktree/read",
             Some(json!({
                 "worktreeId": "wt-other",
-                "baseRepoPath": other_repo.display().to_string(),
+                "baseRepoPath": protocol_path(&other_repo),
             })),
         )
         .await?;
@@ -1094,7 +1094,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             .map(|worktree| worktree.worktree_id.clone())
     );
     assert_eq!(
-        Some(other_repo.display().to_string()),
+        Some(protocol_path(&other_repo)),
         read_requested_repo.policy.current_base_repo_path
     );
 
@@ -1190,7 +1190,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert_eq!(1, reconciled.discovered);
     assert!(reconciled.updated >= 1);
     assert!(reconciled.data.iter().any(|worktree| {
-        worktree.worktree_path == manual_path.to_string_lossy()
+        worktree.worktree_path == protocol_path(&manual_path)
             && worktree
                 .identity
                 .as_deref()
@@ -1199,7 +1199,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert!(reconciled.data.iter().any(|worktree| {
         worktree.worktree_id == "outside-root"
             && worktree.lifecycle_status == WorktreeLifecycleStatus::Active
-            && worktree.worktree_path == outside_root_path.to_string_lossy()
+            && worktree.worktree_path == protocol_path(&outside_root_path)
     }));
 
     let cleanup_request_id = mcp
@@ -1451,7 +1451,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "merge candidate\n",
-        std::fs::read_to_string(codex_home.path().join("feature.txt"))?
+        std::fs::read_to_string(codex_home.path().join("feature.txt"))?.replace("\r\n", "\n")
     );
 
     let apply_again_error = raw_request_error(
@@ -1736,6 +1736,32 @@ fn git(cwd: &Path, args: &[&str]) -> Result<()> {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn protocol_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+
+    let path = path.to_string_lossy().into_owned();
+    strip_windows_verbatim_prefix(path)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    path
 }
 
 async fn create_managed_worktree(
