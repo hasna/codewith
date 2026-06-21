@@ -807,50 +807,15 @@ impl ThreadRequestProcessor {
             .cleanup_policy
             .map(state_worktree_cleanup_policy)
             .unwrap_or(worktree.cleanup_policy);
-        let status_snapshot_json = git_status_snapshot_json(status_snapshot.clone());
-        let worktree_id = worktree.worktree_id.clone();
-        let background_agent_lease = state_db
-            .get_background_agent_worktree_lease(worktree_id.as_str())
-            .await
-            .map_err(|err| {
-                internal_error(format!(
-                    "failed to read background agent worktree lease: {err}"
-                ))
-            })?;
-        if background_agent_lease
-            .as_ref()
-            .is_some_and(|lease| lease.released_at.is_none() && lease.deleted_at.is_none())
+        if let Some(worktree) = release_background_agent_worktree_lease_if_present(
+            &state_db,
+            &worktree,
+            cleanup_policy,
+            force_delete,
+            &status_snapshot,
+        )
+        .await?
         {
-            state_db
-                .update_background_agent_worktree_lease_status(
-                    worktree_id.as_str(),
-                    status_snapshot.dirty,
-                    &status_snapshot_json,
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to update background agent worktree lease: {err}"
-                    ))
-                })?;
-            state_db
-                .release_background_agent_worktree_lease(
-                    worktree_id.as_str(),
-                    background_agent_workspace_cleanup(cleanup_policy, force_delete),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to release background agent worktree lease: {err}"
-                    ))
-                })?;
-            let worktree = state_db
-                .managed_worktrees()
-                .get_managed_worktree(worktree_id.as_str())
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to read released worktree: {err}"))
-                })?;
             let worktree = match worktree {
                 Some(worktree) => Some(api_worktree_from_state(state_db.as_ref(), worktree).await?),
                 None => None,
@@ -863,7 +828,7 @@ impl ThreadRequestProcessor {
                 worktree_id: worktree.worktree_id,
                 cleanup_policy,
                 force_delete,
-                status_snapshot_json,
+                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
                 dirty: status_snapshot.dirty,
             })
             .await
@@ -897,17 +862,30 @@ impl ThreadRequestProcessor {
         } else {
             codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean
         };
-        let released = state_db
-            .managed_worktrees()
-            .release_managed_worktree(codex_state::ManagedWorktreeReleaseParams {
-                worktree_id: worktree.worktree_id.clone(),
-                cleanup_policy,
-                force_delete,
-                status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
-                dirty: status_snapshot.dirty,
-            })
-            .await
-            .map_err(|err| invalid_params(format!("failed to queue worktree cleanup: {err}")))?;
+        let released = match release_background_agent_worktree_lease_if_present(
+            &state_db,
+            &worktree,
+            cleanup_policy,
+            force_delete,
+            &status_snapshot,
+        )
+        .await?
+        {
+            Some(worktree) => worktree,
+            None => state_db
+                .managed_worktrees()
+                .release_managed_worktree(codex_state::ManagedWorktreeReleaseParams {
+                    worktree_id: worktree.worktree_id.clone(),
+                    cleanup_policy,
+                    force_delete,
+                    status_snapshot_json: git_status_snapshot_json(status_snapshot.clone()),
+                    dirty: status_snapshot.dirty,
+                })
+                .await
+                .map_err(|err| {
+                    invalid_params(format!("failed to queue worktree cleanup: {err}"))
+                })?,
+        };
         if let Some(candidate) = released
             && candidate.lifecycle_status
                 == codex_state::ManagedWorktreeLifecycleStatus::CleanupPending
@@ -1467,6 +1445,32 @@ async fn reconcile_background_agent_worker_processes(
         None => context.state_db.list_runs(Some(200)).await?,
     };
     for run in runs {
+        let active_handle = context
+            .active_worker_processes
+            .lock()
+            .await
+            .get(run.id.as_str())
+            .cloned();
+        if let Some(handle) = active_handle
+            && (run.desired_state != BackgroundAgentDesiredState::Running
+                || run.status == BackgroundAgentRunStatus::Orphaned)
+        {
+            let controller = WorkerProcessController::default();
+            if let Err(err) = controller.stop(&handle).await {
+                warn!(
+                    run_id = %run.id,
+                    "failed to stop inactive background-agent worker process: {err}"
+                );
+            }
+            context
+                .active_worker_processes
+                .lock()
+                .await
+                .remove(run.id.as_str());
+            if run.desired_state != BackgroundAgentDesiredState::Running {
+                continue;
+            }
+        }
         if !should_start_background_run(&run) {
             continue;
         }
@@ -1658,6 +1662,61 @@ fn background_agent_workspace_cleanup(
             BackgroundAgentWorkspaceCleanup::ForceDelete
         }
     }
+}
+
+async fn release_background_agent_worktree_lease_if_present(
+    state_db: &StateDbHandle,
+    worktree: &codex_state::ManagedWorktree,
+    cleanup_policy: codex_state::ManagedWorktreeCleanupPolicy,
+    force_delete: bool,
+    status_snapshot: &GitWorktreeStatusSnapshot,
+) -> Result<Option<Option<codex_state::ManagedWorktree>>, JSONRPCErrorError> {
+    let worktree_id = worktree.worktree_id.clone();
+    let background_agent_lease = state_db
+        .get_background_agent_worktree_lease(worktree_id.as_str())
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to read background agent worktree lease: {err}"
+            ))
+        })?;
+    if background_agent_lease
+        .as_ref()
+        .is_none_or(|lease| lease.deleted_at.is_some())
+    {
+        return Ok(None);
+    }
+
+    let status_snapshot_json = git_status_snapshot_json(status_snapshot.clone());
+    state_db
+        .update_background_agent_worktree_lease_status(
+            worktree_id.as_str(),
+            status_snapshot.dirty,
+            &status_snapshot_json,
+        )
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to update background agent worktree lease: {err}"
+            ))
+        })?;
+    state_db
+        .release_background_agent_worktree_lease(
+            worktree_id.as_str(),
+            background_agent_workspace_cleanup(cleanup_policy, force_delete),
+        )
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to release background agent worktree lease: {err}"
+            ))
+        })?;
+    let worktree = state_db
+        .managed_worktrees()
+        .get_managed_worktree(worktree_id.as_str())
+        .await
+        .map_err(|err| internal_error(format!("failed to read released worktree: {err}")))?;
+    Ok(Some(worktree))
 }
 
 fn state_worktree_merge_candidate_status(
@@ -3745,6 +3804,73 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn process_supervisor_replaces_live_handle_for_orphaned_run() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "orphaned-run").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor("orphaned-run", "old-supervisor", "old-lease")
+            .await?
+            .expect("run should be claimed");
+        let controller = WorkerProcessController::default();
+        let old_handle = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", temp.path().join("old.stderr.log"))
+                    .arg("-c")
+                    .arg("sleep 60"),
+            )
+            .await?;
+        let old_stderr_log_path = old_handle.stderr_log_path.to_string_lossy().to_string();
+        state_db
+            .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                run_id: "orphaned-run",
+                supervisor_id: "old-supervisor",
+                generation,
+                pid: Some(i64::from(old_handle.pid)),
+                pgid: old_handle.pgid.map(i64::from),
+                job_id: Some("old-worker"),
+                start_token: old_handle.start_token.as_deref(),
+                stderr_log_path: Some(old_stderr_log_path.as_str()),
+            })
+            .await?;
+        let active_worker_processes = Arc::new(Mutex::new(HashMap::from([(
+            "orphaned-run".to_string(),
+            old_handle.clone(),
+        )])));
+        assert_eq!(
+            state_db
+                .orphan_stale_background_agent_runs(Duration::ZERO)
+                .await?,
+            1
+        );
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "new-process-supervisor".to_string(),
+            active_worker_processes: Arc::clone(&active_worker_processes),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+        };
+
+        reconcile_background_agent_worker_processes(context, Some("orphaned-run".to_string()))
+            .await?;
+
+        let replacement = active_worker_processes
+            .lock()
+            .await
+            .get("orphaned-run")
+            .cloned()
+            .expect("replacement handle should be tracked");
+        assert_ne!(old_handle.pid, replacement.pid);
+        assert_ne!(
+            controller.status(&old_handle).await?,
+            WorkerProcessStatus::Running
+        );
+        Ok(())
     }
 
     async fn seed_queued_run(

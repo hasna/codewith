@@ -75,6 +75,8 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
 - Hardened background-agent managed worktree release so active background-agent
   leases use the lease release path and cannot be bypassed by generic worktree
   detach or release.
+- Hardened background-agent stop/delete ordering, diagnostics pending counts,
+  and rollout/thread validation.
 - Preserved usage accounting when resuming blocked or usage-limited goals.
 - Kept usage self-heal retry tests active even when retry behavior is gated by
   config defaults.

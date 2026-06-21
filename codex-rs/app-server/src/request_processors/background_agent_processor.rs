@@ -364,6 +364,7 @@ impl BackgroundAgentRequestProcessor {
         params: AgentReadParams,
     ) -> Result<AgentReadResponse, JSONRPCErrorError> {
         let state_db = self.state_db()?;
+        expire_timed_out_pending_interactions(state_db.as_ref()).await?;
         let Some(run) = self
             .load_agent_run(state_db.as_ref(), params.agent_id.as_str())
             .await?
@@ -375,7 +376,6 @@ impl BackgroundAgentRequestProcessor {
                 pending_interactions: Vec::new(),
             });
         };
-        expire_timed_out_pending_interactions(state_db.as_ref()).await?;
         let status_snapshot = state_db
             .get_status_snapshot(run.id.as_str())
             .await
@@ -442,19 +442,6 @@ impl BackgroundAgentRequestProcessor {
                 ))
             })?
             .map(api_agent_execution_snapshot_from_state);
-        let limit = normalize_agent_list_limit(params.limit)?;
-        let after_seq = decode_event_cursor(params.cursor.as_deref())?;
-        let mut events = state_db
-            .list_events_after(run.id.as_str(), after_seq, Some(limit.saturating_add(1)))
-            .await
-            .map_err(map_background_agent_event_replay_error)?;
-        let has_more = events.len() > limit;
-        if has_more {
-            events.truncate(limit);
-        }
-        let next_cursor = has_more
-            .then(|| events.last().map(|event| encode_event_cursor(event.seq)))
-            .flatten();
         for interaction in state_db
             .list_pending_interactions(
                 run.id.as_str(),
@@ -476,6 +463,19 @@ impl BackgroundAgentRequestProcessor {
                     ))
                 })?;
         }
+        let limit = normalize_agent_list_limit(params.limit)?;
+        let after_seq = decode_event_cursor(params.cursor.as_deref())?;
+        let mut events = state_db
+            .list_events_after(run.id.as_str(), after_seq, Some(limit.saturating_add(1)))
+            .await
+            .map_err(map_background_agent_event_replay_error)?;
+        let has_more = events.len() > limit;
+        if has_more {
+            events.truncate(limit);
+        }
+        let next_cursor = has_more
+            .then(|| events.last().map(|event| encode_event_cursor(event.seq)))
+            .flatten();
         let pending_interactions = state_db
             .list_pending_interactions(run.id.as_str(), None)
             .await
@@ -541,6 +541,18 @@ impl BackgroundAgentRequestProcessor {
                 agent: None,
             });
         };
+        if matches!(
+            run.retention_state,
+            codex_state::BackgroundAgentRetentionState::DeleteRequested
+                | codex_state::BackgroundAgentRetentionState::Deleted
+        ) {
+            return Ok(AgentStopResponse {
+                effect: api_lifecycle_effect_from_runtime(lifecycle_effect_for(
+                    LifecycleAction::Stop,
+                )),
+                agent: Some(api_agent_run_from_state(run)),
+            });
+        }
         state_db
             .set_desired_state(run.id.as_str(), BackgroundAgentDesiredState::Stopped)
             .await
@@ -813,7 +825,17 @@ impl BackgroundAgentRequestProcessor {
                 internal_error(format!(
                     "failed to count background agent pending interactions: {err}"
                 ))
-            })?;
+            })?
+            + state_db
+                .count_pending_interactions(Some(
+                    BackgroundAgentPendingInteractionStatus::Delivered,
+                ))
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to count background agent delivered interactions: {err}"
+                    ))
+                })?;
         Ok(AgentDaemonDiagnosticsResponse {
             state_store_available: true,
             active_run_count: quota.active_run_count,
@@ -1003,11 +1025,15 @@ async fn validate_agent_start_rollout_path(
     thread_id: Option<&str>,
     rollout_path: Option<&str>,
 ) -> Result<(), JSONRPCErrorError> {
-    let Some(rollout_path) = rollout_path else {
-        return Ok(());
-    };
-    let Some(thread_id) = thread_id else {
-        return Err(invalid_params("agent/start rolloutPath requires threadId"));
+    let (thread_id, rollout_path) = match (thread_id, rollout_path) {
+        (None, None) => return Ok(()),
+        (Some(_), None) => {
+            return Err(invalid_params("agent/start threadId requires rolloutPath"));
+        }
+        (None, Some(_)) => {
+            return Err(invalid_params("agent/start rolloutPath requires threadId"));
+        }
+        (Some(thread_id), Some(rollout_path)) => (thread_id, rollout_path),
     };
     let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
@@ -1769,6 +1795,17 @@ mod tests {
         validate_agent_start_rollout_path(state_db.as_ref(), None, None)
             .await
             .expect("missing rolloutPath should be accepted");
+        let missing_rollout_path = validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            Some(thread_id_string.as_str()),
+            None,
+        )
+        .await
+        .expect_err("threadId without rolloutPath should be rejected");
+        assert_eq!(
+            missing_rollout_path.message,
+            "agent/start threadId requires rolloutPath"
+        );
         let missing_thread_id = validate_agent_start_rollout_path(
             state_db.as_ref(),
             None,

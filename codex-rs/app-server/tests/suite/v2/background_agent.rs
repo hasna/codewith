@@ -324,6 +324,19 @@ async fn agent_start_rejects_unvalidated_rollout_path_metadata() -> Result<()> {
     write_config(codex_home.path(), server.uri().as_str())?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
+    let mut missing_rollout = start_params(
+        "resume a thread without rollout",
+        Some("missing-rollout-thread".to_string()),
+        codex_home.path(),
+    );
+    missing_rollout.thread_id = Some("00000000-0000-0000-0000-000000000320".to_string());
+    let missing_rollout_error = start_agent_error(&mut mcp, missing_rollout).await?;
+    assert_eq!(missing_rollout_error.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert_eq!(
+        missing_rollout_error.error.message,
+        "agent/start threadId requires rolloutPath"
+    );
+
     let mut missing_thread = start_params(
         "resume an unowned rollout",
         Some("missing-thread-rollout".to_string()),
@@ -540,6 +553,21 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
         )
         .await?;
 
+    let read_after_expire = agent_read(&mut mcp, &agent_id).await?;
+    let read_agent = read_after_expire
+        .agent
+        .expect("read should return the seeded agent");
+    let read_snapshot = read_after_expire
+        .status_snapshot
+        .expect("read should return a refreshed status snapshot");
+    assert_eq!(read_agent.last_event_seq, read_snapshot.last_event_seq);
+    let read_expired = read_after_expire
+        .pending_interactions
+        .iter()
+        .find(|interaction| interaction.interaction_id == "expired-1")
+        .expect("expired interaction should be returned by read");
+    assert_eq!(read_expired.status, AgentPendingInteractionStatus::Expired);
+
     let attach = agent_attach(&mut mcp, &agent_id).await?;
     assert_eq!(attach.effect, AgentLifecycleEffect::ReplayState);
     assert_eq!(
@@ -557,30 +585,35 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
         .find(|interaction| interaction.interaction_id == "approval-1")
         .expect("approval interaction should be replayed");
     assert_eq!(approval.status, AgentPendingInteractionStatus::Delivered);
+    assert!(
+        attach
+            .events
+            .iter()
+            .any(|event| event.event_type == "interaction.delivered")
+    );
     let expired = attach
         .pending_interactions
         .iter()
         .find(|interaction| interaction.interaction_id == "expired-1")
         .expect("expired interaction should be replayed");
     assert_eq!(expired.status, AgentPendingInteractionStatus::Expired);
+    let diagnostics = agent_daemon_diagnostics(&mut mcp).await?;
+    assert_eq!(1, diagnostics.pending_interaction_count);
 
-    let expired_respond_id = mcp
-        .send_agent_pending_interaction_respond_request(AgentPendingInteractionRespondParams {
+    let expired_respond = agent_pending_interaction_respond_error(
+        &mut mcp,
+        AgentPendingInteractionRespondParams {
             agent_id: agent_id.clone(),
             interaction_id: "expired-1".to_string(),
             response: json!({ "answer": "late" }),
             terminal_status: AgentPendingInteractionTerminalStatus::Responded,
-        })
-        .await?;
-    let expired_respond: AgentPendingInteractionRespondResponse =
-        read_response(&mut mcp, expired_respond_id).await?;
-    assert!(!expired_respond.updated);
+        },
+    )
+    .await?;
+    assert_eq!(-32600, expired_respond.error.code);
     assert_eq!(
-        expired_respond
-            .interaction
-            .expect("expired interaction should be returned")
-            .status,
-        AgentPendingInteractionStatus::Expired
+        "background agent pending interaction response is invalid for user_input",
+        expired_respond.error.message
     );
 
     let respond_id = mcp
@@ -644,6 +677,59 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
     let diagnostics = agent_daemon_diagnostics(&mut mcp).await?;
     assert!(diagnostics.state_store_available);
     assert_eventually_no_pending_interactions(&mut mcp).await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    let agent_id = "delete-then-stop-run".to_string();
+    seed_queued_agent_run(
+        state_db.as_ref(),
+        agent_id.as_str(),
+        None,
+        "delete then stop",
+    )
+    .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let delete_id = mcp
+        .send_agent_delete_request(AgentDeleteParams {
+            agent_id: agent_id.clone(),
+        })
+        .await?;
+    let delete: AgentDeleteResponse = read_response(&mut mcp, delete_id).await?;
+    let deleted_agent = delete.agent.expect("delete response should include agent");
+    assert_eq!(AgentDesiredState::Deleted, deleted_agent.desired_state);
+    assert_eq!(
+        AgentRetentionState::DeleteRequested,
+        deleted_agent.retention_state
+    );
+
+    let stop_id = mcp
+        .send_agent_stop_request(AgentStopParams {
+            agent_id: agent_id.clone(),
+        })
+        .await?;
+    let stop: AgentStopResponse = read_response(&mut mcp, stop_id).await?;
+    let stopped_agent = stop.agent.expect("stop response should include agent");
+    assert_eq!(AgentDesiredState::Deleted, stopped_agent.desired_state);
+    assert_eq!(
+        AgentRetentionState::DeleteRequested,
+        stopped_agent.retention_state
+    );
+    assert!(
+        matches!(
+            stopped_agent.status,
+            AgentRunStatus::Stopping | AgentRunStatus::Cancelled
+        ),
+        "unexpected stop status: {:?}",
+        stopped_agent.status
+    );
 
     Ok(())
 }
@@ -1048,47 +1134,13 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     write_config(codex_home.path(), server.uri().as_str())?;
     let state_db = init_state_db(codex_home.path()).await?;
-    seed_queued_agent_run(
+    create_background_agent_git_worktree_lease(
         state_db.as_ref(),
         "agent-run-release",
-        None,
-        "release a leased background-agent worktree",
+        "lease-release",
+        codex_home.path(),
     )
     .await?;
-    let worktree_path = codex_home
-        .path()
-        .join(".codewith")
-        .join("worktrees")
-        .join("agent-run-release");
-    std::fs::create_dir_all(worktree_path.parent().expect("worktree parent"))?;
-    git(
-        codex_home.path(),
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "codewith/agent-run-release",
-            worktree_path.to_string_lossy().as_ref(),
-            "HEAD",
-        ],
-    )?;
-    state_db
-        .create_background_agent_worktree_lease(
-            &codex_state::BackgroundAgentWorktreeLeaseCreateParams {
-                id: "lease-release".to_string(),
-                run_id: "agent-run-release".to_string(),
-                identity: "test:lease-release".to_string(),
-                mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: codex_home.path().to_string_lossy().to_string(),
-                worktree_path: worktree_path.to_string_lossy().to_string(),
-                branch: Some("codewith/agent-run-release".to_string()),
-                head_sha: None,
-                status_snapshot_json: json!({"dirty": false, "source": "seed"}),
-                dirty: false,
-                cleanup_after: None,
-            },
-        )
-        .await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let release_request_id = mcp
@@ -1096,7 +1148,7 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
             "worktree/release",
             Some(json!({
                 "worktreeId": "lease-release",
-                "cleanupPolicy": "deleteIfClean",
+                "cleanupPolicy": "retain",
                 "forceDelete": false,
             })),
         )
@@ -1107,7 +1159,7 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
         .expect("release response should include the managed worktree");
     assert_eq!("lease-release", released_worktree.worktree_id);
     assert_eq!(
-        WorktreeLifecycleStatus::CleanupPending,
+        WorktreeLifecycleStatus::Released,
         released_worktree.lifecycle_status
     );
     assert_eq!(
@@ -1124,7 +1176,34 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
         .await?
         .expect("background-agent lease should still be readable after release");
     assert!(lease.released_at.is_some());
+    assert_eq!(None, lease.deleted_at);
+    assert!(!lease.force_delete_requested);
     assert_eq!(Some(&json!(false)), lease.status_snapshot_json.get("dirty"));
+
+    let force_release_request_id = mcp
+        .send_raw_request(
+            "worktree/release",
+            Some(json!({
+                "worktreeId": "lease-release",
+                "forceDelete": true,
+            })),
+        )
+        .await?;
+    let force_released: WorktreeReleaseResponse =
+        read_response(&mut mcp, force_release_request_id).await?;
+    let force_released_worktree = force_released
+        .worktree
+        .expect("force release response should include the managed worktree");
+    assert_eq!(
+        WorktreeLifecycleStatus::CleanupPending,
+        force_released_worktree.lifecycle_status
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-release")
+        .await?
+        .expect("background-agent lease should remain readable after force release");
+    assert!(lease.force_delete_requested);
+    assert_eq!(None, lease.deleted_at);
     let worktree = state_db
         .managed_worktrees()
         .get_managed_worktree("lease-release")
@@ -1135,6 +1214,49 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
         worktree.lifecycle_status
     );
     assert!(worktree.released_at.is_some());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_background_agent_git_worktree_lease(
+        state_db.as_ref(),
+        "agent-run-cleanup",
+        "lease-cleanup",
+        codex_home.path(),
+    )
+    .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let cleanup_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": "lease-cleanup",
+                "forceDelete": false,
+            })),
+        )
+        .await?;
+    let cleanup: WorktreeCleanupResponse = read_response(&mut mcp, cleanup_request_id).await?;
+    let cleaned = cleanup
+        .worktree
+        .expect("cleanup response should include the managed worktree");
+    assert_eq!("lease-cleanup", cleaned.worktree_id);
+    assert_eq!(WorktreeLifecycleStatus::Deleted, cleaned.lifecycle_status);
+    assert!(!Path::new(cleaned.worktree_path.as_str()).exists());
+
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-cleanup")
+        .await?
+        .expect("background-agent lease should remain readable after cleanup");
+    assert!(lease.released_at.is_some());
+    assert!(lease.deleted_at.is_some());
 
     Ok(())
 }
@@ -1512,6 +1634,59 @@ async fn create_managed_worktree(
             owner_agent_run_id: None,
             cleanup_after: None,
         })
+        .await?;
+    Ok(())
+}
+
+async fn create_background_agent_git_worktree_lease(
+    state_db: &codex_state::StateRuntime,
+    agent_id: &str,
+    lease_id: &str,
+    codex_home: &Path,
+) -> Result<()> {
+    seed_queued_agent_run(
+        state_db,
+        agent_id,
+        None,
+        "release a leased background-agent worktree",
+    )
+    .await?;
+    let branch = format!("codewith/{agent_id}");
+    let worktree_path = codex_home
+        .join(".codewith")
+        .join("worktrees")
+        .join(agent_id);
+    let worktree_parent = worktree_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("worktree path has no parent"))?;
+    std::fs::create_dir_all(worktree_parent)?;
+    git(
+        codex_home,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch.as_str(),
+            worktree_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    state_db
+        .create_background_agent_worktree_lease(
+            &codex_state::BackgroundAgentWorktreeLeaseCreateParams {
+                id: lease_id.to_string(),
+                run_id: agent_id.to_string(),
+                identity: format!("test:{lease_id}"),
+                mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
+                base_repo_path: codex_home.to_string_lossy().to_string(),
+                worktree_path: worktree_path.to_string_lossy().to_string(),
+                branch: Some(branch),
+                head_sha: None,
+                status_snapshot_json: json!({"dirty": false, "source": "seed"}),
+                dirty: false,
+                cleanup_after: None,
+            },
+        )
         .await?;
     Ok(())
 }
