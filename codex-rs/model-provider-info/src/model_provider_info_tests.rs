@@ -845,3 +845,93 @@ fn model_gateway_helpers_map_direct_and_aggregator_providers() {
         OPENROUTER_GATEWAY_ID
     ));
 }
+
+#[test]
+fn provider_base_url_matches_ignores_case_and_trailing_slashes() {
+    assert!(provider_base_url_matches(
+        " https://OPENROUTER.ai/api/v1/ ",
+        OPENROUTER_BASE_URL
+    ));
+    assert!(!provider_base_url_matches(
+        "https://evil.example/https://openrouter.ai/api/v1",
+        OPENROUTER_BASE_URL
+    ));
+}
+
+#[test]
+fn built_in_provider_env_keys_have_trusted_secret_backend_scope() {
+    for provider in built_in_model_providers(/*openai_base_url*/ None).values() {
+        let Some(env_key) = provider.env_key.as_deref() else {
+            continue;
+        };
+        let Some(base_url) = provider.base_url.as_deref() else {
+            panic!("built-in provider env keys must have a trusted base URL");
+        };
+
+        assert_eq!(
+            trusted_secret_backend_base_url_for_env_key(env_key),
+            Some(base_url)
+        );
+        assert_eq!(
+            provider.secret_backend_fallback(env_key),
+            provider_credentials::SecretBackendFallback::Enabled
+        );
+    }
+}
+
+#[test]
+fn built_in_secret_backend_fallback_is_disabled_for_untrusted_base_url() {
+    let provider = ModelProviderInfo {
+        name: "OpenRouter Mirror".to_string(),
+        base_url: Some("https://openrouter-mirror.example/api/v1".to_string()),
+        env_key: Some("OPENROUTER_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+
+    assert_eq!(
+        provider.secret_backend_fallback("OPENROUTER_API_KEY"),
+        provider_credentials::SecretBackendFallback::Disabled
+    );
+}
+
+#[test]
+fn built_in_secret_backend_fallback_uses_derived_secret_name_scope() {
+    let provider = ModelProviderInfo {
+        name: "OpenRouter Mirror".to_string(),
+        base_url: Some("https://openrouter-mirror.example/api/v1".to_string()),
+        env_key: Some("_OPENROUTER_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+
+    assert_eq!(
+        provider.secret_backend_fallback("_OPENROUTER_API_KEY"),
+        provider_credentials::SecretBackendFallback::Disabled
+    );
+    assert_eq!(
+        provider.secret_backend_fallback("OPENROUTER__API_KEY"),
+        provider_credentials::SecretBackendFallback::Disabled
+    );
+    assert_eq!(
+        provider.secret_backend_fallback("OPENROUTER_TOKEN"),
+        provider_credentials::SecretBackendFallback::Disabled
+    );
+    assert_eq!(
+        provider.secret_backend_fallback("ANTHROPIC_ACCESS_TOKEN"),
+        provider_credentials::SecretBackendFallback::Disabled
+    );
+}
+
+#[test]
+fn custom_provider_secret_backend_fallback_remains_available_for_custom_env_key() {
+    let provider = ModelProviderInfo {
+        name: "Corp".to_string(),
+        base_url: Some("https://models.corp.example/v1".to_string()),
+        env_key: Some("CORP_MODELS_API_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+
+    assert_eq!(
+        provider.secret_backend_fallback("CORP_MODELS_API_KEY"),
+        provider_credentials::SecretBackendFallback::Enabled
+    );
+}

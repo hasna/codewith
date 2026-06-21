@@ -39,6 +39,7 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
+pub const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const HASNA_GATEWAY_ID: &str = "hasna";
 pub const HASNA_GATEWAY_NAME: &str = "Hasna";
@@ -169,6 +170,35 @@ pub fn provider_belongs_to_model_gateway(provider_id: &str, gateway_id: &str) ->
         HASNA_GATEWAY_ID => true,
         OPENROUTER_GATEWAY_ID => provider_id == OPENROUTER_PROVIDER_ID,
         _ => false,
+    }
+}
+
+pub fn provider_base_url_matches(configured_base_url: &str, trusted_base_url: &str) -> bool {
+    normalize_provider_base_url(configured_base_url)
+        == normalize_provider_base_url(trusted_base_url)
+}
+
+fn normalize_provider_base_url(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn trusted_secret_backend_base_url_for_env_key(env_key: &str) -> Option<&'static str> {
+    let secret_name = provider_credentials::default_secret_name_for_provider_env_key(env_key)?;
+    let (provider_secret_namespace, _secret_leaf) = secret_name.split_once('/')?;
+    match provider_secret_namespace {
+        "openai" => Some(OPENAI_API_BASE_URL),
+        "openrouter" => Some(OPENROUTER_BASE_URL),
+        "xai" => Some(XAI_BASE_URL),
+        "anthropic" => Some(ANTHROPIC_BASE_URL),
+        "cerebras" => Some(CEREBRAS_BASE_URL),
+        "nvidia" => Some(NVIDIA_BASE_URL),
+        "mimo" => Some(XIAOMI_BASE_URL),
+        "deepseek" => Some(DEEPSEEK_BASE_URL),
+        "dashscope" => Some(QWEN_BASE_URL),
+        "gemini" => Some(GOOGLE_BASE_URL),
+        "zai" => Some(ZAI_BASE_URL),
+        "minimax" => Some(MINIMAX_BASE_URL),
+        _ => None,
     }
 }
 
@@ -339,7 +369,7 @@ impl ModelProviderInfo {
         ) {
             CHATGPT_CODEX_BASE_URL
         } else {
-            "https://api.openai.com/v1"
+            OPENAI_API_BASE_URL
         };
         let base_url = self
             .base_url
@@ -387,9 +417,32 @@ impl ModelProviderInfo {
     /// If `env_key` is Some, returns the API key when it is present in a
     /// supported runtime credential source. Missing keys are allowed.
     pub fn api_key_if_available(&self) -> Option<String> {
-        self.env_key
-            .as_deref()
-            .and_then(provider_credentials::provider_key_from_env_or_secret)
+        self.env_key.as_deref().and_then(|env_key| {
+            provider_credentials::provider_key_from_env_or_secret(
+                env_key,
+                self.secret_backend_fallback(env_key),
+            )
+        })
+    }
+
+    fn secret_backend_fallback(
+        &self,
+        env_key: &str,
+    ) -> provider_credentials::SecretBackendFallback {
+        match trusted_secret_backend_base_url_for_env_key(env_key) {
+            Some(trusted_base_url) => {
+                let base_url_is_trusted = match self.base_url.as_deref() {
+                    Some(base_url) => provider_base_url_matches(base_url, trusted_base_url),
+                    None => provider_base_url_matches(trusted_base_url, OPENAI_API_BASE_URL),
+                };
+                if base_url_is_trusted {
+                    provider_credentials::SecretBackendFallback::Enabled
+                } else {
+                    provider_credentials::SecretBackendFallback::Disabled
+                }
+            }
+            None => provider_credentials::SecretBackendFallback::Enabled,
+        }
     }
 
     /// Effective maximum number of request retries for this provider.
