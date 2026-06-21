@@ -1,0 +1,5 @@
+---
+source: tui/src/bottom_pane/footer.rs
+expression: line_text(&line)
+---
+Pursuing goal 2/4 (40s)

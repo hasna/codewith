@@ -99,13 +99,26 @@ pub(crate) enum CollaborationModeIndicator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GoalStatusIndicator {
-    Active { usage: Option<String> },
+    Active {
+        usage: Option<String>,
+    },
+    ActivePlan {
+        usage: Option<String>,
+        current_goal: i64,
+        total_goals: i64,
+    },
     Paused,
     Blocked,
     UsageLimited,
-    BudgetLimited { usage: Option<String> },
-    Complete { usage: Option<String> },
-    Cancelled { usage: Option<String> },
+    BudgetLimited {
+        usage: Option<String>,
+    },
+    Complete {
+        usage: Option<String>,
+    },
+    Cancelled {
+        usage: Option<String>,
+    },
 }
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
@@ -556,6 +569,18 @@ pub(crate) fn goal_status_indicator_line(
                 format!("Pursuing goal ({usage})")
             } else {
                 "Pursuing goal".to_string()
+            }
+        }
+        GoalStatusIndicator::ActivePlan {
+            usage,
+            current_goal,
+            total_goals,
+        } => {
+            let label = format!("Pursuing goal {current_goal}/{total_goals}");
+            if let Some(usage) = usage {
+                format!("{label} ({usage})")
+            } else {
+                label
             }
         }
         GoalStatusIndicator::Paused => "Goal paused (/goal resume)".to_string(),
@@ -1733,6 +1758,21 @@ mod tests {
         passive_footer_status_height(props, area, right_width)
             .unwrap_or_else(|| footer_height(props))
             .max(1)
+    }
+
+    #[test]
+    fn goal_status_indicator_line_formats_goal_plan_position() {
+        let line = goal_status_indicator_line(Some(&GoalStatusIndicator::ActivePlan {
+            usage: Some("40s".to_string()),
+            current_goal: 2,
+            total_goals: 4,
+        }))
+        .expect("goal status indicator should render");
+
+        assert_snapshot!(
+            "goal_status_indicator_line_goal_plan_position",
+            line_text(&line)
+        );
     }
 
     #[test]

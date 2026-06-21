@@ -1,6 +1,9 @@
 //! Helpers for mapping thread-goal state into the compact status-line indicator.
 
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
+use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
+use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
+use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use std::time::Instant;
 
@@ -93,6 +96,36 @@ pub(super) fn goal_status_indicator_from_app_goal(
     }
 }
 
+pub(super) fn goal_status_indicator_with_goal_plan(
+    indicator: GoalStatusIndicator,
+    goal_plan: Option<&AppThreadGoalPlan>,
+) -> GoalStatusIndicator {
+    let GoalStatusIndicator::Active { usage } = indicator else {
+        return indicator;
+    };
+    let Some(goal_plan) = goal_plan else {
+        return GoalStatusIndicator::Active { usage };
+    };
+    if goal_plan.status != ThreadGoalPlanStatus::Active || goal_plan.node_count <= 0 {
+        return GoalStatusIndicator::Active { usage };
+    }
+    let Some((index, _)) = goal_plan
+        .nodes
+        .iter()
+        .enumerate()
+        .find(|(_, node)| node.status == ThreadGoalPlanNodeStatus::Active)
+    else {
+        return GoalStatusIndicator::Active { usage };
+    };
+    let current_goal = i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1);
+
+    GoalStatusIndicator::ActivePlan {
+        usage,
+        current_goal,
+        total_goals: goal_plan.node_count.max(current_goal),
+    }
+}
+
 fn active_goal_usage(
     token_budget: Option<i64>,
     tokens_used: i64,
@@ -136,10 +169,17 @@ mod tests {
     use super::GoalStatusState;
     use super::active_goal_usage;
     use super::completed_goal_usage;
+    use super::goal_status_indicator_with_goal_plan;
     use super::stopped_goal_budget_usage;
     use crate::bottom_pane::GoalStatusIndicator;
     use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
+    use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
+    use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
+    use codex_app_server_protocol::ThreadGoalPlanNode;
+    use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
+    use codex_app_server_protocol::ThreadGoalPlanStatus;
     use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
+    use pretty_assertions::assert_eq;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -239,6 +279,28 @@ mod tests {
     }
 
     #[test]
+    fn active_goal_status_includes_goal_plan_position() {
+        let indicator = GoalStatusIndicator::Active {
+            usage: Some("40s".to_string()),
+        };
+        let goal_plan = test_goal_plan(&[
+            ThreadGoalPlanNodeStatus::Complete,
+            ThreadGoalPlanNodeStatus::Active,
+            ThreadGoalPlanNodeStatus::Pending,
+            ThreadGoalPlanNodeStatus::Pending,
+        ]);
+
+        assert_eq!(
+            goal_status_indicator_with_goal_plan(indicator, Some(&goal_plan)),
+            GoalStatusIndicator::ActivePlan {
+                usage: Some("40s".to_string()),
+                current_goal: 2,
+                total_goals: 4,
+            }
+        );
+    }
+
+    #[test]
     fn same_goal_update_keeps_displayed_elapsed_time_monotonic() {
         let observed_at = Instant::now();
         let active_turn_started_at = observed_at;
@@ -301,6 +363,58 @@ mod tests {
             time_used_seconds,
             created_at: 1,
             updated_at: 1,
+        }
+    }
+
+    fn test_goal_plan(statuses: &[ThreadGoalPlanNodeStatus]) -> AppThreadGoalPlan {
+        let count_status = |needle| {
+            i64::try_from(statuses.iter().filter(|status| **status == needle).count())
+                .unwrap_or(i64::MAX)
+        };
+
+        AppThreadGoalPlan {
+            plan_id: "plan-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            status: ThreadGoalPlanStatus::Active,
+            auto_execute: ThreadGoalPlanAutoExecute::AiDirected,
+            max_tokens: None,
+            total_tokens_used: 0,
+            total_time_used_seconds: 0,
+            remaining_tokens: None,
+            node_count: i64::try_from(statuses.len()).unwrap_or(i64::MAX),
+            completed_node_count: count_status(ThreadGoalPlanNodeStatus::Complete),
+            ready_node_count: 0,
+            active_node_count: count_status(ThreadGoalPlanNodeStatus::Active),
+            pending_node_count: count_status(ThreadGoalPlanNodeStatus::Pending),
+            paused_node_count: 0,
+            blocked_node_count: 0,
+            usage_limited_node_count: 0,
+            budget_limited_node_count: 0,
+            cancelled_node_count: 0,
+            created_at: 0,
+            updated_at: 0,
+            nodes: statuses
+                .iter()
+                .enumerate()
+                .map(|(index, status)| ThreadGoalPlanNode {
+                    node_id: format!("node-{index}"),
+                    plan_id: "plan-1".to_string(),
+                    thread_id: "thread-1".to_string(),
+                    key: format!("goal-{index}"),
+                    sequence: i64::try_from(index).unwrap_or(i64::MAX),
+                    priority: 0,
+                    objective: format!("Goal {index}"),
+                    status: *status,
+                    ready: false,
+                    token_budget: None,
+                    tokens_used: 0,
+                    time_used_seconds: 0,
+                    projected_goal_id: None,
+                    depends_on: Vec::new(),
+                    created_at: 0,
+                    updated_at: 0,
+                })
+                .collect(),
         }
     }
 }

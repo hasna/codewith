@@ -834,9 +834,17 @@ impl ChatWidget {
         if !self.config.features.enabled(Feature::Goals) {
             return None;
         }
-        self.current_goal_status.as_ref().and_then(|state| {
-            state.indicator(now, self.turn_lifecycle.goal_status_active_turn_started_at)
-        })
+        self.current_goal_status
+            .as_ref()
+            .and_then(|state| {
+                state.indicator(now, self.turn_lifecycle.goal_status_active_turn_started_at)
+            })
+            .map(|indicator| {
+                super::goal_status::goal_status_indicator_with_goal_plan(
+                    indicator,
+                    self.current_goal_plan.as_ref(),
+                )
+            })
     }
 
     pub(super) fn on_thread_goal_updated(&mut self, goal: AppThreadGoal, turn_id: Option<String>) {
@@ -877,6 +885,7 @@ impl ChatWidget {
             return;
         }
         self.current_goal_plan = Some(plan);
+        self.update_collaboration_mode_indicator();
     }
 
     pub(super) fn current_goal_plan_progress_summary(&self) -> Option<String> {
