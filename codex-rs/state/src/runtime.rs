@@ -127,6 +127,7 @@ pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
+pub use goals::GoalDeleteOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use machine_registry::DEFAULT_MACHINE_REGISTRY_LIST_LIMIT;
@@ -1184,12 +1185,13 @@ INSERT INTO thread_goal_plan_nodes (
             .execute(&current_pool)
             .await
             .expect("plan node cancellation status should be accepted");
-        let statuses: (String, String, String) = sqlx::query_as(
+        let statuses: (String, String, String, String) = sqlx::query_as(
             r#"
 SELECT
     goal.status,
     plan.status,
-    node.status
+    node.status,
+    node.assigned_thread_id
 FROM thread_goals goal
 JOIN thread_goal_plans plan ON plan.thread_id = goal.thread_id
 JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
@@ -1202,7 +1204,8 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
             (
                 "cancelled".to_string(),
                 "cancelled".to_string(),
-                "cancelled".to_string()
+                "cancelled".to_string(),
+                "thread-1".to_string()
             ),
             statuses
         );

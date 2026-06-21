@@ -143,6 +143,7 @@ pub use runtime::DEFAULT_THREAD_WORKFLOW_LIST_LIMIT;
 pub use runtime::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT;
 pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
+pub use runtime::GoalDeleteOutcome;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
 pub use runtime::MAX_MACHINE_REGISTRY_LIST_LIMIT;

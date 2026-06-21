@@ -299,7 +299,8 @@ fn goal_plan_item(thread_id: ThreadId, plan: ThreadGoalPlan) -> SelectionItem {
 }
 
 fn goal_plan_node_item(thread_id: ThreadId, node: ThreadGoalPlanNode) -> SelectionItem {
-    let actions: Vec<SelectionAction> = if node.ready {
+    let can_activate = node.ready && node.assigned_thread_id == thread_id.to_string();
+    let actions: Vec<SelectionAction> = if can_activate {
         let node_id = node.node_id.clone();
         vec![Box::new(move |tx| {
             tx.send(AppEvent::ActivateThreadGoalPlanNode {
@@ -314,7 +315,7 @@ fn goal_plan_node_item(thread_id: ThreadId, node: ThreadGoalPlanNode) -> Selecti
         name: goal_plan_node_row_name(&node),
         selected_description: Some(goal_plan_node_selected_detail(&node)),
         actions,
-        dismiss_on_select: node.ready,
+        dismiss_on_select: can_activate,
         search_value: Some(format!(
             "{} {} {} {:?}",
             node.key, node.objective, node.node_id, node.depends_on
