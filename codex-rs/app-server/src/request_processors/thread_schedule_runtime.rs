@@ -215,10 +215,10 @@ impl ThreadScheduleRuntime {
         } else {
             scheduled_thread_prompt(&prompt, claim.run.run_id.as_str(), claim.run.scheduled_for)
         };
-        let thread_settings = codex_protocol::protocol::ThreadSettingsOverrides {
-            auth_profile: claim_auth_profile,
-            ..codex_protocol::protocol::ThreadSettingsOverrides::default()
-        };
+        let thread_settings = scheduled_thread_settings_from_snapshot(
+            thread.config_snapshot().await,
+            claim_auth_profile,
+        );
         thread_state.lock().await.begin_scheduled_run_submission();
         let submit_result = thread
             .submit(Op::UserInput {
@@ -930,24 +930,145 @@ async fn apply_persisted_schedule_resume_metadata(
             return;
         }
     };
-    typesafe_overrides.model = persisted_metadata.model;
-    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider);
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
+    typesafe_overrides.model = persisted_metadata.model.clone();
+    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
         );
     }
 
-    // Restore the thread's approval policy so an unattended scheduled run is
-    // gated by the same human-in-the-loop control the thread was created with,
-    // not the app-server's launch-time default (which may be more permissive).
-    // Combined with the unattended auto-deny guard, this stops a scheduled run
-    // from silently escalating beyond the thread's configured authority.
-    if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
-    {
-        typesafe_overrides.approval_policy = Some(approval_policy);
+    let latest_cwd_from_items = |items: &[RolloutItem]| {
+        items.iter().rev().find_map(|item| match item {
+            RolloutItem::TurnContext(turn_context) if !turn_context.cwd.as_os_str().is_empty() => {
+                Some(turn_context.cwd.clone())
+            }
+            RolloutItem::SessionMeta(meta_line) if !meta_line.meta.cwd.as_os_str().is_empty() => {
+                Some(meta_line.meta.cwd.clone())
+            }
+            RolloutItem::ResponseItem(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::SessionMeta(_) => None,
+        })
+    };
+    let fallback_cwd = match initial_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => latest_cwd_from_items(&resumed.history),
+        InitialHistory::Forked(items) => latest_cwd_from_items(items),
+    };
+    let persisted_settings = persisted_schedule_thread_settings_from_metadata(
+        &persisted_metadata,
+        fallback_cwd.as_deref(),
+    );
+
+    // Restore the thread's command permissions so an unattended scheduled run
+    // is gated by the same human-in-the-loop and sandbox controls the thread
+    // was last run with, not the app-server's launch-time defaults.
+    if typesafe_overrides.approval_policy.is_none() {
+        typesafe_overrides.approval_policy = persisted_settings.approval_policy;
     }
+    if typesafe_overrides.permission_profile.is_none() {
+        typesafe_overrides.permission_profile = persisted_settings.permission_profile;
+    }
+}
+
+fn scheduled_thread_settings_from_snapshot(
+    snapshot: ThreadConfigSnapshot,
+    auth_profile: Option<Option<String>>,
+) -> codex_protocol::protocol::ThreadSettingsOverrides {
+    codex_protocol::protocol::ThreadSettingsOverrides {
+        cwd: Some(snapshot.cwd),
+        workspace_roots: Some(snapshot.workspace_roots),
+        profile_workspace_roots: Some(snapshot.profile_workspace_roots),
+        approval_policy: Some(snapshot.approval_policy),
+        approvals_reviewer: Some(snapshot.approvals_reviewer),
+        permission_profile: Some(snapshot.permission_profile),
+        active_permission_profile: snapshot.active_permission_profile,
+        auth_profile,
+        ..codex_protocol::protocol::ThreadSettingsOverrides::default()
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PersistedScheduleThreadSettings {
+    approval_policy: Option<codex_protocol::protocol::AskForApproval>,
+    permission_profile: Option<codex_protocol::models::PermissionProfile>,
+}
+
+fn persisted_schedule_thread_settings_from_metadata(
+    metadata: &codex_state::ThreadMetadata,
+    fallback_cwd: Option<&Path>,
+) -> PersistedScheduleThreadSettings {
+    let permission_cwd = fallback_cwd.unwrap_or_else(|| {
+        if metadata.cwd.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            metadata.cwd.as_path()
+        }
+    });
+    PersistedScheduleThreadSettings {
+        approval_policy: parse_persisted_approval_mode(&metadata.approval_mode),
+        permission_profile: parse_persisted_permission_profile(
+            &metadata.sandbox_policy,
+            permission_cwd,
+        ),
+    }
+}
+
+fn parse_persisted_permission_profile(
+    stored: &str,
+    cwd: &Path,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(permission_profile) =
+        serde_json::from_str::<codex_protocol::models::PermissionProfile>(trimmed)
+    {
+        return Some(permission_profile);
+    }
+    if let Ok(sandbox_policy) =
+        serde_json::from_str::<codex_protocol::protocol::SandboxPolicy>(trimmed)
+    {
+        return Some(
+            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd,
+            ),
+        );
+    }
+    let owned_bare;
+    let bare = match serde_json::from_str::<String>(trimmed) {
+        Ok(value) => {
+            owned_bare = value;
+            owned_bare.as_str()
+        }
+        Err(_) => trimmed,
+    };
+    let sandbox_policy = match bare {
+        "danger-full-access" => Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess),
+        "external-sandbox" => Some(codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
+            network_access: codex_protocol::protocol::NetworkAccess::Restricted,
+        }),
+        "read-only" => Some(codex_protocol::protocol::SandboxPolicy::new_read_only_policy()),
+        "workspace-write" => Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }),
+        _ => None,
+    }?;
+    Some(
+        codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+            &sandbox_policy,
+            cwd,
+        ),
+    )
 }
 
 fn schedule_resume_auth_profile(
@@ -1161,6 +1282,7 @@ fn looks_like_jwt(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
@@ -1289,8 +1411,135 @@ mod tests {
         assert_eq!(None, parse_persisted_approval_mode("not-a-real-mode"));
     }
 
+    #[test]
+    fn parse_persisted_permission_profile_accepts_current_metadata_format() {
+        let profile = PermissionProfile::Disabled;
+        let stored = serde_json::to_string(&profile).expect("serialize permission profile");
+
+        assert_eq!(
+            Some(profile),
+            parse_persisted_permission_profile(&stored, Path::new("/workspace"))
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_sandbox_policy_metadata() {
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let cwd = Path::new("/workspace");
+        let stored = serde_json::to_string(&sandbox_policy).expect("serialize sandbox policy");
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd
+            )),
+            parse_persisted_permission_profile(&stored, cwd)
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_bare_sandbox_policy_metadata() {
+        let cwd = Path::new("/workspace");
+        let workspace_write = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+
+        for (stored, expected) in [
+            ("danger-full-access", SandboxPolicy::DangerFullAccess),
+            ("read-only", SandboxPolicy::new_read_only_policy()),
+            ("workspace-write", workspace_write),
+        ] {
+            assert_eq!(
+                Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                    &expected, cwd
+                )),
+                parse_persisted_permission_profile(stored, cwd)
+            );
+        }
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &SandboxPolicy::new_read_only_policy(),
+                cwd
+            )),
+            parse_persisted_permission_profile("\"read-only\"", cwd)
+        );
+    }
+
+    #[test]
+    fn scheduled_thread_settings_preserve_live_permission_snapshot() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let cwd = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("workspace"))
+            .expect("absolute cwd");
+        let workspace_root = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("root"))
+            .expect("absolute workspace root");
+        let profile_root = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("profile"))
+            .expect("absolute profile root");
+        let permission_profile = PermissionProfile::Disabled;
+        let active_permission_profile = Some(codex_protocol::models::ActivePermissionProfile::new(
+            codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+        ));
+
+        let settings = scheduled_thread_settings_from_snapshot(
+            ThreadConfigSnapshot {
+                model: "gpt-5".to_string(),
+                model_provider_id: "openai".to_string(),
+                service_tier: None,
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
+                permission_profile: permission_profile.clone(),
+                active_permission_profile: active_permission_profile.clone(),
+                auth_profile: Some("work".to_string()),
+                cwd: cwd.clone(),
+                workspace_roots: vec![workspace_root.clone()],
+                profile_workspace_roots: vec![profile_root.clone()],
+                ephemeral: false,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                personality: None,
+                collaboration_mode: codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: "gpt-5".to_string(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                },
+                selected_auth_profile: Some("work".to_string()),
+                session_source: SessionSource::Cli,
+                forked_from_thread_id: None,
+                parent_thread_id: None,
+                thread_source: None,
+            },
+            Some(Some("schedule-work".to_string())),
+        );
+
+        assert_eq!(
+            codex_protocol::protocol::ThreadSettingsOverrides {
+                cwd: Some(cwd),
+                workspace_roots: Some(vec![workspace_root]),
+                profile_workspace_roots: Some(vec![profile_root]),
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(codex_protocol::config_types::ApprovalsReviewer::User),
+                permission_profile: Some(permission_profile),
+                active_permission_profile,
+                auth_profile: Some(Some("schedule-work".to_string())),
+                ..codex_protocol::protocol::ThreadSettingsOverrides::default()
+            },
+            settings
+        );
+    }
+
     #[tokio::test]
-    async fn scheduled_resume_metadata_restores_auth_profile_from_history() {
+    async fn scheduled_resume_metadata_restores_auth_profile_and_permissions_from_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let state_db = codex_state::StateRuntime::init(
             temp_dir.path().to_path_buf(),
@@ -1310,6 +1559,8 @@ mod tests {
         builder.approval_mode = codex_protocol::protocol::AskForApproval::Never;
         let mut metadata = builder.build("fallback-provider");
         metadata.model = Some("gpt-5.5".to_string());
+        metadata.sandbox_policy =
+            serde_json::to_string(&PermissionProfile::Disabled).expect("serialize permissions");
         state_db
             .upsert_thread(&metadata)
             .await
@@ -1340,6 +1591,99 @@ mod tests {
         assert_eq!(
             Some(codex_protocol::protocol::AskForApproval::Never),
             typesafe_overrides.approval_policy
+        );
+        assert_eq!(
+            Some(PermissionProfile::Disabled),
+            typesafe_overrides.permission_profile
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_resume_metadata_restores_legacy_sandbox_policy_with_latest_history_cwd() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = PathBuf::from("/old-workspace");
+        builder.model_provider = Some("openai".to_string());
+        let mut metadata = builder.build("fallback-provider");
+        metadata.sandbox_policy = "workspace-write".to_string();
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread metadata should persist");
+
+        let latest_cwd = PathBuf::from("/latest-workspace");
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![
+                RolloutItem::SessionMeta(SessionMetaLine {
+                    meta: SessionMeta {
+                        id: thread_id,
+                        cwd: PathBuf::from("/session-workspace"),
+                        ..SessionMeta::default()
+                    },
+                    git: None,
+                }),
+                RolloutItem::TurnContext(TurnContextItem {
+                    thread_id: Some(thread_id),
+                    turn_id: Some("turn-latest".to_string()),
+                    cwd: latest_cwd.clone(),
+                    workspace_roots: None,
+                    current_date: None,
+                    timezone: None,
+                    approval_policy: AskForApproval::OnRequest,
+                    sandbox_policy: SandboxPolicy::DangerFullAccess,
+                    permission_profile: None,
+                    network: None,
+                    file_system_sandbox_policy: None,
+                    model: "gpt-5.5".to_string(),
+                    model_provider_id: None,
+                    personality: None,
+                    collaboration_mode: None,
+                    multi_agent_version: None,
+                    auth_profile: None,
+                    realtime_active: None,
+                    effort: None,
+                    summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                }),
+            ],
+            rollout_path: None,
+        });
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            None,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                latest_cwd.as_path()
+            )),
+            typesafe_overrides.permission_profile
         );
     }
 

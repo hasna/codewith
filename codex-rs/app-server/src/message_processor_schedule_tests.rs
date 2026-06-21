@@ -48,6 +48,8 @@ use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadScheduleUpdateParams;
 use codex_app_server_protocol::ThreadScheduleUpdateResponse;
 use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_arg0::Arg0DispatchPaths;
@@ -59,6 +61,8 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db::StateDbHandle;
 use pretty_assertions::assert_eq;
@@ -85,6 +89,7 @@ struct ScheduleHarness {
     _server: MockServer,
     _codex_home: TempDir,
     workspace: TempDir,
+    state_db: StateDbHandle,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
@@ -115,11 +120,13 @@ impl ScheduleHarness {
             config.model_provider_id.clone(),
         )
         .await?;
-        let (processor, outgoing_rx) = build_test_processor(config, Some(state_db)).await;
+        let (processor, outgoing_rx) =
+            build_test_processor(config, Some(Arc::clone(&state_db))).await;
         let mut harness = Self {
             _server: server,
             _codex_home: codex_home,
             workspace,
+            state_db,
             processor,
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
@@ -587,6 +594,99 @@ async fn build_test_processor(
         background_agent_worker_run_id: None,
     }));
     (processor, outgoing_rx)
+}
+
+#[test]
+fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let thread_uuid = ThreadId::from_string(thread_id.as_str())
+            .expect("app-server thread id should be a core thread id");
+
+        let request_id = harness.request_id();
+        let initial_create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "materialize schedule metadata".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            initial_create_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let mut stale_metadata = harness
+            .state_db
+            .get_thread(thread_uuid)
+            .await?
+            .expect("materialized thread metadata should exist");
+        stale_metadata.sandbox_policy = "read-only".to_string();
+        harness.state_db.upsert_thread(&stale_metadata).await?;
+
+        let request_id = harness.request_id();
+        let _: ThreadSettingsUpdateResponse = harness
+            .request(ClientRequest::ThreadSettingsUpdate {
+                request_id,
+                params: ThreadSettingsUpdateParams {
+                    thread_id: thread_id.clone(),
+                    sandbox_policy: Some(
+                        codex_app_server_protocol::SandboxPolicy::DangerFullAccess,
+                    ),
+                    ..ThreadSettingsUpdateParams::default()
+                },
+            })
+            .await;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "refresh live permission metadata".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            create_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let refreshed_metadata = harness
+            .state_db
+            .get_thread(thread_uuid)
+            .await?
+            .expect("thread metadata should still exist");
+        assert_eq!(
+            PermissionProfile::Disabled,
+            serde_json::from_str::<PermissionProfile>(&refreshed_metadata.sandbox_policy)
+                .expect("schedule creation should store live permission profile")
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
 }
 
 #[test]
