@@ -50,25 +50,29 @@ pub(crate) fn reasoning_levels(
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
     match slug {
-        "glm-5.2" | "glm-5.2[1m]" | "glm-5.1" | "glm-5" | "glm-5-turbo" | "glm-4.7"
-        | "glm-4.7-flashx" | "glm-4.7-flash" => (
-            Some(ReasoningEffort::Medium),
+        "glm-5.2" | "glm-5.2[1m]" => (
+            Some(ReasoningEffort::Custom("max".to_string())),
             vec![
                 reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
-                reasoning_preset(ReasoningEffort::Medium, "Reasoning enabled"),
+                reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                reasoning_preset(ReasoningEffort::Custom("max".to_string()), "Max reasoning"),
             ],
         ),
+        "glm-5.1" | "glm-5" | "glm-5-turbo" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" => {
+            (None, Vec::new())
+        }
         _ => (None, Vec::new()),
     }
 }
 
 const fn model(display_name: &'static str, context_window: i64) -> KnownProviderModelMetadata {
-    KnownProviderModelMetadata::with_search_tool(
+    KnownProviderModelMetadata::with_search_tool_and_input_modalities(
         display_name,
         context_window,
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
         /*supports_reasoning*/ true,
         /*supports_search_tool*/ true,
+        super::TEXT_INPUT_MODALITIES,
     )
 }
