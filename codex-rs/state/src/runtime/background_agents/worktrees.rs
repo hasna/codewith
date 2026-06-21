@@ -154,6 +154,7 @@ INSERT INTO managed_worktrees (
     base_repo_path,
     worktree_path,
     branch,
+    base_sha,
     head_sha,
     lifecycle_status,
     status_snapshot_json,
@@ -165,7 +166,7 @@ INSERT INTO managed_worktrees (
     created_at_ms,
     updated_at_ms,
     cleanup_after_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(params.id.as_str())
@@ -174,6 +175,7 @@ INSERT INTO managed_worktrees (
         .bind(base_repo_path.as_str())
         .bind(worktree_path.as_str())
         .bind(params.branch.as_deref())
+        .bind(params.head_sha.as_deref())
         .bind(params.head_sha.as_deref())
         .bind(ManagedWorktreeLifecycleStatus::Active.as_str())
         .bind(status_snapshot_json.as_str())

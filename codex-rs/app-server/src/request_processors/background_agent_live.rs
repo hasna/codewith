@@ -86,6 +86,8 @@ use codex_git_utils::merge_tree_dry_run;
 use codex_git_utils::remove_linked_git_worktree;
 use codex_git_utils::resolve_git_ref;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_git_utils::validate_git_branch_name;
+use codex_git_utils::worktree_has_commits_after;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
@@ -474,6 +476,17 @@ impl ThreadRequestProcessor {
             params.name.as_deref(),
             worktree_id.as_str(),
         )?;
+        let valid_branch_name = run_git_worktree_task("failed to validate worktree branch name", {
+            let base_repo_path = base_repo_path.clone();
+            let branch = branch.clone();
+            move || validate_git_branch_name(base_repo_path.as_path(), branch.as_str())
+        })
+        .await?;
+        if !valid_branch_name {
+            return Err(invalid_params(format!(
+                "worktree/create branch `{branch}` is not a valid git branch name"
+            )));
+        }
         let start_point = params
             .start_point
             .as_deref()
@@ -1020,20 +1033,19 @@ impl ThreadRequestProcessor {
                 "worktree/mergeCandidate/refresh targetRef `{target_ref}` does not resolve"
             ))
         })?;
-        let head_ref = worktree
-            .branch
+        let head_sha = worktree
+            .head_sha
             .clone()
-            .or_else(|| worktree.head_sha.clone())
-            .ok_or_else(|| invalid_params("worktree has no branch or head SHA to merge"))?;
+            .ok_or_else(|| invalid_params("worktree has no head SHA to merge"))?;
         let dry_run = run_git_worktree_task("failed to dry-run worktree merge", {
             let base_repo_path = worktree.base_repo_path.clone();
             let target_ref = target_ref.clone();
-            let head_ref = head_ref.clone();
+            let head_sha = head_sha.clone();
             move || {
                 merge_tree_dry_run(
                     base_repo_path.as_path(),
                     target_ref.as_str(),
-                    head_ref.as_str(),
+                    head_sha.as_str(),
                 )
             }
         })
@@ -1046,7 +1058,7 @@ impl ThreadRequestProcessor {
                 target_ref,
                 target_sha: Some(target_sha.clone()),
                 base_sha: worktree.base_sha.unwrap_or(target_sha),
-                head_sha: worktree.head_sha.unwrap_or_else(|| head_ref.clone()),
+                head_sha,
                 status: if dry_run.clean {
                     codex_state::ManagedWorktreeMergeCandidateStatus::Open
                 } else {
@@ -1092,15 +1104,39 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
             .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        if worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires an active worktree",
+            ));
+        }
+        let worktree_status = run_git_worktree_task("failed to inspect merge source worktree", {
+            let worktree_path = worktree.worktree_path.clone();
+            move || get_git_worktree_status_snapshot(worktree_path.as_path())
+        })
+        .await?;
+        if worktree_status.dirty {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires a clean source worktree",
+            ));
+        }
+        if worktree_status.head_sha.as_deref() != Some(candidate.head_sha.as_str()) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply source changed; refresh before applying",
+            ));
+        }
+        let target_status = run_git_worktree_task("failed to inspect merge target checkout", {
+            let base_repo_path = worktree.base_repo_path.clone();
+            move || get_git_worktree_status_snapshot(base_repo_path.as_path())
+        })
+        .await?;
+        if status_snapshot_has_merge_target_changes(&target_status) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires a clean target checkout",
+            ));
+        }
         if candidate.target_ref != "HEAD" {
             let target_branch = short_branch_name(candidate.target_ref.as_str());
-            let status_snapshot =
-                run_git_worktree_task("failed to inspect merge target checkout", {
-                    let base_repo_path = worktree.base_repo_path.clone();
-                    move || get_git_worktree_status_snapshot(base_repo_path.as_path())
-                })
-                .await?;
-            if status_snapshot.branch.as_deref() != Some(target_branch.as_str()) {
+            if target_status.branch.as_deref() != Some(target_branch.as_str()) {
                 return Err(invalid_params(format!(
                     "worktree/mergeCandidate/apply requires the base repo checkout to be on targetRef `{}`",
                     candidate.target_ref
@@ -1598,6 +1634,47 @@ async fn cleanup_managed_worktree_candidate(
         .await?;
         return Ok(());
     }
+    let has_new_commits_result = match worktree.base_sha.clone() {
+        Some(base_sha) => {
+            let worktree_path = worktree_path.clone();
+            tokio::task::spawn_blocking(move || {
+                worktree_has_commits_after(&worktree_path, base_sha.as_str())
+            })
+            .await?
+        }
+        None => Ok(true),
+    };
+    match has_new_commits_result {
+        Ok(true) if !force_delete => {
+            record_managed_worktree_cleanup_failure(
+                state_db,
+                worktree.worktree_id.as_str(),
+                "worktree has commits after its managed base",
+                status_snapshot,
+                /*force_delete_required*/ true,
+            )
+            .await?;
+            return Ok(());
+        }
+        Ok(_) => {}
+        Err(err) if !force_delete => {
+            record_managed_worktree_cleanup_failure(
+                state_db,
+                worktree.worktree_id.as_str(),
+                format!("git worktree commit-safety check failed: {err}"),
+                status_snapshot,
+                /*force_delete_required*/ false,
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(err) => {
+            warn!(
+                worktree_id = worktree.worktree_id.as_str(),
+                "force cleanup continuing after commit-safety check failed: {err}"
+            );
+        }
+    }
 
     let remove_result = tokio::task::spawn_blocking({
         let base_repo_path = base_repo_path.clone();
@@ -1704,11 +1781,29 @@ async fn release_background_agent_worktree_lease_if_present(
                 "failed to read background agent worktree lease: {err}"
             ))
         })?;
-    if background_agent_lease
-        .as_ref()
-        .is_none_or(|lease| lease.deleted_at.is_some())
-    {
+    let Some(lease) = background_agent_lease.as_ref() else {
         return Ok(None);
+    };
+    if lease.deleted_at.is_some() {
+        return Ok(None);
+    }
+    let run = state_db
+        .get_run(lease.run_id.as_str())
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to read background agent run for worktree lease: {err}"
+            ))
+        })?;
+    if let Some(run) = run
+        && run.desired_state == BackgroundAgentDesiredState::Running
+        && run.status != BackgroundAgentRunStatus::Orphaned
+        && !is_terminal_background_agent_status(run.status)
+    {
+        return Err(invalid_params(format!(
+            "worktree is owned by active background agent run {}; stop the agent before release or cleanup",
+            run.id
+        )));
     }
 
     let status_snapshot_json = git_status_snapshot_json(status_snapshot.clone());
@@ -1889,6 +1984,18 @@ async fn status_snapshot_for_release(
         }),
         Err(err) => Err(err),
     }
+}
+
+fn status_snapshot_has_merge_target_changes(status_snapshot: &GitWorktreeStatusSnapshot) -> bool {
+    status_snapshot.records.iter().any(|record| {
+        if record.starts_with("# ") {
+            return false;
+        }
+        if let Some(path) = record.strip_prefix("? ") {
+            return !path.starts_with(".codewith/worktrees/");
+        }
+        !record.trim().is_empty()
+    })
 }
 
 async fn record_managed_worktree_cleanup_failure(

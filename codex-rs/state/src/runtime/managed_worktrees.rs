@@ -111,6 +111,7 @@ impl ManagedWorktreeStore {
     ) -> anyhow::Result<u64> {
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
 UPDATE managed_worktree_assignments
@@ -121,8 +122,31 @@ WHERE thread_id = ?
         )
         .bind(now_ms)
         .bind(thread_id.to_string())
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            r#"
+UPDATE managed_worktrees
+SET
+    owner_kind = ?,
+    owner_thread_id = NULL,
+    owner_agent_run_id = NULL,
+    updated_at_ms = ?
+WHERE owner_thread_id = ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM managed_worktree_assignments AS assignment
+    WHERE assignment.worktree_id = managed_worktrees.worktree_id
+      AND assignment.detached_at_ms IS NULL
+  )
+            "#,
+        )
+        .bind(crate::ManagedWorktreeOwnerKind::Manual.as_str())
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 
@@ -751,7 +775,8 @@ WHERE worktree_id = ?
         let lifecycle_status = if deleted_at_ms.is_some() {
             crate::ManagedWorktreeLifecycleStatus::Deleted
         } else if mode == crate::ManagedWorktreeMode::IsolatedWorktree
-            && params.cleanup_policy != crate::ManagedWorktreeCleanupPolicy::Retain
+            && (force_delete_requested
+                || params.cleanup_policy != crate::ManagedWorktreeCleanupPolicy::Retain)
         {
             crate::ManagedWorktreeLifecycleStatus::CleanupPending
         } else {
@@ -1806,6 +1831,38 @@ mod tests {
         assert!(released.dirty);
         assert_eq!(json!({"dirty": true}), released.status_snapshot_json);
         assert!(released.released_at.is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn force_delete_release_overrides_retain_cleanup_policy() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-a", "/repo-a"))
+            .await?;
+
+        let released = store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: "wt-a".to_string(),
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::Retain,
+                force_delete: true,
+                status_snapshot_json: json!({"dirty": false}),
+                dirty: false,
+            })
+            .await?
+            .expect("worktree should exist");
+
+        assert_eq!(
+            crate::ManagedWorktreeLifecycleStatus::CleanupPending,
+            released.lifecycle_status
+        );
+        assert_eq!(
+            crate::ManagedWorktreeCleanupPolicy::Retain,
+            released.cleanup_policy
+        );
+        assert!(released.force_delete_requested);
 
         Ok(())
     }

@@ -2607,7 +2607,10 @@ fn parse_worktree_create_args(input: &str) -> Result<WorktreeSlashCommand, Monit
                         "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
                     ));
                 };
-                branch = Some(value.to_string());
+                branch = Some(parse_required_option_value(
+                    value,
+                    "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+                )?);
                 remaining = next_rest;
             }
             "--start-point" | "--start" => {
@@ -2616,7 +2619,10 @@ fn parse_worktree_create_args(input: &str) -> Result<WorktreeSlashCommand, Monit
                         "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
                     ));
                 };
-                start_point = Some(value.to_string());
+                start_point = Some(parse_required_option_value(
+                    value,
+                    "Usage: /worktree create [name] [--branch <branch>] [--start-point <ref>]",
+                )?);
                 remaining = next_rest;
             }
             _ if name.is_none() => {
@@ -2684,7 +2690,7 @@ fn parse_required_option_value(
     value: &str,
     usage: &'static str,
 ) -> Result<String, MonitorSlashParseError> {
-    if value.trim().is_empty() {
+    if value.trim().is_empty() || value.starts_with('-') {
         Err(worktree_usage_error(usage))
     } else {
         Ok(value.to_string())
@@ -3151,6 +3157,10 @@ mod external_agent_arg_tests {
         assert!(parse_worktree_slash_args("cleanup").is_err());
         assert!(parse_worktree_slash_args("merge").is_err());
         assert!(parse_worktree_slash_args("create one two").is_err());
+        assert!(parse_worktree_slash_args("create --branch").is_err());
+        assert!(parse_worktree_slash_args("create --branch --start main").is_err());
+        assert!(parse_worktree_slash_args("create --branch=--start").is_err());
+        assert!(parse_worktree_slash_args("create --start-point --branch feature").is_err());
         assert!(parse_worktree_slash_args("unknown").is_err());
     }
 
