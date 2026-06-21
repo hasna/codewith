@@ -1000,7 +1000,7 @@ Use `thread/workflow/run/start` to start a saved workflow for the same thread. T
 { "id": 39, "result": { "run": { "run": { "runId": "run_123", "status": "waiting" } } } }
 
 { "method": "thread/workflow/run/cancel", "id": 40, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "stop this workflow" } }
-{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "cancel_requested" } } } }
+{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "cancelRequested" } } } }
 ```
 
 ### Example: Schedule a thread loop
