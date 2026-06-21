@@ -151,6 +151,16 @@ WHERE id = ?
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<BackgroundAgentRun>> {
         let limit = limit.unwrap_or(100).min(500);
+        self.list_background_agent_runs_page(/*offset*/ 0, limit)
+            .await
+    }
+
+    pub async fn list_background_agent_runs_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<Vec<BackgroundAgentRun>> {
+        let limit = limit.min(500);
         let rows = sqlx::query_as::<_, BackgroundAgentRunRow>(
             r#"
 SELECT
@@ -198,9 +208,11 @@ FROM background_agent_runs
 WHERE retention_state != 'deleted'
 ORDER BY updated_at DESC, id ASC
 LIMIT ?
+OFFSET ?
             "#,
         )
         .bind(limit as i64)
+        .bind(offset as i64)
         .fetch_all(self.pool.as_ref())
         .await?;
         rows.into_iter().map(BackgroundAgentRun::try_from).collect()
@@ -564,6 +576,14 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
                 "generation": generation,
                 "staleBefore": stale_before,
             });
+            super::interactions::terminalize_active_background_agent_pending_interactions_in_tx(
+                &mut tx,
+                run_id.as_str(),
+                BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting,
+                &payload_json,
+                now,
+            )
+            .await?;
             append_terminal_stale_background_agent_status_in_tx(
                 &mut tx,
                 run_id.as_str(),
@@ -662,6 +682,14 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
                 "generation": generation,
                 "staleBefore": stale_before,
             });
+            super::interactions::terminalize_active_background_agent_pending_interactions_in_tx(
+                &mut tx,
+                run_id.as_str(),
+                BackgroundAgentPendingInteractionStatus::Cancelled,
+                &payload_json,
+                now,
+            )
+            .await?;
             append_terminal_stale_background_agent_status_in_tx(
                 &mut tx,
                 run_id.as_str(),

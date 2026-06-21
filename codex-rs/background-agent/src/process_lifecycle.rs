@@ -153,8 +153,8 @@ impl WorkerProcessController {
         }
         let stderr_log = fs::OpenOptions::new()
             .create(true)
-            .truncate(true)
             .write(true)
+            .append(true)
             .open(&request.stderr_log_path)
             .await
             .with_context(|| {
@@ -613,6 +613,39 @@ wait
                 path: stderr_path,
                 contents: "recent error\nusage".to_string(),
             })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn spawn_appends_to_existing_stderr_log() -> Result<()> {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let stderr_path = temp_dir.path().join("worker.stderr.log");
+        let controller = WorkerProcessController::with_timeouts(
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+        );
+
+        let first = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", &stderr_path)
+                    .arg("-c")
+                    .arg("printf 'first failure\\n' >&2"),
+            )
+            .await?;
+        wait_for_process_exit(first.pid).await?;
+        let second = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", &stderr_path)
+                    .arg("-c")
+                    .arg("printf 'second failure\\n' >&2"),
+            )
+            .await?;
+        wait_for_process_exit(second.pid).await?;
+
+        assert_eq!(
+            fs::read_to_string(&stderr_path).await?,
+            "first failure\nsecond failure\n"
         );
         Ok(())
     }

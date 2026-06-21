@@ -109,7 +109,8 @@ impl ManagedWorktreeStore {
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<u64> {
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now = Utc::now();
+        let now_ms = datetime_to_epoch_millis(now);
         let result = sqlx::query(
             r#"
 UPDATE managed_worktree_assignments
@@ -133,7 +134,8 @@ WHERE thread_id = ?
         let worktree_id = params
             .worktree_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now = Utc::now();
+        let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let sql = format!(
@@ -318,7 +320,8 @@ LIMIT ?
         params: ManagedWorktreeAttachParams,
     ) -> anyhow::Result<crate::ManagedWorktree> {
         validate_attach_params(&params)?;
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now = Utc::now();
+        let now_ms = datetime_to_epoch_millis(now);
         let mut tx = self.pool.begin().await?;
         let owner: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
@@ -806,7 +809,9 @@ WHERE worktree_id = ?
         if worktree_id.trim().is_empty() {
             anyhow::bail!("managed worktree id cannot be empty");
         }
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now = Utc::now();
+        let now_ms = datetime_to_epoch_millis(now);
+        let now_seconds = datetime_to_epoch_seconds(now);
         let mut tx = self.pool.begin().await?;
         let sql = format!(
             r#"
@@ -843,6 +848,30 @@ WHERE worktree_id = ?
         .execute(&mut *tx)
         .await?;
         let worktree = row.map(|row| managed_worktree_from_row(&row)).transpose()?;
+        if worktree
+            .as_ref()
+            .and_then(|worktree| worktree.owner_agent_run_id.as_ref())
+            .is_some()
+        {
+            sqlx::query(
+                r#"
+UPDATE background_agent_worktree_leases
+SET
+    released_at = COALESCE(released_at, ?),
+    deleted_at = COALESCE(deleted_at, ?),
+    updated_at = ?
+WHERE id = ?
+  AND mode = 'isolated_worktree'
+  AND deleted_at IS NULL
+                "#,
+            )
+            .bind(now_seconds)
+            .bind(now_seconds)
+            .bind(now_seconds)
+            .bind(worktree_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         Ok(worktree)
     }
@@ -1944,6 +1973,33 @@ WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
         .fetch_one(runtime.pool.as_ref())
         .await?;
         assert_eq!((1,), active_assignment_count);
+
+        let deleted = store
+            .mark_managed_worktree_deleted("lease-1")
+            .await?
+            .expect("background-agent worktree should be marked deleted");
+        assert_eq!(
+            crate::ManagedWorktreeLifecycleStatus::Deleted,
+            deleted.lifecycle_status
+        );
+        let lease = runtime
+            .get_background_agent_worktree_lease("lease-1")
+            .await?
+            .expect("lease should remain readable");
+        assert!(lease.released_at.is_some());
+        assert!(lease.deleted_at.is_some());
+        let active_assignment_count: (i64,) = sqlx::query_as(
+            r#"
+SELECT COUNT(*)
+FROM managed_worktree_assignments
+WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
+            "#,
+        )
+        .bind("lease-1")
+        .bind("run-1")
+        .fetch_one(runtime.pool.as_ref())
+        .await?;
+        assert_eq!((0,), active_assignment_count);
 
         Ok(())
     }

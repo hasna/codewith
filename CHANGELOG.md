@@ -77,6 +77,8 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
   detach or release.
 - Hardened background-agent stop/delete ordering, diagnostics pending counts,
   and rollout/thread validation.
+- Hardened durable background-agent supervisor attach/stop behavior for
+  delivered interactions, delete-requested runs, and unclaimed queued runs.
 - Preserved usage accounting when resuming blocked or usage-limited goals.
 - Kept usage self-heal retry tests active even when retry behavior is gated by
   config defaults.

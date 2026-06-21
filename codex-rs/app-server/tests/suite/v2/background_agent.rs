@@ -236,6 +236,51 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    for index in 0..501 {
+        let agent_id = format!("paged-run-{index:03}");
+        seed_queued_agent_run(state_db.as_ref(), agent_id.as_str(), None, "paged run").await?;
+    }
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let first_id = mcp
+        .send_agent_list_request(AgentListParams {
+            cursor: None,
+            limit: Some(200),
+        })
+        .await?;
+    let first: AgentListResponse = read_response(&mut mcp, first_id).await?;
+    assert_eq!(first.data.len(), 200);
+    assert_eq!(first.next_cursor, Some("200".to_string()));
+
+    let second_id = mcp
+        .send_agent_list_request(AgentListParams {
+            cursor: first.next_cursor,
+            limit: Some(200),
+        })
+        .await?;
+    let second: AgentListResponse = read_response(&mut mcp, second_id).await?;
+    assert_eq!(second.data.len(), 200);
+    assert_eq!(second.next_cursor, Some("400".to_string()));
+
+    let third_id = mcp
+        .send_agent_list_request(AgentListParams {
+            cursor: second.next_cursor,
+            limit: Some(200),
+        })
+        .await?;
+    let third: AgentListResponse = read_response(&mut mcp, third_id).await?;
+    assert_eq!(third.data.len(), 101);
+    assert_eq!(third.next_cursor, None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = create_mock_responses_server_sequence_unchecked(vec![
@@ -568,8 +613,43 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
         .expect("expired interaction should be returned by read");
     assert_eq!(read_expired.status, AgentPendingInteractionStatus::Expired);
 
+    let invalid_attach = raw_request_error(
+        &mut mcp,
+        "agent/attach",
+        json!({
+            "agentId": agent_id.clone(),
+            "cursor": "not-an-event-cursor",
+        }),
+    )
+    .await?;
+    assert_eq!(-32600, invalid_attach.error.code);
+    assert_eq!(
+        "cursor must be an opaque event cursor",
+        invalid_attach.error.message
+    );
+    let approval_before_attach = state_db
+        .get_background_agent_pending_interaction("approval-1")
+        .await?
+        .expect("approval should still exist");
+    assert_eq!(
+        StateBackgroundAgentPendingInteractionStatus::Pending,
+        approval_before_attach.status
+    );
+
     let attach = agent_attach(&mut mcp, &agent_id).await?;
     assert_eq!(attach.effect, AgentLifecycleEffect::ReplayState);
+    assert_eq!(
+        attach
+            .agent
+            .as_ref()
+            .expect("attach should return agent")
+            .last_event_seq,
+        attach
+            .status_snapshot
+            .as_ref()
+            .expect("attach should return status snapshot")
+            .last_event_seq
+    );
     assert_eq!(
         attach
             .execution_snapshot
@@ -600,20 +680,23 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
     let diagnostics = agent_daemon_diagnostics(&mut mcp).await?;
     assert_eq!(1, diagnostics.pending_interaction_count);
 
-    let expired_respond = agent_pending_interaction_respond_error(
-        &mut mcp,
-        AgentPendingInteractionRespondParams {
+    let expired_respond_id = mcp
+        .send_agent_pending_interaction_respond_request(AgentPendingInteractionRespondParams {
             agent_id: agent_id.clone(),
             interaction_id: "expired-1".to_string(),
             response: json!({ "answer": "late" }),
             terminal_status: AgentPendingInteractionTerminalStatus::Responded,
-        },
-    )
-    .await?;
-    assert_eq!(-32600, expired_respond.error.code);
+        })
+        .await?;
+    let expired_respond: AgentPendingInteractionRespondResponse =
+        read_response(&mut mcp, expired_respond_id).await?;
+    assert!(!expired_respond.updated);
     assert_eq!(
-        "background agent pending interaction response is invalid for user_input",
-        expired_respond.error.message
+        AgentPendingInteractionStatus::Expired,
+        expired_respond
+            .interaction
+            .expect("expired interaction should be returned")
+            .status
     );
 
     let respond_id = mcp
@@ -630,6 +713,17 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
     assert_eq!(
         respond.interaction.expect("responded interaction").status,
         AgentPendingInteractionStatus::Denied
+    );
+    let read_after_respond = agent_read(&mut mcp, &agent_id).await?;
+    assert_eq!(
+        read_after_respond
+            .agent
+            .expect("read should return agent")
+            .last_event_seq,
+        read_after_respond
+            .status_snapshot
+            .expect("read should return status snapshot")
+            .last_event_seq
     );
 
     let detach_id = mcp
@@ -1257,6 +1351,43 @@ async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Re
         .expect("background-agent lease should remain readable after cleanup");
     assert!(lease.released_at.is_some());
     assert!(lease.deleted_at.is_some());
+
+    let cleanup_again_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": "lease-cleanup",
+                "forceDelete": false,
+            })),
+        )
+        .await?;
+    let cleanup_again: WorktreeCleanupResponse =
+        read_response(&mut mcp, cleanup_again_request_id).await?;
+    assert_eq!(
+        WorktreeLifecycleStatus::Deleted,
+        cleanup_again
+            .worktree
+            .expect("cleanup retry should return tombstone")
+            .lifecycle_status
+    );
+
+    let release_again_request_id = mcp
+        .send_raw_request(
+            "worktree/release",
+            Some(json!({
+                "worktreeId": "lease-cleanup",
+            })),
+        )
+        .await?;
+    let release_again: WorktreeReleaseResponse =
+        read_response(&mut mcp, release_again_request_id).await?;
+    assert_eq!(
+        WorktreeLifecycleStatus::Deleted,
+        release_again
+            .worktree
+            .expect("release retry should return tombstone")
+            .lifecycle_status
+    );
 
     Ok(())
 }

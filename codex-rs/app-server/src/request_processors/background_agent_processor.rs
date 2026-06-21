@@ -348,11 +348,13 @@ impl BackgroundAgentRequestProcessor {
         let limit = normalize_agent_list_limit(params.limit)?;
         let offset = decode_offset_cursor(params.cursor.as_deref())?;
         let mut runs = state_db
-            .list_runs(Some(offset.saturating_add(limit).saturating_add(1)))
+            .list_background_agent_runs_page(offset, limit.saturating_add(1))
             .await
             .map_err(|err| internal_error(format!("failed to list background agents: {err}")))?;
-        let has_more = runs.len() > offset.saturating_add(limit);
-        runs = runs.into_iter().skip(offset).take(limit).collect();
+        let has_more = runs.len() > limit;
+        if has_more {
+            runs.truncate(limit);
+        }
         Ok(AgentListResponse {
             data: runs.into_iter().map(api_agent_run_from_state).collect(),
             next_cursor: has_more.then(|| offset.saturating_add(limit).to_string()),
@@ -432,6 +434,12 @@ impl BackgroundAgentRequestProcessor {
                 next_cursor: None,
             });
         };
+        let limit = normalize_agent_list_limit(params.limit)?;
+        let after_seq = decode_event_cursor(params.cursor.as_deref())?;
+        state_db
+            .list_events_after(run.id.as_str(), after_seq, Some(1))
+            .await
+            .map_err(map_background_agent_event_replay_error)?;
         expire_timed_out_pending_interactions(state_db.as_ref()).await?;
         let execution_snapshot = state_db
             .get_latest_execution_snapshot(run.id.as_str())
@@ -463,8 +471,6 @@ impl BackgroundAgentRequestProcessor {
                     ))
                 })?;
         }
-        let limit = normalize_agent_list_limit(params.limit)?;
-        let after_seq = decode_event_cursor(params.cursor.as_deref())?;
         let mut events = state_db
             .list_events_after(run.id.as_str(), after_seq, Some(limit.saturating_add(1)))
             .await
@@ -494,6 +500,10 @@ impl BackgroundAgentRequestProcessor {
                 internal_error(format!("failed to load background agent snapshot: {err}"))
             })?
             .map(api_agent_status_snapshot_from_state);
+        let run = self
+            .load_agent_run(state_db.as_ref(), run.id.as_str())
+            .await?
+            .unwrap_or(run);
 
         Ok(AgentAttachResponse {
             effect: api_lifecycle_effect_from_runtime(lifecycle_effect_for(
@@ -579,7 +589,7 @@ impl BackgroundAgentRequestProcessor {
                 .map_err(|err| {
                     internal_error(format!("failed to update background agent status: {err}"))
                 })?;
-            let event = state_db
+            state_db
                 .append_event(
                     run.id.as_str(),
                     "agent.stopRequested",
@@ -591,19 +601,27 @@ impl BackgroundAgentRequestProcessor {
                 .map_err(|err| {
                     internal_error(format!("failed to append background agent event: {err}"))
                 })?;
+            cancel_active_pending_interactions_for_run(
+                state_db.as_ref(),
+                run.id.as_str(),
+                "client_requested_stop",
+            )
+            .await?;
             if terminalize_immediately {
-                cancel_active_pending_interactions_for_run(
-                    state_db.as_ref(),
-                    run.id.as_str(),
-                    "client_requested_stop",
-                )
-                .await?;
                 upsert_lifecycle_status_snapshot(
                     state_db.as_ref(),
                     run.id.as_str(),
                     status,
-                    event.seq,
                     "Stopped",
+                    "client_requested_stop",
+                )
+                .await?;
+            } else {
+                upsert_lifecycle_status_snapshot(
+                    state_db.as_ref(),
+                    run.id.as_str(),
+                    status,
+                    "Stopping",
                     "client_requested_stop",
                 )
                 .await?;
@@ -633,9 +651,11 @@ impl BackgroundAgentRequestProcessor {
                 internal_error(format!("failed to request background agent delete: {err}"))
             })?;
         if deleted {
-            let terminalized_immediately = existing_run.as_ref().is_some_and(|run| {
-                !is_terminal_agent_status(run.status) && should_terminalize_unclaimed_agent_run(run)
-            });
+            let non_terminal_existing_run = existing_run
+                .as_ref()
+                .filter(|run| !is_terminal_agent_status(run.status));
+            let terminalized_immediately =
+                non_terminal_existing_run.is_some_and(should_terminalize_unclaimed_agent_run);
             if terminalized_immediately {
                 state_db
                     .update_run_status(
@@ -648,7 +668,7 @@ impl BackgroundAgentRequestProcessor {
                         internal_error(format!("failed to update background agent status: {err}"))
                     })?;
             }
-            let event = state_db
+            state_db
                 .append_event(
                     params.agent_id.as_str(),
                     "agent.deleteRequested",
@@ -660,18 +680,35 @@ impl BackgroundAgentRequestProcessor {
                 .map_err(|err| {
                     internal_error(format!("failed to append background agent event: {err}"))
                 })?;
-            if terminalized_immediately {
+            if non_terminal_existing_run.is_some() {
                 cancel_active_pending_interactions_for_run(
                     state_db.as_ref(),
                     params.agent_id.as_str(),
                     "client_requested_delete",
                 )
                 .await?;
+                let status = if terminalized_immediately {
+                    BackgroundAgentRunStatus::Cancelled
+                } else {
+                    BackgroundAgentRunStatus::Stopping
+                };
                 upsert_lifecycle_status_snapshot(
                     state_db.as_ref(),
                     params.agent_id.as_str(),
-                    BackgroundAgentRunStatus::Cancelled,
-                    event.seq,
+                    status,
+                    if terminalized_immediately {
+                        "Deleted"
+                    } else {
+                        "Deleting"
+                    },
+                    "client_requested_delete",
+                )
+                .await?;
+            } else if let Some(existing_run) = existing_run.as_ref() {
+                upsert_lifecycle_status_snapshot(
+                    state_db.as_ref(),
+                    params.agent_id.as_str(),
+                    existing_run.status,
                     "Deleted",
                     "client_requested_delete",
                 )
@@ -745,6 +782,18 @@ impl BackgroundAgentRequestProcessor {
                 "pending interaction does not belong to requested agent",
             ));
         }
+        if !matches!(
+            existing_interaction.status,
+            BackgroundAgentPendingInteractionStatus::Pending
+                | BackgroundAgentPendingInteractionStatus::Delivered
+        ) {
+            return Ok(AgentPendingInteractionRespondResponse {
+                updated: false,
+                interaction: Some(api_agent_pending_interaction_from_state(
+                    existing_interaction,
+                )),
+            });
+        }
         validate_agent_pending_interaction_response(
             existing_interaction.kind,
             terminal_status,
@@ -771,23 +820,6 @@ impl BackgroundAgentRequestProcessor {
                 ))
             })?;
         let interaction = interaction.map(api_agent_pending_interaction_from_state);
-        if updated {
-            state_db
-                .append_event(
-                    params.agent_id.as_str(),
-                    "agent.pendingInteractionResponded",
-                    &json!({
-                        "interactionId": params.interaction_id,
-                        "terminalStatus": api_agent_pending_interaction_status_from_background(
-                            terminal_status
-                        ),
-                    }),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to append background agent event: {err}"))
-                })?;
-        }
         Ok(AgentPendingInteractionRespondResponse {
             updated,
             interaction,
@@ -1383,7 +1415,6 @@ async fn upsert_lifecycle_status_snapshot(
     state_db: &codex_state::StateRuntime,
     run_id: &str,
     status: BackgroundAgentRunStatus,
-    event_seq: i64,
     summary: &str,
     reason: &str,
 ) -> Result<(), JSONRPCErrorError> {
@@ -1415,12 +1446,12 @@ async fn upsert_lifecycle_status_snapshot(
     state_db
         .upsert_status_snapshot(BackgroundAgentStatusSnapshotParams {
             run_id: run_id.to_string(),
-            seq: event_seq,
+            seq: run.last_event_seq,
             status,
             desired_state: run.desired_state,
             summary: Some(summary.to_string()),
             pending_interaction_count,
-            last_event_seq: event_seq,
+            last_event_seq: run.last_event_seq,
             payload_json: json!({
                 "phase": status.as_str(),
                 "reason": reason,
@@ -1779,6 +1810,71 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
+    async fn agent_stop_with_active_pending_interaction_keeps_snapshot_in_sync()
+    -> anyhow::Result<()> {
+        let (_temp, state_db) = temp_state_db().await?;
+        seed_test_agent_run(state_db.as_ref(), "stop-pending-run").await?;
+        create_test_pending_interaction(
+            state_db.as_ref(),
+            "stop-pending-1",
+            "stop-pending-run",
+            BackgroundAgentPendingInteractionKind::UserInput,
+        )
+        .await?;
+        let processor = BackgroundAgentRequestProcessor::new(Some(state_db.clone()));
+
+        let response = processor
+            .agent_stop_inner(AgentStopParams {
+                agent_id: "stop-pending-run".to_string(),
+            })
+            .await
+            .expect("stop should succeed");
+
+        let stopped_agent = response.agent.expect("stop should return agent");
+        assert_eq!(AgentRunStatus::Cancelled, stopped_agent.status);
+        assert_no_active_pending_interactions_and_current_snapshot(
+            state_db.as_ref(),
+            "stop-pending-run",
+            "stop-pending-1",
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_delete_with_active_pending_interaction_keeps_snapshot_in_sync()
+    -> anyhow::Result<()> {
+        let (_temp, state_db) = temp_state_db().await?;
+        seed_test_agent_run(state_db.as_ref(), "delete-pending-run").await?;
+        create_test_pending_interaction(
+            state_db.as_ref(),
+            "delete-pending-1",
+            "delete-pending-run",
+            BackgroundAgentPendingInteractionKind::Approval,
+        )
+        .await?;
+        let processor = BackgroundAgentRequestProcessor::new(Some(state_db.clone()));
+
+        let response = processor
+            .agent_delete_inner(AgentDeleteParams {
+                agent_id: "delete-pending-run".to_string(),
+            })
+            .await
+            .expect("delete should succeed");
+
+        let deleted_agent = response.agent.expect("delete should return agent");
+        assert_eq!(AgentRunStatus::Cancelled, deleted_agent.status);
+        assert_eq!(AgentDesiredState::Deleted, deleted_agent.desired_state);
+        assert_no_active_pending_interactions_and_current_snapshot(
+            state_db.as_ref(),
+            "delete-pending-run",
+            "delete-pending-1",
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn validate_agent_start_rollout_path_requires_matching_thread_metadata()
     -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
@@ -1884,6 +1980,102 @@ mod tests {
             "agent/start rolloutPath must match threadId"
         );
 
+        Ok(())
+    }
+
+    async fn temp_state_db() -> anyhow::Result<(TempDir, StateDbHandle)> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "mock_provider".to_string())
+                .await?;
+        state_db
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await?;
+        Ok((temp, state_db))
+    }
+
+    async fn seed_test_agent_run(
+        state_db: &codex_state::StateRuntime,
+        agent_id: &str,
+    ) -> anyhow::Result<()> {
+        state_db
+            .create_background_agent_run(&BackgroundAgentRunCreateParams {
+                id: agent_id.to_string(),
+                idempotency_key: None,
+                request_id: None,
+                source: "processor-test".to_string(),
+                prompt_snapshot_ref: format!("inline:{agent_id}:prompt"),
+                input_snapshot_ref: None,
+                thread_id: None,
+                thread_store_kind: "background-agent".to_string(),
+                thread_store_id: None,
+                rollout_path: None,
+                parent_thread_id: None,
+                parent_agent_run_id: None,
+                spawn_linkage_json: None,
+                auth_profile_ref: None,
+                status_reason: Some("queued by processor test".to_string()),
+                config_fingerprint: Some("cfg-test".to_string()),
+                version_fingerprint: Some("version-test".to_string()),
+            })
+            .await?;
+        state_db
+            .append_background_agent_event(
+                agent_id,
+                "agent.started",
+                &json!({
+                    "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_test_pending_interaction(
+        state_db: &codex_state::StateRuntime,
+        interaction_id: &str,
+        agent_id: &str,
+        kind: BackgroundAgentPendingInteractionKind,
+    ) -> anyhow::Result<()> {
+        state_db
+            .create_background_agent_pending_interaction(
+                &codex_background_agent::BackgroundAgentPendingInteractionCreateParams {
+                    id: interaction_id.to_string(),
+                    run_id: agent_id.to_string(),
+                    worker_request_id: Some(format!("{interaction_id}-worker-request")),
+                    kind,
+                    request_payload_json: json!({"prompt": "continue?"}),
+                    no_client_policy: "cancel".to_string(),
+                    timeout_at: None,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn assert_no_active_pending_interactions_and_current_snapshot(
+        state_db: &codex_state::StateRuntime,
+        agent_id: &str,
+        interaction_id: &str,
+    ) -> anyhow::Result<()> {
+        let run = state_db
+            .get_background_agent_run(agent_id)
+            .await?
+            .expect("run should exist");
+        let snapshot = state_db
+            .get_background_agent_status_snapshot(agent_id)
+            .await?
+            .expect("status snapshot should exist");
+        assert_eq!(run.last_event_seq, snapshot.last_event_seq);
+        assert_eq!(0, snapshot.pending_interaction_count);
+        let interaction = state_db
+            .get_background_agent_pending_interaction(interaction_id)
+            .await?
+            .expect("interaction should exist");
+        assert_eq!(
+            BackgroundAgentPendingInteractionStatus::Cancelled,
+            interaction.status
+        );
         Ok(())
     }
 }

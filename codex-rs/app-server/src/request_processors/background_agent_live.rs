@@ -801,6 +801,17 @@ impl ThreadRequestProcessor {
         let Some(worktree) = worktree else {
             return Ok(Some(WorktreeReleaseResponse { worktree: None }.into()));
         };
+        if worktree.lifecycle_status == codex_state::ManagedWorktreeLifecycleStatus::Deleted
+            || worktree.deleted_at.is_some()
+        {
+            let worktree = api_worktree_from_state(state_db.as_ref(), worktree).await?;
+            return Ok(Some(
+                WorktreeReleaseResponse {
+                    worktree: Some(worktree),
+                }
+                .into(),
+            ));
+        }
         let status_snapshot = status_snapshot_for_release(&worktree, params.force_delete).await?;
         let force_delete = params.force_delete.unwrap_or(false);
         let cleanup_policy = params
@@ -855,6 +866,17 @@ impl ThreadRequestProcessor {
         let Some(worktree) = worktree else {
             return Ok(Some(WorktreeCleanupResponse { worktree: None }.into()));
         };
+        if worktree.lifecycle_status == codex_state::ManagedWorktreeLifecycleStatus::Deleted
+            || worktree.deleted_at.is_some()
+        {
+            let worktree = api_worktree_from_state(state_db.as_ref(), worktree).await?;
+            return Ok(Some(
+                WorktreeCleanupResponse {
+                    worktree: Some(worktree),
+                }
+                .into(),
+            ));
+        }
         let force_delete = params.force_delete.unwrap_or(false);
         let status_snapshot = status_snapshot_for_release(&worktree, Some(force_delete)).await?;
         let cleanup_policy = if force_delete {
@@ -1371,7 +1393,8 @@ async fn reconcile_background_agents(
             .cloned();
         if let Some(handle) = active_handle
             && (run.desired_state != BackgroundAgentDesiredState::Running
-                || run.status == BackgroundAgentRunStatus::Orphaned)
+                || run.status == BackgroundAgentRunStatus::Orphaned
+                || is_terminal_background_agent_status(run.status))
         {
             let controller = WorkerProcessController::default();
             if let Err(err) = controller.stop(&handle).await {
@@ -1453,7 +1476,8 @@ async fn reconcile_background_agent_worker_processes(
             .cloned();
         if let Some(handle) = active_handle
             && (run.desired_state != BackgroundAgentDesiredState::Running
-                || run.status == BackgroundAgentRunStatus::Orphaned)
+                || run.status == BackgroundAgentRunStatus::Orphaned
+                || is_terminal_background_agent_status(run.status))
         {
             let controller = WorkerProcessController::default();
             if let Err(err) = controller.stop(&handle).await {
@@ -2045,6 +2069,15 @@ fn should_start_background_run(run: &BackgroundAgentRun) -> bool {
         return wait_until <= Utc::now().timestamp();
     }
     true
+}
+
+fn is_terminal_background_agent_status(status: BackgroundAgentRunStatus) -> bool {
+    matches!(
+        status,
+        BackgroundAgentRunStatus::Completed
+            | BackgroundAgentRunStatus::Failed
+            | BackgroundAgentRunStatus::Cancelled
+    )
 }
 
 async fn run_background_agent_worker(
@@ -2908,6 +2941,17 @@ async fn handle_background_agent_event(
                 json!({}),
             )
             .await?;
+            context
+                .state_db
+                .finish_background_agent_process_lease(
+                    run_id,
+                    context.supervisor_id.as_str(),
+                    generation,
+                    Some(1),
+                    None,
+                    Some("worker shutdown completed"),
+                )
+                .await?;
             return Ok(true);
         }
         other => {
@@ -3504,8 +3548,16 @@ fn status_snapshot_payload(
 fn review_decision_from_response(
     interaction: &BackgroundAgentPendingInteraction,
 ) -> ReviewDecision {
-    if interaction.status != BackgroundAgentPendingInteractionStatus::Responded {
-        return ReviewDecision::Abort;
+    match interaction.status {
+        BackgroundAgentPendingInteractionStatus::Responded => {}
+        BackgroundAgentPendingInteractionStatus::Denied => return ReviewDecision::Denied,
+        BackgroundAgentPendingInteractionStatus::Expired => return ReviewDecision::TimedOut,
+        BackgroundAgentPendingInteractionStatus::Pending
+        | BackgroundAgentPendingInteractionStatus::Delivered
+        | BackgroundAgentPendingInteractionStatus::Cancelled
+        | BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting => {
+            return ReviewDecision::Abort;
+        }
     }
     interaction
         .response_payload_json
@@ -3561,12 +3613,22 @@ fn user_input_response_from_response(
 fn elicitation_response_from_response(
     interaction: &BackgroundAgentPendingInteraction,
 ) -> (ElicitationAction, Option<Value>, Option<Value>) {
+    match interaction.status {
+        BackgroundAgentPendingInteractionStatus::Responded => {}
+        BackgroundAgentPendingInteractionStatus::Denied => {
+            return (ElicitationAction::Decline, None, None);
+        }
+        BackgroundAgentPendingInteractionStatus::Pending
+        | BackgroundAgentPendingInteractionStatus::Delivered
+        | BackgroundAgentPendingInteractionStatus::Expired
+        | BackgroundAgentPendingInteractionStatus::Cancelled
+        | BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting => {
+            return (ElicitationAction::Cancel, None, None);
+        }
+    }
     let Some(payload) = interaction.response_payload_json.as_ref() else {
         return (ElicitationAction::Cancel, None, None);
     };
-    if interaction.status != BackgroundAgentPendingInteractionStatus::Responded {
-        return (ElicitationAction::Cancel, None, None);
-    }
     let decision = payload
         .get("decision")
         .cloned()
@@ -3871,6 +3933,88 @@ mod tests {
             WorkerProcessStatus::Running
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_supervisor_stops_live_handle_for_terminal_run() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "terminal-run").await?;
+        state_db
+            .update_background_agent_run_status(
+                "terminal-run",
+                BackgroundAgentRunStatus::Completed,
+                Some("already completed"),
+            )
+            .await?;
+        let controller = WorkerProcessController::default();
+        let old_handle = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", temp.path().join("terminal.stderr.log"))
+                    .arg("-c")
+                    .arg("sleep 60"),
+            )
+            .await?;
+        let active_worker_processes = Arc::new(Mutex::new(HashMap::from([(
+            "terminal-run".to_string(),
+            old_handle.clone(),
+        )])));
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db,
+            supervisor_id: "process-supervisor-test".to_string(),
+            active_worker_processes: Arc::clone(&active_worker_processes),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+        };
+
+        reconcile_background_agent_worker_processes(context, Some("terminal-run".to_string()))
+            .await?;
+
+        assert!(
+            !active_worker_processes
+                .lock()
+                .await
+                .contains_key("terminal-run")
+        );
+        assert_ne!(
+            controller.status(&old_handle).await?,
+            WorkerProcessStatus::Running
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_pending_interaction_statuses_map_to_protocol_decisions() {
+        let approval = BackgroundAgentPendingInteraction {
+            id: "approval-1".to_string(),
+            run_id: "run-1".to_string(),
+            worker_request_id: Some("worker-request-1".to_string()),
+            kind: BackgroundAgentPendingInteractionKind::Approval,
+            status: BackgroundAgentPendingInteractionStatus::Denied,
+            request_payload_json: json!({}),
+            response_payload_json: None,
+            no_client_policy: "deny".to_string(),
+            timeout_at: None,
+            created_at: Utc::now(),
+            delivered_at: None,
+            responded_at: Some(Utc::now()),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(
+            ReviewDecision::Denied,
+            review_decision_from_response(&approval)
+        );
+
+        let elicitation = BackgroundAgentPendingInteraction {
+            kind: BackgroundAgentPendingInteractionKind::McpElicitation,
+            ..approval
+        };
+        assert_eq!(
+            (ElicitationAction::Decline, None, None),
+            elicitation_response_from_response(&elicitation)
+        );
     }
 
     async fn seed_queued_run(

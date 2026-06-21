@@ -129,24 +129,31 @@ where
     }
 
     pub async fn attach(&self, run_id: &str) -> anyhow::Result<Option<AgentAttachSnapshot>> {
+        if self.store().get_run(run_id).await?.is_none() {
+            return Ok(None);
+        }
+        self.store().expire_timed_out_interactions().await?;
+        for interaction in self
+            .store()
+            .list_pending_interactions(
+                run_id,
+                Some(BackgroundAgentPendingInteractionStatus::Pending),
+            )
+            .await?
+        {
+            self.store()
+                .mark_pending_interaction_delivered(interaction.id.as_str())
+                .await?;
+        }
         let Some(run) = self.store().get_run(run_id).await? else {
             return Ok(None);
         };
-        self.store().expire_timed_out_interactions().await?;
         let status_snapshot = self.store().get_status_snapshot(run_id).await?;
         let pending_interactions = self.store().list_pending_interactions(run_id, None).await?;
         let events = self
             .store()
             .list_events_after(run_id, None, Some(self.config.attach_event_limit))
             .await?;
-
-        for interaction in pending_interactions.iter().filter(|interaction| {
-            interaction.status == BackgroundAgentPendingInteractionStatus::Pending
-        }) {
-            self.store()
-                .mark_pending_interaction_delivered(interaction.id.as_str())
-                .await?;
-        }
 
         Ok(Some(AgentAttachSnapshot {
             run,
@@ -164,16 +171,30 @@ where
         let Some(run) = self.store().get_run(run_id).await? else {
             return Ok(false);
         };
+        if matches!(
+            run.retention_state,
+            codex_state::BackgroundAgentRetentionState::DeleteRequested
+                | codex_state::BackgroundAgentRetentionState::Deleted
+        ) {
+            return Ok(true);
+        }
         self.store()
             .set_desired_state(run_id, BackgroundAgentDesiredState::Stopped)
             .await?;
         if !is_terminal_agent_status(run.status) {
+            let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
+            let status = if terminalize_immediately {
+                BackgroundAgentRunStatus::Cancelled
+            } else {
+                BackgroundAgentRunStatus::Stopping
+            };
+            let status_reason = if terminalize_immediately {
+                "stop requested before worker claim"
+            } else {
+                "stop requested"
+            };
             self.store()
-                .update_run_status(
-                    run_id,
-                    BackgroundAgentRunStatus::Stopping,
-                    Some("stop requested"),
-                )
+                .update_run_status(run_id, status, Some(status_reason))
                 .await?;
             self.store()
                 .append_event(
@@ -184,6 +205,14 @@ where
                     }),
                 )
                 .await?;
+            if terminalize_immediately {
+                cancel_active_pending_interactions_for_run(
+                    self.store(),
+                    run_id,
+                    "supervisor_requested_stop",
+                )
+                .await?;
+            }
         }
         Ok(true)
     }
@@ -333,6 +362,37 @@ fn is_terminal_agent_status(status: BackgroundAgentRunStatus) -> bool {
             | BackgroundAgentRunStatus::Failed
             | BackgroundAgentRunStatus::Cancelled
     )
+}
+
+fn should_terminalize_unclaimed_agent_run(run: &BackgroundAgentRun) -> bool {
+    run.supervisor_id.is_none()
+        || matches!(
+            run.status,
+            BackgroundAgentRunStatus::Queued | BackgroundAgentRunStatus::Orphaned
+        )
+}
+
+async fn cancel_active_pending_interactions_for_run(
+    store: &(impl PendingInteractionLedger + ?Sized),
+    run_id: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    for interaction in store.list_pending_interactions(run_id, None).await? {
+        if matches!(
+            interaction.status,
+            BackgroundAgentPendingInteractionStatus::Pending
+                | BackgroundAgentPendingInteractionStatus::Delivered
+        ) {
+            store
+                .respond_pending_interaction(
+                    interaction.id.as_str(),
+                    &json!({"reason": reason}),
+                    BackgroundAgentPendingInteractionStatus::Cancelled,
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -539,7 +599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attach_marks_pending_interactions_delivered_after_replay() -> anyhow::Result<()> {
+    async fn attach_marks_pending_interactions_delivered_before_replay() -> anyhow::Result<()> {
         let state = temp_state().await?;
         create_run(state.runtime.as_ref(), "run-1").await?;
         state
@@ -570,7 +630,7 @@ mod tests {
         assert_eq!(snapshot.pending_interactions.len(), 1);
         assert_eq!(
             snapshot.pending_interactions[0].status,
-            BackgroundAgentPendingInteractionStatus::Pending
+            BackgroundAgentPendingInteractionStatus::Delivered
         );
         let delivered = state
             .runtime
@@ -581,6 +641,7 @@ mod tests {
             delivered.status,
             BackgroundAgentPendingInteractionStatus::Delivered
         );
+        assert_eq!(snapshot.run.last_event_seq, 2);
         assert_eq!(
             state
                 .runtime
@@ -592,6 +653,101 @@ mod tests {
             vec![
                 "interaction.created".to_string(),
                 "interaction.delivered".to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_stop_does_not_clobber_delete_requested_run() -> anyhow::Result<()> {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        assert!(
+            state
+                .runtime
+                .request_background_agent_delete("run-1")
+                .await?
+        );
+        let supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            RecordingExecution::default(),
+            DurableAgentSupervisorConfig::new("supervisor-1"),
+        );
+
+        assert!(supervisor.request_stop("run-1").await?);
+
+        let run = state
+            .runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.desired_state, BackgroundAgentDesiredState::Deleted);
+        assert_eq!(
+            run.retention_state,
+            codex_state::BackgroundAgentRetentionState::DeleteRequested
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_stop_terminalizes_unclaimed_run_and_cancels_interactions() -> anyhow::Result<()>
+    {
+        let state = temp_state().await?;
+        create_run(state.runtime.as_ref(), "run-1").await?;
+        state
+            .runtime
+            .create_background_agent_pending_interaction(
+                &BackgroundAgentPendingInteractionCreateParams {
+                    id: "pending-1".to_string(),
+                    run_id: "run-1".to_string(),
+                    worker_request_id: Some("worker-req-1".to_string()),
+                    kind: BackgroundAgentPendingInteractionKind::UserInput,
+                    request_payload_json: serde_json::json!({"prompt": "continue?"}),
+                    no_client_policy: "cancel".to_string(),
+                    timeout_at: None,
+                },
+            )
+            .await?;
+        let supervisor = DurableAgentSupervisor::new(
+            state.runtime.clone(),
+            RecordingExecution::default(),
+            DurableAgentSupervisorConfig::new("supervisor-1"),
+        );
+
+        assert!(supervisor.request_stop("run-1").await?);
+
+        let run = state
+            .runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.desired_state, BackgroundAgentDesiredState::Stopped);
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("stop requested before worker claim")
+        );
+        let interaction = state
+            .runtime
+            .get_background_agent_pending_interaction("pending-1")
+            .await?
+            .expect("interaction should exist");
+        assert_eq!(
+            interaction.status,
+            BackgroundAgentPendingInteractionStatus::Cancelled
+        );
+        assert_eq!(
+            state
+                .runtime
+                .list_background_agent_events_after("run-1", None, None)
+                .await?
+                .into_iter()
+                .map(|event| event.event_type)
+                .collect::<Vec<_>>(),
+            vec![
+                "interaction.created".to_string(),
+                "agent.stopRequested".to_string(),
+                "interaction.cancelled".to_string()
             ]
         );
         Ok(())

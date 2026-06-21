@@ -741,6 +741,91 @@ async fn stale_supervisor_lease_is_orphaned_and_reclaimable() -> anyhow::Result<
 }
 
 #[tokio::test]
+async fn orphaning_waiting_run_terminalizes_pending_interactions() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+
+    let first_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    runtime
+        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+            run_id: "run-1",
+            supervisor_id: "supervisor-1",
+            generation: first_generation,
+            pid: Some(100),
+            pgid: Some(100),
+            job_id: Some("job-1"),
+            start_token: Some("start-1"),
+            stderr_log_path: Some("/tmp/run-1.stderr.log"),
+        })
+        .await?;
+    runtime
+        .create_background_agent_pending_interaction_for_supervisor(
+            &BackgroundAgentPendingInteractionCreateParams {
+                id: "pending-1".to_string(),
+                run_id: "run-1".to_string(),
+                worker_request_id: Some("worker-request-1".to_string()),
+                kind: BackgroundAgentPendingInteractionKind::Approval,
+                request_payload_json: json!({"command": "deploy"}),
+                no_client_policy: "deny".to_string(),
+                timeout_at: None,
+            },
+            "supervisor-1",
+            first_generation,
+            BackgroundAgentRunStatus::WaitingOnApproval,
+        )
+        .await?
+        .expect("pending interaction should be created");
+
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+
+    let interaction = runtime
+        .get_background_agent_pending_interaction("pending-1")
+        .await?
+        .expect("interaction should exist");
+    assert_eq!(
+        interaction.status,
+        BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting
+    );
+    let status_snapshot = runtime
+        .get_background_agent_status_snapshot("run-1")
+        .await?
+        .expect("status snapshot should exist");
+    assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Orphaned);
+    assert_eq!(status_snapshot.pending_interaction_count, 0);
+    assert_eq!(status_snapshot.last_event_seq, 3);
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(
+                "run-1", /*after_seq*/ None, /*limit*/ None
+            )
+            .await?
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>(),
+        vec![
+            "interaction.created".to_string(),
+            "interaction.workerNoLongerWaiting".to_string(),
+            "agent.orphaned".to_string()
+        ]
+    );
+
+    let second_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-2", "lease-2")
+        .await?
+        .expect("orphaned run should be reclaimable");
+    assert_eq!(second_generation, first_generation + 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn stale_generation_cannot_update_status_or_create_interactions_after_reclaim()
 -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -842,6 +927,19 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
         })
         .await?;
     runtime
+        .create_background_agent_pending_interaction(
+            &BackgroundAgentPendingInteractionCreateParams {
+                id: "pending-1".to_string(),
+                run_id: "run-1".to_string(),
+                worker_request_id: Some("worker-request-1".to_string()),
+                kind: BackgroundAgentPendingInteractionKind::Approval,
+                request_payload_json: json!({"command": "deploy"}),
+                no_client_policy: "deny".to_string(),
+                timeout_at: None,
+            },
+        )
+        .await?;
+    runtime
         .set_background_agent_desired_state("run-1", BackgroundAgentDesiredState::Stopped)
         .await?;
     runtime
@@ -894,11 +992,20 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
         status_snapshot.desired_state,
         BackgroundAgentDesiredState::Stopped
     );
+    assert_eq!(status_snapshot.pending_interaction_count, 0);
     assert_eq!(
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 1);
+    assert_eq!(status_snapshot.last_event_seq, 3);
+    let interaction = runtime
+        .get_background_agent_pending_interaction("pending-1")
+        .await?
+        .expect("interaction should exist");
+    assert_eq!(
+        interaction.status,
+        BackgroundAgentPendingInteractionStatus::Cancelled
+    );
     Ok(())
 }
 

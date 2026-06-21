@@ -463,6 +463,73 @@ WHERE id = ? AND status IN (?, ?)
     }
 }
 
+pub(super) async fn terminalize_active_background_agent_pending_interactions_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    terminal_status: BackgroundAgentPendingInteractionStatus,
+    response_payload_json: &serde_json::Value,
+    now: i64,
+) -> anyhow::Result<usize> {
+    if matches!(
+        terminal_status,
+        BackgroundAgentPendingInteractionStatus::Pending
+            | BackgroundAgentPendingInteractionStatus::Delivered
+    ) {
+        anyhow::bail!("background agent pending interaction response must be terminal");
+    }
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        r#"
+SELECT id, kind
+FROM background_agent_pending_interactions
+WHERE run_id = ? AND status IN (?, ?)
+ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(run_id)
+    .bind(BackgroundAgentPendingInteractionStatus::Pending.as_str())
+    .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+    let response_payload_json = serde_json::to_string(response_payload_json)?;
+    let mut terminalized = 0;
+    for (interaction_id, kind) in rows {
+        let result = sqlx::query(
+            r#"
+UPDATE background_agent_pending_interactions
+SET status = ?, response_payload_json = ?, responded_at = ?, updated_at = ?
+WHERE id = ? AND status IN (?, ?)
+            "#,
+        )
+        .bind(terminal_status.as_str())
+        .bind(response_payload_json.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(interaction_id.as_str())
+        .bind(BackgroundAgentPendingInteractionStatus::Pending.as_str())
+        .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            continue;
+        }
+        terminalized += 1;
+        append_background_agent_event_in_tx(
+            tx,
+            run_id,
+            pending_interaction_event_type(terminal_status),
+            &serde_json::json!({
+                "interactionId": interaction_id,
+                "kind": kind,
+                "status": terminal_status.as_str(),
+            }),
+            now,
+        )
+        .await?;
+    }
+    Ok(terminalized)
+}
+
 fn pending_interaction_event_type(status: BackgroundAgentPendingInteractionStatus) -> &'static str {
     match status {
         BackgroundAgentPendingInteractionStatus::Responded => "interaction.responded",
