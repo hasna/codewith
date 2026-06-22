@@ -6,6 +6,7 @@ struct SettingsConfiguration: View {
     var sandbox: String? = nil
     var onSetApproval: (String) -> Void = { _ in }
     var onSetSandbox: (String) -> Void = { _ in }
+    @Environment(\.snapshotMode) private var snapshot
 
     private var approvalLabel: String {
         switch approval {
@@ -45,20 +46,26 @@ struct SettingsConfiguration: View {
                 .padding(.bottom, 8)
                 card {
                     SettingsRow(title: "Approval policy", subtitle: "Choose when CodeWith asks for approval") {
-                        Menu {
-                            ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
-                                Button(v) { onSetApproval(v) }
-                            }
-                        } label: { DropdownPill(text: approvalLabel) }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        if snapshot { DropdownPill(text: approvalLabel) }
+                        else {
+                            Menu {
+                                ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
+                                    Button(v) { onSetApproval(v) }
+                                }
+                            } label: { DropdownPill(text: approvalLabel) }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        }
                     }
                     SettingsRow(title: "Sandbox settings", subtitle: "Choose how much CodeWith can do when running commands", showDivider: false) {
-                        Menu {
-                            ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
-                                Button(v) { onSetSandbox(v) }
-                            }
-                        } label: { DropdownPill(text: sandboxLabel) }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        if snapshot { DropdownPill(text: sandboxLabel) }
+                        else {
+                            Menu {
+                                ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
+                                    Button(v) { onSetSandbox(v) }
+                                }
+                            } label: { DropdownPill(text: sandboxLabel) }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        }
                     }
                 }
                 .padding(.bottom, 22)
