@@ -1540,6 +1540,10 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         summary: crate::chatwidget::StatusLineGitSummary,
     },
+    /// Request the current native schedules for status-line countdown rendering.
+    StatusLineSchedulesRefresh {
+        thread_id: ThreadId,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
@@ -1558,6 +1562,13 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the terminal-title setup UI without changing config.
     TerminalTitleSetupCancelled,
+
+    /// Apply a user-confirmed final message summary item ordering/selection.
+    MessageSummarySetup {
+        items: Vec<crate::history_cell::MessageSummaryItem>,
+    },
+    /// Dismiss the final message summary setup UI without changing config.
+    MessageSummarySetupCancelled,
 
     /// Apply a user-confirmed syntax theme selection.
     SyntaxThemeSelected {

@@ -81,6 +81,7 @@ pub enum SlashCommand {
     DebugConfig,
     Title,
     Statusline,
+    Summary,
     Theme,
     #[strum(to_string = "pets", serialize = "pet")]
     Pets,
@@ -140,6 +141,7 @@ impl SlashCommand {
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
+            SlashCommand::Summary => "configure what appears after final messages",
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Pets => "choose or hide the terminal pet",
             SlashCommand::Ps => "list background terminals",
@@ -300,6 +302,7 @@ impl SlashCommand {
             | SlashCommand::Plugins
             | SlashCommand::Title
             | SlashCommand::Statusline
+            | SlashCommand::Summary
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
             | SlashCommand::Ide
@@ -420,6 +423,7 @@ mod tests {
         assert!(SlashCommand::Changelog.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
+        assert!(SlashCommand::Summary.available_during_task());
         assert!(SlashCommand::MissionControl.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
@@ -438,6 +442,8 @@ mod tests {
             SlashCommand::MissionControl,
             SlashCommand::Worktree,
             SlashCommand::Status,
+            SlashCommand::Statusline,
+            SlashCommand::Summary,
             SlashCommand::Changelog,
         ];
         for command in available {
@@ -467,6 +473,23 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("changelog"),
             Ok(SlashCommand::Changelog)
+        );
+    }
+
+    #[test]
+    fn summary_command_configures_final_message_summary() {
+        assert_eq!(SlashCommand::Summary.command(), "summary");
+        assert_eq!(
+            SlashCommand::Summary.description(),
+            "configure what appears after final messages"
+        );
+        assert!(!SlashCommand::Summary.supports_inline_args());
+        assert!(SlashCommand::Summary.available_during_task());
+        assert!(!SlashCommand::Summary.available_in_side_conversation());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "summary" && *command == SlashCommand::Summary)
         );
     }
 
