@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// Window content: sidebar + detail.
+/// Window content for snapshots/previews: sidebar + detail driven by a model.
 struct RootView<Detail: View>: View {
-    var selected: String = ""
+    var model: AppModel
     @ViewBuilder var detail: () -> Detail
 
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar(selected: selected)
+            Sidebar(model: model)
             Rectangle().fill(Theme.separator).frame(width: 1)
             detail()
         }

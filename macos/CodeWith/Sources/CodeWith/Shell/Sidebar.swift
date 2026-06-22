@@ -11,40 +11,27 @@ struct SidebarItem: Identifiable {
     var selected: Bool = false
 }
 
-/// Left navigation rail. Matches the reference Codex sidebar; "Plugins" is
-/// renamed to "Apps" and a "Machines" row is added for the fork.
+/// Left navigation rail, driven by live app-server data.
+/// Colors/metrics are unchanged from the approved design.
 struct Sidebar: View {
-    var selected: String = ""
+    var model: AppModel
     var onTap: (String) -> Void = { _ in }
+    var onThread: (ThreadInfo) -> Void = { _ in }
+    var onProject: (ProjectInfo) -> Void = { _ in }
+    var onLoadMore: () -> Void = {}
 
     private let topItems: [SidebarItem] = [
         .init(icon: "square.and.pencil", title: "New chat"),
         .init(icon: "magnifyingglass", title: "Search"),
         .init(icon: "square.grid.2x2", title: "Apps"),
-        .init(icon: "bolt.horizontal.circle", title: "Automations"),
-        .init(icon: "desktopcomputer", title: "Machines"),
-        .init(icon: "iphone", title: "CodeWith mobile"),
-    ]
-
-    private let projects: [SidebarItem] = [
-        .init(icon: "folder", title: "scaffold-api"),
-        .init(icon: "doc", title: "Add abstract OAuth prepa…", trailing: "5mo", hasCloud: true, indent: true, selected: true),
-        .init(icon: "doc", title: "Add infra folder for EC2 d…", hasCloud: true, hasDot: true, indent: true),
-        .init(icon: "doc", title: "Add docs folder and files", hasCloud: true, hasDot: true, indent: true),
-        .init(icon: "doc", title: "Find and fix bug in codeba…", hasCloud: true, hasDot: true, indent: true),
-        .init(icon: "doc", title: "Write granular tests (e2e, …", hasCloud: true, hasDot: true, indent: true),
-    ]
-
-    private let chats: [SidebarItem] = [
-        .init(icon: "bubble.left", title: "Say hi", trailing: "1m"),
-        .init(icon: "bubble.left", title: "Ads", trailing: "3w"),
+        .init(icon: "arrow.trianglehead.2.clockwise.rotate.90", title: "Loops"),
+        .init(icon: "server.rack", title: "Machines"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Top chrome row: brand mark + nav chevrons + layout toggle.
             HStack(spacing: 8) {
-                Spacer().frame(width: 56) // clear the traffic lights
+                Spacer().frame(width: 56)
                 BrandMark()
                 Image(systemName: "chevron.left").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textTertiary)
                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textTertiary.opacity(0.5))
@@ -56,24 +43,36 @@ struct Sidebar: View {
             ScrollColumn(alignment: .leading, spacing: 1) {
                 ForEach(topItems) { row(for: $0) }
 
-                sectionHeader("Projects")
-                ForEach(projects) { row(for: $0) }
-                HStack(spacing: 4) {
-                    Text("Show more")
-                        .font(Theme.sidebarItem)
-                        .foregroundStyle(Theme.textTertiary)
+                if !model.projects.isEmpty {
+                    sectionHeader("Projects")
+                    ForEach(model.projects) { project in
+                        projectRow(project)
+                    }
                 }
-                .padding(.leading, 30).padding(.vertical, 4)
 
                 sectionHeader("Chats")
-                ForEach(chats) { row(for: $0) }
+                if model.threads.isEmpty {
+                    emptyHint(model.connection == .connecting ? "Loading…" : "No sessions yet")
+                } else {
+                    ForEach(model.threads) { thread in
+                        threadRow(thread)
+                    }
+                    if model.hasMoreThreads {
+                        Button(action: onLoadMore) {
+                            Text(model.loadingThreads ? "Loading…" : "Show more")
+                                .font(Theme.sidebarItem).foregroundStyle(Theme.textTertiary)
+                                .padding(.leading, 8).padding(.vertical, 4)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
             .padding(.top, 2)
 
             Divider().overlay(Theme.separator)
-            // Settings pinned to bottom.
             row(for: .init(icon: "gearshape", title: "Settings"))
                 .padding(.horizontal, 8).padding(.vertical, 6)
         }
@@ -88,8 +87,13 @@ struct Sidebar: View {
             .padding(.leading, 8).padding(.top, 14).padding(.bottom, 4)
     }
 
+    private func emptyHint(_ t: String) -> some View {
+        Text(t).font(Theme.sidebarItem).foregroundStyle(Theme.textTertiary)
+            .padding(.leading, 8).padding(.vertical, 4)
+    }
+
     private func row(for item: SidebarItem) -> some View {
-        let isSel = item.selected || item.title == selected
+        let isSel = item.selected || item.title == model.sidebarSelection
         return Button { onTap(item.title) } label: {
             HStack(spacing: 8) {
                 Image(systemName: item.icon)
@@ -101,24 +105,40 @@ struct Sidebar: View {
                     .foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if item.hasCloud {
-                    Image(systemName: "cloud").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
-                }
-                if let t = item.trailing {
-                    Text(t).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
-                }
-                if item.hasDot {
-                    Circle().fill(Theme.accent).frame(width: 5, height: 5)
-                }
             }
-            .padding(.leading, item.indent ? 22 : 8)
-            .padding(.trailing, 8)
+            .padding(.leading, 8).padding(.trailing, 8)
             .frame(height: 26)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                    .fill(isSel ? Theme.rowSelected : .clear)
-            )
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(isSel ? Theme.rowSelected : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func projectRow(_ project: ProjectInfo) -> some View {
+        let isSel = project.name == model.sidebarSelection
+        return Button { onProject(project) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "folder").font(.system(size: 12.5)).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).frame(width: 16)
+                Text(project.name).font(Theme.sidebarItem).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 8).frame(height: 26).contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(isSel ? Theme.rowSelected : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func threadRow(_ thread: ThreadInfo) -> some View {
+        let isSel = thread.id == model.activeThreadId
+        return Button { onThread(thread) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left").font(.system(size: 12.5)).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).frame(width: 16)
+                Text(thread.name).font(Theme.sidebarItem).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(thread.ageLabel).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.horizontal, 8).frame(height: 26).contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(isSel ? Theme.rowSelected : .clear))
         }
         .buttonStyle(.plain)
     }

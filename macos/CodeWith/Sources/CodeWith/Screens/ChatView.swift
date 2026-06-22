@@ -1,86 +1,64 @@
 import SwiftUI
 
+/// A live session view, driven by `model.activeMessages`.
 struct ChatView: View {
-    var showAddMenu: Bool = false
-    var chat: ChatRef? = nil
-    var composerText: Binding<String>? = nil
-    var onSubmit: (() -> Void)? = nil
-    var onPlus: (() -> Void)? = nil
-    var onAddAction: ((String) -> Void)? = nil
+    @Bindable var model: AppModel
+    var threadId: String
+    var onSubmit: () -> Void = {}
+    var onPlus: () -> Void = {}
+    var onAddAction: (String) -> Void = { _ in }
+    var onToggleConfig: () -> Void = {}
+
+    private var title: String {
+        model.threads.first { $0.id == threadId }?.name ?? "Chat"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Detail top bar
+            // Top bar — title + ellipsis, and the single right-sidebar (config) opener.
             HStack(spacing: 8) {
-                Text(chat?.title ?? "Say hi").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
                 Spacer()
-                Image(systemName: "rectangle.split.3x1").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
-                Image(systemName: "square.righthalf.filled").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
+                Button(action: onToggleConfig) {
+                    Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 16).frame(height: 40)
             Rectangle().fill(Theme.separator).frame(height: 1)
 
-            HStack(spacing: 0) {
-                // Conversation column
-                VStack(alignment: .leading, spacing: 0) {
-                    ScrollColumn(alignment: .leading, spacing: 0) {
-                        if let chat, !chat.messages.isEmpty {
-                            ForEach(chat.messages) { messageView($0) }
-                        } else {
-                            // user bubble
-                            HStack { Spacer()
-                                Text("hi").font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
-                                    .padding(.horizontal, 12).padding(.vertical, 7)
-                                    .background(RoundedRectangle(cornerRadius: 14).fill(Theme.fieldFill))
-                            }
-                            .padding(.bottom, 4)
-                            HStack { Spacer(); Image(systemName: "link").font(.system(size: 10)).foregroundStyle(Theme.textTertiary) }
-                                .padding(.bottom, 16)
-
-                            para("I'll register the session context first because the provided project rules make that mandatory before any real work. After that I'll keep the response lightweight.")
-                            ToolRow(icon: "wrench.and.screwdriver", text: "Loaded a tool, ran a command")
-                            para("The first skill path was stale in this environment, so I'm using the installed CodeWith skill location from the session skill list and continuing with the required registration flow.")
-                            ToolRow(icon: "doc.text", text: "Read a file")
-                            para("I'm completing the login checks through the CLIs now. If a shared MCP wrapper is unavailable, the rules explicitly route to these CLI fallbacks.")
-                            ToolRow(icon: "terminal", text: "Ran 3 commands")
-                            HStack { Spacer(); Text("You stopped after 20s").font(.system(size: 12)).foregroundStyle(Theme.textTertiary) }
-                                .padding(.bottom, 12)
-                        }
-                        Spacer(minLength: 0)
+            // Conversation
+            ScrollColumn(alignment: .leading, spacing: 0) {
+                if model.activeMessages.isEmpty {
+                    Text(model.turnInProgress ? "Working…" : "")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                        .padding(.top, 8)
+                } else {
+                    ForEach(model.activeMessages) { messageView($0) }
+                    if model.turnInProgress {
+                        Text("Working…").font(.system(size: 12)).foregroundStyle(Theme.textTertiary).padding(.top, 4)
                     }
-                    .padding(.horizontal, 24).padding(.top, 18)
-
-                    // Composer
-                    Composer(placeholder: "Ask for follow-up changes", stopMode: composerText == nil,
-                             text: composerText, onSubmit: onSubmit, onPlus: onPlus)
-                        .padding(.horizontal, 24).padding(.vertical, 14)
                 }
-                .frame(maxWidth: .infinity)
-                .overlay(alignment: .bottomLeading) {
-                    if showAddMenu { AddMenu(onAction: onAddAction ?? { _ in }).padding(.leading, 24).padding(.bottom, 68) }
-                }
-
-                // Right panel
-                Rectangle().fill(Theme.separator).frame(width: 1)
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        panelSection("Outputs", empty: "No artifacts yet")
-                        panelSection("Sources", empty: "No sources yet")
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white)
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.cardStroke, lineWidth: 1)))
-                    Spacer()
-                }
-                .frame(width: 168)
-                .padding(.horizontal, 12).padding(.top, 14)
-                .background(Color(hex: 0xFAFAFA))
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 24).padding(.top, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            // Composer
+            Composer(placeholder: "Ask for follow-up changes",
+                     stopMode: model.turnInProgress,
+                     text: $model.composerText, onSubmit: onSubmit, onPlus: onPlus)
+                .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .overlay(alignment: .bottomLeading) {
+            if model.showAddMenu {
+                AddMenu(onAction: onAddAction).padding(.leading, 24).padding(.bottom, 68)
+            }
+        }
     }
 
     @ViewBuilder
@@ -94,23 +72,13 @@ struct ChatView: View {
             }
             .padding(.bottom, 16)
         case .assistant:
-            para(m.text)
+            Text(m.text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true).lineSpacing(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 12)
         case .tool:
             ToolRow(icon: m.toolIcon ?? "wrench.and.screwdriver", text: m.text)
         }
-    }
-
-    private func para(_ t: String) -> some View {
-        Text(t).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
-            .fixedSize(horizontal: false, vertical: true).lineSpacing(3)
-            .padding(.bottom, 12)
-    }
-    private func panelSection(_ title: String, empty: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
-            Text(empty).font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
-        }
-        .padding(.bottom, 18)
     }
 }
 
@@ -120,7 +88,7 @@ struct ToolRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-            Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+            Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(1)
             Spacer()
         }
         .padding(.horizontal, 10).padding(.vertical, 7)

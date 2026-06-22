@@ -26,7 +26,6 @@ struct SettingsProfile: View {
                 topAction("pencil", "Edit")
             }
             .padding(.horizontal, 22).frame(height: 40)
-            Rectangle().fill(Theme.separator).frame(height: 1)
 
             VStack(spacing: 0) {
                 Circle().fill(Color(hex: 0x4AB58E))
