@@ -13,11 +13,12 @@ struct Composer: View {
     var onConfigTap: (() -> Void)? = nil
     var modelLabel: String = "gpt-5.5"
     var effortLabel: String = "Low"
+    @Environment(\.snapshotMode) private var snapshot
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if let text {
+                if let text, !snapshot {
                     TextField(placeholder, text: text, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
@@ -25,7 +26,11 @@ struct Composer: View {
                         .lineLimit(1...5)
                         .onSubmit { onSubmit?() }
                 } else {
-                    Text(placeholder).font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
+                    // Static placeholder (also used in snapshot mode — ImageRenderer
+                    // cannot render an NSTextField-backed TextField).
+                    Text(text?.wrappedValue.isEmpty == false ? text!.wrappedValue : placeholder)
+                        .font(.system(size: 13))
+                        .foregroundStyle(text?.wrappedValue.isEmpty == false ? Theme.textPrimary : Theme.textTertiary)
                 }
                 Spacer()
             }
