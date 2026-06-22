@@ -89,7 +89,7 @@ struct AppShell: View {
         switch name {
         case "Profile":         SettingsProfile(account: model.account)
         case "Appearance":      SettingsAppearance()
-        case "Configuration":   SettingsConfiguration()
+        case "Configuration":   SettingsConfiguration(version: model.serverVersion, approval: model.configApproval, sandbox: model.configSandbox)
         case "Personalization": SettingsPersonalization()
         default:                SettingsGeneral()
         }

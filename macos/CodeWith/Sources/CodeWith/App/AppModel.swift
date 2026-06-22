@@ -490,6 +490,7 @@ final class AppModel {
             ChatMessage(role: .tool, text: "Read a file", toolIcon: "doc.text"),
         ]
         m.model = "gpt-5.5-codex"; m.provider = "openai"
+        m.serverVersion = "0.137.0"; m.configApproval = "on-request"; m.configSandbox = "read-only"
         return m
     }
 }

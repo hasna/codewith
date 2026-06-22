@@ -1,6 +1,27 @@
 import SwiftUI
 
 struct SettingsConfiguration: View {
+    var version: String? = nil
+    var approval: String? = nil
+    var sandbox: String? = nil
+
+    private var approvalLabel: String {
+        switch approval {
+        case "never": return "Never"
+        case "on-failure": return "On failure"
+        case "untrusted": return "Untrusted"
+        case "granular": return "Custom"
+        default: return "On request"
+        }
+    }
+    private var sandboxLabel: String {
+        switch sandbox {
+        case "workspace-write": return "Workspace write"
+        case "danger-full-access": return "Full access"
+        default: return "Read only"
+        }
+    }
+
     var body: some View {
         SettingsPage(title: "Configuration") {
             VStack(alignment: .leading, spacing: 0) {
@@ -22,10 +43,10 @@ struct SettingsConfiguration: View {
                 .padding(.bottom, 8)
                 card {
                     SettingsRow(title: "Approval policy", subtitle: "Choose when CodeWith asks for approval") {
-                        DropdownPill(text: "On request")
+                        DropdownPill(text: approvalLabel)
                     }
                     SettingsRow(title: "Sandbox settings", subtitle: "Choose how much CodeWith can do when running commands", showDivider: false) {
-                        DropdownPill(text: "Read only")
+                        DropdownPill(text: sandboxLabel)
                     }
                 }
                 .padding(.bottom, 22)
@@ -33,7 +54,7 @@ struct SettingsConfiguration: View {
                 SettingsGroupLabel(text: "Workspace Dependencies")
                 card {
                     SettingsRow(title: "Current version", subtitle: nil) {
-                        Text("26.619.11828").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        Text(version ?? "—").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                     }
                     SettingsRow(title: "CodeWith dependencies", subtitle: "Allow CodeWith to install and expose bundled Node.js and Python tools") {
                         GlassToggle(on: true)

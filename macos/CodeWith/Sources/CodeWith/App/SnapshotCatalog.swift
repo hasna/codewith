@@ -17,7 +17,7 @@ enum SnapshotCatalog {
             framed("05-settings-general") { SettingsShell(selected: "General") { SettingsGeneral() } },
             framed("06-settings-profile") { SettingsShell(selected: "Profile") { SettingsProfile(account: m.account) } },
             framed("07-settings-appearance") { SettingsShell(selected: "Appearance") { SettingsAppearance() } },
-            framed("08-settings-configuration") { SettingsShell(selected: "Configuration") { SettingsConfiguration() } },
+            framed("08-settings-configuration") { SettingsShell(selected: "Configuration") { SettingsConfiguration(version: m.serverVersion, approval: m.configApproval, sandbox: m.configSandbox) } },
             framed("09-settings-personalization") { SettingsShell(selected: "Personalization") { SettingsPersonalization() } },
             framed("12-machines") { RootView(model: m) { MachinesView(machines: m.machines) } },
             framed("13-profiles") { RootView(model: m) { ProfilesView(profiles: m.authProfiles, activeEmail: m.account.email) } },
