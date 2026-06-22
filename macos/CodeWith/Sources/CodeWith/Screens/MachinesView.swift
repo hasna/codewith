@@ -22,22 +22,29 @@ struct MachinesView: View {
             Rectangle().fill(Theme.separator).frame(height: 1)
 
             ScrollColumn(spacing: 0) {
-                // Summary line.
-                HStack(spacing: 6) {
-                    Text("\(machines.filter(\.online).count) online")
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                    Text("·").foregroundStyle(Theme.textTertiary)
-                    Text("\(machines.count) machines in fleet")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    Spacer()
-                }
-                .padding(.horizontal, 28).padding(.top, 20).padding(.bottom, 16)
+                if machines.isEmpty {
+                    Text("No machines in your fleet yet.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 28).padding(.top, 20)
+                } else {
+                    // Summary line.
+                    HStack(spacing: 6) {
+                        Text("\(machines.filter(\.online).count) online")
+                            .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                        Text("·").foregroundStyle(Theme.textTertiary)
+                        Text("\(machines.count) machines in fleet")
+                            .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 28).padding(.top, 20).padding(.bottom, 16)
 
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(machines) { machineCard($0) }
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(machines) { machineCard($0) }
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 28)
                 }
-                .padding(.horizontal, 28)
-                .padding(.bottom, 28)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -68,7 +75,7 @@ struct MachinesView: View {
             // Header: status dot + name + this-machine badge.
             HStack(spacing: 8) {
                 Circle()
-                    .fill(m.online ? Theme.success : Color(hex: 0xC4C4C8))
+                    .fill(m.online ? Theme.success : Theme.textTertiary)
                     .frame(width: 8, height: 8)
                 Text(m.id).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Spacer(minLength: 4)

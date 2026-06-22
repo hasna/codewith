@@ -8,10 +8,15 @@ struct ProjectSessionsView: View {
 
     private var project: ProjectInfo? { model.project(forKey: projectKey) }
     private var sessions: [ThreadInfo] {
-        model.threads(forProjectKey: projectKey).sorted { (Int($0.updatedAt ?? "") ?? 0) > (Int($1.updatedAt ?? "") ?? 0) }
+        model.threads(forProjectKey: projectKey).sorted { updatedTime($0) > updatedTime($1) }
     }
     private var name: String { project?.name ?? projectKey }
     private var path: String { project?.path ?? projectKey }
+
+    private func updatedTime(_ thread: ThreadInfo) -> TimeInterval {
+        guard let updatedAt = thread.updatedAt else { return 0 }
+        return ThreadInfo.parseDate(updatedAt)?.timeIntervalSince1970 ?? 0
+    }
 
     var body: some View {
         VStack(spacing: 0) {

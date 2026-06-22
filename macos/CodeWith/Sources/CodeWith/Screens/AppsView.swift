@@ -10,7 +10,14 @@ struct AppsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            // Detail top bar — matches the reference/settings pattern.
+            HStack {
+                Text("Apps").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+                Spacer()
+            }
+            .padding(.horizontal, 22).frame(height: 40)
+            Rectangle().fill(Theme.separator).frame(height: 1)
+
             ScrollColumn(spacing: 0) {
                 if apps.isEmpty {
                     Text("No apps available.")
@@ -31,23 +38,29 @@ struct AppsView: View {
         .background(Theme.canvas)
     }
 
-    private var topBar: some View {
-        HStack {
-            Text("Apps")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-                Text("Search apps").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
-            }
-            .padding(.horizontal, 10).frame(width: 180, height: 26)
-            .background(RoundedRectangle(cornerRadius: 7).fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+    /// Pick a representative SF Symbol from the app's name/description keywords.
+    private func icon(for app: AppItemInfo) -> String {
+        let n = (app.name + " " + app.detail).lowercased()
+        // Order matters: check specific/safe keywords before looser ones so e.g.
+        // "reports" doesn't get matched as a git "repo".
+        switch true {
+        case n.contains("mail"), n.contains("email"), n.contains("inbox"): return "envelope"
+        case n.contains("search"), n.contains("research"), n.contains("index"): return "magnifyingglass"
+        case n.contains("security"), n.contains("audit"), n.contains("secret"), n.contains("vault"): return "lock.shield"
+        case n.contains("github"), n.contains("gitlab"), n.contains("repository"), n.contains("branch"), n.contains("commit"): return "arrow.triangle.branch"
+        case n.contains("loop"), n.contains("schedule"), n.contains("cron"), n.contains("daemon"): return "arrow.trianglehead.2.clockwise.rotate.90"
+        case n.contains("deploy"), n.contains("ship"), n.contains("release"), n.contains("publish"): return "shippingbox"
+        case n.contains("test"): return "checkmark.seal"
+        case n.contains("database"), n.contains("postgres"), n.contains("sql"): return "cylinder.split.1x2"
+        case n.contains("chat"), n.contains("message"), n.contains("slack"), n.contains("whatsapp"): return "bubble.left.and.bubble.right"
+        case n.contains("memo"), n.contains("note"), n.contains("document"): return "doc.text"
+        case n.contains("image"), n.contains("photo"), n.contains("design"): return "photo"
+        case n.contains("web"), n.contains("http"), n.contains("browser"), n.contains("scrape"): return "globe"
+        case n.contains("calendar"), n.contains("event"): return "calendar"
+        case n.contains("voice"), n.contains("audio"), n.contains("phone"), n.contains("call"), n.contains("record"): return "waveform"
+        case n.contains("task"), n.contains("todo"), n.contains("plan"): return "checklist"
+        default: return "square.grid.2x2.fill"
         }
-        .frame(height: 38)
-        .padding(.horizontal, 16)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
     }
 
     private func card(_ app: AppItemInfo, tint: Color) -> some View {
@@ -55,7 +68,7 @@ struct AppsView: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(tint.opacity(0.14))
                 .frame(width: 36, height: 36)
-                .overlay(Image(systemName: "square.grid.2x2.fill").font(.system(size: 15)).foregroundStyle(tint))
+                .overlay(Image(systemName: icon(for: app)).font(.system(size: 15)).foregroundStyle(tint))
             Text(app.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(1)
             Text(app.detail).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)

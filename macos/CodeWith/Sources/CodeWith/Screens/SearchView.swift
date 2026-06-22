@@ -58,6 +58,9 @@ struct SearchView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .task(id: model.searchQuery) {
+            await model.runSearch()
+        }
     }
 
     private func section(_ t: String) -> some View {

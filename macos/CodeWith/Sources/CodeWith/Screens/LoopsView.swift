@@ -8,6 +8,7 @@ struct LoopsView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            Rectangle().fill(Theme.separator).frame(height: 1)
             ScrollColumn(spacing: 0) {
                 VStack(alignment: .leading, spacing: 8) {
                     if loops.isEmpty {
@@ -30,7 +31,7 @@ struct LoopsView: View {
 
     private var topBar: some View {
         HStack {
-            Text("Loops").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+            Text("Loops").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
             Spacer()
             HStack(spacing: 5) {
                 Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
@@ -38,16 +39,14 @@ struct LoopsView: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12).frame(height: 26)
-            .background(Capsule().fill(Theme.accent))
+            .background(Capsule().fill(Color(hex: 0x202020)))
         }
-        .frame(height: 38)
-        .padding(.horizontal, 16)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
+        .padding(.horizontal, 22).frame(height: 40)
     }
 
     private func loopRow(_ loop: LoopInfo) -> some View {
         let isSchedule = loop.kind == .schedule
-        let tint = isSchedule ? Theme.accent : Color(hex: 0x34C759)
+        let tint = isSchedule ? Theme.accent : Theme.success
         let icon = isSchedule ? "clock.arrow.circlepath" : "dot.radiowaves.left.and.right"
         return HStack(alignment: .center, spacing: 12) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -63,9 +62,9 @@ struct LoopsView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }

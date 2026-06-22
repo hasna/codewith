@@ -47,6 +47,16 @@ struct ChatView: View {
             .padding(.horizontal, 24).padding(.top, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+            if let pending = model.pendingServerRequests.first {
+                PendingServerRequestPanel(
+                    prompt: pending,
+                    onApprove: { model.respondToServerRequest(pending, approve: true) },
+                    onDecline: { model.respondToServerRequest(pending, approve: false) }
+                )
+                .padding(.horizontal, 24)
+                .padding(.top, 6)
+            }
+
             // Composer
             Composer(placeholder: "Ask for follow-up changes",
                      stopMode: model.turnInProgress,
@@ -83,6 +93,63 @@ struct ChatView: View {
         case .tool:
             ToolRow(icon: m.toolIcon ?? "wrench.and.screwdriver", text: m.text)
         }
+    }
+}
+
+struct PendingServerRequestPanel: View {
+    var prompt: PendingServerRequest
+    var onApprove: () -> Void
+    var onDecline: () -> Void
+
+    private var iconName: String {
+        switch prompt.kind {
+        case .commandApproval: return "terminal"
+        case .fileChangeApproval: return "doc.badge.gearshape"
+        case .permissionsApproval: return "lock.shield"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.warning)
+                .frame(width: 18)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(prompt.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(prompt.detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(3)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Button("Decline", action: onDecline)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(Capsule().fill(Theme.fieldFill).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
+                Button("Approve", action: onApprove)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(Capsule().fill(Theme.accent))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.fieldFill)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+        )
     }
 }
 

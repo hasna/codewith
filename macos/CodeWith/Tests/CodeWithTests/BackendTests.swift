@@ -55,6 +55,16 @@ final class MessageRoutingTests: XCTestCase {
     func testNotificationNoParams() {
         XCTAssertEqual(classify("{\"method\":\"initialized\"}"), .notification(method: "initialized", params: .null))
     }
+    func testServerRequest() {
+        XCTAssertEqual(
+            classify("{\"id\":9,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"t\"}}"),
+            .serverRequest(
+                id: .number(9),
+                method: "item/commandExecution/requestApproval",
+                params: .object(["threadId": .string("t")])
+            )
+        )
+    }
     func testIdWithoutResultIgnored() { XCTAssertEqual(classify("{\"id\":7}"), .ignored) }
     func testIdPlusResultBeatsMethod() {
         XCTAssertEqual(classify("{\"id\":7,\"method\":\"x\",\"result\":1}"), .response(id: 7, result: .number(1)))
@@ -62,6 +72,57 @@ final class MessageRoutingTests: XCTestCase {
     func testMalformedIgnored() { XCTAssertEqual(classify("not json"), .ignored) }
     func testEmptyObjectIgnored() { XCTAssertEqual(classify("{}"), .ignored) }
     func testNullErrorIsSuccess() { XCTAssertEqual(classify("{\"id\":7,\"result\":1,\"error\":null}"), .response(id: 7, result: .number(1))) }
+}
+
+// Regression: the app must never resolve its own GUI executable as the "codewith"
+// CLI. On macOS's case-insensitive filesystem the candidate "Contents/MacOS/codewith"
+// is the SAME file as the app binary "Contents/MacOS/CodeWith"; spawning it reboots
+// the GUI, which spawns again — an unbounded fork bomb. The device+inode guard must
+// see through the case folding.
+final class BinaryResolutionTests: XCTestCase {
+    private var tmp: NSString { NSTemporaryDirectory() as NSString }
+
+    func testSameFileIdentifiesIdenticalPath() {
+        let p = tmp.appendingPathComponent("cw-same-\(getpid())")
+        FileManager.default.createFile(atPath: p, contents: Data("x".utf8))
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        XCTAssertTrue(AppServerClient.sameFile(p, p))
+    }
+
+    func testSameFileDistinguishesDifferentFiles() {
+        let a = tmp.appendingPathComponent("cw-a-\(getpid())")
+        let b = tmp.appendingPathComponent("cw-b-\(getpid())")
+        FileManager.default.createFile(atPath: a, contents: Data("a".utf8))
+        FileManager.default.createFile(atPath: b, contents: Data("b".utf8))
+        defer { try? FileManager.default.removeItem(atPath: a); try? FileManager.default.removeItem(atPath: b) }
+        XCTAssertFalse(AppServerClient.sameFile(a, b))
+    }
+
+    func testSameFileSeesThroughCaseFolding() {
+        let lower = tmp.appendingPathComponent("codewith-case-\(getpid())")
+        let upper = tmp.appendingPathComponent("CODEWITH-case-\(getpid())")
+        FileManager.default.createFile(atPath: lower, contents: Data("x".utf8))
+        defer { try? FileManager.default.removeItem(atPath: lower) }
+        // Only assert identity when the volume actually folds case (it does on macOS).
+        if FileManager.default.isReadableFile(atPath: upper) {
+            XCTAssertTrue(AppServerClient.sameFile(lower, upper))
+        }
+    }
+
+    func testNonexistentPathsAreNotSameFile() {
+        XCTAssertFalse(AppServerClient.sameFile("/no/such/aaa-\(getpid())", "/no/such/bbb-\(getpid())"))
+    }
+
+    func testOwnExecutableIsDetectedAsSelf() throws {
+        let selfPath = try XCTUnwrap(Bundle.main.executablePath)
+        XCTAssertTrue(AppServerClient.isSelfExecutable(selfPath))
+    }
+
+    func testResolvedBinaryIsNeverTheRunningExecutable() {
+        if let resolved = AppServerClient.binaryPath {
+            XCTAssertFalse(AppServerClient.isSelfExecutable(resolved))
+        }
+    }
 }
 
 final class BackendModelsTests: XCTestCase {
@@ -154,6 +215,12 @@ final class BackendModelsTests: XCTestCase {
     func testAccountNullSignedOut() {
         let a = AccountInfo(from: obj(["account": .null]))
         XCTAssertEqual(a.name, "Signed out"); XCTAssertEqual(a.email, "")
+    }
+    func testAccountNullForNoAuthProviderIsSignedInState() {
+        let a = AccountInfo(from: obj(["account": .null, "requiresOpenaiAuth": .bool(false)]))
+        XCTAssertEqual(a.name, "Local provider")
+        XCTAssertEqual(a.plan, "No account required")
+        XCTAssertFalse(a.requiresOpenAIAuth)
     }
 }
 

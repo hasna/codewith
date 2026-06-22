@@ -18,9 +18,9 @@ struct LoginView: View {
     }
     private let providers: [Provider] = [
         .init(name: "OpenAI", icon: "key.fill", keyBased: true),
-        .init(name: "Anthropic", icon: "key.fill", keyBased: true),
-        .init(name: "Azure", icon: "key.fill", keyBased: true),
-        .init(name: "OpenRouter", icon: "key.fill", keyBased: true),
+        .init(name: "Anthropic", icon: "slider.horizontal.3", keyBased: false),
+        .init(name: "Azure", icon: "slider.horizontal.3", keyBased: false),
+        .init(name: "OpenRouter", icon: "slider.horizontal.3", keyBased: false),
         .init(name: "Ollama", icon: "desktopcomputer", keyBased: false),
     ]
 
@@ -67,9 +67,11 @@ struct LoginView: View {
             primaryButton(icon: "", title: model.loginInProgress ? "Waiting for browser…" : "Sign in with ChatGPT") {
                 Task { await model.loginWithChatGPT() }
             }
+            .disabled(model.loginInProgress)
             .padding(.bottom, 12)
 
             secondaryButton(title: "Sign in another way") { mode = .providers }
+                .disabled(model.loginInProgress)
                 .padding(.bottom, 22)
 
             Button { openURL("https://chatgpt.com") } label: {
@@ -89,7 +91,7 @@ struct LoginView: View {
                 ForEach(providers) { p in
                     Button {
                         selectedProvider = p.name
-                        if p.keyBased { mode = .apiKey } else { Task { await model.loginWithApiKey("") } }
+                        if p.keyBased { mode = .apiKey } else { Task { await model.loginWithoutApiKey(providerName: p.name) } }
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: p.icon).font(.system(size: 14)).foregroundStyle(Theme.textSecondary).frame(width: 20)
@@ -100,7 +102,7 @@ struct LoginView: View {
                         .padding(.horizontal, 14).frame(height: 48).contentShape(Rectangle())
                         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.fieldFill)
                             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.cardStroke, lineWidth: 1)))
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).disabled(model.loginInProgress)
                 }
             }
             backLink { mode = .home }
@@ -131,8 +133,9 @@ struct LoginView: View {
             .padding(.bottom, 12)
 
             primaryButton(icon: "checkmark", title: model.loginInProgress ? "Signing in…" : "Continue") {
-                Task { await model.loginWithApiKey(apiKey) }
+                Task { await model.loginWithApiKey(apiKey, providerName: selectedProvider) }
             }
+            .disabled(model.loginInProgress)
             backLink { mode = .providers }
         }
     }

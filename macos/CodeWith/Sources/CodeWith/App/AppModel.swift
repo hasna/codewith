@@ -18,6 +18,17 @@ struct ChatMessage: Identifiable, Hashable {
     var toolIcon: String? = nil
 }
 
+struct PendingServerRequest: Identifiable {
+    enum Kind: Equatable { case commandApproval, fileChangeApproval, permissionsApproval }
+    let id = UUID()
+    var requestId: JSONValue
+    var method: String
+    var kind: Kind
+    var title: String
+    var detail: String
+    var requestedPermissions: JSONValue? = nil
+}
+
 struct ProfileRef: Identifiable, Hashable {
     let id = UUID()
     var name: String
@@ -63,21 +74,31 @@ final class AppModel {
     var serverVersion: String? = nil
     var configApproval: String? = nil
     var configSandbox: String? = nil
+    var remoteSearchThreads: [ThreadInfo] = []
+    private var pendingOpenURL: URL? = nil
 
     // In-session config
     var model: String? = nil
     var provider: String? = nil
     var effort: String = "Low"
-    let availableModels = ["gpt-5.5-codex", "gpt-5.5", "o3", "gpt-4.1"]
-    let availableProviders = ["openai", "azure", "openrouter", "ollama"]
+    var availableModels = ["gpt-5.5-codex", "gpt-5.5", "o3", "gpt-4.1"]
+    var availableProviders = ["openai", "azure", "openrouter", "ollama"]
     let availableEfforts = ["Low", "Medium", "High", "Extra High"]
 
     // Active chat
     var activeThreadId: String? = nil
+    var activeTurnId: String? = nil
     var activeMessages: [ChatMessage] = []
+    var pendingServerRequests: [PendingServerRequest] = []
     var turnInProgress = false
     var currentProjectPath: String? = nil
     private var streamingAssistantIndex: Int? = nil
+
+    // Turn watchdog: if a turn goes silent (no deltas/items/completion) for this
+    // long, the agent is presumed stuck and we release the spinner with an error.
+    private var turnWatchdog: Task<Void, Never>? = nil
+    private var lastTurnActivity = Date()
+    private static let turnSilenceTimeout: TimeInterval = 300
 
     // Profiles (local switch; profile picker UI)
     var profiles: [ProfileRef]
@@ -104,6 +125,12 @@ final class AppModel {
                 self?.handleNotification(method: method, params: params)
             }
         }
+        Task { @MainActor [weak self] in
+            guard let stream = self?.client.serverRequests else { return }
+            for await request in stream {
+                self?.handleServerRequest(request)
+            }
+        }
     }
 
     func shutdown() { client.stop() }
@@ -127,15 +154,20 @@ final class AppModel {
         }
         startNotificationConsumer()
         await refreshAll()
+        if let pendingOpenURL {
+            self.pendingOpenURL = nil
+            await openDesktopURL(pendingOpenURL)
+        }
     }
 
     func refreshAll() async {
         async let acct: () = loadAccount()
-        async let cfg: () = loadConfig()
         async let apps: () = loadApps()
+        await loadConfig()
+        async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, cfg, apps)
+        _ = await (acct, apps, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { [weak self] in
             guard let self else { return }
@@ -152,9 +184,31 @@ final class AppModel {
         apps = (try? await client.listApps()) ?? []
     }
 
+    func loadModelCatalog() async {
+        guard connection == .connected else { return }
+        if let providers = try? await client.listModelProviders(), !providers.isEmpty {
+            availableProviders = providers
+            if provider == nil || !providers.contains(provider ?? "") {
+                provider = providers.first
+            }
+        }
+        if let models = try? await client.listModels(provider: provider), !models.isEmpty {
+            availableModels = models
+            if model == nil || !models.contains(model ?? "") {
+                model = models.first
+            }
+        }
+    }
+
     func loadMachines() async {
-        let (m, _) = await FleetRunner.loadFleet()
-        if !m.isEmpty { machines = m }
+        if connection == .connected,
+           let registryMachines = try? await client.listMachines(),
+           !registryMachines.isEmpty {
+            machines = registryMachines
+            return
+        }
+        let (fallbackMachines, _) = await FleetRunner.loadFleet()
+        if !fallbackMachines.isEmpty { machines = fallbackMachines }
     }
 
     func toggleLoop(_ loop: LoopInfo) async {
@@ -204,7 +258,8 @@ final class AppModel {
 
     private var q: String { searchQuery.trimmingCharacters(in: .whitespaces).lowercased() }
     var searchThreads: [ThreadInfo] {
-        q.isEmpty ? [] : threads.filter { $0.name.lowercased().contains(q) }
+        if q.isEmpty { return [] }
+        return remoteSearchThreads.isEmpty ? threads.filter { $0.name.lowercased().contains(q) } : remoteSearchThreads
     }
     var searchProjects: [ProjectInfo] {
         q.isEmpty ? [] : projects.filter { $0.name.lowercased().contains(q) }
@@ -213,6 +268,17 @@ final class AppModel {
         q.isEmpty ? [] : apps.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
     }
     var hasSearchResults: Bool { !searchThreads.isEmpty || !searchProjects.isEmpty || !searchApps.isEmpty }
+
+    func runSearch() async {
+        let term = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connection == .connected, !term.isEmpty else {
+            remoteSearchThreads = []
+            return
+        }
+        let results = (try? await client.searchThreads(term: term)) ?? []
+        guard searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == term else { return }
+        remoteSearchThreads = results
+    }
 
     func loadLoops() async {
         guard connection == .connected else { return }
@@ -226,10 +292,12 @@ final class AppModel {
 
     func loadConfig() async {
         if let cfg = try? await client.readFullConfig() {
-            if model == nil { model = cfg.model }
-            if provider == nil { provider = cfg.provider }
+            if let configModel = cfg.model { model = configModel }
+            if let configProvider = cfg.provider { provider = configProvider }
+            if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
             configApproval = cfg.approval
             configSandbox = cfg.sandbox
+            fullAccess = cfg.sandbox == "danger-full-access"
         }
     }
 
@@ -241,8 +309,10 @@ final class AppModel {
 
     var loginInProgress = false
     var loginError: String? = nil
+    private var pendingLoginId: String? = nil
 
     var isSignedIn: Bool {
+        if !account.requiresOpenAIAuth { return true }
         let n = account.name
         return n != "Signed out" && !n.isEmpty
     }
@@ -250,10 +320,11 @@ final class AppModel {
     /// Start ChatGPT OAuth: open the returned auth URL in the browser. The
     /// `account/login/completed` notification finalizes it.
     func loginWithChatGPT() async {
-        guard connection == .connected else { return }
+        guard connection == .connected, !loginInProgress else { return }
         loginInProgress = true; loginError = nil
         do {
             let r = try await client.request("account/login/start", .object(["type": .string("chatgpt")]), timeout: 30)
+            pendingLoginId = r["loginId"]?.string
             if let urlStr = r["authUrl"]?.string, let url = URL(string: urlStr) {
                 #if canImport(AppKit)
                 NSWorkspace.shared.open(url)
@@ -270,24 +341,51 @@ final class AppModel {
     }
 
     /// Sign in with an OpenAI API key.
-    func loginWithApiKey(_ key: String) async {
+    func loginWithApiKey(_ key: String, providerName: String = "OpenAI") async {
         let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connection == .connected, !k.isEmpty else { return }
+        guard connection == .connected, !loginInProgress, !k.isEmpty else { return }
+        guard Self.providerID(for: providerName) == "openai" else {
+            await loginWithoutApiKey(providerName: providerName)
+            return
+        }
         loginInProgress = true; loginError = nil
-        _ = try? await client.request("account/login/start",
-            .object(["type": .string("apiKey"), "apiKey": .string(k)]), timeout: 30)
+        do {
+            await client.writeConfig(keyPath: "model_provider", value: .string(Self.providerID(for: providerName)))
+            _ = try await client.request("account/login/start",
+                .object(["type": .string("apiKey"), "apiKey": .string(k)]), timeout: 30)
+            await loadConfig()
+            await loadModelCatalog()
+            await loadAccount()
+            if !isSignedIn { loginError = "That key was not accepted." }
+        } catch {
+            loginError = error.localizedDescription
+        }
+        loginInProgress = false
+    }
+
+    func loginWithoutApiKey(providerName: String) async {
+        guard connection == .connected, !loginInProgress else { return }
+        loginInProgress = true; loginError = nil
+        await client.writeConfig(keyPath: "model_provider", value: .string(Self.providerID(for: providerName)))
+        await loadConfig()
+        await loadModelCatalog()
         await loadAccount()
         loginInProgress = false
-        if !isSignedIn { loginError = "That key was not accepted." }
+        if !isSignedIn {
+            loginError = "\(providerName) is not ready. Check your provider configuration."
+        }
     }
 
     func cancelLogin() async {
-        _ = try? await client.request("account/login/cancel", .object([:]), timeout: 10)
+        if let pendingLoginId {
+            _ = try? await client.request("account/login/cancel", .object(["loginId": .string(pendingLoginId)]), timeout: 10)
+        }
+        pendingLoginId = nil
         loginInProgress = false
     }
 
     func logout() async {
-        _ = try? await client.request("account/logout", .object([:]), timeout: 10)
+        _ = try? await client.request("account/logout", timeout: 10)
         await loadAccount()
     }
 
@@ -312,6 +410,16 @@ final class AppModel {
         return current.filter { $0 == "." }.count >= 2 ? current : nil
     }
 
+    static func providerID(for displayName: String) -> String {
+        switch displayName.lowercased() {
+        case "openrouter": return "openrouter"
+        case "azure": return "azure"
+        case "anthropic": return "anthropic"
+        case "ollama": return "ollama"
+        default: return "openai"
+        }
+    }
+
     // MARK: Navigation
 
     func open(_ r: Route, label: String) {
@@ -319,13 +427,56 @@ final class AppModel {
     }
 
     func openThread(_ t: ThreadInfo) async {
+        let requestedThreadId = t.id
         activeThreadId = t.id
+        activeTurnId = nil
         activeMessages = []
+        pendingServerRequests = []
+        currentProjectPath = t.cwd
         route = .chat(t.id); sidebarSelection = t.name; showSettings = false
-        activeMessages = (try? await client.readThreadMessages(id: t.id)) ?? []
+        // Prefer resume (so future turns can continue the thread); fall back to a
+        // plain read if resume isn't available. `await` can't live in a `??`
+        // autoclosure, so branch explicitly.
+        let messages: [ChatMessage]
+        if let resumed = try? await client.resumeThreadMessages(id: t.id) {
+            messages = resumed
+        } else {
+            messages = (try? await client.readThreadMessages(id: t.id)) ?? []
+        }
+        guard activeThreadId == requestedThreadId else { return }
+        activeMessages = messages
     }
 
     func openSettings(_ page: String = "General") { showSettings = true; settingsPage = page }
+
+    func handleDesktopURL(_ url: URL) {
+        guard connection == .connected else {
+            pendingOpenURL = url
+            return
+        }
+        Task { await openDesktopURL(url) }
+    }
+
+    private func openDesktopURL(_ url: URL) async {
+        guard url.scheme == "codewith" || url.scheme == "codex" else { return }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let host = url.host ?? ""
+        let pathParts = url.path.split(separator: "/").map(String.init)
+        guard host == "threads" else { return }
+
+        if pathParts.first == "new" {
+            let path = components?.queryItems?.first { $0.name == "path" }?.value
+            if let path, !path.isEmpty { newSessionInProject(path) }
+            else { newChat() }
+            return
+        }
+
+        if let threadId = pathParts.first, !threadId.isEmpty {
+            let thread = threads.first { $0.id == threadId }
+                ?? ThreadInfo(from: .object(["id": .string(threadId), "name": .string("Chat")]))
+            await openThread(thread)
+        }
+    }
 
     /// Show a project's sessions (and let the user start a new one there).
     func openProject(_ p: ProjectInfo) {
@@ -336,7 +487,7 @@ final class AppModel {
     /// New session scoped to a project's directory.
     func newSessionInProject(_ path: String) {
         currentProjectPath = path
-        composerText = ""; activeThreadId = nil; activeMessages = []
+        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeMessages = []; pendingServerRequests = []
         open(.home, label: (path as NSString).lastPathComponent)
     }
 
@@ -356,11 +507,19 @@ final class AppModel {
 
     /// Select the project context for new sessions (nil = all projects / machines).
     func selectProject(_ p: ProjectInfo?) {
+        if activeThreadId != nil {
+            if let p {
+                newSessionInProject(p.path)
+            } else {
+                newChat()
+            }
+            return
+        }
         currentProjectPath = p?.path
     }
 
     func newChat() {
-        composerText = ""; activeThreadId = nil; activeMessages = []
+        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeMessages = []; pendingServerRequests = []
         currentProjectPath = nil
         open(.home, label: "New chat")
     }
@@ -374,6 +533,8 @@ final class AppModel {
         guard !text.isEmpty, connection == .connected, !turnInProgress else { return }
         turnInProgress = true   // set immediately to block re-entry across the awaits below
         streamingAssistantIndex = nil
+        activeTurnId = nil
+        pendingServerRequests = []
         composerText = ""
         // Show the user's message immediately for responsiveness.
         activeMessages.append(ChatMessage(role: .user, text: text))
@@ -383,25 +544,72 @@ final class AppModel {
             await loadThreads(reset: true)
         }
         guard let tid = activeThreadId else {
-            turnInProgress = false
-            activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ Couldn't start a session. Is the app-server connected?"))
+            finishTurn(failureMessage: "Couldn't start a session. Is the app-server connected?")
             return
         }
         route = .chat(tid)
         do {
-            try await client.startTurn(threadId: tid, input: text, model: model, provider: provider,
-                                       effort: effort.lowercased().replacingOccurrences(of: " ", with: ""))
+            let turnId = try await client.startTurn(threadId: tid, input: text, model: model, provider: provider,
+                                                    effort: Self.wireEffort(effort))
+            if activeThreadId == tid {
+                activeTurnId = turnId
+                startTurnWatchdog()
+            }
         } catch {
-            turnInProgress = false
-            activeMessages.append(ChatMessage(role: .assistant,
-                text: "⚠︎ \(error.localizedDescription)"))
+            finishTurn(failureMessage: error.localizedDescription)
         }
     }
 
     func interrupt() async {
-        guard let tid = activeThreadId else { return }
-        await client.interruptTurn(threadId: tid)
+        guard let tid = activeThreadId, let turnId = activeTurnId else { return }
+        await client.interruptTurn(threadId: tid, turnId: turnId)
+        finishTurn(failureMessage: nil)
+    }
+
+    /// Returns a user-facing failure message iff the turn payload signals failure.
+    static func turnFailureMessage(_ params: JSONValue) -> String? {
+        guard let turn = params["turn"], turn["status"]?.string == "failed" else { return nil }
+        return turn["error"]?["message"]?.string ?? "The turn failed."
+    }
+
+    /// Release the turn-in-progress state, cancel the watchdog, and optionally
+    /// surface a failure message. Idempotent.
+    func finishTurn(failureMessage: String?) {
         turnInProgress = false
+        streamingAssistantIndex = nil
+        activeTurnId = nil
+        pendingServerRequests.removeAll()
+        cancelTurnWatchdog()
+        if let failureMessage {
+            activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ \(failureMessage)"))
+        }
+    }
+
+    private func noteTurnActivity() { lastTurnActivity = Date() }
+
+    /// Start (or restart) the silence watchdog for the active turn. If no
+    /// streaming activity arrives for `turnSilenceTimeout`, the turn is presumed
+    /// stuck and the spinner is released with an explanatory message.
+    private func startTurnWatchdog() {
+        cancelTurnWatchdog()
+        lastTurnActivity = Date()
+        let threadAtArm = activeThreadId
+        turnWatchdog = Task { @MainActor [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.turnInProgress, self.activeThreadId == threadAtArm else { return }
+                if Date().timeIntervalSince(self.lastTurnActivity) >= Self.turnSilenceTimeout {
+                    self.finishTurn(failureMessage: "The agent didn't respond in time. It may be stuck — try sending again.")
+                    return
+                }
+            }
+        }
+    }
+
+    private func cancelTurnWatchdog() {
+        turnWatchdog?.cancel()
+        turnWatchdog = nil
     }
 
     // MARK: Live notifications (turn streaming)
@@ -410,23 +618,161 @@ final class AppModel {
         switch method {
         // Real wire name is "item/agentMessage/delta"; aliases kept defensively.
         case "item/agentMessage/delta", "item/agentMessageDelta", "agentMessageDelta", "thread/agentMessageDelta":
+            guard notificationBelongsToActiveThread(params) else { return }
+            noteTurnActivity()
             appendAssistantDelta(params["delta"]?.string ?? params["text"]?.string ?? "")
         case "item/completed", "thread/item/completed", "thread/realtimeItemAdded":
+            guard notificationBelongsToActiveThread(params) else { return }
+            noteTurnActivity()
             handleCompletedItem(params["item"] ?? .null)
         case "turn/started", "thread/turn/started":
+            guard notificationBelongsToActiveThread(params) else { return }
             turnInProgress = true
-        case "turn/completed", "thread/turn/completed", "turn/failed", "thread/turn/failed":
-            turnInProgress = false
-            streamingAssistantIndex = nil
+            activeTurnId = params["turn"]?["id"]?.string ?? params["turnId"]?.string ?? activeTurnId
+            startTurnWatchdog()
+        case "turn/completed", "thread/turn/completed":
+            guard notificationBelongsToActiveThread(params) else { return }
+            finishTurn(failureMessage: Self.turnFailureMessage(params))
+        case "turn/failed", "thread/turn/failed":
+            // Not a real wire method per the schema, but handle defensively.
+            guard notificationBelongsToActiveThread(params) else { return }
+            finishTurn(failureMessage: Self.turnFailureMessage(params) ?? "The turn failed.")
+        case "error", "thread/error":
+            // Retryable errors stream with willRetry:true; surface only terminal ones.
+            guard notificationBelongsToActiveThread(params) else { return }
+            noteTurnActivity()
+            if params["willRetry"]?.bool != true,
+               let msg = params["error"]?["message"]?.string ?? params["message"]?.string {
+                activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ \(msg)"))
+            }
         case "account/login/completed", "account/updated", "account/login/chatGptComplete":
             loginInProgress = false
+            pendingLoginId = nil
             Task { await loadAccount(); await refreshAll() }
         case "thread/started", "thread/closed", "thread/archived", "thread/unarchived":
             // A session appeared/changed — refresh the list so Projects + Chats stay live.
             Task { await loadThreads(reset: true) }
+        case "thread/name/updated", "thread/status/changed", "thread/metadata/updated":
+            Task { await loadThreads(reset: true) }
+        case "thread/settings/updated":
+            Task { await loadConfig(); await loadModelCatalog() }
+        case "thread/schedule/updated", "thread/schedule/deleted",
+             "thread/monitor/updated", "thread/monitor/deleted":
+            Task { await loadLoops() }
+        case "app/list/updated":
+            let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
+            if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
+        case "serverRequest/resolved":
+            guard notificationBelongsToActiveThread(params) else { return }
+            let resolvedId = params["requestId"] ?? params["id"]
+            if let resolvedId {
+                pendingServerRequests.removeAll { $0.requestId == resolvedId }
+            } else {
+                pendingServerRequests.removeAll()
+            }
         default:
             break
         }
+    }
+
+    private func notificationBelongsToActiveThread(_ params: JSONValue) -> Bool {
+        guard let threadId = Self.notificationThreadId(params) else { return true }
+        return threadId == activeThreadId
+    }
+
+    private static func notificationThreadId(_ params: JSONValue) -> String? {
+        params["threadId"]?.string
+            ?? params["thread"]?["id"]?.string
+            ?? params["item"]?["threadId"]?.string
+            ?? params["item"]?["thread"]?["id"]?.string
+    }
+
+    func handleServerRequest(_ request: AppServerClient.ServerRequest) {
+        guard notificationBelongsToActiveThread(request.params) else {
+            client.respondError(to: request.id, message: "CodeWith.app is not displaying this thread.")
+            return
+        }
+
+        switch request.method {
+        case "item/commandExecution/requestApproval":
+            let command = request.params["command"]?.string ?? "Run command"
+            let reason = request.params["reason"]?.string
+            let cwd = request.params["cwd"]?.string
+            let detail = [command, reason, cwd].compactMap { value in
+                value?.isEmpty == false ? value : nil
+            }.joined(separator: "\n")
+            pendingServerRequests.append(PendingServerRequest(
+                requestId: request.id,
+                method: request.method,
+                kind: .commandApproval,
+                title: "Approve command?",
+                detail: detail.isEmpty ? command : detail))
+        case "item/fileChange/requestApproval":
+            let reason = request.params["reason"]?.string
+            let root = request.params["grantRoot"]?.string
+            let detail = [reason, root].compactMap { value in
+                value?.isEmpty == false ? value : nil
+            }.joined(separator: "\n")
+            pendingServerRequests.append(PendingServerRequest(
+                requestId: request.id,
+                method: request.method,
+                kind: .fileChangeApproval,
+                title: "Approve file changes?",
+                detail: detail.isEmpty ? "The agent wants to edit files." : detail))
+        case "item/permissions/requestApproval":
+            let permissions = request.params["permissions"] ?? .object([:])
+            let reason = request.params["reason"]?.string
+            let cwd = request.params["cwd"]?.string
+            let summary = Self.permissionsSummary(permissions)
+            let detail = [reason, cwd, summary].compactMap { value in
+                value?.isEmpty == false ? value : nil
+            }.joined(separator: "\n")
+            pendingServerRequests.append(PendingServerRequest(
+                requestId: request.id,
+                method: request.method,
+                kind: .permissionsApproval,
+                title: "Approve permissions?",
+                detail: detail.isEmpty ? "The agent wants additional permissions." : detail,
+                requestedPermissions: permissions))
+        default:
+            activeMessages.append(ChatMessage(role: .tool,
+                text: "Unsupported app-server request: \(request.method)",
+                toolIcon: "exclamationmark.triangle"))
+            client.respondError(to: request.id, message: "CodeWith.app does not support \(request.method) yet.")
+        }
+    }
+
+    func respondToServerRequest(_ prompt: PendingServerRequest, approve: Bool) {
+        pendingServerRequests.removeAll { $0.id == prompt.id }
+        switch prompt.kind {
+        case .commandApproval:
+            client.respond(to: prompt.requestId, result: .object([
+                "decision": .string(approve ? "accept" : "decline"),
+            ]))
+        case .fileChangeApproval:
+            client.respond(to: prompt.requestId, result: .object([
+                "decision": .string(approve ? "accept" : "decline"),
+            ]))
+        case .permissionsApproval:
+            client.respond(to: prompt.requestId, result: .object([
+                "scope": .string("turn"),
+                "permissions": approve ? (prompt.requestedPermissions ?? .object([:])) : .object([:]),
+            ]))
+        }
+    }
+
+    private static func permissionsSummary(_ permissions: JSONValue) -> String {
+        var parts: [String] = []
+        if permissions["network"] != nil { parts.append("Network access") }
+        if let fileSystem = permissions["fileSystem"] {
+            if let read = fileSystem["read"]?.array?.compactMap(\.string), !read.isEmpty {
+                parts.append("Read: \(read.joined(separator: ", "))")
+            }
+            if let write = fileSystem["write"]?.array?.compactMap(\.string), !write.isEmpty {
+                parts.append("Write: \(write.joined(separator: ", "))")
+            }
+        }
+        return parts.joined(separator: "\n")
     }
 
     private func handleCompletedItem(_ item: JSONValue) {
@@ -465,11 +811,15 @@ final class AppModel {
     }
     func setProvider(_ p: String) {
         provider = p
-        Task { await client.writeConfig(keyPath: "model_provider", value: .string(p)); await loadConfig() }
+        Task {
+            await client.writeConfig(keyPath: "model_provider", value: .string(p))
+            await loadConfig()
+            await loadModelCatalog()
+        }
     }
     func setEffort(_ e: String) {
         effort = e
-        Task { await client.writeConfig(keyPath: "model_reasoning_effort", value: .string(e.lowercased().replacingOccurrences(of: " ", with: ""))) }
+        Task { await client.writeConfig(keyPath: "model_reasoning_effort", value: .string(Self.wireEffort(e))) }
     }
     func setApproval(_ a: String) {
         configApproval = a
@@ -482,6 +832,28 @@ final class AppModel {
     func setFullAccess(_ on: Bool) {
         fullAccess = on
         setSandbox(on ? "danger-full-access" : "workspace-write")
+    }
+
+    static func wireEffort(_ label: String) -> String {
+        switch label.lowercased().replacingOccurrences(of: " ", with: "") {
+        case "extrahigh", "xhigh": return "xhigh"
+        case "medium": return "medium"
+        case "high": return "high"
+        case "minimal": return "minimal"
+        case "none": return "none"
+        default: return "low"
+        }
+    }
+
+    static func displayEffort(_ wireValue: String) -> String {
+        switch wireValue.lowercased() {
+        case "xhigh", "extrahigh": return "Extra High"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "minimal": return "Minimal"
+        case "none": return "None"
+        default: return "Low"
+        }
     }
 
     // MARK: Add menu

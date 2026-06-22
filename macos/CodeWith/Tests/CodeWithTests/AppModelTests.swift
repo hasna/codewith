@@ -74,6 +74,60 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.activeMessages.filter { $0.role == .assistant }.count, 2)
     }
 
+    // Regression: a failed turn (e.g. 401 expired auth) arrives as turn/completed
+    // with status:"failed"; the app must surface turn.error.message, not go silent.
+    func testTurnCompletedFailedStatusSurfacesError() {
+        let m = AppModel()
+        m.handleNotification(method: "turn/started", params: .null)
+        XCTAssertTrue(m.turnInProgress)
+        m.handleNotification(method: "turn/completed", params: obj([
+            "turn": obj(["status": .string("failed"),
+                         "error": obj(["message": .string("401 Unauthorized: Incorrect API key")])]),
+        ]))
+        XCTAssertFalse(m.turnInProgress)
+        XCTAssertEqual(m.activeMessages.last?.role, .assistant)
+        XCTAssertEqual(m.activeMessages.last?.text, "⚠︎ 401 Unauthorized: Incorrect API key")
+    }
+
+    func testTurnCompletedSuccessAppendsNoError() {
+        let m = AppModel()
+        m.handleNotification(method: "turn/started", params: .null)
+        m.handleNotification(method: "turn/completed", params: obj(["turn": obj(["status": .string("completed")])]))
+        XCTAssertFalse(m.turnInProgress)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    // Terminal errors (willRetry != true) surface; retryable ones are suppressed.
+    func testTerminalErrorNotificationSurfaced() {
+        let m = AppModel()
+        m.handleNotification(method: "error", params: obj([
+            "willRetry": .bool(false),
+            "error": obj(["message": .string("stream disconnected")]),
+        ]))
+        XCTAssertEqual(m.activeMessages.last?.text, "⚠︎ stream disconnected")
+    }
+
+    func testRetryableErrorNotificationSuppressed() {
+        let m = AppModel()
+        m.handleNotification(method: "error", params: obj([
+            "willRetry": .bool(true),
+            "error": obj(["message": .string("transient")]),
+        ]))
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testTurnFailureMessageHelper() {
+        XCTAssertNil(AppModel.turnFailureMessage(.null))
+        XCTAssertNil(AppModel.turnFailureMessage(obj(["turn": obj(["status": .string("completed")])])))
+        XCTAssertEqual(
+            AppModel.turnFailureMessage(obj(["turn": obj(["status": .string("failed"),
+                "error": obj(["message": .string("boom")])])])),
+            "boom")
+        XCTAssertEqual(
+            AppModel.turnFailureMessage(obj(["turn": obj(["status": .string("failed")])])),
+            "The turn failed.")
+    }
+
     func testItemCompletedAppendsToolAndEndsAssistantBubble() {
         let m = AppModel()
         m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("A")]))
@@ -99,6 +153,38 @@ final class AppModelTests: XCTestCase {
         m.handleNotification(method: "garbage/method", params: .null)
         XCTAssertTrue(m.activeMessages.isEmpty)
         XCTAssertFalse(m.turnInProgress)
+    }
+
+    func testNotificationForDifferentThreadIgnored() {
+        let m = AppModel()
+        m.activeThreadId = "thread-a"
+        m.handleNotification(method: "item/agentMessage/delta",
+                             params: obj(["threadId": .string("thread-b"), "delta": .string("wrong")]))
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        m.handleNotification(method: "item/agentMessage/delta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("right")]))
+        XCTAssertEqual(m.activeMessages.first?.text, "right")
+    }
+
+    func testPermissionsApprovalRequestQueuedAndResolved() {
+        let m = AppModel()
+        m.activeThreadId = "thread-a"
+        m.handleServerRequest(AppServerClient.ServerRequest(
+            id: .number(3),
+            method: "item/permissions/requestApproval",
+            params: obj([
+                "threadId": .string("thread-a"),
+                "reason": .string("Needs write access"),
+                "permissions": obj(["fileSystem": obj(["write": .array([.string("/tmp/project")])])]),
+            ])
+        ))
+        XCTAssertEqual(m.pendingServerRequests.count, 1)
+        XCTAssertEqual(m.pendingServerRequests.first?.kind, .permissionsApproval)
+        XCTAssertEqual(m.pendingServerRequests.first?.requestedPermissions?["fileSystem"]?["write"]?.array?.first?.string,
+                       "/tmp/project")
+        m.handleNotification(method: "serverRequest/resolved",
+                             params: obj(["threadId": .string("thread-a"), "requestId": .number(3)]))
+        XCTAssertTrue(m.pendingServerRequests.isEmpty)
     }
 
     // MARK: add menu
@@ -128,6 +214,13 @@ final class AppModelTests: XCTestCase {
         let m = AppModel()
         m.setModel("o3"); m.setProvider("azure"); m.setEffort("High")
         XCTAssertEqual(m.model, "o3"); XCTAssertEqual(m.provider, "azure"); XCTAssertEqual(m.effort, "High")
+    }
+    func testProviderIDMapping() {
+        XCTAssertEqual(AppModel.providerID(for: "OpenAI"), "openai")
+        XCTAssertEqual(AppModel.providerID(for: "OpenRouter"), "openrouter")
+        XCTAssertEqual(AppModel.providerID(for: "Anthropic"), "anthropic")
+        XCTAssertEqual(AppModel.providerID(for: "Azure"), "azure")
+        XCTAssertEqual(AppModel.providerID(for: "Ollama"), "ollama")
     }
 
     func testSubmitNoOpWhenNotConnected() async {

@@ -123,6 +123,28 @@ struct MachineInfo: Identifiable, Hashable {
     var role: String
     var isLocal: Bool
     var online: Bool { status == "online" }
+
+    init(id: String, os: String, status: String, role: String, isLocal: Bool) {
+        self.id = id
+        self.os = os
+        self.status = status
+        self.role = role
+        self.isLocal = isLocal
+    }
+
+    init(registryValue v: JSONValue) {
+        id = v["displayName"]?.string ?? v["machineId"]?.string ?? UUID().uuidString
+        os = v["capabilities"]?["os"]?.string
+            ?? v["capabilities"]?["platform"]?.string
+            ?? v["adapterName"]?.string
+            ?? "unknown"
+        status = (v["healthState"]?.string ?? "unknown").lowercased()
+        let source = v["sourceKind"]?.string ?? ""
+        let trust = v["trustState"]?.string ?? ""
+        role = [source, trust].filter { !$0.isEmpty }.joined(separator: " · ")
+        isLocal = (v["trustState"]?.string ?? "").lowercased() == "local"
+            || (v["sourceKind"]?.string ?? "").lowercased() == "local"
+    }
 }
 
 /// An auth profile from `codewith profile list`.
@@ -159,12 +181,18 @@ struct AccountInfo {
     var email: String
     var plan: String
     var initials: String
+    var requiresOpenAIAuth: Bool
 
     init(from v: JSONValue) {
         // account/read → { account: Account|null, requiresOpenaiAuth }
+        requiresOpenAIAuth = v["requiresOpenaiAuth"]?.bool ?? true
         let acc = v["account"] ?? .null
         if acc.isNull {
-            name = "Signed out"; email = ""; plan = ""; initials = "?"
+            if requiresOpenAIAuth {
+                name = "Signed out"; email = ""; plan = ""; initials = "?"
+            } else {
+                name = "Local provider"; email = ""; plan = "No account required"; initials = "LP"
+            }
             return
         }
         email = acc["email"]?.string ?? ""

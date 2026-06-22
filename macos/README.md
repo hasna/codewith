@@ -22,7 +22,7 @@ macos/
         Settings/               General, Profile, Appearance, Configuration, Personalization
   scripts/
     shoot.sh                    sync → build → ImageRenderer snapshots → pull PNGs
-    run-on-apple03.sh           build → .app bundle → launch in the GUI session
+    run-on-apple03.sh           build → .app bundle (pass --launch for GUI)
 ```
 
 ## Building & screenshotting
@@ -33,8 +33,9 @@ session), so screens are rendered **in-process** via `ImageRenderer` — pixel-e
 permission-free, deterministic.
 
 ```bash
-bash macos/scripts/shoot.sh          # renders every screen → design-refs/renders/
-bash macos/scripts/run-on-apple03.sh # launches the real windowed app on apple03
+bash macos/scripts/shoot.sh                   # renders every screen → design-refs/renders/
+bash macos/scripts/run-on-apple03.sh          # builds the .app bundle on apple03
+bash macos/scripts/run-on-apple03.sh --launch # opens the windowed app on apple03
 ```
 
 Reference captures live in `design-refs/screenshots/`; our renders land in

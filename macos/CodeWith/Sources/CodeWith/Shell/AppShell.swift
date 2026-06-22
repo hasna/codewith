@@ -31,6 +31,10 @@ struct AppShell: View {
         .background(Theme.canvas)
         .ignoresSafeArea(.container, edges: .top)   // header sits flush under the title bar
         .task { await model.bootstrap() }
+        .onReceive(NotificationCenter.default.publisher(for: .codeWithOpenURL)) { note in
+            guard let url = note.object as? URL else { return }
+            model.handleDesktopURL(url)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             model.shutdown()
         }
@@ -101,4 +105,3 @@ struct AppShell: View {
         }
     }
 }
-

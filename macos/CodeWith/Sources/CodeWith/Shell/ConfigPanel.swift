@@ -30,7 +30,7 @@ struct ConfigPanel: View {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundStyle(Theme.warning)
                     Text("Full access").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.warning)
                     Spacer()
-                    GlassToggle(on: model.fullAccess) { model.fullAccess.toggle() }
+                    GlassToggle(on: model.fullAccess) { model.setFullAccess(!model.fullAccess) }
                 }
             }
             .padding(14)

@@ -50,21 +50,6 @@ struct ProfilesView: View {
                         )
                 )
                 .padding(.horizontal, 28)
-
-                // Manage hint row.
-                HStack(spacing: 8) {
-                    Image(systemName: "gearshape").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-                    Text("Manage profiles")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
-                }
-                .padding(.horizontal, 14).frame(height: 38)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                        .fill(Theme.rowHover)
-                )
-                .padding(.horizontal, 28).padding(.top, 14)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

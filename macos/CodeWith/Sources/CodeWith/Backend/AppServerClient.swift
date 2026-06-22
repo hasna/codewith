@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum AppServerError: Error, LocalizedError {
     case binaryNotFound
@@ -24,12 +29,53 @@ enum AppServerError: Error, LocalizedError {
 /// resolved immediately on write/dead-process failure; child process killed on
 /// teardown; bounded buffer; re-entrant start (rebuilds Process/Pipe).
 final class AppServerClient: @unchecked Sendable {
-    static let candidateBinaries = [
-        "/opt/homebrew/bin/codewith", "/usr/local/bin/codewith",
-        "\(NSHomeDirectory())/.bun/bin/codewith",
-    ]
+    struct ServerRequest: Sendable, Equatable {
+        var id: JSONValue
+        var method: String
+        var params: JSONValue
+    }
+
+    static var candidateBinaries: [String] {
+        var paths: [String] = []
+        let env = ProcessInfo.processInfo.environment
+        if let override = env["CODEWITH_CLI_PATH"], !override.isEmpty {
+            paths.append(override)
+        }
+        if let resource = Bundle.main.url(forResource: "codewith", withExtension: nil) {
+            paths.append(resource.path)
+        }
+        paths.append(Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/codewith").path)
+        paths.append(contentsOf: [
+            "/opt/homebrew/bin/codewith", "/usr/local/bin/codewith",
+            "\(NSHomeDirectory())/.bun/bin/codewith",
+        ])
+        paths.append(contentsOf: (env["PATH"] ?? "")
+            .split(separator: ":")
+            .map { URL(fileURLWithPath: String($0)).appendingPathComponent("codewith").path })
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
+    }
     static var binaryPath: String? {
-        candidateBinaries.first { FileManager.default.isExecutableFile(atPath: $0) }
+        candidateBinaries.first {
+            FileManager.default.isExecutableFile(atPath: $0) && !isSelfExecutable($0)
+        }
+    }
+
+    /// Guard against spawning the app's own GUI binary as the "CLI". macOS uses a
+    /// case-insensitive filesystem, so the candidate `Contents/MacOS/codewith`
+    /// resolves to the app executable `Contents/MacOS/CodeWith`; launching it
+    /// reboots the GUI, which spawns again — an unbounded fork bomb. Compare by
+    /// file identity (device + inode), which sees through the case folding.
+    static func isSelfExecutable(_ path: String) -> Bool {
+        guard let selfPath = Bundle.main.executablePath else { return false }
+        return sameFile(path, selfPath)
+    }
+
+    /// True iff both paths resolve to the same on-disk file (same device + inode).
+    static func sameFile(_ a: String, _ b: String) -> Bool {
+        var sa = stat(), sb = stat()
+        guard stat(a, &sa) == 0, stat(b, &sb) == 0 else { return false }
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino
     }
     var isAvailable: Bool { Self.binaryPath != nil }
 
@@ -51,12 +97,18 @@ final class AppServerClient: @unchecked Sendable {
     /// Ordered stream of server notifications `(method, params)`.
     let notifications: AsyncStream<(String, JSONValue)>
     private let notifyContinuation: AsyncStream<(String, JSONValue)>.Continuation
+    /// Ordered stream of app-server requests that require a client response.
+    let serverRequests: AsyncStream<ServerRequest>
+    private let serverRequestContinuation: AsyncStream<ServerRequest>.Continuation
     var onExit: (@Sendable (Int32) -> Void)?
 
     init() {
         var c: AsyncStream<(String, JSONValue)>.Continuation!
         notifications = AsyncStream(bufferingPolicy: .unbounded) { c = $0 }
         notifyContinuation = c
+        var r: AsyncStream<ServerRequest>.Continuation!
+        serverRequests = AsyncStream(bufferingPolicy: .unbounded) { r = $0 }
+        serverRequestContinuation = r
     }
 
     deinit { stop() }
@@ -145,6 +197,7 @@ final class AppServerClient: @unchecked Sendable {
         case response(id: Int, result: JSONValue)
         case failure(id: Int, code: Int, message: String)
         case notification(method: String, params: JSONValue)
+        case serverRequest(id: JSONValue, method: String, params: JSONValue)
         case ignored
     }
     static func classify(_ line: Data) -> Incoming {
@@ -156,6 +209,9 @@ final class AppServerClient: @unchecked Sendable {
                                 message: err["message"]?.string ?? "unknown")
             }
             return .response(id: id, result: msg["result"] ?? .null)
+        }
+        if let id = msg["id"], let method = msg["method"]?.string {
+            return .serverRequest(id: id, method: method, params: msg["params"] ?? .null)
         }
         if let method = msg["method"]?.string, msg["id"] == nil {
             return .notification(method: method, params: msg["params"] ?? .null)
@@ -173,6 +229,8 @@ final class AppServerClient: @unchecked Sendable {
             h?(.failure(AppServerError.rpc(code: code, message: message)))
         case .notification(let method, let params):
             notifyContinuation.yield((method, params))
+        case .serverRequest(let id, let method, let params):
+            serverRequestContinuation.yield(ServerRequest(id: id, method: method, params: params))
         case .ignored:
             break
         }
@@ -218,6 +276,20 @@ final class AppServerClient: @unchecked Sendable {
         }
     }
 
+    func respond(to id: JSONValue, result: JSONValue) {
+        enqueueWrite(.object(["id": id, "result": result]))
+    }
+
+    func respondError(to id: JSONValue, code: Int = -32603, message: String) {
+        enqueueWrite(.object([
+            "id": id,
+            "error": .object([
+                "code": .number(Double(code)),
+                "message": .string(message),
+            ]),
+        ]))
+    }
+
     private func enqueueWrite(_ value: JSONValue) {
         writeQueue.async { [weak self] in _ = self?.writeSync(value) }
     }
@@ -240,7 +312,9 @@ final class AppServerClient: @unchecked Sendable {
             "clientInfo": .object([
                 "name": .string(clientName), "title": .string("CodeWith"), "version": .string(version),
             ]),
-            "capabilities": .object([:]),
+            "capabilities": .object([
+                "experimentalApi": .bool(true),
+            ]),
         ]))
         notify("initialized")
         return result
