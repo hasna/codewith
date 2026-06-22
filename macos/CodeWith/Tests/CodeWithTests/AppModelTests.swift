@@ -3,182 +3,179 @@ import XCTest
 
 @MainActor
 final class AppModelTests: XCTestCase {
-    func testStartsAtHome() {
+    private func obj(_ p: [String: JSONValue]) -> JSONValue { .object(p) }
+
+    func testInitialState() {
         let m = AppModel()
         XCTAssertEqual(m.route, .home)
         XCTAssertEqual(m.sidebarSelection, "New chat")
         XCTAssertFalse(m.showSettings)
+        XCTAssertEqual(m.connection, .connecting)
+        XCTAssertFalse(m.turnInProgress)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertTrue(m.threads.isEmpty)
     }
 
-    func testSeedData() {
+    func testOpenUpdatesRouteAndClosesMenus() {
         let m = AppModel()
-        XCTAssertEqual(m.projects.first?.name, "scaffold-api")
-        XCTAssertEqual(m.projects.first?.tasks.count, 5)
-        XCTAssertEqual(m.chats.count, 2)
-        XCTAssertEqual(m.profiles.count, 3)
-        XCTAssertEqual(m.currentProfile.initials, "AH")
-    }
-
-    func testOpenRouteUpdatesSelection() {
-        let m = AppModel()
-        m.open(.machines, label: "Machines")
-        XCTAssertEqual(m.route, .machines)
-        XCTAssertEqual(m.sidebarSelection, "Machines")
+        m.showAddMenu = true; m.showSettings = true
+        m.open(.loops, label: "Loops")
+        XCTAssertEqual(m.route, .loops)
+        XCTAssertEqual(m.sidebarSelection, "Loops")
         XCTAssertFalse(m.showSettings)
+        XCTAssertFalse(m.showAddMenu)
     }
 
-    func testOpenSettingsAndBack() {
+    func testOpenSettings() {
         let m = AppModel()
         m.openSettings("Appearance")
         XCTAssertTrue(m.showSettings)
         XCTAssertEqual(m.settingsPage, "Appearance")
-        m.showSettings = false
-        XCTAssertFalse(m.showSettings)
     }
 
-    func testSubmitComposerCreatesChatAndNavigates() {
+    func testNewChatResets() {
         let m = AppModel()
-        let before = m.chats.count
-        m.composerText = "Refactor the auth module"
-        m.submitComposer()
-        XCTAssertEqual(m.chats.count, before + 1)
-        XCTAssertEqual(m.chats.first?.messages.first?.text, "Refactor the auth module")
-        XCTAssertEqual(m.chats.first?.messages.first?.role, .user)
-        if case .chat(let id) = m.route {
-            XCTAssertEqual(id, m.chats.first?.id)
-        } else {
-            XCTFail("expected chat route after submit")
-        }
-        XCTAssertTrue(m.composerText.isEmpty, "composer should clear after submit")
-    }
-
-    func testSubmitEmptyComposerIsNoOp() {
-        let m = AppModel()
-        let before = m.chats.count
-        m.composerText = "   "
-        m.submitComposer()
-        XCTAssertEqual(m.chats.count, before)
-    }
-
-    func testNewChatResetsToHome() {
-        let m = AppModel()
-        m.open(.apps, label: "Apps")
-        m.composerText = "leftover"
+        m.activeThreadId = "x"; m.activeMessages = [ChatMessage(role: .user, text: "hi")]
+        m.composerText = "draft"; m.route = .chat("x")
         m.newChat()
-        XCTAssertEqual(m.route, .home)
-        XCTAssertEqual(m.sidebarSelection, "New chat")
+        XCTAssertNil(m.activeThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
         XCTAssertTrue(m.composerText.isEmpty)
+        XCTAssertEqual(m.route, .home)
     }
 
-    func testSwitchProfile() {
+    // MARK: streaming
+
+    func testAgentDeltaAccumulatesIntoOneMessage() {
         let m = AppModel()
-        let work = m.profiles[1]
-        m.switchProfile(work.id)
-        XCTAssertEqual(m.currentProfile.id, work.id)
-        XCTAssertEqual(m.currentProfile.name, "Work")
+        for d in ["Hel", "lo ", "world"] {
+            m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string(d)]))
+        }
+        XCTAssertEqual(m.activeMessages.count, 1)
+        XCTAssertEqual(m.activeMessages.first?.role, .assistant)
+        XCTAssertEqual(m.activeMessages.first?.text, "Hello world")
     }
 
-    func testSubmitComposerAddsSimulatedReply() {
+    func testEmptyDeltaIgnored() {
         let m = AppModel()
-        m.composerText = "Add a feature"
-        m.submitComposer()
-        let msgs = m.chats.first?.messages ?? []
-        XCTAssertGreaterThan(msgs.count, 1, "chat should include a simulated assistant reply")
-        XCTAssertTrue(msgs.contains { $0.role == .assistant })
-        XCTAssertTrue(msgs.contains { $0.role == .tool })
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("")]))
+        XCTAssertTrue(m.activeMessages.isEmpty)
     }
 
-    func testAddProject() {
+    func testTurnStartedAndCompleted() {
         let m = AppModel()
-        let before = m.projects.count
-        m.addProject(name: "  my-new-repo  ")
-        XCTAssertEqual(m.projects.count, before + 1)
-        XCTAssertEqual(m.projects.first?.name, "my-new-repo")
-        XCTAssertEqual(m.sidebarSelection, "my-new-repo")
+        m.handleNotification(method: "turn/started", params: .null)
+        XCTAssertTrue(m.turnInProgress)
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("A")]))
+        m.handleNotification(method: "turn/completed", params: .null)
+        XCTAssertFalse(m.turnInProgress)
+        // A subsequent delta starts a NEW assistant message (index reset).
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("B")]))
+        XCTAssertEqual(m.activeMessages.filter { $0.role == .assistant }.count, 2)
     }
 
-    func testAddProjectIgnoresEmpty() {
+    func testItemCompletedAppendsToolAndEndsAssistantBubble() {
         let m = AppModel()
-        let before = m.projects.count
-        m.addProject(name: "   ")
-        XCTAssertEqual(m.projects.count, before)
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("A")]))
+        m.handleNotification(method: "item/completed",
+            params: obj(["item": obj(["type": .string("commandExecution"), "command": .string("ls")])]))
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("B")]))
+        // [assistant "A", tool, assistant "B"] — tool ends the bubble, B starts fresh.
+        XCTAssertEqual(m.activeMessages.map(\.role), [.assistant, .tool, .assistant])
+        XCTAssertEqual(m.activeMessages[0].text, "A")
+        XCTAssertEqual(m.activeMessages[2].text, "B")
     }
 
-    func testAddTaskToProject() {
+    func testItemCompletedAgentMessageNotDuplicatedWhenStreamed() {
         let m = AppModel()
-        m.addTask("Wire up OAuth", toProjectNamed: "scaffold-api")
-        XCTAssertEqual(m.projects.first { $0.name == "scaffold-api" }?.tasks.first?.title, "Wire up OAuth")
+        m.handleNotification(method: "item/agentMessage/delta", params: obj(["delta": .string("hi")]))
+        m.handleNotification(method: "item/completed",
+            params: obj(["item": obj(["type": .string("agentMessage"), "text": .string("hi")])]))
+        XCTAssertEqual(m.activeMessages.filter { $0.role == .assistant }.count, 1)
     }
+
+    func testUnknownNotificationNoOp() {
+        let m = AppModel()
+        m.handleNotification(method: "garbage/method", params: .null)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertFalse(m.turnInProgress)
+    }
+
+    // MARK: add menu
 
     func testToggleAddMenu() {
         let m = AppModel()
-        XCTAssertFalse(m.showAddMenu)
-        m.toggleAddMenu()
-        XCTAssertTrue(m.showAddMenu)
-        m.toggleAddMenu()
-        XCTAssertFalse(m.showAddMenu)
+        m.toggleAddMenu(); XCTAssertTrue(m.showAddMenu)
+        m.toggleAddMenu(); XCTAssertFalse(m.showAddMenu)
     }
-
-    func testSetPlanModeClosesMenu() {
-        let m = AppModel()
-        m.showAddMenu = true
-        m.setPlanMode(true)
-        XCTAssertTrue(m.planMode)
-        XCTAssertFalse(m.showAddMenu)
-    }
-
-    func testGoalPrefixesComposer() {
-        let m = AppModel()
-        m.composerText = "ship the release"
-        m.setGoalFromComposer()
-        XCTAssertEqual(m.composerText, "Goal: ship the release")
-        XCTAssertFalse(m.showAddMenu)
-    }
-
-    func testHandleAddActionPlanMode() {
-        let m = AppModel()
-        m.showAddMenu = true
+    func testAddActionPlanMode() {
+        let m = AppModel(); m.showAddMenu = true
         m.handleAddAction("Plan mode")
-        XCTAssertTrue(m.planMode)
-        XCTAssertFalse(m.showAddMenu)
+        XCTAssertTrue(m.planMode); XCTAssertFalse(m.showAddMenu)
     }
-
-    func testHandleAddActionGoal() {
-        let m = AppModel()
-        m.composerText = "fix the bug"
-        m.handleAddAction("Goal")
-        XCTAssertEqual(m.composerText, "Goal: fix the bug")
+    func testAddActionGoalPrefixesOnce() {
+        let m = AppModel(); m.composerText = "ship it"
+        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
+        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
     }
-
-    func testHandleAddActionAgentMention() {
-        let m = AppModel()
-        m.showAddMenu = true
-        m.composerText = "review this"
+    func testAddActionAgentMention() {
+        let m = AppModel(); m.composerText = "review"
         m.handleAddAction("Apollo")
-        XCTAssertEqual(m.composerText, "@Apollo review this")
+        XCTAssertEqual(m.composerText, "@Apollo review")
         XCTAssertFalse(m.showAddMenu)
     }
-
-    func testAgentRunnerClassifyAuthError() {
-        let out = "ERROR: Reconnecting... 5/5\n401 Unauthorized: Missing bearer or basic authentication"
-        if case .notAuthenticated = AgentRunner.classify(exitCode: 1, output: out) {} else {
-            XCTFail("401 output should classify as notAuthenticated")
-        }
-    }
-
-    func testAgentRunnerClassifyReply() {
-        if case .reply(let t) = AgentRunner.classify(exitCode: 0, output: "  Done refactoring the module.\n") {
-            XCTAssertEqual(t, "Done refactoring the module.")
-        } else {
-            XCTFail("clean exit with output should classify as reply")
-        }
-    }
-
-    func testOpenChatNavigates() {
+    func testConfigSetters() {
         let m = AppModel()
-        let chat = m.chats[0]
-        m.openChat(chat)
-        XCTAssertEqual(m.route, .chat(chat.id))
-        XCTAssertEqual(m.sidebarSelection, chat.title)
+        m.setModel("o3"); m.setProvider("azure"); m.setEffort("High")
+        XCTAssertEqual(m.model, "o3"); XCTAssertEqual(m.provider, "azure"); XCTAssertEqual(m.effort, "High")
+    }
+
+    func testSubmitNoOpWhenNotConnected() async {
+        let m = AppModel()   // connection == .connecting
+        m.composerText = "hello"
+        await m.submitComposer()
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertEqual(m.composerText, "hello")
+    }
+
+    func testSampleModelHasData() {
+        let m = AppModel.sample()
+        XCTAssertEqual(m.connection, .connected)
+        XCTAssertFalse(m.threads.isEmpty)
+        XCTAssertFalse(m.projects.isEmpty)
+        XCTAssertFalse(m.loops.isEmpty)
+        XCTAssertEqual(m.account.name, "Andrei Hasna")
+    }
+}
+
+// MARK: - AgentRunner (still present, pure)
+
+final class AgentRunnerTests: XCTestCase {
+    func test401IsNotAuthenticated() {
+        if case .notAuthenticated = AgentRunner.classify(exitCode: 1, output: "401 Unauthorized: Missing bearer") {}
+        else { XCTFail() }
+    }
+    func testReconnectingIsNotAuthenticated() {
+        if case .notAuthenticated = AgentRunner.classify(exitCode: 1, output: "ERROR: Reconnecting... 5/5") {}
+        else { XCTFail() }
+    }
+    func testCleanReplyTrims() {
+        if case .reply(let t) = AgentRunner.classify(exitCode: 0, output: "  done.\n") { XCTAssertEqual(t, "done.") }
+        else { XCTFail() }
+    }
+}
+
+// MARK: - Integration (gated: needs the real codewith binary)
+
+final class AppServerIntegrationTests: XCTestCase {
+    func testSpawnInitializeAndListThreads() async throws {
+        try XCTSkipUnless(AppServerClient.binaryPath != nil, "codewith not installed; skipping live test")
+        let client = AppServerClient()
+        try client.start()
+        defer { client.stop() }
+        let initResult = try await client.initialize()
+        XCTAssertFalse(initResult.isNull, "initialize should return a non-null result")
+        let (threads, _) = try await client.listThreads(limit: 3)
+        XCTAssertNotNil(threads)   // array (possibly empty) — no RPC error thrown
     }
 }

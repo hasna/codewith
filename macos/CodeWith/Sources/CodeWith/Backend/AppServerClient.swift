@@ -140,24 +140,48 @@ final class AppServerClient: @unchecked Sendable {
         }
     }
 
-    private func route(_ line: Data) {
-        guard let msg = try? decoder.decode(JSONValue.self, from: line) else { return }
+    /// Pure classification of one JSON-RPC frame (no lock, no dispatch) — testable.
+    enum Incoming: Equatable {
+        case response(id: Int, result: JSONValue)
+        case failure(id: Int, code: Int, message: String)
+        case notification(method: String, params: JSONValue)
+        case ignored
+    }
+    static func classify(_ line: Data) -> Incoming {
+        guard let msg = try? JSONDecoder().decode(JSONValue.self, from: line) else { return .ignored }
         if case .number(let idn)? = msg["id"], msg["result"] != nil || msg["error"] != nil {
             let id = Int(idn)
-            lock.lock(); let handler = pending.removeValue(forKey: id); lock.unlock()
-            guard let handler else { return }
             if let err = msg["error"], !err.isNull {
-                handler(.failure(AppServerError.rpc(code: err["code"]?.int ?? -1,
-                                                    message: err["message"]?.string ?? "unknown")))
-            } else {
-                handler(.success(msg["result"] ?? .null))
+                return .failure(id: id, code: err["code"]?.int ?? -1,
+                                message: err["message"]?.string ?? "unknown")
             }
-            return
+            return .response(id: id, result: msg["result"] ?? .null)
         }
         if let method = msg["method"]?.string, msg["id"] == nil {
-            notifyContinuation.yield((method, msg["params"] ?? .null))
+            return .notification(method: method, params: msg["params"] ?? .null)
+        }
+        return .ignored
+    }
+
+    private func route(_ line: Data) {
+        switch Self.classify(line) {
+        case .response(let id, let result):
+            lock.lock(); let h = pending.removeValue(forKey: id); lock.unlock()
+            h?(.success(result))
+        case .failure(let id, let code, let message):
+            lock.lock(); let h = pending.removeValue(forKey: id); lock.unlock()
+            h?(.failure(AppServerError.rpc(code: code, message: message)))
+        case .notification(let method, let params):
+            notifyContinuation.yield((method, params))
+        case .ignored:
+            break
         }
     }
+
+    #if DEBUG
+    /// Test hook: feed raw bytes as if they arrived from the server.
+    func _ingestForTesting(_ data: Data) { ingest(data) }
+    #endif
 
     private func failAllPending(_ error: Error) {
         lock.lock(); let handlers = Array(pending.values); pending.removeAll(); lock.unlock()
