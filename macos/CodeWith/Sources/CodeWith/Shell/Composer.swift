@@ -67,6 +67,8 @@ struct Composer: View {
                 }
                 .buttonStyle(.plain).disabled(onConfigTap == nil)
 
+                Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+
                 if showSend {
                     Button { stopMode ? onStop?() : onSubmit?() } label: {
                         Circle()

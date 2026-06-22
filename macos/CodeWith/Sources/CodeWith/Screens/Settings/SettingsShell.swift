@@ -49,12 +49,7 @@ struct SettingsShell<Content: View>: View {
         HStack(spacing: 0) {
             // Settings sidebar
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Spacer().frame(width: 52)
-                    BrandMark()
-                    Spacer()
-                }
-                .frame(height: 36).padding(.horizontal, 10)
+                Color.clear.frame(height: 36)   // clear traffic lights; brand mark removed
 
                 Button(action: onBack) {
                     HStack(spacing: 6) {
