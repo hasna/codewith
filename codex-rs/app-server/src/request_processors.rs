@@ -591,6 +591,9 @@ fn infer_model_provider_from_model<'a>(
 
     let model = model?;
     let provider_ids = provider_ids.into_iter().collect::<Vec<_>>();
+    if provider_for_fallback_model(model, [current_provider]).is_some() {
+        return None;
+    }
     if let Some((provider_id, _)) = model.split_once('/') {
         if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
             return None;

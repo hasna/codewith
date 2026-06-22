@@ -3010,6 +3010,9 @@ impl App {
         result: Result<Vec<RateLimitSnapshot>, String>,
     ) -> RateLimitRefreshCompletion {
         let is_current_profile = auth_profile == self.config.selected_auth_profile;
+        let heartbeat_profile = matches!(origin, RateLimitRefreshOrigin::Heartbeat)
+            .then(|| target.auth_profile_key(self.config.selected_auth_profile.as_deref()))
+            .flatten();
         if target.targets_selected_profile() && !is_current_profile {
             tracing::debug!(
                 request_auth_profile = ?auth_profile,
@@ -3025,6 +3028,10 @@ impl App {
 
         match result {
             Ok(snapshots) => {
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
+                }
                 if is_current_profile {
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
@@ -3046,6 +3053,10 @@ impl App {
                 }
             }
             Err(err) => {
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_failure(heartbeat_profile);
+                }
                 if matches!(origin, RateLimitRefreshOrigin::StatusCommand { .. })
                     || target.targets_selected_profile()
                     || is_current_profile

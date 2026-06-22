@@ -583,11 +583,11 @@ async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> 
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
         ("minimax", "MiniMax-M3"),
-        ("nvidia", "openai/gpt-oss-120b"),
-        ("openrouter", "openai/gpt-oss-120b"),
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("openrouter", "z-ai/glm-5.2"),
         ("qwen", "qwen3.5-flash"),
         ("xai", "grok-4.3"),
-        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("xiaomi", "mimo-v2.5-pro"),
         ("zai", "glm-5.2"),
     ];
     let mut config = String::new();
