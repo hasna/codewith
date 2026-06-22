@@ -1,6 +1,7 @@
 use super::background_agent_processor::BackgroundAgentRequestProcessor;
 use super::background_agent_processor::api_worktree_from_state;
 use super::background_agent_processor::api_worktree_merge_candidate_from_state;
+use super::sqlite_retry::retry_transient_sqlite_busy;
 use super::thread_processor::ThreadRequestProcessor;
 use super::worktree_paths::path_to_api_string;
 use super::worktree_paths::paths_equivalent;
@@ -111,7 +112,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -3655,38 +3655,6 @@ fn core_event_type(msg: &EventMsg) -> &'static str {
         EventMsg::HookCompleted(_) => "core.hookCompleted",
         _ => "core.event",
     }
-}
-
-async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
-{
-    let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
-                debug!(
-                    operation,
-                    attempt = attempt + 1,
-                    "retrying background agent operation after SQLite busy: {err}"
-                );
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("retry loop should return on success or final error")
-}
-
-fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("database is locked")
-        || message.contains("database is busy")
-        || message.contains("code: 5")
-        || message.contains("code: 517")
 }
 
 pub(super) fn new_background_agent_supervisor_id() -> String {

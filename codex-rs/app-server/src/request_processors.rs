@@ -630,6 +630,7 @@ mod process_exec_processor;
 mod remote_control_processor;
 mod remote_dispatch_processor;
 mod search;
+mod sqlite_retry;
 mod thread_external_agent_processor;
 mod thread_mailbox_dispatcher_runtime;
 mod thread_mailbox_processor;

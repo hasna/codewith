@@ -1,4 +1,5 @@
 use super::MAX_USER_INPUT_TEXT_CHARS;
+use super::sqlite_retry::retry_transient_sqlite_busy;
 use super::worktree_paths::path_to_api_string;
 use super::worktree_paths::paths_equivalent;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
@@ -87,10 +88,7 @@ use codex_state::ManagedWorktreeAttachParams;
 use codex_state::ManagedWorktreeDetachParams;
 use serde_json::Value;
 use serde_json::json;
-use std::future::Future;
 use std::path::Path;
-use std::time::Duration;
-use tracing::debug;
 use uuid::Uuid;
 
 const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
@@ -1313,38 +1311,6 @@ async fn append_background_agent_event_with_retry(
         state_db.append_event(run_id, event_type, payload_json)
     })
     .await
-}
-
-async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
-{
-    let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
-                debug!(
-                    operation,
-                    attempt = attempt + 1,
-                    "retrying background agent processor operation after SQLite busy: {err}"
-                );
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("retry loop should return on success or final error")
-}
-
-fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("database is locked")
-        || message.contains("database is busy")
-        || message.contains("code: 5")
-        || message.contains("code: 517")
 }
 
 fn decode_offset_cursor(cursor: Option<&str>) -> Result<usize, JSONRPCErrorError> {
