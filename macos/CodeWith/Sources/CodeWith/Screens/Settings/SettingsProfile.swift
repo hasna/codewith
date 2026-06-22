@@ -80,9 +80,9 @@ struct SettingsProfile: View {
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Most used plugins").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).padding(.bottom, 8)
-                    ForEach(plugins, id: \.0) { row in
+                    ForEach(Array(plugins.enumerated()), id: \.0) { i, row in
                         HStack(spacing: 8) {
-                            Circle().fill(Color(hex: 0xE9A23B)).frame(width: 14, height: 14)
+                            Circle().fill([Color(hex: 0xE9A23B), Color(hex: 0x4AB58E), Color(hex: 0x6E6BF2), Color(hex: 0xDB5B5B), Color(hex: 0x3B82F6)][i % 5]).frame(width: 14, height: 14)
                             Text(row.0).font(.system(size: 12)).foregroundStyle(Theme.textPrimary)
                             Spacer()
                             Text(row.1).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)

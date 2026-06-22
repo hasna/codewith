@@ -38,11 +38,14 @@ struct ChatView: View {
                             HStack { Spacer(); Image(systemName: "link").font(.system(size: 10)).foregroundStyle(Theme.textTertiary) }
                                 .padding(.bottom, 16)
 
-                            Text("Working for 8s").font(.system(size: 12)).foregroundStyle(Theme.textTertiary).padding(.bottom, 12)
                             para("I'll register the session context first because the provided project rules make that mandatory before any real work. After that I'll keep the response lightweight.")
                             ToolRow(icon: "wrench.and.screwdriver", text: "Loaded a tool, ran a command")
                             para("The first skill path was stale in this environment, so I'm using the installed CodeWith skill location from the session skill list and continuing with the required registration flow.")
-                            ToolRow(icon: "doc.text", text: "Reading SKILL.md")
+                            ToolRow(icon: "doc.text", text: "Read a file")
+                            para("I'm completing the login checks through the CLIs now. If a shared MCP wrapper is unavailable, the rules explicitly route to these CLI fallbacks.")
+                            ToolRow(icon: "terminal", text: "Ran 3 commands")
+                            HStack { Spacer(); Text("You stopped after 20s").font(.system(size: 12)).foregroundStyle(Theme.textTertiary) }
+                                .padding(.bottom, 12)
                         }
                         Spacer(minLength: 0)
                     }

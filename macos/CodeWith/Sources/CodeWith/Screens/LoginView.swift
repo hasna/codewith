@@ -22,7 +22,7 @@ struct LoginView: View {
                 // Brand glyph — soft organic blob with a thin terminal prompt.
                 BrandBlob()
                     .frame(width: 72, height: 72)
-                    .padding(.bottom, 30)
+                    .padding(.bottom, 44)
 
                 Text("Get started with CodeWith")
                     .font(.system(size: 29, weight: .medium)).foregroundStyle(Theme.textPrimary)
@@ -51,7 +51,7 @@ struct LoginView: View {
 
 /// A soft multi-lobed "cloud/flower" blob mark with a thin `>_` prompt glyph.
 struct BrandBlob: View {
-    private let grad = LinearGradient(colors: [Color(hex: 0xB5AEF7), Color(hex: 0x8A86F0), Color(hex: 0x5B6CF0)],
+    private let grad = LinearGradient(colors: [Color(hex: 0x9D9BF6), Color(hex: 0x6E6BEF), Color(hex: 0x4D54E8)],
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {

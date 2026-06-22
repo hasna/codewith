@@ -6,9 +6,9 @@ struct SettingsAppearance: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Theme cards
                 HStack(spacing: 14) {
-                    themeCard(title: "System", selected: true, left: Color(hex: 0xC9CDD2), right: Color(hex: 0x2B2D30))
-                    themeCard(title: "Light", selected: false, left: Color(hex: 0xF3F3F5), right: Color(hex: 0xF3F3F5))
-                    themeCard(title: "Dark", selected: false, left: Color(hex: 0x2B2D30), right: Color(hex: 0x2B2D30))
+                    themeCard(title: "System", selected: true, mode: .system)
+                    themeCard(title: "Light", selected: false, mode: .light)
+                    themeCard(title: "Dark", selected: false, mode: .dark)
                 }
                 .padding(.bottom, 16)
 
@@ -40,26 +40,58 @@ struct SettingsAppearance: View {
         }
     }
 
-    private func themeCard(title: String, selected: Bool, left: Color, right: Color) -> some View {
+    enum ThemeMode { case system, light, dark }
+
+    private func themeCard(title: String, selected: Bool, mode: ThemeMode) -> some View {
         VStack(spacing: 8) {
-            HStack(spacing: 0) {
-                left.overlay(alignment: .topLeading) { miniLines(dark: false) }
-                right.overlay(alignment: .topLeading) { miniLines(dark: true) }
+            ZStack {
+                switch mode {
+                case .light: miniApp(dark: false)
+                case .dark:  miniApp(dark: true)
+                case .system:
+                    HStack(spacing: 0) {
+                        miniApp(dark: false).frame(maxWidth: .infinity).clipped()
+                        miniApp(dark: true).frame(maxWidth: .infinity).clipped()
+                    }
+                }
             }
-            .frame(height: 78)
+            .frame(height: 80)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Theme.toggleBlue : Theme.cardStroke, lineWidth: selected ? 2 : 1))
             Text(title).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity)
     }
-    private func miniLines(dark: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(0..<3, id: \.self) { _ in
-                Capsule().fill((dark ? Color.white : Color.black).opacity(0.18)).frame(width: 34, height: 3)
+
+    /// A tiny app-window mockup: sidebar (with rows) + content (title + lines).
+    private func miniApp(dark: Bool) -> some View {
+        let bg = dark ? Color(hex: 0x1F2123) : Color.white
+        let side = dark ? Color(hex: 0x2A2C2F) : Color(hex: 0xF1F1F3)
+        let ink = (dark ? Color.white : Color.black)
+        return HStack(spacing: 0) {
+            // sidebar
+            VStack(alignment: .leading, spacing: 4) {
+                Capsule().fill(Color(hex: 0x6E6BF2)).frame(width: 14, height: 4)
+                ForEach(0..<4, id: \.self) { _ in
+                    Capsule().fill(ink.opacity(0.16)).frame(width: 22, height: 3)
+                }
+                Spacer()
             }
+            .padding(6)
+            .frame(width: 40)
+            .background(side)
+            // content
+            VStack(alignment: .leading, spacing: 5) {
+                Capsule().fill(ink.opacity(0.30)).frame(width: 40, height: 5)
+                ForEach(0..<4, id: \.self) { i in
+                    Capsule().fill(ink.opacity(0.12)).frame(width: i == 3 ? 30 : 52, height: 3)
+                }
+                Spacer()
+            }
+            .padding(7)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(bg)
         }
-        .padding(8)
     }
 
     enum DiffKind { case plain, add, del }
