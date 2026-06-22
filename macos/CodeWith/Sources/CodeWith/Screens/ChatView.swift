@@ -19,7 +19,6 @@ struct ChatView: View {
             HStack(spacing: 8) {
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
-                ProjectMenu(model: model, compact: true)
                 Spacer()
                 Button(action: onToggleConfig) {
                     Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
@@ -70,7 +69,11 @@ struct ChatView: View {
         .background(Theme.canvas)
         .overlay(alignment: .bottomLeading) {
             if model.showAddMenu {
-                AddMenu(onAction: onAddAction).padding(.leading, 24).padding(.bottom, 68)
+                AddMenu(
+                    onAction: onAddAction,
+                    activePeers: model.activePeers,
+                    agentRuns: model.addMenuAgentRuns
+                ).padding(.leading, 24).padding(.bottom, 68)
             }
         }
     }

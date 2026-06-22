@@ -49,7 +49,7 @@ struct SettingsProfile: View {
                 HStack(spacing: 0) {
                     ForEach(Array(stats.enumerated()), id: \.0) { i, s in
                         VStack(spacing: 4) {
-                            Text(s.0).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                            Text(s.0).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                             Text(s.1).font(.system(size: 10.5)).foregroundStyle(Theme.textSecondary)
                         }
                         .frame(maxWidth: .infinity)
