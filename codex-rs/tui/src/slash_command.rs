@@ -51,6 +51,7 @@ pub enum SlashCommand {
     MissionControl,
     Workflow,
     Loop,
+    Queued,
     Schedule,
     Monitor,
     #[strum(
@@ -161,6 +162,7 @@ impl SlashCommand {
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
+            SlashCommand::Queued => "view and manage queued messages",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
             SlashCommand::Session => "switch the active session or agent thread",
@@ -207,6 +209,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
+                | SlashCommand::Queued
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Agent
@@ -290,6 +293,7 @@ impl SlashCommand {
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
+            | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::BackgroundAgent
@@ -413,6 +417,8 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Queued.available_during_task());
+        assert!(SlashCommand::Queued.supports_inline_args());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
@@ -434,6 +440,7 @@ mod tests {
             SlashCommand::Profile,
             SlashCommand::Goal,
             SlashCommand::Loop,
+            SlashCommand::Queued,
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
             SlashCommand::Worktree,

@@ -328,6 +328,91 @@ pub struct ThreadSettingsUpdatedNotification {
     pub thread_settings: ThreadSettings,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListParams {
+    pub thread_id: String,
+    /// Opaque pagination cursor returned by a previous call.
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    /// Optional page size; defaults to no limit.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListResponse {
+    pub data: Vec<ThreadQueuedMessage>,
+    pub next_cursor: Option<String>,
+    pub stats: ThreadQueuedMessageStats,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessage {
+    pub message_id: String,
+    pub thread_id: String,
+    /// 1-based position in the pending agent-message mailbox.
+    pub position: u32,
+    pub author: String,
+    pub recipient: String,
+    pub text: String,
+    pub trigger_turn: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageStats {
+    pub total: u32,
+    pub trigger_turn: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateResponse {
+    pub message: Option<ThreadQueuedMessage>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadQueuedMessageMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub direction: ThreadQueuedMessageMoveDirection,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveResponse {
+    pub moved: bool,
+    pub message: Option<ThreadQueuedMessage>,
+}
+
 #[derive(
     Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
 )]

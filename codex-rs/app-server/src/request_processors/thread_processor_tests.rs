@@ -53,14 +53,19 @@ mod thread_processor_behavior_tests {
     use chrono::Utc;
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ThreadItem;
+    use codex_app_server_protocol::ThreadQueuedMessage;
+    use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
+    use codex_app_server_protocol::ThreadQueuedMessageStats;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
     use codex_config::SessionThreadConfig;
     use codex_config::StaticThreadConfigLoader;
     use codex_config::ThreadConfigSource;
+    use codex_core::QueuedMailboxMessage;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
+    use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
@@ -76,6 +81,7 @@ mod thread_processor_behavior_tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::InitialHistory;
+    use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::protocol::ResumedHistory;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionMeta;
@@ -213,6 +219,82 @@ mod thread_processor_behavior_tests {
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn queued_message_helpers_project_core_queue_for_api() {
+        let thread_id = ThreadId::new();
+        let author = AgentPath::root().join("author").expect("author path");
+        let recipient = AgentPath::root().join("recipient").expect("recipient path");
+        let messages = vec![
+            QueuedMailboxMessage {
+                id: "msg-1".to_string(),
+                communication: InterAgentCommunication::new(
+                    author.clone(),
+                    recipient.clone(),
+                    Vec::new(),
+                    "first queued".to_string(),
+                    false,
+                ),
+            },
+            QueuedMailboxMessage {
+                id: "msg-2".to_string(),
+                communication: InterAgentCommunication::new(
+                    author.clone(),
+                    recipient.clone(),
+                    Vec::new(),
+                    "second queued".to_string(),
+                    true,
+                ),
+            },
+        ];
+
+        assert_eq!(
+            queued_messages_api_view(thread_id, &messages),
+            vec![
+                ThreadQueuedMessage {
+                    message_id: "msg-1".to_string(),
+                    thread_id: thread_id.to_string(),
+                    position: 1,
+                    author: author.to_string(),
+                    recipient: recipient.to_string(),
+                    text: "first queued".to_string(),
+                    trigger_turn: false,
+                },
+                ThreadQueuedMessage {
+                    message_id: "msg-2".to_string(),
+                    thread_id: thread_id.to_string(),
+                    position: 2,
+                    author: author.to_string(),
+                    recipient: recipient.to_string(),
+                    text: "second queued".to_string(),
+                    trigger_turn: true,
+                },
+            ]
+        );
+        assert_eq!(
+            queued_message_stats(&messages),
+            ThreadQueuedMessageStats {
+                total: 2,
+                trigger_turn: 1,
+            }
+        );
+
+        validate_queued_message_id("msg-1").expect("valid message id");
+        assert!(validate_queued_message_id(" ").is_err());
+        validate_queued_message_text("revised queued message").expect("valid message text");
+        assert!(validate_queued_message_text("").is_err());
+        assert!(
+            validate_queued_message_text(&"x".repeat(MAX_THREAD_QUEUED_MESSAGE_BYTES + 1)).is_err()
+        );
+        assert_eq!(
+            core_queued_message_move_direction(ThreadQueuedMessageMoveDirection::Up),
+            CoreQueuedMailboxMoveDirection::Up
+        );
+        assert_eq!(
+            core_queued_message_move_direction(ThreadQueuedMessageMoveDirection::Down),
+            CoreQueuedMailboxMoveDirection::Down
+        );
     }
 
     #[test]

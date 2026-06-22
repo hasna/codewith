@@ -31,6 +31,7 @@ use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadPendingInteraction;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_file_search::FileMatch;
@@ -419,6 +420,25 @@ pub(crate) enum AppEvent {
     ActivateThreadGoalPlanNode {
         thread_id: ThreadId,
         node_id: String,
+    },
+
+    /// Show queued user inputs and queued agent mailbox messages.
+    OpenQueuedMessages {
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Update one queued agent mailbox message.
+    UpdateQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        text: String,
+    },
+
+    /// Move one queued agent mailbox message.
+    MoveQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        direction: ThreadQueuedMessageMoveDirection,
     },
 
     /// Open the current thread loop schedule summary.

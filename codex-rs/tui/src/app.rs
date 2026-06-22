@@ -217,6 +217,7 @@ mod pending_interactive_replay;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod queued_message_actions;
 mod replay_filter;
 mod resize_reflow;
 mod session_lifecycle;

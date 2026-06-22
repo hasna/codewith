@@ -1537,6 +1537,21 @@ impl MessageProcessor {
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
             }
+            ClientRequest::ThreadQueuedMessageList { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_list(params)
+                    .await
+            }
+            ClientRequest::ThreadQueuedMessageUpdate { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_update(params)
+                    .await
+            }
+            ClientRequest::ThreadQueuedMessageMove { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_move(params)
+                    .await
+            }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await
             }
