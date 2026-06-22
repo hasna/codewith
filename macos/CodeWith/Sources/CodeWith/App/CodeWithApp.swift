@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let hosting = NSHostingController(rootView: AppShell())
+        // Let content extend under the transparent title bar so headers sit flush
+        // at the top (no title-bar safe-area inset).
+        if #available(macOS 13.3, *) { hosting.safeAreaRegions = [] }
         let win = NSWindow(contentViewController: hosting)
         win.setContentSize(WindowSize.app)
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
