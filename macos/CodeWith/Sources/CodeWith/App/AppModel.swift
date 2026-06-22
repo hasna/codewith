@@ -47,6 +47,7 @@ final class AppModel {
     var showConfigPanel = false
     var planMode = false
     var fullAccess = true
+    var searchQuery = ""
 
     // Backend data
     var threads: [ThreadInfo] = []
@@ -55,6 +56,7 @@ final class AppModel {
     var projects: [ProjectInfo] = []
     var loops: [LoopInfo] = []
     var apps: [AppItemInfo] = []
+    var machines: [MachineInfo] = []
     var account = AccountInfo.signedOut
 
     // In-session config
@@ -135,6 +137,19 @@ final class AppModel {
         apps = (try? await client.listApps()) ?? []
     }
 
+    func loadMachines() async {
+        let (m, _) = await FleetRunner.loadFleet()
+        if !m.isEmpty { machines = m }
+    }
+
+    func toggleLoop(_ loop: LoopInfo) async {
+        guard connection == .connected, !loop.threadId.isEmpty else { return }
+        // Optimistic flip, then call backend and reload.
+        if let i = loops.firstIndex(where: { $0.id == loop.id }) { loops[i].active.toggle() }
+        await client.setLoopActive(loop, active: !loop.active)
+        await loadLoops()
+    }
+
     // MARK: Threads / projects
 
     func loadThreads(reset: Bool) async {
@@ -158,6 +173,20 @@ final class AppModel {
     }
 
     var hasMoreThreads: Bool { nextCursor != nil }
+
+    // MARK: Search (local, over loaded data)
+
+    private var q: String { searchQuery.trimmingCharacters(in: .whitespaces).lowercased() }
+    var searchThreads: [ThreadInfo] {
+        q.isEmpty ? [] : threads.filter { $0.name.lowercased().contains(q) }
+    }
+    var searchProjects: [ProjectInfo] {
+        q.isEmpty ? [] : projects.filter { $0.name.lowercased().contains(q) }
+    }
+    var searchApps: [AppItemInfo] {
+        q.isEmpty ? [] : apps.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
+    }
+    var hasSearchResults: Bool { !searchThreads.isEmpty || !searchProjects.isEmpty || !searchApps.isEmpty }
 
     func loadLoops() async {
         guard connection == .connected else { return }
@@ -349,6 +378,12 @@ final class AppModel {
             AppItemInfo(name: "Deep Research", detail: "Fan-out, fact-checked reports.", enabled: false),
             AppItemInfo(name: "Search", detail: "Trigram local search.", enabled: true),
             AppItemInfo(name: "Memory", detail: "Persistent cross-session memory.", enabled: true),
+        ]
+        m.machines = [
+            MachineInfo(id: "spark01", os: "linux", status: "online", role: "primary", isLocal: true),
+            MachineInfo(id: "apple03", os: "macos", status: "online", role: "workstation", isLocal: false),
+            MachineInfo(id: "machine001", os: "macos", status: "online", role: "build", isLocal: false),
+            MachineInfo(id: "apple06", os: "macos", status: "unknown", role: "laptop", isLocal: false),
         ]
         m.account = AccountInfo(from: .object(["account": .object([
             "displayName": .string("Andrei Hasna"), "email": .string("andrei@hasna.com"), "planType": .string("Pro"),

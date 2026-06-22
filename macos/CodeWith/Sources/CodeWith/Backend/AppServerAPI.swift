@@ -112,7 +112,8 @@ extension AppServerClient {
                         title: s["prompt"]?.string ?? "Schedule",
                         subtitle: Self.scheduleDescription(s["schedule"]),
                         kind: .schedule,
-                        active: (s["status"]?.string ?? "active") == "active"))
+                        active: (s["status"]?.string ?? "active") == "active",
+                        threadId: s["threadId"]?.string ?? tid))
                 }
             }
             if let mon = try? await request("thread/monitor/list",
@@ -123,11 +124,27 @@ extension AppServerClient {
                         title: m["name"]?.string ?? m["prompt"]?.string ?? "Monitor",
                         subtitle: m["command"]?.string ?? "monitoring",
                         kind: .monitor,
-                        active: (m["status"]?.string ?? "running") == "running"))
+                        active: (m["status"]?.string ?? "running") == "running",
+                        threadId: m["threadId"]?.string ?? tid))
                 }
             }
         }
         return loops
+    }
+
+    /// Pause/resume a schedule or stop/restart a monitor.
+    func setLoopActive(_ loop: LoopInfo, active: Bool) async {
+        let method: String
+        switch (loop.kind, active) {
+        case (.schedule, false): method = "thread/schedule/pause"
+        case (.schedule, true):  method = "thread/schedule/resume"
+        case (.monitor, false):  method = "thread/monitor/stop"
+        case (.monitor, true):   method = "thread/monitor/restart"
+        }
+        let idKey = loop.kind == .schedule ? "scheduleId" : "monitorId"
+        _ = try? await request(method, .object([
+            "threadId": .string(loop.threadId), idKey: .string(loop.id),
+        ]), timeout: 15)
     }
 
     static func scheduleDescription(_ s: JSONValue?) -> String {

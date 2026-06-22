@@ -3,6 +3,7 @@ import SwiftUI
 /// Loops — recurring schedules + monitors running across all sessions (live data).
 struct LoopsView: View {
     var loops: [LoopInfo] = []
+    var onToggle: (LoopInfo) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,7 +59,7 @@ struct LoopsView: View {
                 Text(loop.subtitle).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
             }
             Spacer()
-            GlassToggle(on: loop.active)
+            GlassToggle(on: loop.active) { onToggle(loop) }
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .background(

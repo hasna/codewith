@@ -19,7 +19,7 @@ enum SnapshotCatalog {
             framed("07-settings-appearance") { SettingsShell(selected: "Appearance") { SettingsAppearance() } },
             framed("08-settings-configuration") { SettingsShell(selected: "Configuration") { SettingsConfiguration() } },
             framed("09-settings-personalization") { SettingsShell(selected: "Personalization") { SettingsPersonalization() } },
-            framed("12-machines") { RootView(model: m) { MachinesView() } },
+            framed("12-machines") { RootView(model: m) { MachinesView(machines: m.machines) } },
             framed("13-profiles") { RootView(model: m) { ProfilesView() } },
             framed("14-apps") { RootView(model: m) { AppsView(apps: m.apps) } },
             framed("15-loops") { RootView(model: m) { LoopsView(loops: m.loops) } },

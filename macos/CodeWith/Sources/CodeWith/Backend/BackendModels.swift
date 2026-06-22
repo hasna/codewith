@@ -69,6 +69,16 @@ struct ProjectInfo: Identifiable, Hashable {
     }
 }
 
+/// A machine in the fleet (from `machines topology -j`).
+struct MachineInfo: Identifiable, Hashable {
+    var id: String
+    var os: String
+    var status: String   // online / offline / unknown
+    var role: String
+    var isLocal: Bool
+    var online: Bool { status == "online" }
+}
+
 /// An installable app/skill from `app/list`.
 struct AppItemInfo: Identifiable, Hashable {
     var id: String { name }
@@ -84,6 +94,7 @@ struct LoopInfo: Identifiable, Hashable {
     var subtitle: String
     var kind: Kind
     var active: Bool
+    var threadId: String = ""
     enum Kind: String { case schedule, monitor }
 }
 

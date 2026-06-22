@@ -49,10 +49,12 @@ struct AppShell: View {
                              onPlus: { model.toggleAddMenu() },
                              onAddAction: { model.handleAddAction($0) },
                              onToggleConfig: { model.showConfigPanel.toggle() })
-                case .search:   SearchView()
+                case .search:   SearchView(model: model,
+                                           onThread: { t in Task { await model.openThread(t) } },
+                                           onProject: { model.openProject($0) })
                 case .apps:     AppsView(apps: model.apps)
-                case .loops:    LoopsView(loops: model.loops)
-                case .machines: MachinesView()
+                case .loops:    LoopsView(loops: model.loops, onToggle: { l in Task { await model.toggleLoop(l) } })
+                case .machines: MachinesView(machines: model.machines)
                 case .profiles: ProfilesView()
                 }
             }
@@ -73,7 +75,7 @@ struct AppShell: View {
         case "Search":   model.open(.search, label: title)
         case "Apps":     model.open(.apps, label: title)
         case "Loops":    model.open(.loops, label: title); Task { await model.loadLoops() }
-        case "Machines": model.open(.machines, label: title)
+        case "Machines": model.open(.machines, label: title); Task { await model.loadMachines() }
         case "Settings": model.openSettings()
         default:         break
         }
@@ -90,44 +92,3 @@ struct AppShell: View {
     }
 }
 
-// MARK: - Simple detail panes
-
-struct SearchView: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            DetailTopBar(title: "Search")
-            Spacer()
-            VStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 26)).foregroundStyle(Theme.textTertiary)
-                Text("Search everything").font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                Text("Find chats, projects, machines, and apps").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
-            }
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.canvas)
-    }
-}
-
-/// Shared detail top bar with optional right-side config toggle.
-struct DetailTopBar: View {
-    var title: String
-    var onToggleConfig: (() -> Void)? = nil
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                Spacer()
-                if let onToggleConfig {
-                    Button(action: onToggleConfig) {
-                        Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 16).frame(height: 40)
-            Rectangle().fill(Theme.separator).frame(height: 1)
-        }
-    }
-}
