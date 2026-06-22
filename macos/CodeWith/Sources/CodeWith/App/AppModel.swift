@@ -313,6 +313,17 @@ final class AppModel {
         open(.home, label: p.name)
     }
 
+    /// The label for the header project selector.
+    var currentProjectLabel: String {
+        guard let path = currentProjectPath else { return "All projects" }
+        return projects.first { $0.path == path }?.name ?? (path as NSString).lastPathComponent
+    }
+
+    /// Select the project context for new sessions (nil = all projects / machines).
+    func selectProject(_ p: ProjectInfo?) {
+        currentProjectPath = p?.path
+    }
+
     func newChat() {
         composerText = ""; activeThreadId = nil; activeMessages = []
         currentProjectPath = nil

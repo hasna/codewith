@@ -30,8 +30,8 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Top spacer clears the window traffic lights; brand/nav buttons removed.
-            Color.clear.frame(height: 38)
+            // Minimal top inset to clear the window traffic-light row.
+            Color.clear.frame(height: 28)
 
             ScrollColumn(alignment: .leading, spacing: 1) {
                 ForEach(topItems) { row(for: $0) }

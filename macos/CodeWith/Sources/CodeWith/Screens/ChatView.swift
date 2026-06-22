@@ -15,10 +15,11 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar — title + ellipsis, and the single right-sidebar (config) opener.
+            // Top bar — title + project selector, and the right-sidebar (config) opener.
             HStack(spacing: 8) {
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                ProjectMenu(model: model, compact: true)
                 Spacer()
                 Button(action: onToggleConfig) {
                     Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)

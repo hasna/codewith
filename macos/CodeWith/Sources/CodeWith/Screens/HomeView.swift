@@ -34,16 +34,9 @@ struct HomeView: View {
                      effortLabel: model.effort)
                 .frame(width: 392)
 
-            HStack(spacing: 5) {
-                Image(systemName: "folder").font(.system(size: 10))
-                Text("Work in a project").font(.system(size: 11))
-                Image(systemName: "chevron.down").font(.system(size: 8))
-            }
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(Capsule().fill(Theme.fieldFill).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
-            .padding(.top, 12)
-            .frame(width: 392, alignment: .leading)
+            HStack { ProjectMenu(model: model); Spacer() }
+                .padding(.top, 12)
+                .frame(width: 392, alignment: .leading)
 
             Spacer()
         }

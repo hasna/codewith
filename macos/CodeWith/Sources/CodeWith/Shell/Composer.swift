@@ -43,14 +43,13 @@ struct Composer: View {
                 }
                 .buttonStyle(.plain).disabled(onPlus == nil)
 
-                // Full access pill — opens the in-session config panel.
+                // Full access pill — subtle; opens the in-session config panel.
                 Button { onConfigTap?() } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
-                        Text("Full access").font(.system(size: 11.5, weight: .medium))
+                        Text("Full access").font(.system(size: 11.5, weight: .regular))
                         Image(systemName: "chevron.down").font(.system(size: 8))
                     }
-                    .foregroundStyle(Theme.warning).contentShape(Rectangle())
+                    .foregroundStyle(Theme.textSecondary).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(onConfigTap == nil)
 
@@ -70,9 +69,12 @@ struct Composer: View {
                 Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
 
                 if showSend {
+                    // Active (black) while typing or running; gray only when empty/idle.
+                    let hasText = !(text?.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    let active = stopMode || hasText
                     Button { stopMode ? onStop?() : onSubmit?() } label: {
                         Circle()
-                            .fill(stopMode ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
+                            .fill(active ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
                             .frame(width: 24, height: 24)
                             .overlay(Image(systemName: stopMode ? "stop.fill" : "arrow.up")
                                 .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
