@@ -55,9 +55,9 @@ struct SettingsAppearance: View {
                     }
                 }
             }
-            .frame(height: 80)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Theme.toggleBlue : Theme.cardStroke, lineWidth: selected ? 2 : 1))
+            .frame(height: 88)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Theme.toggleBlue : Theme.cardStroke, lineWidth: selected ? 2 : 1))
             Text(title).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity)
