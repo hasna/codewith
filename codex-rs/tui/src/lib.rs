@@ -2170,15 +2170,19 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serial_test::serial;
     use std::sync::Arc;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicUsize;
+    #[cfg(unix)]
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
+    #[cfg(unix)]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
@@ -2189,6 +2193,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             unsafe {
