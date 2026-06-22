@@ -3,18 +3,28 @@ import SwiftUI
 /// A project's sessions — all chats whose working directory is this project.
 struct ProjectSessionsView: View {
     @Bindable var model: AppModel
-    var path: String
+    var projectKey: String
     var onThread: (ThreadInfo) -> Void = { _ in }
 
-    private var sessions: [ThreadInfo] { model.threads(inProject: path) }
-    private var name: String { model.project(forPath: path)?.name ?? (path as NSString).lastPathComponent }
+    private var project: ProjectInfo? { model.project(forKey: projectKey) }
+    private var sessions: [ThreadInfo] {
+        model.threads(forProjectKey: projectKey).sorted { (Int($0.updatedAt ?? "") ?? 0) > (Int($1.updatedAt ?? "") ?? 0) }
+    }
+    private var name: String { project?.name ?? projectKey }
+    private var path: String { project?.path ?? projectKey }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack(spacing: 8) {
-                Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Image(systemName: project?.originUrl != nil ? "arrow.triangle.branch" : "folder")
+                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 Text(name).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                if let branch = project?.branch, !branch.isEmpty {
+                    Text(branch).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Theme.fieldFill))
+                }
                 Spacer()
                 Button { model.newSessionInProject(path) } label: {
                     HStack(spacing: 5) {

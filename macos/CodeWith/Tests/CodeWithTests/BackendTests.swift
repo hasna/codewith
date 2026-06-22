@@ -98,6 +98,40 @@ final class BackendModelsTests: XCTestCase {
         let ps = ProjectInfo.derive(from: [ThreadInfo(from: obj(["cwd": .string("/Users/me/code/foo")]))])
         XCTAssertEqual(ps.first?.name, "foo")
     }
+    func testProjectGroupsByGitOriginAcrossSubdirs() {
+        // Two sessions in different sub-dirs of the same repo → one project.
+        func t(_ cwd: String) -> ThreadInfo {
+            ThreadInfo(from: obj(["cwd": .string(cwd), "gitInfo": obj(["originUrl": .string("git@github.com:hasnaxyz/iapp-mail.git"), "branch": .string("main")])]))
+        }
+        let ps = ProjectInfo.derive(from: [t("/Users/me/iapp-mail"), t("/Users/me/iapp-mail/sub")])
+        XCTAssertEqual(ps.count, 1)
+        XCTAssertEqual(ps.first?.name, "iapp-mail")
+        XCTAssertEqual(ps.first?.branch, "main")
+        XCTAssertEqual(ps.first?.threadCount, 2)
+    }
+    func testProjectFallsBackToCwdWhenNoGit() {
+        let ps = ProjectInfo.derive(from: [ThreadInfo(from: obj(["cwd": .string("/Users/me/plain")]))])
+        XCTAssertEqual(ps.first?.name, "plain")
+        XCTAssertEqual(ps.first?.groupKey, "/Users/me/plain")
+        XCTAssertNil(ps.first?.originUrl)
+    }
+    func testRepoNameParsesSshAndHttps() {
+        XCTAssertEqual(ProjectInfo.repoName(fromOrigin: "git@github.com:o/iapp-mail.git"), "iapp-mail")
+        XCTAssertEqual(ProjectInfo.repoName(fromOrigin: "https://github.com/o/r.git"), "r")
+    }
+    func testNormalizeOriginSshEqualsHttps() {
+        XCTAssertEqual(ProjectInfo.normalizeOrigin("git@github.com:o/r.git"),
+                       ProjectInfo.normalizeOrigin("https://github.com/o/r.git"))
+    }
+    func testThreadStatusDecodesObjectType() {
+        let t = ThreadInfo(from: obj(["status": obj(["type": .string("idle")])]))
+        XCTAssertEqual(t.status, "idle")
+    }
+    func testThreadGitInfoDecoded() {
+        let t = ThreadInfo(from: obj(["gitInfo": obj(["originUrl": .string("git@github.com:o/r.git"), "branch": .string("dev"), "sha": .string("abc")])]))
+        XCTAssertEqual(t.gitBranch, "dev"); XCTAssertEqual(t.gitSha, "abc")
+        XCTAssertEqual(t.projectKey, "github.com/o/r")
+    }
     func testAgeLabelBuckets() {
         func age(_ secsAgo: TimeInterval) -> String {
             let iso = ISO8601DateFormatter()

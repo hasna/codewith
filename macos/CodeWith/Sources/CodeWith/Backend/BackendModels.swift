@@ -10,6 +10,9 @@ struct ThreadInfo: Identifiable, Hashable {
     var createdAt: String?
     var modelProvider: String?
     var status: String?
+    var gitOriginUrl: String?
+    var gitBranch: String?
+    var gitSha: String?
     var messages: [ChatMessage] = []
 
     init(from v: JSONValue) {
@@ -19,10 +22,21 @@ struct ThreadInfo: Identifiable, Hashable {
         name = (nm?.isEmpty == false ? nm : nil) ?? (pv?.isEmpty == false ? pv : nil) ?? "Untitled session"
         cwd = v["cwd"]?.string
         preview = pv
-        updatedAt = v["updatedAt"]?.string ?? v["updatedAt"]?.double.map { String($0) }
-        createdAt = v["createdAt"]?.string
+        updatedAt = v["updatedAt"]?.string ?? v["updatedAt"]?.double.map { String(Int($0)) }
+        createdAt = v["createdAt"]?.string ?? v["createdAt"]?.double.map { String(Int($0)) }
         modelProvider = v["modelProvider"]?.string
-        status = v["status"]?.string
+        // status is an object {type: "idle"|"active"|...} on the wire.
+        status = v["status"]?["type"]?.string ?? v["status"]?.string
+        gitOriginUrl = v["gitInfo"]?["originUrl"]?.string
+        gitBranch = v["gitInfo"]?["branch"]?.string
+        gitSha = v["gitInfo"]?["sha"]?.string
+    }
+
+    /// Repo-identity grouping key: normalized git origin if present, else cwd.
+    var projectKey: String? {
+        if let o = gitOriginUrl { return ProjectInfo.normalizeOrigin(o) }
+        if let c = cwd, !c.isEmpty { return c }
+        return nil
     }
 
     /// Short relative-age label (e.g. "3w", "1m") parsed best-effort from updatedAt.
@@ -47,25 +61,57 @@ struct ThreadInfo: Identifiable, Hashable {
     }
 }
 
-/// A project = a working directory / repo that has sessions.
+/// A project = a repo / working directory that has sessions. Grouped by git
+/// origin when available (so sub-dirs of one repo are one project), else cwd.
 struct ProjectInfo: Identifiable, Hashable {
-    var id: String { path }
+    var id: String { groupKey }
     var name: String
     var path: String
+    var groupKey: String
+    var originUrl: String?
+    var branch: String?
     var threadCount: Int
+    var lastActivity: Int
 
-    /// Derive projects by grouping threads on their cwd.
+    /// Derive projects from threads, grouping by repo identity (origin) or cwd.
     static func derive(from threads: [ThreadInfo]) -> [ProjectInfo] {
-        var groups: [String: Int] = [:]
+        struct Acc { var name: String; var path: String; var origin: String?; var branch: String?; var count: Int; var last: Int }
+        var acc: [String: Acc] = [:]
         var order: [String] = []
         for t in threads {
             guard let cwd = t.cwd, !cwd.isEmpty else { continue }
-            if groups[cwd] == nil { order.append(cwd) }
-            groups[cwd, default: 0] += 1
+            let key = t.projectKey ?? cwd
+            let updated = Int(t.updatedAt ?? "") ?? 0
+            if var a = acc[key] {
+                a.count += 1
+                if updated >= a.last { a.last = updated; a.branch = t.gitBranch ?? a.branch }
+                acc[key] = a
+            } else {
+                order.append(key)
+                acc[key] = Acc(
+                    name: t.gitOriginUrl.map(repoName(fromOrigin:)) ?? (cwd as NSString).lastPathComponent,
+                    path: cwd, origin: t.gitOriginUrl, branch: t.gitBranch, count: 1, last: updated)
+            }
         }
-        return order.map { path in
-            ProjectInfo(name: (path as NSString).lastPathComponent, path: path, threadCount: groups[path] ?? 0)
+        return order.map { k in
+            let a = acc[k]!
+            return ProjectInfo(name: a.name, path: a.path, groupKey: k, originUrl: a.origin,
+                               branch: a.branch, threadCount: a.count, lastActivity: a.last)
         }
+    }
+
+    static func repoName(fromOrigin url: String) -> String {
+        var s = url.hasSuffix(".git") ? String(url.dropLast(4)) : url
+        if let slash = s.lastIndex(of: "/") { s = String(s[s.index(after: slash)...]) }
+        else if let colon = s.lastIndex(of: ":") { s = String(s[s.index(after: colon)...]) }
+        return s.isEmpty ? url : s
+    }
+    static func normalizeOrigin(_ url: String) -> String {
+        var s = url.hasSuffix(".git") ? String(url.dropLast(4)) : url
+        s = s.replacingOccurrences(of: "git@github.com:", with: "github.com/")
+             .replacingOccurrences(of: "https://github.com/", with: "github.com/")
+             .replacingOccurrences(of: "ssh://git@github.com/", with: "github.com/")
+        return s.lowercased()
     }
 }
 

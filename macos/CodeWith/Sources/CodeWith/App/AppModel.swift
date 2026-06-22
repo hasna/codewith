@@ -133,9 +133,18 @@ final class AppModel {
         async let acct: () = loadAccount()
         async let cfg: () = loadConfig()
         async let apps: () = loadApps()
-        await loadThreads(reset: true)
+        await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
         _ = await (acct, cfg, apps)
+        // Drain remaining pages in the background so Projects becomes complete.
+        Task { [weak self] in
+            guard let self else { return }
+            var guardCount = 0
+            while await self.nextCursor != nil, guardCount < 60 {
+                await self.loadThreads(reset: false)
+                guardCount += 1
+            }
+        }
     }
 
     func loadApps() async {
@@ -165,7 +174,7 @@ final class AppModel {
         do {
             let cursor = reset ? nil : nextCursor
             // Load a larger first page so Projects (derived from cwd) are complete.
-            let (newThreads, next) = try await client.listThreads(cursor: cursor, limit: reset ? 80 : 30)
+            let (newThreads, next) = try await client.listThreads(cursor: cursor, limit: reset ? 200 : 50)
             if reset { threads = newThreads } else { threads.append(contentsOf: newThreads) }
             nextCursor = next
             projects = ProjectInfo.derive(from: threads)
@@ -177,6 +186,16 @@ final class AppModel {
     func loadMoreThreads() async {
         guard nextCursor != nil else { return }
         await loadThreads(reset: false)
+    }
+
+    /// Drain every page so Projects (derived from cwd/repo) is complete.
+    func loadAllProjects() async {
+        await loadThreads(reset: true)
+        var guardCount = 0
+        while nextCursor != nil, guardCount < 60 {
+            await loadThreads(reset: false)
+            guardCount += 1
+        }
     }
 
     var hasMoreThreads: Bool { nextCursor != nil }
@@ -311,7 +330,7 @@ final class AppModel {
     /// Show a project's sessions (and let the user start a new one there).
     func openProject(_ p: ProjectInfo) {
         currentProjectPath = p.path
-        open(.project(p.path), label: p.name)
+        open(.project(p.groupKey), label: p.name)
     }
 
     /// New session scoped to a project's directory.
@@ -321,12 +340,12 @@ final class AppModel {
         open(.home, label: (path as NSString).lastPathComponent)
     }
 
-    /// Threads belonging to a project (by cwd).
-    func threads(inProject path: String) -> [ThreadInfo] {
-        threads.filter { $0.cwd == path }
+    /// Threads belonging to a project, by repo-identity group key.
+    func threads(forProjectKey key: String) -> [ThreadInfo] {
+        threads.filter { ($0.projectKey ?? $0.cwd ?? "") == key }
     }
-    func project(forPath path: String) -> ProjectInfo? {
-        projects.first { $0.path == path }
+    func project(forKey key: String) -> ProjectInfo? {
+        projects.first { $0.groupKey == key }
     }
 
     /// The label for the header project selector.
@@ -486,8 +505,9 @@ final class AppModel {
         panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.allowsMultipleSelection = false; panel.prompt = "Add Project"
         if panel.runModal() == .OK, let url = panel.url {
-            projects.insert(ProjectInfo(name: url.lastPathComponent, path: url.path, threadCount: 0), at: 0)
-            open(.home, label: url.lastPathComponent)
+            projects.insert(ProjectInfo(name: url.lastPathComponent, path: url.path, groupKey: url.path,
+                                        originUrl: nil, branch: nil, threadCount: 0, lastActivity: 0), at: 0)
+            newSessionInProject(url.path)
         }
         #endif
     }

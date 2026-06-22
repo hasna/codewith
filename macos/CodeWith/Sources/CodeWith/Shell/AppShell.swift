@@ -57,8 +57,8 @@ struct AppShell: View {
                                            onProject: { model.openProject($0) })
                 case .apps:     AppsView(apps: model.apps)
                 case .loops:    LoopsView(loops: model.loops, onToggle: { l in Task { await model.toggleLoop(l) } })
-                case .project(let path):
-                    ProjectSessionsView(model: model, path: path,
+                case .project(let key):
+                    ProjectSessionsView(model: model, projectKey: key,
                                         onThread: { t in Task { await model.openThread(t) } })
                 case .machines: MachinesView(machines: model.machines)
                 case .profiles: ProfilesView(profiles: model.authProfiles,
