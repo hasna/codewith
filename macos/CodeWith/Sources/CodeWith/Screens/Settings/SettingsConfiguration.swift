@@ -40,10 +40,7 @@ struct SettingsConfiguration: View {
                 HStack {
                     // Borderless dropdown — the reference renders this selector with
                     // no card outline (text + chevron only).
-                    HStack(spacing: 6) {
-                        Text("User config").font(.system(size: 12)).foregroundStyle(Theme.textPrimary)
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
-                    }
+                    Text("User config").font(.system(size: 12)).foregroundStyle(Theme.textPrimary)
                     Spacer()
                     Button(action: onOpenConfig) {
                         HStack(spacing: 4) {
@@ -56,24 +53,24 @@ struct SettingsConfiguration: View {
                 .padding(.bottom, 8)
                 card {
                     SettingsRow(title: "Approval policy", subtitle: "Choose when CodeWith asks for approval") {
-                        if snapshot { DropdownPill(text: approvalLabel) }
+                        if snapshot { DropdownPill(text: approvalLabel, minWidth: 150) }
                         else {
                             Menu {
                                 ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
                                     Button(v) { onSetApproval(v) }
                                 }
-                            } label: { DropdownPill(text: approvalLabel) }
+                            } label: { DropdownPill(text: approvalLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         }
                     }
                     SettingsRow(title: "Sandbox settings", subtitle: "Choose how much CodeWith can do when running commands", showDivider: false) {
-                        if snapshot { DropdownPill(text: sandboxLabel) }
+                        if snapshot { DropdownPill(text: sandboxLabel, minWidth: 150) }
                         else {
                             Menu {
                                 ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
                                     Button(v) { onSetSandbox(v) }
                                 }
-                            } label: { DropdownPill(text: sandboxLabel) }
+                            } label: { DropdownPill(text: sandboxLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         }
                     }
@@ -89,8 +86,8 @@ struct SettingsConfiguration: View {
                         GlassToggle(on: true).opacity(0.45)
                             .help("Dependency management is not available in CodeWith.app yet.")
                     }
-                    SettingsRow(title: "Diagnose issues in CodeWith Workspace", subtitle: "Checks the current bundle and records diagnostic logs") {
-                        pillButton("Diagnose", icon: "magnifyingglass", color: Theme.textPrimary, action: onDiagnose)
+                    SettingsRow(title: "Diagnostics log", subtitle: "Open the local app-server diagnostics log") {
+                        pillButton("Open log", icon: "doc.text.magnifyingglass", color: Theme.textPrimary, action: onDiagnose)
                     }
                     SettingsRow(title: "Reset and install Workspace", subtitle: "Deletes the local bundle, downloads it again, and reloads tools", showDivider: false) {
                         pill("Reinstall", icon: "arrow.down.circle", color: Theme.danger).opacity(0.45)

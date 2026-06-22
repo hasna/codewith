@@ -179,9 +179,11 @@ struct BrandBlob: View {
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {
-            ForEach(Array([CGPoint(x: 0, y: -0.5), CGPoint(x: 0.5, y: -0.1), CGPoint(x: 0.42, y: 0.42),
-                           CGPoint(x: -0.42, y: 0.42), CGPoint(x: -0.5, y: -0.1), CGPoint(x: 0, y: 0.2)].enumerated()), id: \.offset) { _, p in
-                Circle().frame(width: 40, height: 40).offset(x: p.x * 30, y: p.y * 30)
+            // 8 outer lobes + center → a fuller cloud closer to the reference mark.
+            ForEach(Array([CGPoint(x: 0, y: -0.52), CGPoint(x: 0.37, y: -0.37), CGPoint(x: 0.52, y: 0),
+                           CGPoint(x: 0.37, y: 0.37), CGPoint(x: 0, y: 0.52), CGPoint(x: -0.37, y: 0.37),
+                           CGPoint(x: -0.52, y: 0), CGPoint(x: -0.37, y: -0.37), CGPoint(x: 0, y: 0)].enumerated()), id: \.offset) { _, p in
+                Circle().frame(width: 38, height: 38).offset(x: p.x * 32, y: p.y * 32)
             }
         }
         .foregroundStyle(grad)

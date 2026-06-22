@@ -78,14 +78,16 @@ struct GlassToggle: View {
 struct DropdownPill: View {
     var text: String
     var icon: String? = nil
+    var minWidth: CGFloat? = nil
     var body: some View {
         HStack(spacing: 6) {
             if let icon { Image(systemName: icon).font(.system(size: 11)) }
             Text(text).font(.system(size: 12))
+            if minWidth != nil { Spacer(minLength: 6) }
             Image(systemName: "chevron.up.chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
         }
         .foregroundStyle(Theme.textPrimary)
-        .padding(.horizontal, 10).frame(height: 28)
+        .padding(.horizontal, 10).frame(minWidth: minWidth, alignment: .leading).frame(height: 28)
         .background(RoundedRectangle(cornerRadius: 7).fill(Theme.fieldFill)
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Theme.cardStroke, lineWidth: 1)))
     }

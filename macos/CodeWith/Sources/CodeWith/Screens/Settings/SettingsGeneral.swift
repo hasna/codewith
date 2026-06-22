@@ -37,10 +37,10 @@ struct SettingsGeneral: View {
 
                 SettingsGroupLabel(text: "General")
                 SettingsRow(title: "Default file open destination", subtitle: "Where files and folders open by default") {
-                    DropdownPill(text: "Cursor", icon: "cursorarrow")
+                    DropdownPill(text: "Cursor", icon: "cursorarrow", minWidth: 140)
                 }
                 SettingsRow(title: "Language", subtitle: "Language for the app UI") {
-                    DropdownPill(text: "Auto detect")
+                    DropdownPill(text: "Auto detect", minWidth: 140)
                 }
                 SettingsRow(title: "Show in menu bar", subtitle: "Keep CodeWith in the macOS menu bar when the main window is closed") {
                     GlassToggle(on: true)
