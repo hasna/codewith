@@ -21,8 +21,8 @@ enum Theme {
     static let accent = Color(red: 0.36, green: 0.34, blue: 0.92)
     /// Toggle / control "on" blue (Codex uses Apple's system blue, not the brand violet).
     static let toggleBlue = Color(hex: 0x0A84FF)
-    /// Warning amber used by "Full access".
-    static let warning = Color(red: 0.86, green: 0.45, blue: 0.10)
+    /// Warning red-orange used by "Full access" (sampled from the reference, #D3642F).
+    static let warning = Color(hex: 0xD3642F)
     /// Success green.
     static let success = Color(red: 0.18, green: 0.62, blue: 0.34)
     /// Danger red.

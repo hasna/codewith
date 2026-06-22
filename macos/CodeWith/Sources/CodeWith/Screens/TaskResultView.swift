@@ -221,7 +221,7 @@ struct DiffPanel: View {
             Text(text).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textPrimary).lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.trailing, 6).padding(.vertical, 1.5)
+        .padding(.trailing, 6).padding(.vertical, 1.0)
         .background(k == .add ? Color(hex: 0xE6FFEC) : (k == .del ? Color(hex: 0xFFEBE9) : Color.clear))
         .overlay(alignment: .leading) { Rectangle().fill(Color(hex: 0xEFEFEF)).frame(width: 1).padding(.leading, 20) }
     }

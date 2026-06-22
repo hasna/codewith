@@ -34,7 +34,7 @@ confirmation — act and course-correct later.
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textPrimary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
-                    .frame(height: 120, alignment: .topLeading)
+                    .frame(height: 156, alignment: .topLeading)
                     .clipped()
                     .background(RoundedRectangle(cornerRadius: 8).fill(Theme.fieldFill)
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.cardStroke, lineWidth: 1)))

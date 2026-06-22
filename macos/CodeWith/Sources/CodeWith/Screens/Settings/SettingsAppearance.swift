@@ -63,17 +63,21 @@ struct SettingsAppearance: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// A tiny app-window mockup: sidebar (with rows) + content (title + lines).
+    /// A neutral app-window preview: faint sidebar + content lines + window dots,
+    /// matching the reference's muted gray/light/dark theme thumbnails.
     private func miniApp(dark: Bool) -> some View {
-        let bg = dark ? Color(hex: 0x1F2123) : Color.white
-        let side = dark ? Color(hex: 0x2A2C2F) : Color(hex: 0xF1F1F3)
+        let bg = dark ? Color(hex: 0x2B2D30) : Color(hex: 0xF4F4F6)
+        let side = dark ? Color(hex: 0x232527) : Color(hex: 0xE7E7EA)
         let ink = (dark ? Color.white : Color.black)
         return HStack(spacing: 0) {
-            // sidebar
+            // faint sidebar
             VStack(alignment: .leading, spacing: 4) {
-                Capsule().fill(Color(hex: 0x6E6BF2)).frame(width: 14, height: 4)
+                HStack(spacing: 2) {
+                    ForEach(0..<3, id: \.self) { _ in Circle().fill(ink.opacity(0.22)).frame(width: 3, height: 3) }
+                }
+                .padding(.bottom, 2)
                 ForEach(0..<4, id: \.self) { _ in
-                    Capsule().fill(ink.opacity(0.16)).frame(width: 22, height: 3)
+                    Capsule().fill(ink.opacity(0.14)).frame(width: 22, height: 3)
                 }
                 Spacer()
             }
@@ -82,9 +86,9 @@ struct SettingsAppearance: View {
             .background(side)
             // content
             VStack(alignment: .leading, spacing: 5) {
-                Capsule().fill(ink.opacity(0.30)).frame(width: 40, height: 5)
+                Capsule().fill(ink.opacity(0.22)).frame(width: 40, height: 4)
                 ForEach(0..<4, id: \.self) { i in
-                    Capsule().fill(ink.opacity(0.12)).frame(width: i == 3 ? 30 : 52, height: 3)
+                    Capsule().fill(ink.opacity(0.10)).frame(width: i == 3 ? 30 : 52, height: 3)
                 }
                 Spacer()
             }
