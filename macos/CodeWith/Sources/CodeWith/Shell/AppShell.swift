@@ -29,6 +29,7 @@ struct AppShell: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .ignoresSafeArea(.container, edges: .top)   // header sits flush under the title bar
         .task { await model.bootstrap() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             model.shutdown()
@@ -56,6 +57,9 @@ struct AppShell: View {
                                            onProject: { model.openProject($0) })
                 case .apps:     AppsView(apps: model.apps)
                 case .loops:    LoopsView(loops: model.loops, onToggle: { l in Task { await model.toggleLoop(l) } })
+                case .project(let path):
+                    ProjectSessionsView(model: model, path: path,
+                                        onThread: { t in Task { await model.openThread(t) } })
                 case .machines: MachinesView(machines: model.machines)
                 case .profiles: ProfilesView(profiles: model.authProfiles,
                                              activeEmail: model.account.email,

@@ -4,7 +4,8 @@ import SwiftUI
 
 enum Route: Hashable {
     case home, search, apps, loops, machines, profiles
-    case chat(String)   // thread id
+    case chat(String)      // thread id
+    case project(String)   // project path
 }
 
 // MARK: - Chat message (display)
@@ -163,7 +164,8 @@ final class AppModel {
         defer { loadingThreads = false }
         do {
             let cursor = reset ? nil : nextCursor
-            let (newThreads, next) = try await client.listThreads(cursor: cursor, limit: 30)
+            // Load a larger first page so Projects (derived from cwd) are complete.
+            let (newThreads, next) = try await client.listThreads(cursor: cursor, limit: reset ? 80 : 30)
             if reset { threads = newThreads } else { threads.append(contentsOf: newThreads) }
             nextCursor = next
             projects = ProjectInfo.derive(from: threads)
@@ -306,11 +308,25 @@ final class AppModel {
 
     func openSettings(_ page: String = "General") { showSettings = true; settingsPage = page }
 
-    /// Scope a new chat to a project's directory and start a fresh session there.
+    /// Show a project's sessions (and let the user start a new one there).
     func openProject(_ p: ProjectInfo) {
         currentProjectPath = p.path
+        open(.project(p.path), label: p.name)
+    }
+
+    /// New session scoped to a project's directory.
+    func newSessionInProject(_ path: String) {
+        currentProjectPath = path
         composerText = ""; activeThreadId = nil; activeMessages = []
-        open(.home, label: p.name)
+        open(.home, label: (path as NSString).lastPathComponent)
+    }
+
+    /// Threads belonging to a project (by cwd).
+    func threads(inProject path: String) -> [ThreadInfo] {
+        threads.filter { $0.cwd == path }
+    }
+    func project(forPath path: String) -> ProjectInfo? {
+        projects.first { $0.path == path }
     }
 
     /// The label for the header project selector.
@@ -383,6 +399,9 @@ final class AppModel {
         case "account/login/completed", "account/updated", "account/login/chatGptComplete":
             loginInProgress = false
             Task { await loadAccount(); await refreshAll() }
+        case "thread/started", "thread/closed", "thread/archived", "thread/unarchived":
+            // A session appeared/changed — refresh the list so Projects + Chats stay live.
+            Task { await loadThreads(reset: true) }
         default:
             break
         }
@@ -390,7 +409,11 @@ final class AppModel {
 
     private func handleCompletedItem(_ item: JSONValue) {
         guard !item.isNull else { return }
-        if item["type"]?.string == "agentMessage" {
+        let type = item["type"]?.string
+        // The server echoes the user's own message back as a completed item; we
+        // already added it optimistically on submit — skip to avoid a duplicate.
+        if type == "userMessage" { return }
+        if type == "agentMessage" {
             // If nothing streamed via deltas, append the finalized text.
             if streamingAssistantIndex == nil, let msg = AppServerClient.parseItem(item) {
                 activeMessages.append(msg)
