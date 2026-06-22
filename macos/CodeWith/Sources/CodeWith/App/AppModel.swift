@@ -54,6 +54,7 @@ final class AppModel {
     var loadingThreads = false
     var projects: [ProjectInfo] = []
     var loops: [LoopInfo] = []
+    var apps: [AppItemInfo] = []
     var account = AccountInfo.signedOut
 
     // In-session config
@@ -68,6 +69,7 @@ final class AppModel {
     var activeThreadId: String? = nil
     var activeMessages: [ChatMessage] = []
     var turnInProgress = false
+    var currentProjectPath: String? = nil
     private var streamingAssistantIndex: Int? = nil
 
     // Profiles (local switch; profile picker UI)
@@ -122,9 +124,15 @@ final class AppModel {
     func refreshAll() async {
         async let acct: () = loadAccount()
         async let cfg: () = loadConfig()
+        async let apps: () = loadApps()
         await loadThreads(reset: true)
         await loadLoops()
-        _ = await (acct, cfg)
+        _ = await (acct, cfg, apps)
+    }
+
+    func loadApps() async {
+        guard connection == .connected else { return }
+        apps = (try? await client.listApps()) ?? []
     }
 
     // MARK: Threads / projects
@@ -183,8 +191,16 @@ final class AppModel {
 
     func openSettings(_ page: String = "General") { showSettings = true; settingsPage = page }
 
+    /// Scope a new chat to a project's directory and start a fresh session there.
+    func openProject(_ p: ProjectInfo) {
+        currentProjectPath = p.path
+        composerText = ""; activeThreadId = nil; activeMessages = []
+        open(.home, label: p.name)
+    }
+
     func newChat() {
         composerText = ""; activeThreadId = nil; activeMessages = []
+        currentProjectPath = nil
         open(.home, label: "New chat")
     }
 
@@ -194,14 +210,17 @@ final class AppModel {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, connection == .connected else { return }
         composerText = ""
-        // Ensure we have a thread.
+        // Show the user's message immediately for responsiveness.
+        activeMessages.append(ChatMessage(role: .user, text: text))
+        // Ensure we have a thread (use a real directory, not the app bundle cwd).
         if activeThreadId == nil {
-            let cwd = FileManager.default.currentDirectoryPath
-            activeThreadId = try? await client.startThread(cwd: cwd)
+            activeThreadId = try? await client.startThread(cwd: currentProjectPath ?? NSHomeDirectory())
             await loadThreads(reset: true)
         }
-        guard let tid = activeThreadId else { return }
-        activeMessages.append(ChatMessage(role: .user, text: text))
+        guard let tid = activeThreadId else {
+            activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ Couldn't start a session. Is the app-server connected?"))
+            return
+        }
         route = .chat(tid)
         turnInProgress = true
         streamingAssistantIndex = nil
@@ -322,6 +341,14 @@ final class AppModel {
             LoopInfo(id: "l1", title: "Daily standup digest", subtitle: "every day · 9:00", kind: .schedule, active: true),
             LoopInfo(id: "l2", title: "PR babysitter", subtitle: "every 5m", kind: .monitor, active: true),
             LoopInfo(id: "l3", title: "Security sweep", subtitle: "weekly", kind: .schedule, active: false),
+        ]
+        m.apps = [
+            AppItemInfo(name: "Mail", detail: "Read and send email from your agent.", enabled: true),
+            AppItemInfo(name: "Deploy", detail: "Ship builds to staging and production.", enabled: false),
+            AppItemInfo(name: "Image", detail: "Generate and edit images on demand.", enabled: true),
+            AppItemInfo(name: "Deep Research", detail: "Fan-out, fact-checked reports.", enabled: false),
+            AppItemInfo(name: "Search", detail: "Trigram local search.", enabled: true),
+            AppItemInfo(name: "Memory", detail: "Persistent cross-session memory.", enabled: true),
         ]
         m.account = AccountInfo(from: .object(["account": .object([
             "displayName": .string("Andrei Hasna"), "email": .string("andrei@hasna.com"), "planType": .string("Pro"),

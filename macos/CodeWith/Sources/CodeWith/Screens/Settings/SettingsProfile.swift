@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SettingsProfile: View {
+    var account: AccountInfo? = nil
+
     private let stats: [(String, String)] = [
         ("9.3B", "Lifetime tokens"), ("2.2B", "Peak tokens"), ("5h 27m", "Longest task"),
         ("8 days", "Current streak"), ("8 days", "Longest streak"),
@@ -30,12 +32,16 @@ struct SettingsProfile: View {
             VStack(spacing: 0) {
                 Circle().fill(Color(hex: 0x4AB58E))
                     .frame(width: 64, height: 64)
-                    .overlay(Text("AH").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white))
+                    .overlay(Text(account?.initials ?? "ME").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white))
                     .padding(.top, 26).padding(.bottom, 12)
-                Text("Andrei Hasna").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                Text(account?.name ?? "Signed out").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 HStack(spacing: 6) {
-                    Text("@andrei.hasna").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    Text("Pro").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                    if let email = account?.email, !email.isEmpty {
+                        Text(email).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    }
+                    if let plan = account?.plan, !plan.isEmpty {
+                        Text(plan).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                    }
                 }
                 .padding(.top, 3).padding(.bottom, 18)
 

@@ -15,13 +15,13 @@ enum SnapshotCatalog {
             framed("01-home") { RootView(model: m) { HomeView(model: m) } },
             framed("02-chat") { RootView(model: m) { ChatView(model: m, threadId: "t1") } },
             framed("05-settings-general") { SettingsShell(selected: "General") { SettingsGeneral() } },
-            framed("06-settings-profile") { SettingsShell(selected: "Profile") { SettingsProfile() } },
+            framed("06-settings-profile") { SettingsShell(selected: "Profile") { SettingsProfile(account: m.account) } },
             framed("07-settings-appearance") { SettingsShell(selected: "Appearance") { SettingsAppearance() } },
             framed("08-settings-configuration") { SettingsShell(selected: "Configuration") { SettingsConfiguration() } },
             framed("09-settings-personalization") { SettingsShell(selected: "Personalization") { SettingsPersonalization() } },
             framed("12-machines") { RootView(model: m) { MachinesView() } },
             framed("13-profiles") { RootView(model: m) { ProfilesView() } },
-            framed("14-apps") { RootView(model: m) { AppsView() } },
+            framed("14-apps") { RootView(model: m) { AppsView(apps: m.apps) } },
             framed("15-loops") { RootView(model: m) { LoopsView(loops: m.loops) } },
             SnapshotItem(name: "11-login", size: WindowSize.framed, view: AnyView(
                 WindowFrame(showTrafficLights: false) { LoginView() }

@@ -49,12 +49,15 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
-        .contentShape(Rectangle())
-        .onTapGesture { if model.showAddMenu { model.showAddMenu = false } }
-        .overlay(alignment: .center) {
+        .overlay {
+            // Dismiss layer + menu only while the add-menu is open, so it never
+            // intercepts taps on the composer/send button when closed.
             if model.showAddMenu {
-                AddMenu(onAction: { model.handleAddAction($0) })
-                    .offset(y: 40)
+                ZStack {
+                    Color.black.opacity(0.001).contentShape(Rectangle())
+                        .onTapGesture { model.showAddMenu = false }
+                    AddMenu(onAction: { model.handleAddAction($0) }).offset(y: 40)
+                }
             }
         }
     }

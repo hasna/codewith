@@ -18,7 +18,7 @@ struct AppShell: View {
                     Sidebar(model: model,
                             onTap: handleTap,
                             onThread: { t in Task { await model.openThread(t) } },
-                            onProject: { p in model.open(.home, label: p.name) },
+                            onProject: { p in model.openProject(p) },
                             onLoadMore: { Task { await model.loadMoreThreads() } })
                     Rectangle().fill(Theme.separator).frame(width: 1)
                     detail
@@ -50,7 +50,7 @@ struct AppShell: View {
                              onAddAction: { model.handleAddAction($0) },
                              onToggleConfig: { model.showConfigPanel.toggle() })
                 case .search:   SearchView()
-                case .apps:     AppsView()
+                case .apps:     AppsView(apps: model.apps)
                 case .loops:    LoopsView(loops: model.loops)
                 case .machines: MachinesView()
                 case .profiles: ProfilesView()
@@ -81,7 +81,7 @@ struct AppShell: View {
 
     @ViewBuilder private func settingsPage(_ name: String) -> some View {
         switch name {
-        case "Profile":         SettingsProfile()
+        case "Profile":         SettingsProfile(account: model.account)
         case "Appearance":      SettingsAppearance()
         case "Configuration":   SettingsConfiguration()
         case "Personalization": SettingsPersonalization()

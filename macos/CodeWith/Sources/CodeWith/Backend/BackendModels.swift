@@ -69,6 +69,14 @@ struct ProjectInfo: Identifiable, Hashable {
     }
 }
 
+/// An installable app/skill from `app/list`.
+struct AppItemInfo: Identifiable, Hashable {
+    var id: String { name }
+    var name: String
+    var detail: String
+    var enabled: Bool
+}
+
 /// A loop = a schedule or monitor running against a thread.
 struct LoopInfo: Identifiable, Hashable {
     let id: String

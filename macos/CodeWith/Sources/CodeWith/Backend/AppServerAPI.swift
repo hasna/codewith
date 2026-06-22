@@ -152,12 +152,12 @@ extension AppServerClient {
         return (cfg["model"]?.string, cfg["model_provider"]?.string ?? cfg["modelProvider"]?.string)
     }
 
-    func listAppItems() async throws -> [(name: String, description: String, installed: Bool)] {
+    func listApps() async throws -> [AppItemInfo] {
         guard let r = try? await request("app/list", .object([:]), timeout: 20) else { return [] }
         return (r["data"]?.array ?? []).map { a in
-            (a["name"]?.string ?? a["id"]?.string ?? "App",
-             a["description"]?.string ?? a["summary"]?.string ?? "",
-             a["isEnabled"]?.bool ?? true)
+            AppItemInfo(name: a["name"]?.string ?? a["id"]?.string ?? "App",
+                        detail: a["description"]?.string ?? a["summary"]?.string ?? "",
+                        enabled: a["isEnabled"]?.bool ?? true)
         }
     }
 }
