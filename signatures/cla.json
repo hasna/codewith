@@ -1,3 +1,12 @@
 {
-  "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "andrei-hasna",
+      "id": 28298713,
+      "comment_id": 4765723046,
+      "created_at": "2026-06-22T07:02:09Z",
+      "repoId": 1256924036,
+      "pullRequestNo": 32
+    }
+  ]
 }
