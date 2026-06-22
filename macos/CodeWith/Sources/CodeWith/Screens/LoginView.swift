@@ -40,7 +40,7 @@ struct LoginView: View {
             .padding(18)
 
             VStack(spacing: 0) {
-                BrandBlob().frame(width: 72, height: 72).padding(.bottom, 28)
+                BrandBlob().frame(width: 80, height: 80).padding(.bottom, 34)
 
                 switch mode {
                 case .home:      homeContent
@@ -64,7 +64,7 @@ struct LoginView: View {
                 .font(.system(size: 28, weight: .medium)).foregroundStyle(Theme.textPrimary)
                 .padding(.bottom, 34)
 
-            primaryButton(icon: "bubble.left.and.bubble.right.fill", title: model.loginInProgress ? "Waiting for browser…" : "Sign in with ChatGPT") {
+            primaryButton(icon: "", title: model.loginInProgress ? "Waiting for browser…" : "Sign in with ChatGPT") {
                 Task { await model.loginWithChatGPT() }
             }
             .padding(.bottom, 12)
@@ -142,7 +142,9 @@ struct LoginView: View {
     private func primaryButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                if !icon.isEmpty {
+                    Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                }
                 Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
             }
             .frame(width: 360, height: 52).contentShape(Rectangle())
@@ -170,7 +172,7 @@ struct LoginView: View {
 
 /// A soft multi-lobed "cloud/flower" blob mark with a thin `>_` prompt glyph.
 struct BrandBlob: View {
-    private let grad = LinearGradient(colors: [Color(hex: 0x9D9BF6), Color(hex: 0x6E6BEF), Color(hex: 0x4D54E8)],
+    private let grad = LinearGradient(colors: [Color(hex: 0x7E9BF5), Color(hex: 0x6E8BF2), Color(hex: 0x4D54E8)],
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {

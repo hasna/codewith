@@ -120,7 +120,7 @@ struct Heatmap: View {
                         ForEach(0..<rows, id: \.self) { r in
                             let v = intensity(c, r)
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(v == 0 ? Color(hex: 0xEBEDF0) : Color(hex: 0xC7D7FF).mix(with: Color(hex: 0x5B8DEF), by: v))
+                                .fill(v == 0 ? Color(hex: 0xEFF1F4) : Color(hex: 0xDCE3F8).mix(with: Color(hex: 0x5B8DEF), by: v))
                                 .frame(width: 16, height: 11)
                         }
                     }

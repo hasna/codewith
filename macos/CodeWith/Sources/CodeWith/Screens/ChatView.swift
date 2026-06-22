@@ -92,7 +92,7 @@ struct ToolRow: View {
     var body: some View {
         // Compact inline chip (hugs content), left-aligned — matches the reference.
         HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
             Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(1)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
