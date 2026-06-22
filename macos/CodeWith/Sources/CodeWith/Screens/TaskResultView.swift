@@ -218,7 +218,7 @@ struct DiffPanel: View {
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundStyle(k == .add ? Theme.success : (k == .del ? Theme.danger : Theme.textTertiary))
                 .frame(width: 7)
-            Text(text).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+            Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textPrimary).lineLimit(1)
             Spacer(minLength: 0)
         }
         .padding(.trailing, 6).padding(.vertical, 1.0)

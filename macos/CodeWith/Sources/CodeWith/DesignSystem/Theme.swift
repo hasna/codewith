@@ -7,8 +7,8 @@ enum Theme {
     // MARK: Palette (light)
     /// App window background — the main detail canvas is pure white.
     static let canvas = Color.white
-    /// Sidebar background — a faint translucent gray over the desktop glass.
-    static let sidebar = Color(nsColor: NSColor(calibratedWhite: 0.96, alpha: 1.0))
+    /// Sidebar background — sampled from the reference (#EFEFEF over desktop glass).
+    static let sidebar = Color(hex: 0xEFEFEF)
     /// Hairline separators.
     static let separator = Color(nsColor: NSColor(calibratedWhite: 0.0, alpha: 0.08))
     /// Primary text.
