@@ -60,7 +60,11 @@ struct AppShell: View {
                                            onThread: { t in Task { await model.openThread(t) } },
                                            onProject: { model.openProject($0) })
                 case .apps:     AppsView(apps: model.apps)
-                case .loops:    LoopsView(loops: model.loops, onToggle: { l in Task { await model.toggleLoop(l) } })
+                case .loops:
+                    LoopsView(
+                        loops: model.loops,
+                        onToggle: { l in Task { await model.toggleLoop(l) } },
+                        onCreate: { Task { await model.createDefaultLoop() } })
                 case .project(let key):
                     ProjectSessionsView(model: model, projectKey: key,
                                         onThread: { t in Task { await model.openThread(t) } })

@@ -15,7 +15,8 @@ struct SettingsPage<Content: View>: View {
             Spacer(minLength: 20)
         }
         .padding(.horizontal, 40)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 680, alignment: .leading)        // constrain content like the reference (no full-bleed)
+        .frame(maxWidth: .infinity, alignment: .leading)  // …and sit at the left of the pane
     }
 }
 
@@ -59,9 +60,9 @@ struct GlassToggle: View {
     @ViewBuilder private var capsule: some View {
         Capsule()
             .fill(on ? Theme.toggleBlue : Color(hex: 0xD8D8DC))
-            .frame(width: 36, height: 21)
+            .frame(width: 28, height: 16)
             .overlay(alignment: on ? .trailing : .leading) {
-                Circle().fill(.white).frame(width: 17, height: 17).padding(2)
+                Circle().fill(.white).frame(width: 12, height: 12).padding(2)
                     .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
             }
     }
@@ -105,8 +106,12 @@ struct ChoiceCard: View {
             }
             Spacer()
             ZStack {
-                Circle().strokeBorder(selected ? Theme.accent : Theme.cardStroke, lineWidth: selected ? 5 : 1)
-                    .frame(width: 16, height: 16)
+                if selected {
+                    Circle().fill(Theme.accent).frame(width: 16, height: 16)
+                    Circle().fill(.white).frame(width: 6, height: 6)
+                } else {
+                    Circle().strokeBorder(Theme.cardStroke, lineWidth: 1).frame(width: 16, height: 16)
+                }
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)

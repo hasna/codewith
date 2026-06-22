@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Fleet dashboard — the real machine fleet from `machines topology`.
+/// Fleet dashboard backed by the app-server machine registry.
 struct MachinesView: View {
     var machines: [MachineInfo] = []
 

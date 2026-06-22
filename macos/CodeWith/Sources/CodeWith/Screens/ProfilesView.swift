@@ -67,7 +67,7 @@ struct ProfilesView: View {
     }
 
     private func profileRow(_ p: AuthProfileInfo, color: Color) -> some View {
-        let active = !activeEmail.isEmpty && p.email == activeEmail
+        let active = p.active || (!activeEmail.isEmpty && p.email == activeEmail)
         let initials = String(p.name.prefix(2)).uppercased()
         return Button { if !active { onSwitch(p.name) } } label: {
             HStack(spacing: 12) {

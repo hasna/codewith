@@ -115,7 +115,7 @@ struct ProjectInfo: Identifiable, Hashable {
     }
 }
 
-/// A machine in the fleet (from `machines topology -j`).
+/// A machine in the fleet from the app-server machine registry.
 struct MachineInfo: Identifiable, Hashable {
     var id: String
     var os: String
@@ -154,6 +154,23 @@ struct AuthProfileInfo: Identifiable, Hashable {
     var email: String
     var provider: String
     var plan: String
+    var active: Bool = false
+
+    init(name: String, email: String, provider: String, plan: String, active: Bool = false) {
+        self.name = name
+        self.email = email
+        self.provider = provider
+        self.plan = plan
+        self.active = active
+    }
+
+    init(from v: JSONValue) {
+        name = v["name"]?.string ?? "profile"
+        email = v["email"]?.string ?? v["accountId"]?.string ?? ""
+        provider = v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? ""
+        plan = v["plan"]?.string ?? v["authMode"]?.string ?? ""
+        active = v["active"]?.bool ?? false
+    }
 }
 
 /// An installable app/skill from `app/list`.
@@ -173,6 +190,31 @@ struct LoopInfo: Identifiable, Hashable {
     var active: Bool
     var threadId: String = ""
     enum Kind: String { case schedule, monitor }
+}
+
+enum LoopScheduleIntervalUnit: String {
+    case minutes, hours, days
+}
+
+/// A persisted goal attached to a thread.
+struct GoalInfo: Identifiable, Hashable {
+    var id: String
+    var threadId: String
+    var objective: String
+    var status: String
+    var tokenBudget: Int?
+    var tokensUsed: Int
+    var timeUsedSeconds: Int
+
+    init(from v: JSONValue) {
+        id = v["goalId"]?.string ?? v["id"]?.string ?? UUID().uuidString
+        threadId = v["threadId"]?.string ?? ""
+        objective = v["objective"]?.string ?? ""
+        status = v["status"]?.string ?? "active"
+        tokenBudget = v["tokenBudget"]?.int
+        tokensUsed = v["tokensUsed"]?.int ?? 0
+        timeUsedSeconds = v["timeUsedSeconds"]?.int ?? 0
+    }
 }
 
 /// Account / profile info from `account/read`.

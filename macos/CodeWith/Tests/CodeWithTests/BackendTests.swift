@@ -222,6 +222,53 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(a.plan, "No account required")
         XCTAssertFalse(a.requiresOpenAIAuth)
     }
+    func testGoalInfoDecodesThreadGoal() {
+        let goal = GoalInfo(from: obj([
+            "goalId": .string("goal-1"),
+            "threadId": .string("thread-1"),
+            "objective": .string("Ship it"),
+            "status": .string("active"),
+            "tokenBudget": .number(1000),
+            "tokensUsed": .number(25),
+            "timeUsedSeconds": .number(3),
+        ]))
+        XCTAssertEqual(goal.id, "goal-1")
+        XCTAssertEqual(goal.threadId, "thread-1")
+        XCTAssertEqual(goal.objective, "Ship it")
+        XCTAssertEqual(goal.status, "active")
+        XCTAssertEqual(goal.tokenBudget, 1000)
+        XCTAssertEqual(goal.tokensUsed, 25)
+        XCTAssertEqual(goal.timeUsedSeconds, 3)
+    }
+    func testLoopInfoDecodesScheduleAndMonitor() {
+        let schedule = AppServerClient.loopInfo(fromSchedule: obj([
+            "threadId": .string("thread-1"),
+            "scheduleId": .string("schedule-1"),
+            "prompt": .string("Check CI"),
+            "status": .string("active"),
+            "schedule": obj(["type": .string("interval"), "amount": .number(5), "unit": .string("minutes")]),
+        ]), fallbackThreadId: "fallback")
+        XCTAssertEqual(schedule.id, "schedule-1")
+        XCTAssertEqual(schedule.title, "Check CI")
+        XCTAssertEqual(schedule.subtitle, "every 5 minutes")
+        XCTAssertEqual(schedule.kind, .schedule)
+        XCTAssertTrue(schedule.active)
+        XCTAssertEqual(schedule.threadId, "thread-1")
+
+        let monitor = AppServerClient.loopInfo(fromMonitor: obj([
+            "threadId": .string("thread-2"),
+            "monitorId": .string("monitor-1"),
+            "name": .string("Watch logs"),
+            "command": .string("tail -f app.log"),
+            "status": .string("stopped"),
+        ]), fallbackThreadId: "fallback")
+        XCTAssertEqual(monitor.id, "monitor-1")
+        XCTAssertEqual(monitor.title, "Watch logs")
+        XCTAssertEqual(monitor.subtitle, "tail -f app.log")
+        XCTAssertEqual(monitor.kind, .monitor)
+        XCTAssertFalse(monitor.active)
+        XCTAssertEqual(monitor.threadId, "thread-2")
+    }
 }
 
 final class ParseItemTests: XCTestCase {
@@ -264,5 +311,70 @@ final class ParseItemTests: XCTestCase {
         XCTAssertEqual(AppServerClient.extractText(.string("x")), "x")
         XCTAssertEqual(AppServerClient.extractText(.array([obj(["text": .string("a")]), obj(["n": .number(1)]), obj(["text": .string("b")])])), "a\nb")
         XCTAssertEqual(AppServerClient.extractText(nil), "")
+    }
+}
+
+final class AppServerRequestShapeTests: XCTestCase {
+    private func obj(_ p: [String: JSONValue]) -> JSONValue { .object(p) }
+
+    func testThreadGoalSetParams() {
+        XCTAssertEqual(
+            AppServerClient.threadGoalSetParams(
+                threadId: "thread-1",
+                objective: "Improve reliability",
+                status: "active",
+                tokenBudget: 2500),
+            obj([
+                "threadId": .string("thread-1"),
+                "objective": .string("Improve reliability"),
+                "status": .string("active"),
+                "tokenBudget": .number(2500),
+            ]))
+    }
+
+    func testThreadScheduleCreateParams() {
+        XCTAssertEqual(
+            AppServerClient.threadScheduleCreateParams(
+                threadId: "thread-1",
+                prompt: "Check CI",
+                promptSource: "inline",
+                schedule: AppServerClient.intervalScheduleSpec(amount: 30, unit: .minutes),
+                timezone: "UTC",
+                nextRunAt: 100,
+                expiresAt: 200),
+            obj([
+                "threadId": .string("thread-1"),
+                "prompt": .string("Check CI"),
+                "promptSource": .string("inline"),
+                "schedule": obj([
+                    "type": .string("interval"),
+                    "amount": .number(30),
+                    "unit": .string("minutes"),
+                ]),
+                "timezone": .string("UTC"),
+                "nextRunAt": .number(100),
+                "expiresAt": .number(200),
+            ]))
+    }
+
+    func testThreadMonitorCreateParams() {
+        XCTAssertEqual(
+            AppServerClient.threadMonitorCreateParams(
+                threadId: "thread-1",
+                name: "Watch logs",
+                prompt: "Tell me when an error appears",
+                command: "tail -f app.log",
+                cwd: "/tmp/project",
+                routing: "both",
+                outputFile: "monitor.log"),
+            obj([
+                "threadId": .string("thread-1"),
+                "name": .string("Watch logs"),
+                "prompt": .string("Tell me when an error appears"),
+                "command": .string("tail -f app.log"),
+                "cwd": .string("/tmp/project"),
+                "routing": .string("both"),
+                "outputFile": .string("monitor.log"),
+            ]))
     }
 }

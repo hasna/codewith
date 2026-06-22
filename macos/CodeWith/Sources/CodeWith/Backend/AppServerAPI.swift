@@ -30,15 +30,25 @@ extension AppServerClient {
     }
 
     func searchThreads(term: String, limit: Int = 40) async throws -> [ThreadInfo] {
-        let r = try await request("thread/search", .object([
+        var params: [String: JSONValue] = [
             "searchTerm": .string(term),
             "limit": .number(Double(limit)),
             "sortKey": .string("updated_at"),
             "sortDirection": .string("desc"),
-        ]), timeout: 20)
-        return (r["data"]?.array ?? []).map { result in
-            ThreadInfo(from: result["thread"] ?? result)
-        }
+        ]
+        var out: [ThreadInfo] = []
+        var cursor: String?
+        var guardCount = 0
+        repeat {
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("thread/search", .object(params), timeout: 20)
+            out.append(contentsOf: (r["data"]?.array ?? []).map { result in
+                ThreadInfo(from: result["thread"] ?? result)
+            })
+            cursor = r["nextCursor"]?.string
+            guardCount += 1
+        } while cursor != nil && guardCount < 10
+        return out
     }
 
     /// Resume a persisted thread so future `turn/start` requests can continue it.
@@ -139,13 +149,7 @@ extension AppServerClient {
                 if let scheduleCursor { params["cursor"] = .string(scheduleCursor) }
                 let sched = try? await request("thread/schedule/list", .object(params), timeout: 15)
                 for s in sched?["data"]?.array ?? [] {
-                    loops.append(LoopInfo(
-                        id: s["scheduleId"]?.string ?? UUID().uuidString,
-                        title: s["prompt"]?.string ?? "Schedule",
-                        subtitle: Self.scheduleDescription(s["schedule"]),
-                        kind: .schedule,
-                        active: (s["status"]?.string ?? "active") == "active",
-                        threadId: s["threadId"]?.string ?? tid))
+                    loops.append(Self.loopInfo(fromSchedule: s, fallbackThreadId: tid))
                 }
                 scheduleCursor = sched?["nextCursor"]?.string
             } while scheduleCursor != nil
@@ -156,18 +160,50 @@ extension AppServerClient {
                 if let monitorCursor { params["cursor"] = .string(monitorCursor) }
                 let mon = try? await request("thread/monitor/list", .object(params), timeout: 15)
                 for m in mon?["data"]?.array ?? [] {
-                    loops.append(LoopInfo(
-                        id: m["monitorId"]?.string ?? UUID().uuidString,
-                        title: m["name"]?.string ?? m["prompt"]?.string ?? "Monitor",
-                        subtitle: m["command"]?.string ?? "monitoring",
-                        kind: .monitor,
-                        active: (m["status"]?.string ?? "running") == "running",
-                        threadId: m["threadId"]?.string ?? tid))
+                    loops.append(Self.loopInfo(fromMonitor: m, fallbackThreadId: tid))
                 }
                 monitorCursor = mon?["nextCursor"]?.string
             } while monitorCursor != nil
         }
         return loops
+    }
+
+    func createSchedule(
+        threadId: String,
+        prompt: String,
+        promptSource: String = "inline",
+        schedule: JSONValue = AppServerClient.dynamicScheduleSpec(),
+        timezone: String = TimeZone.current.identifier
+    ) async throws -> LoopInfo {
+        let r = try await request("thread/schedule/create", Self.threadScheduleCreateParams(
+            threadId: threadId,
+            prompt: prompt,
+            promptSource: promptSource,
+            schedule: schedule,
+            timezone: timezone
+        ), timeout: 20)
+        return Self.loopInfo(fromSchedule: r["schedule"] ?? r, fallbackThreadId: threadId)
+    }
+
+    func createMonitor(
+        threadId: String,
+        name: String,
+        prompt: String,
+        command: String,
+        cwd: String? = nil,
+        routing: String = "stream",
+        outputFile: String? = nil
+    ) async throws -> LoopInfo {
+        let r = try await request("thread/monitor/create", Self.threadMonitorCreateParams(
+            threadId: threadId,
+            name: name,
+            prompt: prompt,
+            command: command,
+            cwd: cwd,
+            routing: routing,
+            outputFile: outputFile
+        ), timeout: 20)
+        return Self.loopInfo(fromMonitor: r["monitor"] ?? r, fallbackThreadId: threadId)
     }
 
     /// Pause/resume a schedule or stop/restart a monitor.
@@ -185,6 +221,106 @@ extension AppServerClient {
         ]), timeout: 15)
     }
 
+    func deleteLoop(_ loop: LoopInfo) async -> Bool {
+        let method = loop.kind == .schedule ? "thread/schedule/delete" : "thread/monitor/delete"
+        let idKey = loop.kind == .schedule ? "scheduleId" : "monitorId"
+        let r = try? await request(method, .object([
+            "threadId": .string(loop.threadId),
+            idKey: .string(loop.id),
+        ]), timeout: 15)
+        return r?["deleted"]?.bool ?? false
+    }
+
+    func runLoopNow(_ loop: LoopInfo) async -> Bool {
+        guard loop.kind == .schedule else { return false }
+        let r = try? await request("thread/schedule/runNow", .object([
+            "threadId": .string(loop.threadId),
+            "scheduleId": .string(loop.id),
+        ]), timeout: 15)
+        return r?["run"] != nil
+    }
+
+    static func threadScheduleCreateParams(
+        threadId: String,
+        prompt: String,
+        promptSource: String,
+        schedule: JSONValue,
+        timezone: String? = nil,
+        nextRunAt: Int? = nil,
+        expiresAt: Int? = nil
+    ) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "threadId": .string(threadId),
+            "prompt": .string(prompt),
+            "promptSource": .string(promptSource),
+            "schedule": schedule,
+        ]
+        if let timezone { params["timezone"] = .string(timezone) }
+        if let nextRunAt { params["nextRunAt"] = .number(Double(nextRunAt)) }
+        if let expiresAt { params["expiresAt"] = .number(Double(expiresAt)) }
+        return .object(params)
+    }
+
+    static func threadMonitorCreateParams(
+        threadId: String,
+        name: String,
+        prompt: String,
+        command: String,
+        cwd: String? = nil,
+        routing: String? = "stream",
+        outputFile: String? = nil
+    ) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "threadId": .string(threadId),
+            "name": .string(name),
+            "prompt": .string(prompt),
+            "command": .string(command),
+        ]
+        if let cwd { params["cwd"] = .string(cwd) }
+        if let routing { params["routing"] = .string(routing) }
+        if let outputFile { params["outputFile"] = .string(outputFile) }
+        return .object(params)
+    }
+
+    static func dynamicScheduleSpec() -> JSONValue {
+        .object(["type": .string("dynamic")])
+    }
+
+    static func intervalScheduleSpec(amount: Int, unit: LoopScheduleIntervalUnit) -> JSONValue {
+        .object([
+            "type": .string("interval"),
+            "amount": .number(Double(amount)),
+            "unit": .string(unit.rawValue),
+        ])
+    }
+
+    static func cronScheduleSpec(expression: String) -> JSONValue {
+        .object([
+            "type": .string("cron"),
+            "expression": .string(expression),
+        ])
+    }
+
+    static func loopInfo(fromSchedule s: JSONValue, fallbackThreadId: String) -> LoopInfo {
+        LoopInfo(
+            id: s["scheduleId"]?.string ?? UUID().uuidString,
+            title: s["prompt"]?.string ?? "Schedule",
+            subtitle: Self.scheduleDescription(s["schedule"]),
+            kind: .schedule,
+            active: (s["status"]?.string ?? "active") == "active",
+            threadId: s["threadId"]?.string ?? fallbackThreadId)
+    }
+
+    static func loopInfo(fromMonitor m: JSONValue, fallbackThreadId: String) -> LoopInfo {
+        LoopInfo(
+            id: m["monitorId"]?.string ?? UUID().uuidString,
+            title: m["name"]?.string ?? m["prompt"]?.string ?? "Monitor",
+            subtitle: m["command"]?.string ?? "monitoring",
+            kind: .monitor,
+            active: (m["status"]?.string ?? "running") == "running",
+            threadId: m["threadId"]?.string ?? fallbackThreadId)
+    }
+
     static func scheduleDescription(_ s: JSONValue?) -> String {
         guard let s else { return "scheduled" }
         if let expr = s["expression"]?.string { return expr }
@@ -193,11 +329,69 @@ extension AppServerClient {
         return "scheduled"
     }
 
+    // MARK: Goals
+
+    func setThreadGoal(threadId: String, objective: String? = nil, status: String? = nil, tokenBudget: Int? = nil)
+        async throws -> GoalInfo
+    {
+        let r = try await request("thread/goal/set", Self.threadGoalSetParams(
+            threadId: threadId,
+            objective: objective,
+            status: status,
+            tokenBudget: tokenBudget
+        ), timeout: 20)
+        return GoalInfo(from: r["goal"] ?? r)
+    }
+
+    func getThreadGoal(threadId: String) async throws -> GoalInfo? {
+        let r = try await request("thread/goal/get", .object(["threadId": .string(threadId)]), timeout: 15)
+        guard let goal = r["goal"], !goal.isNull else { return nil }
+        return GoalInfo(from: goal)
+    }
+
+    func listThreadGoals(threadIds: [String]) async throws -> [GoalInfo] {
+        var goals: [GoalInfo] = []
+        for threadId in threadIds {
+            if let goal = try? await getThreadGoal(threadId: threadId) {
+                goals.append(goal)
+            }
+        }
+        return goals
+    }
+
+    func clearThreadGoal(threadId: String) async -> Bool {
+        let r = try? await request("thread/goal/clear", .object(["threadId": .string(threadId)]), timeout: 15)
+        return r?["cleared"]?.bool ?? false
+    }
+
+    static func threadGoalSetParams(
+        threadId: String,
+        objective: String? = nil,
+        status: String? = nil,
+        tokenBudget: Int? = nil
+    ) -> JSONValue {
+        var params: [String: JSONValue] = ["threadId": .string(threadId)]
+        if let objective { params["objective"] = .string(objective) }
+        if let status { params["status"] = .string(status) }
+        if let tokenBudget { params["tokenBudget"] = .number(Double(tokenBudget)) }
+        return .object(params)
+    }
+
     // MARK: Account & config
 
     func readAccount() async throws -> AccountInfo {
         let r = try await request("account/read", .object([:]), timeout: 20)
         return AccountInfo(from: r)
+    }
+
+    func listAuthProfiles() async throws -> [AuthProfileInfo] {
+        let r = try await request("authProfile/list", .object([:]), timeout: 20)
+        return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
+    }
+
+    func switchAuthProfile(_ name: String) async throws -> AuthProfileInfo {
+        let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
+        return AuthProfileInfo(from: r["profile"] ?? r)
     }
 
     /// Read the current model + provider from config.
@@ -258,12 +452,22 @@ extension AppServerClient {
     }
 
     func listMachines() async throws -> [MachineInfo] {
-        let r = try await request("machineRegistry/list", .object([
-            "includeDisabled": .bool(false),
-            "includeForgotten": .bool(false),
-            "limit": .number(200),
-        ]), timeout: 20)
-        return (r["data"]?.array ?? []).map(MachineInfo.init(registryValue:))
+        var out: [MachineInfo] = []
+        var cursor: String?
+        var guardCount = 0
+        repeat {
+            var params: [String: JSONValue] = [
+                "includeDisabled": .bool(false),
+                "includeForgotten": .bool(false),
+                "limit": .number(200),
+            ]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("machineRegistry/list", .object(params), timeout: 20)
+            out.append(contentsOf: (r["data"]?.array ?? []).map(MachineInfo.init(registryValue:)))
+            cursor = r["nextCursor"]?.string
+            guardCount += 1
+        } while cursor != nil && guardCount < 20
+        return out
     }
 
     func listApps() async throws -> [AppItemInfo] {

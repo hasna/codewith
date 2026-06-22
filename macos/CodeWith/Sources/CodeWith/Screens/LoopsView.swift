@@ -4,6 +4,7 @@ import SwiftUI
 struct LoopsView: View {
     var loops: [LoopInfo] = []
     var onToggle: (LoopInfo) -> Void = { _ in }
+    var onCreate: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,13 +34,16 @@ struct LoopsView: View {
         HStack {
             Text("Loops").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
             Spacer()
-            HStack(spacing: 5) {
-                Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
-                Text("New loop").font(.system(size: 11.5, weight: .medium))
+            Button(action: onCreate) {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                    Text("New loop").font(.system(size: 11.5, weight: .medium))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12).frame(height: 26)
+                .background(Capsule().fill(Color(hex: 0x202020)))
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12).frame(height: 26)
-            .background(Capsule().fill(Color(hex: 0x202020)))
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 22).frame(height: 40)
     }

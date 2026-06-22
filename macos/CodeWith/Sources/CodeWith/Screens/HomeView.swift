@@ -32,11 +32,11 @@ struct HomeView: View {
                      onConfigTap: onToggleConfig,
                      modelLabel: model.model ?? "gpt-5.5",
                      effortLabel: model.effort)
-                .frame(width: 420)
+                .frame(width: 480)
 
             HStack { ProjectMenu(model: model); Spacer() }
                 .padding(.top, 12)
-                .frame(width: 420, alignment: .leading)
+                .frame(width: 480, alignment: .leading)
 
             Spacer()
         }

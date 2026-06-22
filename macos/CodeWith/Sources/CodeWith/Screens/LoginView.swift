@@ -40,7 +40,7 @@ struct LoginView: View {
             .padding(18)
 
             VStack(spacing: 0) {
-                BrandBlob().frame(width: 80, height: 80).padding(.bottom, 34)
+                BrandBlob().frame(width: 88, height: 88).padding(.bottom, 30)
 
                 switch mode {
                 case .home:      homeContent
@@ -61,8 +61,8 @@ struct LoginView: View {
     private var homeContent: some View {
         VStack(spacing: 0) {
             Text("Get started with CodeWith")
-                .font(.system(size: 28, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                .padding(.bottom, 34)
+                .font(.system(size: 30, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                .padding(.bottom, 30)
 
             primaryButton(icon: "", title: model.loginInProgress ? "Waiting for browser…" : "Sign in with ChatGPT") {
                 Task { await model.loginWithChatGPT() }
@@ -151,7 +151,7 @@ struct LoginView: View {
                 Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
             }
             .frame(width: 360, height: 52).contentShape(Rectangle())
-            .background(Capsule().fill(Color(hex: 0x1A1A1A)))
+            .background(Capsule().fill(Color(hex: 0x0D0D0D)))
         }.buttonStyle(.plain)
     }
     private func secondaryButton(title: String, action: @escaping () -> Void) -> some View {

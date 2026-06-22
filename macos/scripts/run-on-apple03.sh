@@ -39,9 +39,23 @@ ssh -o ConnectTimeout=15 "$HOST" "bash -s" <<REMOTE
 set -euo pipefail
 APP="$APP"
 BIN="$REMOTE_DIR/.build/release/CodeWith"
+CLI_SRC="\${CODEWITH_CLI_PATH:-}"
+if [ -z "\$CLI_SRC" ]; then
+  CLI_SRC="\$(command -v codewith || true)"
+fi
+if [ -z "\$CLI_SRC" ] || [ ! -x "\$CLI_SRC" ]; then
+  echo "codewith CLI not found on build host; install it or set CODEWITH_CLI_PATH" >&2
+  exit 1
+fi
+if [ "\$CLI_SRC" -ef "\$BIN" ]; then
+  echo "refusing to bundle the CodeWith GUI executable as the codewith CLI" >&2
+  exit 1
+fi
 rm -rf "\$APP"
 mkdir -p "\$APP/Contents/MacOS" "\$APP/Contents/Resources"
 cp "\$BIN" "\$APP/Contents/MacOS/CodeWith"
+cp "\$CLI_SRC" "\$APP/Contents/Resources/codewith"
+chmod 755 "\$APP/Contents/Resources/codewith"
 cat > "\$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -71,6 +85,7 @@ plutil -lint "\$APP/Contents/Info.plist"
 codesign --force --deep --sign - "\$APP"
 codesign --verify --deep --strict "\$APP"
 echo "bundle ready: \$APP"
+echo "bundled CLI: \$CLI_SRC"
 REMOTE
 
 if [[ "$LAUNCH" == "1" ]]; then

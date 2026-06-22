@@ -48,6 +48,7 @@ final class AppModel {
     // Connection
     var connection: Connection = .connecting
     let client = AppServerClient()
+    @ObservationIgnored private var notificationTasks: [Task<Void, Never>] = []
 
     // Navigation / UI
     var route: Route = .home
@@ -67,6 +68,7 @@ final class AppModel {
     var loadingThreads = false
     var projects: [ProjectInfo] = []
     var loops: [LoopInfo] = []
+    var activeGoal: GoalInfo? = nil
     var apps: [AppItemInfo] = []
     var machines: [MachineInfo] = []
     var authProfiles: [AuthProfileInfo] = []
@@ -96,8 +98,8 @@ final class AppModel {
 
     // Turn watchdog: if a turn goes silent (no deltas/items/completion) for this
     // long, the agent is presumed stuck and we release the spinner with an error.
-    private var turnWatchdog: Task<Void, Never>? = nil
-    private var lastTurnActivity = Date()
+    @ObservationIgnored private var turnWatchdog: Task<Void, Never>? = nil
+    @ObservationIgnored private var lastTurnActivity = Date()
     private static let turnSilenceTimeout: TimeInterval = 300
 
     // Profiles (local switch; profile picker UI)
@@ -108,6 +110,10 @@ final class AppModel {
         let me = ProfileRef(name: "You", handle: "@me", plan: "", initials: "ME", colorHex: 0x4AB58E)
         profiles = [me]
         currentProfileID = me.id
+        installExitHandler()
+    }
+
+    private func installExitHandler() {
         client.onExit = { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -119,38 +125,74 @@ final class AppModel {
 
     /// Consume server notifications in arrival order on the main actor.
     private func startNotificationConsumer() {
-        Task { @MainActor [weak self] in
+        notificationTasks.forEach { $0.cancel() }
+        notificationTasks.removeAll()
+        notificationTasks.append(Task { @MainActor [weak self] in
             guard let stream = self?.client.notifications else { return }
             for await (method, params) in stream {
+                guard !Task.isCancelled else { return }
                 self?.handleNotification(method: method, params: params)
             }
-        }
-        Task { @MainActor [weak self] in
+        })
+        notificationTasks.append(Task { @MainActor [weak self] in
             guard let stream = self?.client.serverRequests else { return }
             for await request in stream {
+                guard !Task.isCancelled else { return }
                 self?.handleServerRequest(request)
             }
-        }
+        })
     }
 
-    func shutdown() { client.stop() }
+    func shutdown() {
+        notificationTasks.forEach { $0.cancel() }
+        notificationTasks.removeAll()
+        client.onExit = nil
+        client.stop()
+    }
+
+    func reconnectAppServer() async {
+        shutdown()
+        turnInProgress = false
+        activeTurnId = nil
+        pendingServerRequests = []
+        cancelTurnWatchdog()
+        connection = .connecting
+        installExitHandler()
+        await bootstrap()
+    }
 
     var currentProfile: ProfileRef { profiles.first { $0.id == currentProfileID } ?? profiles[0] }
 
     // MARK: Bootstrap
 
     func bootstrap() async {
-        guard client.isAvailable else {
+        guard connection == .connecting else { return }   // idempotent
+        // Try each resolvable CLI candidate in order and keep the first that both
+        // starts AND completes the initialize handshake. This makes the app
+        // resilient to a broken candidate (e.g. a bundled CLI that exits on spawn
+        // because it lost its node_modules) by falling through to the next, such
+        // as the system /opt/homebrew/bin/codewith.
+        let candidates = AppServerClient.candidateBinaries.filter {
+            FileManager.default.isExecutableFile(atPath: $0) && !AppServerClient.isSelfExecutable($0)
+        }
+        guard !candidates.isEmpty else {
             connection = .unavailable("codewith CLI not found"); return
         }
-        guard connection == .connecting else { return }   // idempotent
-        do {
-            try client.start()
-            let initResult = try await client.initialize()
-            serverVersion = Self.parseVersion(initResult["userAgent"]?.string)
-            connection = .connected
-        } catch {
-            connection = .unavailable(error.localizedDescription); return
+        var lastError = "could not start the codewith app-server"
+        for candidate in candidates {
+            do {
+                try client.start(binary: candidate)
+                let initResult = try await client.initialize()
+                serverVersion = Self.parseVersion(initResult["userAgent"]?.string)
+                connection = .connected
+                break
+            } catch {
+                lastError = error.localizedDescription
+                client.stop()   // tear down the dead process before trying the next
+            }
+        }
+        guard connection == .connected else {
+            connection = .unavailable(lastError); return
         }
         startNotificationConsumer()
         await refreshAll()
@@ -201,14 +243,8 @@ final class AppModel {
     }
 
     func loadMachines() async {
-        if connection == .connected,
-           let registryMachines = try? await client.listMachines(),
-           !registryMachines.isEmpty {
-            machines = registryMachines
-            return
-        }
-        let (fallbackMachines, _) = await FleetRunner.loadFleet()
-        if !fallbackMachines.isEmpty { machines = fallbackMachines }
+        guard connection == .connected else { return }
+        machines = (try? await client.listMachines()) ?? []
     }
 
     func toggleLoop(_ loop: LoopInfo) async {
@@ -217,6 +253,38 @@ final class AppModel {
         if let i = loops.firstIndex(where: { $0.id == loop.id }) { loops[i].active.toggle() }
         await client.setLoopActive(loop, active: !loop.active)
         await loadLoops()
+    }
+
+    func createDefaultLoop() async {
+        guard connection == .connected else { return }
+        let prompt = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tid = await ensureActiveThread() else { return }
+        let useDefaultPrompt = prompt.isEmpty
+        do {
+            _ = try await client.createSchedule(
+                threadId: tid,
+                prompt: useDefaultPrompt ? "Default loop prompt" : prompt,
+                promptSource: useDefaultPrompt ? "default" : "inline",
+                schedule: AppServerClient.dynamicScheduleSpec()
+            )
+            if !useDefaultPrompt { composerText = "" }
+            await loadLoops()
+        } catch {
+            if prompt.isEmpty {
+                composerText = "Loop: "
+            }
+        }
+    }
+
+    func deleteLoop(_ loop: LoopInfo) async {
+        guard connection == .connected, !loop.threadId.isEmpty else { return }
+        _ = await client.deleteLoop(loop)
+        await loadLoops()
+    }
+
+    func runLoopNow(_ loop: LoopInfo) async {
+        guard connection == .connected, loop.kind == .schedule else { return }
+        _ = await client.runLoopNow(loop)
     }
 
     // MARK: Threads / projects
@@ -286,6 +354,14 @@ final class AppModel {
         loops = (try? await client.listLoops(threadIds: threads.map(\.id))) ?? []
     }
 
+    func loadActiveGoal() async {
+        guard connection == .connected, let activeThreadId else {
+            activeGoal = nil
+            return
+        }
+        activeGoal = try? await client.getThreadGoal(threadId: activeThreadId)
+    }
+
     func loadAccount() async {
         if let a = try? await client.readAccount() { account = a }
     }
@@ -302,6 +378,11 @@ final class AppModel {
     }
 
     func loadProfiles() async {
+        if connection == .connected,
+           let profiles = try? await client.listAuthProfiles() {
+            authProfiles = profiles
+            return
+        }
         authProfiles = await ProfileRunner.loadProfiles()
     }
 
@@ -391,8 +472,15 @@ final class AppModel {
 
     /// Switch the active CLI profile, then reconnect the session.
     func switchAuthProfile(_ name: String) async {
-        await ProfileRunner.switchProfile(name)
-        await loadAccount()
+        var switched = false
+        if connection == .connected,
+           (try? await client.switchAuthProfile(name)) != nil {
+            switched = true
+        }
+        if !switched {
+            await ProfileRunner.switchProfile(name)
+        }
+        await reconnectAppServer()
         await loadProfiles()
     }
 
@@ -445,6 +533,7 @@ final class AppModel {
         }
         guard activeThreadId == requestedThreadId else { return }
         activeMessages = messages
+        await loadActiveGoal()
     }
 
     func openSettings(_ page: String = "General") { showSettings = true; settingsPage = page }
@@ -487,7 +576,7 @@ final class AppModel {
     /// New session scoped to a project's directory.
     func newSessionInProject(_ path: String) {
         currentProjectPath = path
-        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeMessages = []; pendingServerRequests = []
+        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeGoal = nil; activeMessages = []; pendingServerRequests = []
         open(.home, label: (path as NSString).lastPathComponent)
     }
 
@@ -519,7 +608,7 @@ final class AppModel {
     }
 
     func newChat() {
-        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeMessages = []; pendingServerRequests = []
+        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeGoal = nil; activeMessages = []; pendingServerRequests = []
         currentProjectPath = nil
         open(.home, label: "New chat")
     }
@@ -538,14 +627,15 @@ final class AppModel {
         composerText = ""
         // Show the user's message immediately for responsiveness.
         activeMessages.append(ChatMessage(role: .user, text: text))
-        // Ensure we have a thread (use a real directory, not the app bundle cwd).
-        if activeThreadId == nil {
-            activeThreadId = try? await client.startThread(cwd: currentProjectPath ?? NSHomeDirectory())
-            await loadThreads(reset: true)
-        }
-        guard let tid = activeThreadId else {
+        guard let tid = await ensureActiveThread() else {
             finishTurn(failureMessage: "Couldn't start a session. Is the app-server connected?")
             return
+        }
+        if text.lowercased().hasPrefix("goal:") {
+            let objective = Self.goalObjective(from: text)
+            if !objective.isEmpty {
+                activeGoal = try? await client.setThreadGoal(threadId: tid, objective: objective)
+            }
         }
         route = .chat(tid)
         do {
@@ -558,6 +648,13 @@ final class AppModel {
         } catch {
             finishTurn(failureMessage: error.localizedDescription)
         }
+    }
+
+    private func ensureActiveThread() async -> String? {
+        if let activeThreadId { return activeThreadId }
+        activeThreadId = try? await client.startThread(cwd: currentProjectPath ?? NSHomeDirectory())
+        if activeThreadId != nil { await loadThreads(reset: true) }
+        return activeThreadId
     }
 
     func interrupt() async {
@@ -659,6 +756,16 @@ final class AppModel {
         case "thread/schedule/updated", "thread/schedule/deleted",
              "thread/monitor/updated", "thread/monitor/deleted":
             Task { await loadLoops() }
+        case "thread/goal/updated":
+            guard notificationBelongsToActiveThread(params) else { return }
+            if let goal = params["goal"], !goal.isNull {
+                activeGoal = GoalInfo(from: goal)
+            } else {
+                Task { await loadActiveGoal() }
+            }
+        case "thread/goal/cleared":
+            guard notificationBelongsToActiveThread(params) else { return }
+            activeGoal = nil
         case "app/list/updated":
             let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
             if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
@@ -863,12 +970,25 @@ final class AppModel {
     func handleAddAction(_ title: String) {
         switch title {
         case "Plan mode": planMode = true; showAddMenu = false
-        case "Goal": if !composerText.hasPrefix("Goal: ") { composerText = "Goal: " + composerText }; showAddMenu = false
+        case "Goal": prefixGoalComposer()
         case "Files and folders": pickFolder()
         default:
             if Self.agentNames.contains(title) { composerText = "@\(title) " + composerText }
             showAddMenu = false
         }
+    }
+
+    private func prefixGoalComposer() {
+        if !composerText.hasPrefix("Goal: ") { composerText = "Goal: " + composerText }
+        showAddMenu = false
+    }
+
+    static func goalObjective(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("goal:") {
+            return String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
     }
     func pickFolder() {
         showAddMenu = false

@@ -22,7 +22,7 @@ macos/
         Settings/               General, Profile, Appearance, Configuration, Personalization
   scripts/
     shoot.sh                    sync → build → ImageRenderer snapshots → pull PNGs
-    run-on-apple03.sh           build → .app bundle (pass --launch for GUI)
+    run-on-apple03.sh           build → .app bundle + bundled CLI (pass --launch for GUI)
 ```
 
 ## Building & screenshotting
@@ -37,6 +37,11 @@ bash macos/scripts/shoot.sh                   # renders every screen → design-
 bash macos/scripts/run-on-apple03.sh          # builds the .app bundle on apple03
 bash macos/scripts/run-on-apple03.sh --launch # opens the windowed app on apple03
 ```
+
+`run-on-apple03.sh` requires a `codewith` CLI on the build host, or an explicit
+`CODEWITH_CLI_PATH`. It copies that CLI into `CodeWith.app/Contents/Resources/codewith`
+so the Swift app talks to the existing `codewith app-server` harness instead of
+depending on whichever external install happens to be first on `PATH`.
 
 Reference captures live in `design-refs/screenshots/`; our renders land in
 `design-refs/renders/` for side-by-side parity comparison. See the project memory

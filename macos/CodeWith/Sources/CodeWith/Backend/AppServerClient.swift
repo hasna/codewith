@@ -115,8 +115,8 @@ final class AppServerClient: @unchecked Sendable {
 
     // MARK: Lifecycle
 
-    func start() throws {
-        guard let bin = Self.binaryPath else { throw AppServerError.binaryNotFound }
+    func start(binary: String? = nil) throws {
+        guard let bin = binary ?? Self.binaryPath else { throw AppServerError.binaryNotFound }
         lock.lock(); let already = running; lock.unlock()
         if already { return }
 

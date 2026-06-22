@@ -204,6 +204,12 @@ final class AppModelTests: XCTestCase {
         m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
         m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
     }
+    func testGoalObjectiveStripsExistingPrefix() {
+        XCTAssertEqual(AppModel.goalObjective(from: "Goal: ship it"), "ship it")
+        XCTAssertEqual(AppModel.goalObjective(from: "  goal: ship it  "), "ship it")
+        XCTAssertEqual(AppModel.goalObjective(from: "ship it"), "ship it")
+        XCTAssertEqual(AppModel.goalObjective(from: "Goal:   "), "")
+    }
     func testAddActionAgentMention() {
         let m = AppModel(); m.composerText = "review"
         m.handleAddAction("Apollo")
@@ -241,23 +247,6 @@ final class AppModelTests: XCTestCase {
     }
 }
 
-// MARK: - AgentRunner (still present, pure)
-
-final class AgentRunnerTests: XCTestCase {
-    func test401IsNotAuthenticated() {
-        if case .notAuthenticated = AgentRunner.classify(exitCode: 1, output: "401 Unauthorized: Missing bearer") {}
-        else { XCTFail() }
-    }
-    func testReconnectingIsNotAuthenticated() {
-        if case .notAuthenticated = AgentRunner.classify(exitCode: 1, output: "ERROR: Reconnecting... 5/5") {}
-        else { XCTFail() }
-    }
-    func testCleanReplyTrims() {
-        if case .reply(let t) = AgentRunner.classify(exitCode: 0, output: "  done.\n") { XCTAssertEqual(t, "done.") }
-        else { XCTFail() }
-    }
-}
-
 // MARK: - Integration (gated: needs the real codewith binary)
 
 final class AppServerIntegrationTests: XCTestCase {
@@ -270,5 +259,27 @@ final class AppServerIntegrationTests: XCTestCase {
         XCTAssertFalse(initResult.isNull, "initialize should return a non-null result")
         let (threads, _) = try await client.listThreads(limit: 3)
         XCTAssertNotNil(threads)   // array (possibly empty) — no RPC error thrown
+    }
+
+    // Regression: a candidate binary that exits immediately (e.g. a bundled CLI
+    // that lost its node_modules) must surface as a fast initialize FAILURE — not
+    // hang — so bootstrap() can fall through to the next candidate instead of
+    // leaving the app stuck "connecting" with no app-server.
+    func testStartWithImmediatelyExitingBinaryFailsInitialize() async throws {
+        let dir = NSTemporaryDirectory() as NSString
+        let broken = dir.appendingPathComponent("cw-broken-\(getpid())")
+        try "#!/bin/sh\nexit 1\n".write(toFile: broken, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken)
+        defer { try? FileManager.default.removeItem(atPath: broken) }
+
+        let client = AppServerClient()
+        try client.start(binary: broken)
+        defer { client.stop() }
+        do {
+            _ = try await client.initialize()
+            XCTFail("initialize should throw when the spawned binary exits immediately")
+        } catch {
+            // expected: the process died, so the handshake fails fast
+        }
     }
 }

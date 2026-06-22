@@ -15,6 +15,11 @@ struct Composer: View {
     var effortLabel: String = "Low"
     @Environment(\.snapshotMode) private var snapshot
 
+    /// Short model label to match the reference pill (e.g. "gpt-5.5-codex" → "5.5-codex").
+    private var shortModel: String {
+        modelLabel.hasPrefix("gpt-") ? String(modelLabel.dropFirst(4)) : modelLabel
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -34,7 +39,7 @@ struct Composer: View {
                 }
                 Spacer()
             }
-            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 18)
+            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
 
             HStack(spacing: 10) {
                 Button { onPlus?() } label: {
@@ -58,7 +63,7 @@ struct Composer: View {
                 // Model + effort pill — opens the config panel.
                 Button { onConfigTap?() } label: {
                     HStack(spacing: 3) {
-                        Text(modelLabel).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                        Text(shortModel).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
                         Text(effortLabel).font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
                         Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
                     }
@@ -75,7 +80,7 @@ struct Composer: View {
                     Button { stopMode ? onStop?() : onSubmit?() } label: {
                         Circle()
                             .fill(active ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
-                            .frame(width: 24, height: 24)
+                            .frame(width: 22, height: 22)
                             .overlay(Image(systemName: stopMode ? "stop.fill" : "arrow.up")
                                 .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
                             .contentShape(Circle())
@@ -86,9 +91,9 @@ struct Composer: View {
             .padding(.horizontal, 12).padding(.bottom, 10)
         }
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }
