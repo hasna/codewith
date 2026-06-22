@@ -994,7 +994,7 @@ fn select_permissions_popup_row(chat: &mut ChatWidget, label: &str) {
         let popup = render_bottom_popup(chat, /*width*/ 120);
         if popup
             .lines()
-            .any(|line| line.starts_with('›') && line.contains(label))
+            .any(|line| selected_permissions_popup_row_matches_label(line, label))
         {
             return;
         }
@@ -1004,6 +1004,39 @@ fn select_permissions_popup_row(chat: &mut ChatWidget, label: &str) {
         "permissions popup did not select `{label}`:\n{}",
         render_bottom_popup(chat, /*width*/ 120)
     );
+}
+
+fn selected_permissions_popup_row_matches_label(line: &str, label: &str) -> bool {
+    let Some(line) = line.strip_prefix('›') else {
+        return false;
+    };
+    let Some((_number, row)) = line.trim_start().split_once(". ") else {
+        return false;
+    };
+    let Some(suffix) = row.trim_start().strip_prefix(label) else {
+        return false;
+    };
+    suffix.is_empty() || suffix.starts_with("  ") || suffix.starts_with(" (current)")
+}
+
+#[test]
+fn selected_permissions_popup_row_matches_exact_label() {
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 2. Ask for approval              Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 2. Ask for approval (current)    Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(!selected_permissions_popup_row_matches_label(
+        "› 1. Ask for approval (non-admin sandbox)  Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(!selected_permissions_popup_row_matches_label(
+        "  2. Ask for approval              Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
 }
 
 #[tokio::test]
