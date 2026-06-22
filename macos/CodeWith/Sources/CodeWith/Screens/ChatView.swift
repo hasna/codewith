@@ -82,7 +82,7 @@ struct ChatView: View {
             HStack { Spacer()
                 Text(m.text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(Color(hex: 0xEDEDEF)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0xEDEDEF)))
             }
             .padding(.bottom, 16)
         case .assistant:
@@ -157,14 +157,14 @@ struct ToolRow: View {
     var icon: String
     var text: String
     var body: some View {
-        // Compact inline chip (hugs content), left-aligned — matches the reference.
+        // Flat inline tool line (icon + low-contrast text), no chip fill — the
+        // reference renders tool calls as plain gray lines, not filled chips.
         HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
             Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(1)
         }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.black.opacity(0.035)))
+        .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 11)
+        .padding(.bottom, 8)
     }
 }
