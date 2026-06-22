@@ -275,6 +275,7 @@ fn linux_process_command(pid: u32) -> String {
         .unwrap_or_else(|| "<unknown command>".to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn summarize_cmdline(cmdline: &[u8]) -> Option<String> {
     let args: Vec<String> = cmdline
         .split(|byte| *byte == b'\0')
@@ -360,6 +361,7 @@ fn summarize_cmdline(cmdline: &[u8]) -> Option<String> {
     Some(truncate_for_display(summary.join(" ").as_str()))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn command_name(command: &str) -> String {
     Path::new(command)
         .file_name()
@@ -369,6 +371,7 @@ fn command_name(command: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn flag_contains_sensitive_name(flag: &str) -> bool {
     let flag = flag.to_ascii_lowercase();
     flag.contains("api-key")
@@ -379,6 +382,7 @@ fn flag_contains_sensitive_name(flag: &str) -> bool {
         || flag.contains("credential")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn is_safe_inline_flag(flag: &str) -> bool {
     matches!(
         flag,
