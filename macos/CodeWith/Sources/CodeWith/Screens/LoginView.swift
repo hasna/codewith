@@ -1,11 +1,32 @@
 import SwiftUI
 
-/// "Get started with CodeWith" (reference screenshot 11).
+/// "Get started with CodeWith" — login / register for all supported providers.
 struct LoginView: View {
+    @Bindable var model: AppModel
+    @State private var mode: Mode = .home
+    @State private var apiKey = ""
+    @State private var selectedProvider = "OpenAI"
+    @Environment(\.snapshotMode) private var snapshot
+
+    enum Mode { case home, providers, apiKey }
+
+    private struct Provider: Identifiable {
+        var id: String { name }
+        var name: String
+        var icon: String
+        var keyBased: Bool
+    }
+    private let providers: [Provider] = [
+        .init(name: "OpenAI", icon: "key.fill", keyBased: true),
+        .init(name: "Anthropic", icon: "key.fill", keyBased: true),
+        .init(name: "Azure", icon: "key.fill", keyBased: true),
+        .init(name: "OpenRouter", icon: "key.fill", keyBased: true),
+        .init(name: "Ollama", icon: "desktopcomputer", keyBased: false),
+    ]
+
     var body: some View {
         ZStack {
             Theme.canvas
-            // Top-left brand pill
             VStack {
                 HStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -19,33 +40,131 @@ struct LoginView: View {
             .padding(18)
 
             VStack(spacing: 0) {
-                // Brand glyph — soft organic blob with a thin terminal prompt.
-                BrandBlob()
-                    .frame(width: 72, height: 72)
-                    .padding(.bottom, 44)
+                BrandBlob().frame(width: 72, height: 72).padding(.bottom, 28)
 
-                Text("Get started with CodeWith")
-                    .font(.system(size: 29, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                    .padding(.bottom, 38)
-
-                // Primary sign-in
-                HStack(spacing: 10) {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                    Text("Sign in with CodeWith").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                switch mode {
+                case .home:      homeContent
+                case .providers: providerList
+                case .apiKey:    apiKeyEntry
                 }
-                .frame(width: 360, height: 54)
-                .background(Capsule().fill(Color(hex: 0x1A1A1A)))
-                .padding(.bottom, 12)
 
-                Text("Sign in another way")
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-                    .frame(width: 360, height: 54)
-                    .background(Capsule().fill(Color.white).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
-                    .padding(.bottom, 22)
-
-                Text("Sign up").font(.system(size: 14)).foregroundStyle(Theme.textSecondary).underline()
+                if let err = model.loginError {
+                    Text(err).font(.system(size: 12)).foregroundStyle(Theme.danger).padding(.top, 14)
+                }
             }
+            .frame(width: 380)
         }
+    }
+
+    // MARK: Home (ChatGPT + another way)
+
+    private var homeContent: some View {
+        VStack(spacing: 0) {
+            Text("Get started with CodeWith")
+                .font(.system(size: 28, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                .padding(.bottom, 34)
+
+            primaryButton(icon: "bubble.left.and.bubble.right.fill", title: model.loginInProgress ? "Waiting for browser…" : "Sign in with ChatGPT") {
+                Task { await model.loginWithChatGPT() }
+            }
+            .padding(.bottom, 12)
+
+            secondaryButton(title: "Sign in another way") { mode = .providers }
+                .padding(.bottom, 22)
+
+            Button { openURL("https://chatgpt.com") } label: {
+                Text("Sign up").font(.system(size: 14)).foregroundStyle(Theme.textSecondary).underline()
+            }.buttonStyle(.plain)
+        }
+    }
+
+    // MARK: Provider list
+
+    private var providerList: some View {
+        VStack(spacing: 0) {
+            Text("Choose a provider")
+                .font(.system(size: 22, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                .padding(.bottom, 22)
+            VStack(spacing: 8) {
+                ForEach(providers) { p in
+                    Button {
+                        selectedProvider = p.name
+                        if p.keyBased { mode = .apiKey } else { Task { await model.loginWithApiKey("") } }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: p.icon).font(.system(size: 14)).foregroundStyle(Theme.textSecondary).frame(width: 20)
+                            Text(p.name).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                        }
+                        .padding(.horizontal, 14).frame(height: 48).contentShape(Rectangle())
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.fieldFill)
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+                    }.buttonStyle(.plain)
+                }
+            }
+            backLink { mode = .home }
+        }
+    }
+
+    // MARK: API key entry
+
+    private var apiKeyEntry: some View {
+        VStack(spacing: 0) {
+            Text("Sign in with \(selectedProvider)")
+                .font(.system(size: 22, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                .padding(.bottom, 8)
+            Text("Paste your \(selectedProvider) API key.")
+                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 18)
+
+            HStack {
+                if snapshot {
+                    Text(apiKey.isEmpty ? "sk-…" : "••••••••").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
+                } else {
+                    SecureField("sk-…", text: $apiKey).textFieldStyle(.plain).font(.system(size: 13))
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14).frame(height: 46)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Theme.fieldFill)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+            .padding(.bottom, 12)
+
+            primaryButton(icon: "checkmark", title: model.loginInProgress ? "Signing in…" : "Continue") {
+                Task { await model.loginWithApiKey(apiKey) }
+            }
+            backLink { mode = .providers }
+        }
+    }
+
+    // MARK: Components
+
+    private func primaryButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+            }
+            .frame(width: 360, height: 52).contentShape(Rectangle())
+            .background(Capsule().fill(Color(hex: 0x1A1A1A)))
+        }.buttonStyle(.plain)
+    }
+    private func secondaryButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .frame(width: 360, height: 52).contentShape(Rectangle())
+                .background(Capsule().fill(Color.white).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
+        }.buttonStyle(.plain)
+    }
+    private func backLink(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("Back").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+        }.buttonStyle(.plain).padding(.top, 18)
+    }
+    private func openURL(_ s: String) {
+        #if canImport(AppKit)
+        if let url = URL(string: s) { NSWorkspace.shared.open(url) }
+        #endif
     }
 }
 
@@ -55,7 +174,6 @@ struct BrandBlob: View {
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {
-            // Lobes
             ForEach(Array([CGPoint(x: 0, y: -0.5), CGPoint(x: 0.5, y: -0.1), CGPoint(x: 0.42, y: 0.42),
                            CGPoint(x: -0.42, y: 0.42), CGPoint(x: -0.5, y: -0.1), CGPoint(x: 0, y: 0.2)].enumerated()), id: \.offset) { _, p in
                 Circle().frame(width: 40, height: 40).offset(x: p.x * 30, y: p.y * 30)

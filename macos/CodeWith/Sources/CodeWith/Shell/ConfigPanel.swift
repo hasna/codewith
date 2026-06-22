@@ -37,19 +37,27 @@ struct ConfigPanel: View {
 
             Spacer()
 
-            // Account footer
-            HStack(spacing: 8) {
-                Circle().fill(Color(hex: model.currentProfile.colorHex)).frame(width: 22, height: 22)
-                    .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(model.account.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                    if !model.account.plan.isEmpty {
-                        Text(model.account.plan).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+            // Account footer — tap to manage profiles.
+            Button {
+                model.showConfigPanel = false
+                model.open(.profiles, label: "Profiles")
+                Task { await model.loadProfiles() }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle().fill(Color(hex: model.currentProfile.colorHex)).frame(width: 22, height: 22)
+                        .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(model.account.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                        if !model.account.plan.isEmpty {
+                            Text(model.account.plan).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                        }
                     }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
                 }
-                Spacer()
+                .padding(.horizontal, 14).padding(.vertical, 12).contentShape(Rectangle())
             }
-            .padding(.horizontal, 14).padding(.vertical, 12)
+            .buttonStyle(.plain)
             .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
         }
         .frame(width: 232)

@@ -3,24 +3,11 @@ import SwiftUI
 /// Profile switcher — a fork-specific screen for switching between accounts /
 /// profiles. Self-contained sample data, no AppModel dependency.
 struct ProfilesView: View {
-    private struct Profile: Identifiable {
-        let id = UUID()
-        let name: String
-        let handle: String
-        let plan: String
-        let initials: String
-        let color: Color
-        let active: Bool
-    }
+    var profiles: [AuthProfileInfo] = []
+    var activeEmail: String = ""
+    var onSwitch: (String) -> Void = { _ in }
 
-    private let profiles: [Profile] = [
-        Profile(name: "Andrei Hasna", handle: "@andrei.hasna", plan: "Pro",
-                initials: "AH", color: Color(hex: 0x4AB58E), active: true),
-        Profile(name: "Work", handle: "@work", plan: "Team",
-                initials: "W", color: Color(hex: 0x3B82F6), active: false),
-        Profile(name: "Personal", handle: "@personal", plan: "Free",
-                initials: "P", color: Color(hex: 0xE9943B), active: false),
-    ]
+    private let avatarColors: [UInt32] = [0x4AB58E, 0x3B82F6, 0xE9943B, 0x6E6BF2, 0xDB5B5B]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,10 +26,15 @@ struct ProfilesView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 28).padding(.top, 20).padding(.bottom, 14)
 
+                if profiles.isEmpty {
+                    Text("No profiles found.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 28).padding(.bottom, 8)
+                }
                 // Profile list (grouped card).
                 VStack(spacing: 0) {
                     ForEach(Array(profiles.enumerated()), id: \.element.id) { i, p in
-                        profileRow(p)
+                        profileRow(p, color: Color(hex: avatarColors[i % avatarColors.count]))
                         if i < profiles.count - 1 {
                             Rectangle().fill(Theme.separator).frame(height: 1)
                                 .padding(.leading, 60)
@@ -89,33 +81,33 @@ struct ProfilesView: View {
         .background(Capsule().fill(Color(hex: 0x202020)))
     }
 
-    private func profileRow(_ p: Profile) -> some View {
-        HStack(spacing: 12) {
-            // Avatar.
-            Circle().fill(p.color)
-                .frame(width: 36, height: 36)
-                .overlay(
-                    Text(p.initials)
-                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                )
+    private func profileRow(_ p: AuthProfileInfo, color: Color) -> some View {
+        let active = !activeEmail.isEmpty && p.email == activeEmail
+        let initials = String(p.name.prefix(2)).uppercased()
+        return Button { if !active { onSwitch(p.name) } } label: {
+            HStack(spacing: 12) {
+                Circle().fill(color)
+                    .frame(width: 36, height: 36)
+                    .overlay(Text(initials).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                HStack(spacing: 6) {
-                    Text(p.handle).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
-                    Text("·").font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
-                    Text(p.active ? "\(p.plan) · Default" : p.plan)
-                        .font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    HStack(spacing: 6) {
+                        Text(p.email).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                        if !p.plan.isEmpty {
+                            Text("·").font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
+                            Text(active ? "\(p.plan) · Active" : p.plan)
+                                .font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+                Spacer()
+                if active {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 16)).foregroundStyle(Theme.toggleBlue)
                 }
             }
-
-            Spacer()
-
-            if p.active {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 16)).foregroundStyle(Theme.toggleBlue)
-            }
+            .padding(.horizontal, 14).padding(.vertical, 11).contentShape(Rectangle())
         }
-        .padding(.horizontal, 14).padding(.vertical, 11)
+        .buttonStyle(.plain)
     }
 }

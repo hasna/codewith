@@ -7,7 +7,9 @@ struct AppShell: View {
 
     var body: some View {
         Group {
-            if model.showSettings {
+            if model.connection == .connected && !model.isSignedIn {
+                LoginView(model: model)
+            } else if model.showSettings {
                 SettingsShell(
                     selected: model.settingsPage,
                     onSelect: { model.settingsPage = $0 },
@@ -55,7 +57,9 @@ struct AppShell: View {
                 case .apps:     AppsView(apps: model.apps)
                 case .loops:    LoopsView(loops: model.loops, onToggle: { l in Task { await model.toggleLoop(l) } })
                 case .machines: MachinesView(machines: model.machines)
-                case .profiles: ProfilesView()
+                case .profiles: ProfilesView(profiles: model.authProfiles,
+                                             activeEmail: model.account.email,
+                                             onSwitch: { name in Task { await model.switchAuthProfile(name) } })
                 }
             }
             .frame(maxWidth: .infinity)

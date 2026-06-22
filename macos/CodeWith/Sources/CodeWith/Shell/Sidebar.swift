@@ -30,15 +30,8 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Spacer().frame(width: 56)
-                BrandMark()
-                Image(systemName: "chevron.left").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textTertiary)
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textTertiary.opacity(0.5))
-                Spacer()
-            }
-            .frame(height: 38)
-            .padding(.horizontal, 10)
+            // Top spacer clears the window traffic lights; brand/nav buttons removed.
+            Color.clear.frame(height: 38)
 
             ScrollColumn(alignment: .leading, spacing: 1) {
                 ForEach(topItems) { row(for: $0) }

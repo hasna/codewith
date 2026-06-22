@@ -79,6 +79,15 @@ struct MachineInfo: Identifiable, Hashable {
     var online: Bool { status == "online" }
 }
 
+/// An auth profile from `codewith profile list`.
+struct AuthProfileInfo: Identifiable, Hashable {
+    var id: String { name }
+    var name: String
+    var email: String
+    var provider: String
+    var plan: String
+}
+
 /// An installable app/skill from `app/list`.
 struct AppItemInfo: Identifiable, Hashable {
     var id: String { name }

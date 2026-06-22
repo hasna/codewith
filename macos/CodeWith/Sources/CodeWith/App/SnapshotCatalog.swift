@@ -20,11 +20,11 @@ enum SnapshotCatalog {
             framed("08-settings-configuration") { SettingsShell(selected: "Configuration") { SettingsConfiguration() } },
             framed("09-settings-personalization") { SettingsShell(selected: "Personalization") { SettingsPersonalization() } },
             framed("12-machines") { RootView(model: m) { MachinesView(machines: m.machines) } },
-            framed("13-profiles") { RootView(model: m) { ProfilesView() } },
+            framed("13-profiles") { RootView(model: m) { ProfilesView(profiles: m.authProfiles, activeEmail: m.account.email) } },
             framed("14-apps") { RootView(model: m) { AppsView(apps: m.apps) } },
             framed("15-loops") { RootView(model: m) { LoopsView(loops: m.loops) } },
             SnapshotItem(name: "11-login", size: WindowSize.framed, view: AnyView(
-                WindowFrame(showTrafficLights: false) { LoginView() }
+                WindowFrame(showTrafficLights: false) { LoginView(model: m) }
             )),
         ]
     }

@@ -169,6 +169,20 @@ extension AppServerClient {
         return (cfg["model"]?.string, cfg["model_provider"]?.string ?? cfg["modelProvider"]?.string)
     }
 
+    /// Read model + provider + approval policy + sandbox mode from config.
+    func readFullConfig() async throws -> (model: String?, provider: String?, approval: String?, sandbox: String?) {
+        let r = try await request("config/read", .object([:]), timeout: 20)
+        let cfg = r["config"] ?? r
+        let approval: String?
+        if let s = cfg["approval_policy"]?.string { approval = s }
+        else if cfg["approval_policy"]?["granular"] != nil { approval = "granular" }
+        else { approval = nil }
+        return (cfg["model"]?.string,
+                cfg["model_provider"]?.string ?? cfg["modelProvider"]?.string,
+                approval,
+                cfg["sandbox_mode"]?.string)
+    }
+
     func listApps() async throws -> [AppItemInfo] {
         guard let r = try? await request("app/list", .object([:]), timeout: 20) else { return [] }
         return (r["data"]?.array ?? []).map { a in

@@ -57,7 +57,11 @@ final class AppModel {
     var loops: [LoopInfo] = []
     var apps: [AppItemInfo] = []
     var machines: [MachineInfo] = []
+    var authProfiles: [AuthProfileInfo] = []
     var account = AccountInfo.signedOut
+    var serverVersion: String? = nil
+    var configApproval: String? = nil
+    var configSandbox: String? = nil
 
     // In-session config
     var model: String? = nil
@@ -114,7 +118,8 @@ final class AppModel {
         guard connection == .connecting else { return }   // idempotent
         do {
             try client.start()
-            _ = try await client.initialize()
+            let initResult = try await client.initialize()
+            serverVersion = Self.parseVersion(initResult["userAgent"]?.string)
             connection = .connected
         } catch {
             connection = .unavailable(error.localizedDescription); return
@@ -199,10 +204,91 @@ final class AppModel {
     }
 
     func loadConfig() async {
-        if let (m, p) = try? await client.readModelConfig() {
-            if model == nil { model = m }
-            if provider == nil { provider = p }
+        if let cfg = try? await client.readFullConfig() {
+            if model == nil { model = cfg.model }
+            if provider == nil { provider = cfg.provider }
+            configApproval = cfg.approval
+            configSandbox = cfg.sandbox
         }
+    }
+
+    func loadProfiles() async {
+        authProfiles = await ProfileRunner.loadProfiles()
+    }
+
+    // MARK: Login / auth
+
+    var loginInProgress = false
+    var loginError: String? = nil
+
+    var isSignedIn: Bool {
+        let n = account.name
+        return n != "Signed out" && !n.isEmpty
+    }
+
+    /// Start ChatGPT OAuth: open the returned auth URL in the browser. The
+    /// `account/login/completed` notification finalizes it.
+    func loginWithChatGPT() async {
+        guard connection == .connected else { return }
+        loginInProgress = true; loginError = nil
+        do {
+            let r = try await client.request("account/login/start", .object(["type": .string("chatgpt")]), timeout: 30)
+            if let urlStr = r["authUrl"]?.string, let url = URL(string: urlStr) {
+                #if canImport(AppKit)
+                NSWorkspace.shared.open(url)
+                #endif
+            } else if let urlStr = r["verificationUrl"]?.string, let url = URL(string: urlStr) {
+                #if canImport(AppKit)
+                NSWorkspace.shared.open(url)
+                #endif
+            }
+        } catch {
+            loginError = error.localizedDescription
+            loginInProgress = false
+        }
+    }
+
+    /// Sign in with an OpenAI API key.
+    func loginWithApiKey(_ key: String) async {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connection == .connected, !k.isEmpty else { return }
+        loginInProgress = true; loginError = nil
+        _ = try? await client.request("account/login/start",
+            .object(["type": .string("apiKey"), "apiKey": .string(k)]), timeout: 30)
+        await loadAccount()
+        loginInProgress = false
+        if !isSignedIn { loginError = "That key was not accepted." }
+    }
+
+    func cancelLogin() async {
+        _ = try? await client.request("account/login/cancel", .object([:]), timeout: 10)
+        loginInProgress = false
+    }
+
+    func logout() async {
+        _ = try? await client.request("account/logout", .object([:]), timeout: 10)
+        await loadAccount()
+    }
+
+    /// Switch the active CLI profile, then reconnect the session.
+    func switchAuthProfile(_ name: String) async {
+        await ProfileRunner.switchProfile(name)
+        await loadAccount()
+        await loadProfiles()
+    }
+
+    static func parseVersion(_ userAgent: String?) -> String? {
+        guard let ua = userAgent else { return nil }
+        // Extract the first X.Y.Z token.
+        var current = ""
+        for ch in ua {
+            if ch.isNumber || ch == "." { current.append(ch) }
+            else {
+                if current.filter({ $0 == "." }).count >= 2 { return current }
+                current = ""
+            }
+        }
+        return current.filter { $0 == "." }.count >= 2 ? current : nil
     }
 
     // MARK: Navigation
@@ -283,6 +369,9 @@ final class AppModel {
         case "turn/completed", "thread/turn/completed":
             turnInProgress = false
             streamingAssistantIndex = nil
+        case "account/login/completed", "account/updated", "account/login/chatGptComplete":
+            loginInProgress = false
+            Task { await loadAccount(); await refreshAll() }
         default:
             break
         }
@@ -384,6 +473,10 @@ final class AppModel {
             MachineInfo(id: "apple03", os: "macos", status: "online", role: "workstation", isLocal: false),
             MachineInfo(id: "machine001", os: "macos", status: "online", role: "build", isLocal: false),
             MachineInfo(id: "apple06", os: "macos", status: "unknown", role: "laptop", isLocal: false),
+        ]
+        m.authProfiles = [
+            AuthProfileInfo(name: "account001", email: "theflashbadger@gmail.com", provider: "ChatGPT", plan: "Pro"),
+            AuthProfileInfo(name: "account002", email: "andrei@hasna.com", provider: "ChatGPT", plan: "Pro"),
         ]
         m.account = AccountInfo(from: .object(["account": .object([
             "displayName": .string("Andrei Hasna"), "email": .string("andrei@hasna.com"), "planType": .string("Pro"),
