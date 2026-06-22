@@ -971,9 +971,13 @@ async fn permissions_selection_event_full_access_to_default() {
         .permissions
         .set_permission_profile(PermissionProfile::Disabled)
         .expect("set permission profile");
+    #[cfg(target_os = "windows")]
+    let expected_label = format!("{ASK_FOR_APPROVAL_LABEL} (non-admin sandbox)");
+    #[cfg(not(target_os = "windows"))]
+    let expected_label = ASK_FOR_APPROVAL_LABEL.to_string();
 
     chat.open_permissions_popup();
-    select_permissions_popup_row(&mut chat, ASK_FOR_APPROVAL_LABEL);
+    select_permissions_popup_row(&mut chat, expected_label.as_str());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let events = drain_app_events(&mut rx);
@@ -983,7 +987,7 @@ async fn permissions_selection_event_full_access_to_default() {
             AppEvent::SelectPermissionProfile(PermissionProfileSelection {
                 display_label,
                 ..
-            }) if display_label == ASK_FOR_APPROVAL_LABEL
+            }) if display_label == expected_label.as_str()
         )),
         "expected default permissions selection event, got: {events:?}"
     );
@@ -1032,6 +1036,10 @@ fn selected_permissions_popup_row_matches_exact_label() {
     assert!(!selected_permissions_popup_row_matches_label(
         "› 1. Ask for approval (non-admin sandbox)  Codewith can read files",
         ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 1. Ask for approval (non-admin sandbox)  Codewith can read files",
+        "Ask for approval (non-admin sandbox)"
     ));
     assert!(!selected_permissions_popup_row_matches_label(
         "  2. Ask for approval              Codewith can read files",
