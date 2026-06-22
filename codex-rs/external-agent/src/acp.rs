@@ -2678,15 +2678,20 @@ for line in sys.stdin:
 
     #[test]
     fn confined_path_rejects_parent_traversal() {
-        let cwd = Path::new("/repo/project");
+        let cwd = normalize_lexical(Path::new("/repo/project"));
+        let sibling_path = normalize_lexical(Path::new("/repo/secret.txt"));
 
         assert_eq!(
-            confine_path(cwd, Path::new("src/lib.rs")),
-            Ok(PathBuf::from("/repo/project/src/lib.rs"))
+            confine_path(&cwd, Path::new("src/lib.rs")),
+            Ok(cwd.join("src/lib.rs"))
         );
         assert_eq!(
-            confine_path(cwd, Path::new("../secret.txt")),
-            Err("path `/repo/secret.txt` is outside cwd `/repo/project`".to_string())
+            confine_path(&cwd, Path::new("../secret.txt")),
+            Err(format!(
+                "path `{}` is outside cwd `{}`",
+                sibling_path.display(),
+                cwd.display()
+            ))
         );
     }
 
@@ -2707,7 +2712,11 @@ for line in sys.stdin:
                     "cwd": "/repo/other",
                 }),
             ),
-            Err("path `/repo/other` is outside cwd `/repo/project`".to_string())
+            Err(format!(
+                "path `{}` is outside cwd `{}`",
+                normalize_lexical(Path::new("/repo/other")).display(),
+                normalize_lexical(Path::new("/repo/project")).display()
+            ))
         );
     }
 
