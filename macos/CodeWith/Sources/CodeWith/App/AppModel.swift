@@ -350,7 +350,11 @@ final class AppModel {
 
     func submitComposer() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, connection == .connected else { return }
+        // Guard against a second submit while a turn is already running (prevents
+        // the same prompt being sent twice via Enter + button or rapid repeats).
+        guard !text.isEmpty, connection == .connected, !turnInProgress else { return }
+        turnInProgress = true   // set immediately to block re-entry across the awaits below
+        streamingAssistantIndex = nil
         composerText = ""
         // Show the user's message immediately for responsiveness.
         activeMessages.append(ChatMessage(role: .user, text: text))
@@ -360,12 +364,11 @@ final class AppModel {
             await loadThreads(reset: true)
         }
         guard let tid = activeThreadId else {
+            turnInProgress = false
             activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ Couldn't start a session. Is the app-server connected?"))
             return
         }
         route = .chat(tid)
-        turnInProgress = true
-        streamingAssistantIndex = nil
         do {
             try await client.startTurn(threadId: tid, input: text, model: model, provider: provider,
                                        effort: effort.lowercased().replacingOccurrences(of: " ", with: ""))
@@ -393,7 +396,7 @@ final class AppModel {
             handleCompletedItem(params["item"] ?? .null)
         case "turn/started", "thread/turn/started":
             turnInProgress = true
-        case "turn/completed", "thread/turn/completed":
+        case "turn/completed", "thread/turn/completed", "turn/failed", "thread/turn/failed":
             turnInProgress = false
             streamingAssistantIndex = nil
         case "account/login/completed", "account/updated", "account/login/chatGptComplete":
