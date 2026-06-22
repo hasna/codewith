@@ -66,8 +66,8 @@ struct SettingsAppearance: View {
     /// A neutral app-window preview: faint sidebar + content lines + window dots,
     /// matching the reference's muted gray/light/dark theme thumbnails.
     private func miniApp(dark: Bool) -> some View {
-        let bg = dark ? Color(hex: 0x2B2D30) : Color(hex: 0xF4F4F6)
-        let side = dark ? Color(hex: 0x232527) : Color(hex: 0xE7E7EA)
+        let bg = dark ? Color(hex: 0x3A3A3C) : Color(hex: 0xF6F6F8)
+        let side = dark ? Color(hex: 0x303032) : Color(hex: 0xEAEAEC)
         let ink = (dark ? Color.white : Color.black)
         return HStack(spacing: 0) {
             // faint sidebar

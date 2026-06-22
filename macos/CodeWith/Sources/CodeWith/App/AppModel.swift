@@ -403,9 +403,30 @@ final class AppModel {
 
     // MARK: Config actions
 
-    func setModel(_ m: String) { model = m }
-    func setProvider(_ p: String) { provider = p }
-    func setEffort(_ e: String) { effort = e }
+    func setModel(_ m: String) {
+        model = m
+        Task { await client.writeConfig(keyPath: "model", value: .string(m)); await loadConfig() }
+    }
+    func setProvider(_ p: String) {
+        provider = p
+        Task { await client.writeConfig(keyPath: "model_provider", value: .string(p)); await loadConfig() }
+    }
+    func setEffort(_ e: String) {
+        effort = e
+        Task { await client.writeConfig(keyPath: "model_reasoning_effort", value: .string(e.lowercased().replacingOccurrences(of: " ", with: ""))) }
+    }
+    func setApproval(_ a: String) {
+        configApproval = a
+        Task { await client.writeConfig(keyPath: "approval_policy", value: .string(a)); await loadConfig() }
+    }
+    func setSandbox(_ s: String) {
+        configSandbox = s
+        Task { await client.writeConfig(keyPath: "sandbox_mode", value: .string(s)); await loadConfig() }
+    }
+    func setFullAccess(_ on: Bool) {
+        fullAccess = on
+        setSandbox(on ? "danger-full-access" : "workspace-write")
+    }
 
     // MARK: Add menu
 

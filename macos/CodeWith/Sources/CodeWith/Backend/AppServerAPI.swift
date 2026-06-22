@@ -183,6 +183,15 @@ extension AppServerClient {
                 cfg["sandbox_mode"]?.string)
     }
 
+    /// Write a single config value (config/write, replace strategy).
+    func writeConfig(keyPath: String, value: JSONValue) async {
+        _ = try? await request("config/write", .object([
+            "keyPath": .string(keyPath),
+            "value": value,
+            "mergeStrategy": .string("replace"),
+        ]), timeout: 20)
+    }
+
     func listApps() async throws -> [AppItemInfo] {
         guard let r = try? await request("app/list", .object([:]), timeout: 20) else { return [] }
         return (r["data"]?.array ?? []).map { a in

@@ -4,6 +4,8 @@ struct SettingsConfiguration: View {
     var version: String? = nil
     var approval: String? = nil
     var sandbox: String? = nil
+    var onSetApproval: (String) -> Void = { _ in }
+    var onSetSandbox: (String) -> Void = { _ in }
 
     private var approvalLabel: String {
         switch approval {
@@ -43,10 +45,20 @@ struct SettingsConfiguration: View {
                 .padding(.bottom, 8)
                 card {
                     SettingsRow(title: "Approval policy", subtitle: "Choose when CodeWith asks for approval") {
-                        DropdownPill(text: approvalLabel)
+                        Menu {
+                            ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
+                                Button(v) { onSetApproval(v) }
+                            }
+                        } label: { DropdownPill(text: approvalLabel) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     }
                     SettingsRow(title: "Sandbox settings", subtitle: "Choose how much CodeWith can do when running commands", showDivider: false) {
-                        DropdownPill(text: sandboxLabel)
+                        Menu {
+                            ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
+                                Button(v) { onSetSandbox(v) }
+                            }
+                        } label: { DropdownPill(text: sandboxLabel) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     }
                 }
                 .padding(.bottom, 22)

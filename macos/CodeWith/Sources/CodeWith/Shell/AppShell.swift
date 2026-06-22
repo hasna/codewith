@@ -89,9 +89,11 @@ struct AppShell: View {
         switch name {
         case "Profile":         SettingsProfile(account: model.account)
         case "Appearance":      SettingsAppearance()
-        case "Configuration":   SettingsConfiguration(version: model.serverVersion, approval: model.configApproval, sandbox: model.configSandbox)
+        case "Configuration":   SettingsConfiguration(version: model.serverVersion, approval: model.configApproval, sandbox: model.configSandbox,
+                                                       onSetApproval: { model.setApproval($0) }, onSetSandbox: { model.setSandbox($0) })
         case "Personalization": SettingsPersonalization()
-        default:                SettingsGeneral()
+        default:                SettingsGeneral(fullAccess: model.fullAccess, sandbox: model.configSandbox,
+                                                onToggleFullAccess: { model.setFullAccess(!model.fullAccess) })
         }
     }
 }

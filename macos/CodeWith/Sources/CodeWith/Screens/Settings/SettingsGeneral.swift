@@ -1,6 +1,10 @@
 import SwiftUI
 
 struct SettingsGeneral: View {
+    var fullAccess: Bool = true
+    var sandbox: String? = nil
+    var onToggleFullAccess: () -> Void = {}
+
     var body: some View {
         SettingsPage(title: "General") {
             VStack(alignment: .leading, spacing: 0) {
@@ -27,7 +31,7 @@ struct SettingsGeneral: View {
                 SettingsRow(title: "Full access",
                             subtitle: "When CodeWith runs with full access, it can edit any file on your computer and run commands with network, without your approval. This significantly increases the risk of data loss, leaks, or unexpected behavior. Learn more about elevated risks.",
                             showDivider: false) {
-                    GlassToggle(on: true)
+                    GlassToggle(on: fullAccess || sandbox == "danger-full-access") { onToggleFullAccess() }
                 }
                 .padding(.bottom, 14)
 
