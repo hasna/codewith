@@ -6,6 +6,8 @@ struct SettingsConfiguration: View {
     var sandbox: String? = nil
     var onSetApproval: (String) -> Void = { _ in }
     var onSetSandbox: (String) -> Void = { _ in }
+    var onOpenConfig: () -> Void = {}
+    var onDiagnose: () -> Void = {}
     @Environment(\.snapshotMode) private var snapshot
 
     private var approvalLabel: String {
@@ -36,12 +38,20 @@ struct SettingsConfiguration: View {
 
                 SettingsGroupLabel(text: "Custom config.toml settings")
                 HStack {
-                    DropdownPill(text: "User config")
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Text("Open config.toml").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                        Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                    // Borderless dropdown — the reference renders this selector with
+                    // no card outline (text + chevron only).
+                    HStack(spacing: 6) {
+                        Text("User config").font(.system(size: 12)).foregroundStyle(Theme.textPrimary)
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
                     }
+                    Spacer()
+                    Button(action: onOpenConfig) {
+                        HStack(spacing: 4) {
+                            Text("Open config.toml").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                            Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.bottom, 8)
                 card {
@@ -76,13 +86,15 @@ struct SettingsConfiguration: View {
                         Text(version ?? "—").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                     }
                     SettingsRow(title: "CodeWith dependencies", subtitle: "Allow CodeWith to install and expose bundled Node.js and Python tools") {
-                        GlassToggle(on: true)
+                        GlassToggle(on: true).opacity(0.45)
+                            .help("Dependency management is not available in CodeWith.app yet.")
                     }
                     SettingsRow(title: "Diagnose issues in CodeWith Workspace", subtitle: "Checks the current bundle and records diagnostic logs") {
-                        pill("Diagnose", icon: "magnifyingglass", color: Theme.textPrimary)
+                        pillButton("Diagnose", icon: "magnifyingglass", color: Theme.textPrimary, action: onDiagnose)
                     }
                     SettingsRow(title: "Reset and install Workspace", subtitle: "Deletes the local bundle, downloads it again, and reloads tools", showDivider: false) {
-                        pill("Reinstall", icon: "arrow.down.circle", color: Theme.danger)
+                        pill("Reinstall", icon: "arrow.down.circle", color: Theme.danger).opacity(0.45)
+                            .help("Workspace reinstall is not available in CodeWith.app yet.")
                     }
                 }
             }
@@ -91,7 +103,7 @@ struct SettingsConfiguration: View {
     /// Groups rows in a subtle bordered card (reference Configuration layout).
     private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         VStack(spacing: 0) { content() }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 14).padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.white)
@@ -103,7 +115,14 @@ struct SettingsConfiguration: View {
             Image(systemName: icon).font(.system(size: 10))
             Text(t).font(.system(size: 12, weight: .medium))
         }
-        .foregroundStyle(color).padding(.horizontal, 12).frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 7).strokeBorder(color.opacity(0.4), lineWidth: 1))
+            .foregroundStyle(color).padding(.horizontal, 12).frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 7).fill(color.opacity(0.08))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(color.opacity(0.35), lineWidth: 1)))
+    }
+    private func pillButton(_ t: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            pill(t, icon: icon, color: color)
+        }
+        .buttonStyle(.plain)
     }
 }

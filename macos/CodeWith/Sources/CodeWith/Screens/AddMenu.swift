@@ -3,14 +3,8 @@ import SwiftUI
 /// The "+" composer popover (reference screenshot 03).
 struct AddMenu: View {
     var onAction: (String) -> Void = { _ in }
+    var activePeers: [ActiveSessionPeerInfo] = []
 
-    private let agents: [(String, String)] = [
-        ("Apollo", "UX designer — interfaces, UX, accessibility"),
-        ("Ares", "Performance engineer — profiling, optimization, speed"),
-        ("Athena", "Product manager — requirements, prioritization, user stories"),
-        ("Atlas", "Mobile engineer — iOS, Android, cross-platform"),
-        ("Aurelius", "Refactoring expert — code quality, clean architecture, technical debt"),
-    ]
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             label("Add")
@@ -19,12 +13,16 @@ struct AddMenu: View {
             item(icon: "target", title: "Goal", sub: "Set a goal that CodeWith will keep working towards")
             item(icon: "list.bullet.rectangle", title: "Plan mode", sub: "Turn plan mode on")
             label("Agents")
-            ForEach(agents, id: \.0) { a in
-                item(icon: nil, title: a.0, sub: a.1, mono: true)
+            if activePeers.isEmpty {
+                disabledItem(title: "No active agents", sub: "Loaded agents and sessions appear here")
+            } else {
+                ForEach(activePeers) { peer in
+                    item(icon: nil, title: peer.displayName, sub: peer.menuSubtitle, mono: true, actionValue: peer.peerId)
+                }
             }
         }
         .padding(.vertical, 6)
-        .frame(width: 412)
+        .frame(width: 380)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.white)
@@ -36,8 +34,8 @@ struct AddMenu: View {
         Text(t).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textTertiary)
             .padding(.leading, 14).padding(.top, 8).padding(.bottom, 3)
     }
-    private func item(icon: String?, title: String, sub: String?, hover: Bool = false, mono: Bool = false) -> some View {
-        Button { onAction(title) } label: {
+    private func item(icon: String?, title: String, sub: String?, hover: Bool = false, mono: Bool = false, actionValue: String? = nil) -> some View {
+        Button { onAction(actionValue ?? title) } label: {
             HStack(spacing: 10) {
                 if let icon {
                     Image(systemName: icon).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).frame(width: 18)
@@ -57,5 +55,17 @@ struct AddMenu: View {
             .background(RoundedRectangle(cornerRadius: 7).fill(hover ? Theme.rowSelected : .clear).padding(.horizontal, 6))
         }
         .buttonStyle(.plain)
+    }
+
+    private func disabledItem(title: String, sub: String?) -> some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: 18, height: 18)
+            Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textTertiary).fixedSize()
+            if let sub {
+                Text(sub).font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary).lineLimit(1).truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).frame(height: 30)
     }
 }
