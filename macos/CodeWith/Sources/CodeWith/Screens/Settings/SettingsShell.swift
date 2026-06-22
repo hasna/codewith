@@ -89,7 +89,7 @@ struct SettingsShell<Content: View>: View {
                 }
                 .padding(.horizontal, 8)
             }
-            .frame(width: 176)
+            .frame(width: 215)
             .background(Theme.sidebar)
 
             Rectangle().fill(Theme.separator).frame(width: 1)

@@ -47,7 +47,7 @@ enum Theme {
     static let small = Font.system(size: 11.5, weight: .regular)
 
     // MARK: Metrics
-    static let sidebarWidth: CGFloat = 176
+    static let sidebarWidth: CGFloat = 215
     static let rowRadius: CGFloat = 7
     static let cardRadius: CGFloat = 12
     static let windowRadius: CGFloat = 12

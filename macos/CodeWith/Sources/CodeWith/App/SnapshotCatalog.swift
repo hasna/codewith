@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The size of the app window's content (matches the reference captures).
 enum WindowSize {
-    static let app = CGSize(width: 786, height: 506)
+    static let app = CGSize(width: 1000, height: 760)
     /// Including the WindowFrame margin/shadow padding (22 per side).
-    static let framed = CGSize(width: 786 + 44, height: 506 + 44)
+    static let framed = CGSize(width: 1000 + 44, height: 760 + 44)
 }
 
 /// Every screen state we render during snapshot mode.
