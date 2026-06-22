@@ -15,6 +15,8 @@ use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreePolicy;
 use codex_app_server_protocol::WorktreeSessionMode;
 
+const TEST_BASE_REPO_PATH: &str = "/tmp/project";
+
 #[tokio::test]
 async fn worktree_manager_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -115,7 +117,7 @@ async fn worktree_read_selector_emits_read_event_with_repo_scope() {
         Ok(AppEvent::ReadWorktree {
             worktree_id: Some(worktree_id),
             base_repo_path: Some(base_repo_path),
-        }) if worktree_id == "018f-active-worktree" && base_repo_path == test_path_display("/tmp/project")
+        }) if worktree_id == "018f-active-worktree" && base_repo_path == TEST_BASE_REPO_PATH
     );
 }
 
@@ -162,7 +164,7 @@ async fn worktree_actions_use_emits_event_with_repo_scope() {
         Ok(AppEvent::UseWorktree {
             worktree_id,
             base_repo_path: Some(base_repo_path),
-        }) if worktree_id == "018f-actions-worktree" && base_repo_path == test_path_display("/tmp/project")
+        }) if worktree_id == "018f-actions-worktree" && base_repo_path == TEST_BASE_REPO_PATH
     );
 }
 
@@ -203,10 +205,8 @@ fn test_worktree(
         identity: Some(format!("{owner_kind:?}:{worktree_id}")),
         mode: WorktreeMode::IsolatedWorktree,
         lifecycle_status,
-        base_repo_path: test_path_display("/tmp/project"),
-        worktree_path: test_path_display(&format!(
-            "/tmp/project/.codewith/worktrees/{worktree_id}"
-        )),
+        base_repo_path: TEST_BASE_REPO_PATH.to_string(),
+        worktree_path: format!("{TEST_BASE_REPO_PATH}/.codewith/worktrees/{worktree_id}"),
         branch: Some(format!("codewith/{worktree_id}")),
         base_sha: Some("base-sha-1234567890".to_string()),
         head_sha: Some("head-sha-1234567890".to_string()),
@@ -249,11 +249,11 @@ fn local_timestamp_for_snapshot(
 fn test_policy() -> WorktreePolicy {
     WorktreePolicy {
         enabled: true,
-        root: Some(test_path_display("/tmp/project/.codewith/worktrees")),
+        root: Some(format!("{TEST_BASE_REPO_PATH}/.codewith/worktrees")),
         cleanup_default: WorktreeCleanupPolicy::DeleteIfClean,
         main_sessions: WorktreeSessionMode::Manual,
         sub_sessions: WorktreeSessionMode::Auto,
-        current_base_repo_path: Some(test_path_display("/tmp/project")),
+        current_base_repo_path: Some(TEST_BASE_REPO_PATH.to_string()),
     }
 }
 

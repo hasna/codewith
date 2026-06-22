@@ -2,6 +2,8 @@ use super::background_agent_processor::BackgroundAgentRequestProcessor;
 use super::background_agent_processor::api_worktree_from_state;
 use super::background_agent_processor::api_worktree_merge_candidate_from_state;
 use super::thread_processor::ThreadRequestProcessor;
+use super::worktree_paths::path_to_api_string;
+use super::worktree_paths::paths_equivalent;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use anyhow::Context;
@@ -415,7 +417,7 @@ impl ThreadRequestProcessor {
                 .into(),
             ));
         };
-        params.base_repo_path = Some(base_repo_path.to_string_lossy().into_owned());
+        params.base_repo_path = Some(path_to_api_string(base_repo_path.as_path()));
         self.background_agent_state_processor()
             .worktree_list_inner(params, policy)
             .await
@@ -718,7 +720,7 @@ impl ThreadRequestProcessor {
             .background_agent_state_processor()
             .worktree_list_inner(
                 WorktreeListParams {
-                    base_repo_path: Some(base_repo_path.display().to_string()),
+                    base_repo_path: Some(path_to_api_string(base_repo_path.as_path())),
                     include_deleted: Some(true),
                     cursor: None,
                     limit: Some(codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT),
@@ -1201,8 +1203,7 @@ impl ThreadRequestProcessor {
             cleanup_default: api_worktree_cleanup_policy_from_config(config.cleanup_default),
             main_sessions: api_worktree_session_mode_from_config(config.main_sessions),
             sub_sessions: api_worktree_session_mode_from_config(config.sub_sessions),
-            current_base_repo_path: current_base_repo_path
-                .map(|path| path.to_string_lossy().into_owned()),
+            current_base_repo_path: current_base_repo_path.map(path_to_api_string),
         }
     }
 
@@ -1637,13 +1638,7 @@ async fn linked_worktree_is_absent(
 }
 
 fn paths_match(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    paths_equivalent(left, right)
 }
 
 fn ensure_worktree_policy_enabled(policy: &WorktreePolicy) -> Result<(), JSONRPCErrorError> {

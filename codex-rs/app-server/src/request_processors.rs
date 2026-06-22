@@ -647,6 +647,7 @@ mod token_usage_replay;
 mod turn_processor;
 mod usage_profile_broker;
 mod windows_sandbox_processor;
+mod worktree_paths;
 
 pub(crate) use account_processor::AccountRequestProcessor;
 pub(crate) use active_session_processor::ActiveSessionRequestProcessor;

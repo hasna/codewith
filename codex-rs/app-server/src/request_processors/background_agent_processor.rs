@@ -1,4 +1,6 @@
 use super::MAX_USER_INPUT_TEXT_CHARS;
+use super::worktree_paths::path_to_api_string;
+use super::worktree_paths::paths_equivalent;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
@@ -945,7 +947,7 @@ impl BackgroundAgentRequestProcessor {
         let worktree = match worktree {
             Some(worktree) => {
                 if base_repo_path.is_some_and(|base_repo_path| {
-                    worktree.base_repo_path.as_path() != base_repo_path
+                    !paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
                 }) {
                     None
                 } else {
@@ -1620,8 +1622,8 @@ pub(crate) async fn api_worktree_from_state(
         identity: value.identity,
         mode: api_worktree_mode(value.mode),
         lifecycle_status: api_worktree_lifecycle_status(value.lifecycle_status),
-        base_repo_path: value.base_repo_path.display().to_string(),
-        worktree_path: value.worktree_path.display().to_string(),
+        base_repo_path: path_to_api_string(value.base_repo_path.as_path()),
+        worktree_path: path_to_api_string(value.worktree_path.as_path()),
         branch: value.branch,
         base_sha: value.base_sha,
         head_sha: value.head_sha,
