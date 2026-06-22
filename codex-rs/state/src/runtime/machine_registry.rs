@@ -77,6 +77,17 @@ impl MachineRegistryStore {
         &self,
         params: MachineRegistryUpsertParams,
     ) -> anyhow::Result<crate::MachineRecord> {
+        retry_transient_sqlite_busy("upsert machine registry", || {
+            let params = params.clone();
+            async move { self.upsert_machine_once(params).await }
+        })
+        .await
+    }
+
+    async fn upsert_machine_once(
+        &self,
+        params: MachineRegistryUpsertParams,
+    ) -> anyhow::Result<crate::MachineRecord> {
         let machine_id_hint = normalize_optional_token("machine_id", params.machine_id)?;
         let installation_id = normalize_optional_token("installation_id", params.installation_id)?;
         let display_name = normalize_optional_token("display_name", params.display_name)?;
