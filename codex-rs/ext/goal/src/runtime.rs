@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadGoal;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
@@ -29,6 +30,8 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub(crate) max_auto_goals_per_plan: usize,
     pub(crate) max_tokens_per_goal_plan: Option<i64>,
+    pub(crate) post_goal_context: codex_state::PostGoalContextAction,
+    pub(crate) post_goal_plan_context: codex_state::PostGoalContextAction,
 }
 
 pub(crate) enum ActiveGoalStopReason {
@@ -47,6 +50,7 @@ struct GoalRuntimeInner {
     tools_available_for_thread: bool,
     plan_config: std::sync::RwLock<GoalPlanRuntimeConfig>,
     goal_state_lock: Semaphore,
+    pending_context_compaction: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +58,8 @@ pub(crate) struct GoalPlanRuntimeConfig {
     pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub(crate) max_auto_goals_per_plan: usize,
     pub(crate) max_tokens_per_goal_plan: Option<i64>,
+    pub(crate) post_goal_context: codex_state::PostGoalContextAction,
+    pub(crate) post_goal_plan_context: codex_state::PostGoalContextAction,
 }
 
 #[derive(Clone)]
@@ -64,6 +70,16 @@ pub(crate) struct GoalPlanRuntimeConfigHandle {
 impl GoalPlanRuntimeConfigHandle {
     pub(crate) fn current(&self) -> GoalPlanRuntimeConfig {
         self.runtime.plan_config()
+    }
+
+    pub(crate) async fn apply_post_completion_context_policy(
+        &self,
+        goal: &codex_state::ThreadGoal,
+        plan_outcome: Option<&codex_state::ThreadGoalPlanAdvanceOutcome>,
+    ) -> Result<Option<String>, String> {
+        self.runtime
+            .apply_post_completion_context_policy(goal, plan_outcome)
+            .await
     }
 }
 
@@ -119,8 +135,11 @@ impl GoalRuntimeHandle {
                     auto_execute: config.auto_execute,
                     max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                     max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                    post_goal_context: config.post_goal_context,
+                    post_goal_plan_context: config.post_goal_plan_context,
                 }),
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
+                pending_context_compaction: AtomicBool::new(false),
             }),
         }
     }
@@ -132,6 +151,8 @@ impl GoalRuntimeHandle {
                 auto_execute: config.auto_execute,
                 max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                post_goal_context: config.post_goal_context,
+                post_goal_plan_context: config.post_goal_plan_context,
             };
         }
     }
@@ -165,6 +186,8 @@ impl GoalRuntimeHandle {
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
                 max_auto_goals_per_plan: 1,
                 max_tokens_per_goal_plan: None,
+                post_goal_context: codex_state::PostGoalContextAction::Keep,
+                post_goal_plan_context: codex_state::PostGoalContextAction::Keep,
             })
     }
 
@@ -285,7 +308,8 @@ impl GoalRuntimeHandle {
                         .mark_idle_goal_active(goal.goal_id.clone());
                 }
                 if objective_changed {
-                    let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
+                    let item =
+                        objective_updated_steering_item(&protocol_goal_from_state(goal.clone()));
                     self.inject_active_turn_steering(item).await;
                 }
                 self.continue_if_idle().await?;
@@ -326,13 +350,13 @@ impl GoalRuntimeHandle {
                 self.inner.accounting_state.clear_active_goal();
             }
         }
-        if let Some(outcome) = plan_advance {
+        if let Some(outcome) = &plan_advance {
             self.inner.event_emitter.thread_goal_plan_updated(
                 format!("{}:external-goal-plan", self.thread_id()),
                 /*turn_id*/ None,
-                outcome.snapshot,
+                outcome.snapshot.clone(),
             );
-            if let Some(activated_goal) = outcome.activated_goal {
+            if let Some(activated_goal) = outcome.activated_goal.clone() {
                 self.inner.metrics.record_created();
                 self.inner
                     .accounting_state
@@ -344,6 +368,12 @@ impl GoalRuntimeHandle {
                 );
                 self.continue_if_idle().await?;
             }
+        }
+        if let Some(report) = self
+            .apply_post_completion_context_policy(&goal, plan_advance.as_ref())
+            .await?
+        {
+            tracing::info!("{report}");
         }
         Ok(())
     }
@@ -565,6 +595,114 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
         }
         Ok(())
+    }
+
+    pub(crate) async fn apply_post_completion_context_policy(
+        &self,
+        goal: &codex_state::ThreadGoal,
+        plan_outcome: Option<&codex_state::ThreadGoalPlanAdvanceOutcome>,
+    ) -> Result<Option<String>, String> {
+        if !self.is_enabled() || goal.status != codex_state::ThreadGoalStatus::Complete {
+            return Ok(None);
+        }
+
+        let config = self.plan_config();
+        let action = match plan_outcome {
+            Some(outcome) if outcome.activated_goal.is_some() => {
+                return Ok(None);
+            }
+            Some(outcome)
+                if outcome.snapshot.plan.status == codex_state::ThreadGoalPlanStatus::Complete =>
+            {
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .thread_goal_plan_completion_context_action(
+                        self.thread_id(),
+                        outcome.snapshot.plan.plan_id.as_str(),
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .unwrap_or(config.post_goal_plan_context)
+            }
+            Some(outcome) => self
+                .inner
+                .state_dbs
+                .thread_goals()
+                .thread_goal_plan_context_action(
+                    self.thread_id(),
+                    outcome.snapshot.plan.plan_id.as_str(),
+                )
+                .await
+                .map_err(|err| err.to_string())?
+                .unwrap_or(config.post_goal_context),
+            None => self
+                .inner
+                .state_dbs
+                .thread_goals()
+                .thread_goal_context_action(self.thread_id(), goal.goal_id.as_str())
+                .await
+                .map_err(|err| err.to_string())?
+                .unwrap_or(config.post_goal_context),
+        };
+
+        match action {
+            codex_state::PostGoalContextAction::Keep => Ok(None),
+            codex_state::PostGoalContextAction::Compact => {
+                self.schedule_native_compaction_when_idle().await
+            }
+        }
+    }
+
+    async fn schedule_native_compaction_when_idle(&self) -> Result<Option<String>, String> {
+        self.inner
+            .pending_context_compaction
+            .store(true, Ordering::Release);
+        if let Some(thread_manager) = self.inner.thread_manager.upgrade()
+            && let Ok(thread) = thread_manager.get_thread(self.thread_id()).await
+        {
+            thread.emit_thread_idle_lifecycle_if_idle().await;
+        }
+        Ok(Some(
+            "Scheduled native context compaction after the thread becomes idle.".to_string(),
+        ))
+    }
+
+    pub(crate) async fn drain_pending_context_compaction_if_idle(
+        &self,
+    ) -> Result<Option<String>, String> {
+        if !self
+            .inner
+            .pending_context_compaction
+            .swap(false, Ordering::AcqRel)
+        {
+            return Ok(None);
+        }
+        self.queue_native_compaction().await
+    }
+
+    async fn queue_native_compaction(&self) -> Result<Option<String>, String> {
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            return Ok(Some(
+                "Skipped post-goal context compaction because the thread manager is unavailable."
+                    .to_string(),
+            ));
+        };
+        let thread = match thread_manager.get_thread(self.thread_id()).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                return Ok(Some(format!(
+                    "Skipped post-goal context compaction because the live thread is unavailable: {err}"
+                )));
+            }
+        };
+        thread
+            .submit(Op::Compact)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(Some(
+            "Queued native context compaction after completed goal lifecycle.".to_string(),
+        ))
     }
 
     pub(crate) async fn inject_active_turn_steering(&self, item: ResponseItem) {

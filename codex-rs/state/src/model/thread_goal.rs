@@ -148,6 +148,33 @@ impl TryFrom<&str> for ThreadGoalPlanAutoExecute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostGoalContextAction {
+    Keep,
+    Compact,
+}
+
+impl PostGoalContextAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+impl TryFrom<&str> for PostGoalContextAction {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "keep" => Ok(Self::Keep),
+            "compact" => Ok(Self::Compact),
+            other => Err(anyhow!("unknown post-goal context action `{other}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadGoalPlanNodeStatus {
     Pending,
     Active,
