@@ -40,11 +40,9 @@ struct AppShell: View {
             Group {
                 switch model.route {
                 case .home:
-                    HomeView(composerText: $model.composerText,
+                    HomeView(model: model,
                              onSubmit: { Task { await model.submitComposer() } },
-                             onPlus: { model.toggleAddMenu() },
                              onToggleConfig: { model.showConfigPanel.toggle() })
-                        .onTapGesture { if model.showAddMenu { model.showAddMenu = false } }
                 case .chat(let id):
                     ChatView(model: model, threadId: id,
                              onSubmit: { Task { await model.submitComposer() } },

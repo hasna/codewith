@@ -12,7 +12,7 @@ enum SnapshotCatalog {
     static var items: [SnapshotItem] {
         let m = AppModel.sample()
         return [
-            framed("01-home") { RootView(model: m) { HomeView(onToggleConfig: {}) } },
+            framed("01-home") { RootView(model: m) { HomeView(model: m) } },
             framed("02-chat") { RootView(model: m) { ChatView(model: m, threadId: "t1") } },
             framed("05-settings-general") { SettingsShell(selected: "General") { SettingsGeneral() } },
             framed("06-settings-profile") { SettingsShell(selected: "Profile") { SettingsProfile() } },

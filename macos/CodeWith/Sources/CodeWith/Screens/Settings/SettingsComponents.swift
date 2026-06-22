@@ -54,7 +54,9 @@ struct SettingsRow<Trailing: View>: View {
 
 struct GlassToggle: View {
     var on: Bool
-    var body: some View {
+    var onTap: (() -> Void)? = nil
+
+    @ViewBuilder private var capsule: some View {
         Capsule()
             .fill(on ? Theme.toggleBlue : Color(hex: 0xD8D8DC))
             .frame(width: 36, height: 21)
@@ -62,6 +64,13 @@ struct GlassToggle: View {
                 Circle().fill(.white).frame(width: 17, height: 17).padding(2)
                     .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
             }
+    }
+    var body: some View {
+        if let onTap {
+            Button(action: onTap) { capsule.contentShape(Capsule()) }.buttonStyle(.plain)
+        } else {
+            capsule
+        }
     }
 }
 

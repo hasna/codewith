@@ -49,7 +49,10 @@ struct ChatView: View {
             // Composer
             Composer(placeholder: "Ask for follow-up changes",
                      stopMode: model.turnInProgress,
-                     text: $model.composerText, onSubmit: onSubmit, onPlus: onPlus)
+                     text: $model.composerText, onSubmit: onSubmit,
+                     onStop: { Task { await model.interrupt() } },
+                     onPlus: onPlus, onConfigTap: onToggleConfig,
+                     modelLabel: model.model ?? "gpt-5.5", effortLabel: model.effort)
                 .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
