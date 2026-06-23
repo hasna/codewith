@@ -130,6 +130,9 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
     let visible_cmd = match cmd {
         SlashCommand::BackgroundAgent => SlashCommand::Agent,
         SlashCommand::MultiAgents => SlashCommand::Session,
+        SlashCommand::Exit => SlashCommand::Quit,
+        SlashCommand::Btw => SlashCommand::Side,
+        SlashCommand::Stats => SlashCommand::Status,
         _ => cmd,
     };
     builtins_for_input(BuiltinCommandFlags {
@@ -210,19 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn stop_command_resolves_for_dispatch() {
-        assert_eq!(
-            find_builtin_command("stop", all_enabled_flags()),
-            Some(SlashCommand::Stop)
-        );
-    }
-
-    #[test]
-    fn clean_command_alias_resolves_for_dispatch() {
-        assert_eq!(
-            find_builtin_command("clean", all_enabled_flags()),
-            Some(SlashCommand::Stop)
-        );
+    fn removed_stop_and_clean_do_not_resolve_for_dispatch() {
+        assert_eq!(find_builtin_command("stop", all_enabled_flags()), None);
+        assert_eq!(find_builtin_command("clean", all_enabled_flags()), None);
     }
 
     #[test]
@@ -236,6 +229,25 @@ mod tests {
             find_builtin_command("background-agent", flags),
             Some(SlashCommand::BackgroundAgent)
         );
+        // Debloat: `/exit`, `/btw`, `/stats` are hidden duplicates that still
+        // dispatch via exact lookup but never appear in the completion list.
+        assert_eq!(
+            find_builtin_command("exit", flags),
+            Some(SlashCommand::Exit)
+        );
+        assert_eq!(find_builtin_command("btw", flags), Some(SlashCommand::Btw));
+        assert_eq!(
+            find_builtin_command("stats", flags),
+            Some(SlashCommand::Stats)
+        );
+        for hidden in ["exit", "btw", "stats"] {
+            assert!(
+                !builtins_for_input(flags)
+                    .iter()
+                    .any(|(name, _)| *name == hidden),
+                "/{hidden} should be hidden from completion"
+            );
+        }
         assert!(
             !builtins_for_input(flags)
                 .iter()
@@ -381,7 +393,6 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
-                SlashCommand::Stats,
                 SlashCommand::Changelog,
             ]
         );

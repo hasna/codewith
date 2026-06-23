@@ -787,6 +787,13 @@ pub struct Tui {
     #[serde(default)]
     pub terminal_title: Option<Vec<String>>,
 
+    /// Ordered list of final assistant-message summary item identifiers.
+    ///
+    /// When set, the TUI renders the selected items after completed assistant
+    /// messages. When unset, the TUI defaults to the full built-in summary.
+    #[serde(default)]
+    pub message_summary: Option<Vec<String>>,
+
     /// Syntax highlighting theme name (kebab-case).
     ///
     /// When set, overrides automatic light/dark theme detection.

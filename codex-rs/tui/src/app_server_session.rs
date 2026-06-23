@@ -121,6 +121,13 @@ use codex_app_server_protocol::ThreadMonitorRestartResponse;
 use codex_app_server_protocol::ThreadMonitorStopParams;
 use codex_app_server_protocol::ThreadMonitorStopResponse;
 use codex_app_server_protocol::ThreadPendingInteractionStatus;
+use codex_app_server_protocol::ThreadQueuedMessageListParams;
+use codex_app_server_protocol::ThreadQueuedMessageListResponse;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
+use codex_app_server_protocol::ThreadQueuedMessageMoveParams;
+use codex_app_server_protocol::ThreadQueuedMessageMoveResponse;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateParams;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -795,6 +802,64 @@ impl AppServerSession {
             .await
             .wrap_err("thread/read failed during TUI session lookup")?;
         Ok(response.thread)
+    }
+
+    pub(crate) async fn thread_queued_message_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadQueuedMessageListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageList {
+                request_id,
+                params: ThreadQueuedMessageListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("failed to list queued thread messages")
+    }
+
+    pub(crate) async fn thread_queued_message_update(
+        &mut self,
+        thread_id: ThreadId,
+        message_id: String,
+        text: String,
+    ) -> Result<ThreadQueuedMessageUpdateResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageUpdate {
+                request_id,
+                params: ThreadQueuedMessageUpdateParams {
+                    thread_id: thread_id.to_string(),
+                    message_id,
+                    text,
+                },
+            })
+            .await
+            .wrap_err("failed to update queued thread message")
+    }
+
+    pub(crate) async fn thread_queued_message_move(
+        &mut self,
+        thread_id: ThreadId,
+        message_id: String,
+        direction: ThreadQueuedMessageMoveDirection,
+    ) -> Result<ThreadQueuedMessageMoveResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageMove {
+                request_id,
+                params: ThreadQueuedMessageMoveParams {
+                    thread_id: thread_id.to_string(),
+                    message_id,
+                    direction,
+                },
+            })
+            .await
+            .wrap_err("failed to move queued thread message")
     }
 
     pub(crate) async fn thread_archive(&mut self, thread_id: ThreadId) -> Result<()> {

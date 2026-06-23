@@ -1,6 +1,6 @@
 use super::*;
 use crate::request_processors::thread_goal_processor::api_thread_goal_from_state;
-use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state;
+use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state_for_thread;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -317,7 +317,9 @@ pub(super) async fn ensure_listener_task_running(
                         thread_state.track_current_turn_event(&event.id, &event.msg);
                         let terminal_scheduled_run = if matches!(
                             event.msg,
-                            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                            EventMsg::TurnComplete(_)
+                                | EventMsg::TurnAborted(_)
+                                | EventMsg::Error(_)
                         ) {
                             thread_state
                                 .take_scheduled_run(&event.id)
@@ -805,7 +807,7 @@ pub(super) async fn send_thread_goal_snapshot_notification(
                         ThreadGoalPlanUpdatedNotification {
                             thread_id: thread_id.to_string(),
                             turn_id: None,
-                            plan: api_thread_goal_plan_from_state(snapshot),
+                            plan: api_thread_goal_plan_from_state_for_thread(snapshot, thread_id),
                         },
                     ))
                     .await;

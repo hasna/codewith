@@ -24,6 +24,8 @@ pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
 pub use codex_thread::TryStartTurnIfIdleError;
 pub use codex_thread::TryStartTurnIfIdleRejectionReason;
+pub use session::QueuedMailboxMessage;
+pub use session::QueuedMailboxMoveDirection;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod attestation;

@@ -94,6 +94,12 @@ impl GoalPlanActivateOutcome {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct GoalClearOutcome {
+    pub cleared: bool,
+    pub plan_updates: Vec<codex_state::ThreadGoalPlanSnapshot>,
+}
+
 #[derive(Debug, Default)]
 pub struct GoalService {
     runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
@@ -276,7 +282,7 @@ impl GoalService {
         &self,
         state_db: &codex_state::StateRuntime,
         thread_id: ThreadId,
-    ) -> Result<bool, GoalServiceError> {
+    ) -> Result<GoalClearOutcome, GoalServiceError> {
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -302,9 +308,9 @@ impl GoalService {
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
             })?;
-        let cleared = state_db
+        let delete_outcome = state_db
             .thread_goals()
-            .delete_thread_goal(thread_id)
+            .delete_thread_goal_with_plan_updates(thread_id)
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
@@ -312,7 +318,7 @@ impl GoalService {
         drop(goal_state_permit);
         drop(runtime);
 
-        if cleared
+        if delete_outcome.deleted
             && let Some(existing_goal) = existing_goal.as_ref()
             && let Err(err) = crate::pending_interaction::clear_goal_status_waits(
                 state_db,
@@ -325,14 +331,17 @@ impl GoalService {
             tracing::warn!("failed to clear pending goal interactions after clear: {err}");
         }
 
-        if cleared
+        if delete_outcome.deleted
             && let Some(runtime) = self.runtime_for_thread(thread_id)
             && let Err(err) = runtime.apply_external_goal_clear().await
         {
             tracing::warn!("failed to apply external goal clear runtime effects: {err}");
         }
 
-        Ok(cleared)
+        Ok(GoalClearOutcome {
+            cleared: delete_outcome.deleted,
+            plan_updates: delete_outcome.plan_updates,
+        })
     }
 
     pub fn suppress_next_idle_continuation(&self, thread_id: ThreadId, goal_id: &str) {

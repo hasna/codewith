@@ -257,15 +257,19 @@ mod tests {
         let models =
             fallback_supported_models_for_provider("nvidia", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0].model, "openai/gpt-oss-120b");
-        assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].model, "nvidia/nemotron-3-ultra-550b-a55b");
+        assert_eq!(models[0].display_name, "NVIDIA Nemotron 3 Ultra");
         assert!(models[0].is_default);
-        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::Medium);
-        assert_eq!(models[1].model, "z-ai/glm-5.1");
-        assert_eq!(models[1].display_name, "Z.ai GLM 5.1");
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(models[1].model, "openai/gpt-oss-120b");
+        assert_eq!(models[1].display_name, "OpenAI GPT OSS 120B");
         assert!(!models[1].is_default);
-        assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(models[2].model, "z-ai/glm-5.1");
+        assert_eq!(models[2].display_name, "Z.ai GLM 5.1");
+        assert!(!models[2].is_default);
+        assert_eq!(models[2].default_reasoning_effort, ReasoningEffort::None);
     }
 
     #[test]
@@ -286,35 +290,45 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_fallback_models_include_valid_deepseek_and_glm() {
+    fn openrouter_fallback_models_include_current_gateway_defaults() {
         let models =
             fallback_supported_models_for_provider("openrouter", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 4);
-        assert_eq!(models[0].model, "openai/gpt-oss-120b");
-        assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(models.len(), 9);
+        assert_eq!(models[0].model, "z-ai/glm-5.2");
+        assert_eq!(models[0].display_name, "Z.ai GLM 5.2");
         assert!(models[0].is_default);
         assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
-        assert_eq!(models[1].model, "deepseek/deepseek-v4-flash");
-        assert_eq!(models[1].display_name, "DeepSeek V4 Flash");
+        assert_eq!(models[1].model, "openai/gpt-oss-120b");
+        assert_eq!(models[1].display_name, "OpenAI GPT OSS 120B");
         assert!(!models[1].is_default);
-        assert_eq!(models[2].model, "z-ai/glm-4.7");
-        assert_eq!(models[2].display_name, "Z.ai GLM 4.7");
+        assert_eq!(models[2].model, "deepseek/deepseek-v4-flash");
+        assert_eq!(models[2].display_name, "DeepSeek V4 Flash");
         assert!(!models[2].is_default);
-        assert_eq!(models[3].model, "z-ai/glm-5.1");
-        assert_eq!(models[3].display_name, "Z.ai GLM 5.1");
+        assert_eq!(models[3].model, "z-ai/glm-4.7");
+        assert_eq!(models[3].display_name, "Z.ai GLM 4.7");
         assert!(!models[3].is_default);
+        assert_eq!(models[4].model, "z-ai/glm-5.1");
+        assert_eq!(models[5].model, "qwen/qwen3.7-plus");
+        assert_eq!(models[6].model, "x-ai/grok-4.20");
+        assert_eq!(models[7].model, "xiaomi/mimo-v2.5-pro");
+        assert_eq!(models[8].model, "nvidia/nemotron-3-ultra-550b-a55b");
     }
 
     #[test]
-    fn xiaomi_fallback_models_include_ultraspeed_default() {
+    fn xiaomi_fallback_models_include_current_default_and_legacy_alias() {
         let models =
             fallback_supported_models_for_provider("xiaomi", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].model, "mimo-v2.5-pro-ultraspeed");
-        assert_eq!(models[0].display_name, "MiMo V2.5 Pro UltraSpeed");
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].model, "mimo-v2.5-pro");
+        assert_eq!(models[0].display_name, "MiMo V2.5 Pro");
         assert!(models[0].is_default);
         assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(models[1].model, "mimo-v2.5");
+        assert!(!models[1].is_default);
+        assert_eq!(models[2].model, "mimo-v2.5-pro-ultraspeed");
+        assert_eq!(models[2].display_name, "MiMo V2.5 Pro UltraSpeed");
+        assert!(!models[2].is_default);
     }
 }

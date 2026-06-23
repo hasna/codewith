@@ -331,6 +331,91 @@ pub struct ThreadSettingsUpdatedNotification {
     pub thread_settings: ThreadSettings,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListParams {
+    pub thread_id: String,
+    /// Opaque pagination cursor returned by a previous call.
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    /// Optional page size; defaults to no limit.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListResponse {
+    pub data: Vec<ThreadQueuedMessage>,
+    pub next_cursor: Option<String>,
+    pub stats: ThreadQueuedMessageStats,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessage {
+    pub message_id: String,
+    pub thread_id: String,
+    /// 1-based position in the pending agent-message mailbox.
+    pub position: u32,
+    pub author: String,
+    pub recipient: String,
+    pub text: String,
+    pub trigger_turn: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageStats {
+    pub total: u32,
+    pub trigger_turn: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateResponse {
+    pub message: Option<ThreadQueuedMessage>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadQueuedMessageMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub direction: ThreadQueuedMessageMoveDirection,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveResponse {
+    pub moved: bool,
+    pub message: Option<ThreadQueuedMessage>,
+}
+
 #[derive(
     Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
 )]
@@ -850,13 +935,14 @@ pub enum ThreadGoalPlanNodeStatus {
     Cancelled,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: String,
+    pub assigned_thread_id: String,
     pub key: String,
     #[ts(type = "number")]
     pub sequence: i64,
@@ -878,6 +964,59 @@ pub struct ThreadGoalPlanNode {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+}
+
+impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireThreadGoalPlanNode {
+            node_id: String,
+            plan_id: String,
+            thread_id: String,
+            #[serde(default)]
+            assigned_thread_id: Option<String>,
+            key: String,
+            sequence: i64,
+            priority: i64,
+            objective: String,
+            status: ThreadGoalPlanNodeStatus,
+            ready: bool,
+            token_budget: Option<i64>,
+            tokens_used: i64,
+            time_used_seconds: i64,
+            projected_goal_id: Option<String>,
+            depends_on: Vec<String>,
+            created_at: i64,
+            updated_at: i64,
+        }
+
+        let value = WireThreadGoalPlanNode::deserialize(deserializer)?;
+        Ok(Self {
+            node_id: value.node_id,
+            plan_id: value.plan_id,
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or_else(|| value.thread_id.clone()),
+            thread_id: value.thread_id,
+            key: value.key,
+            sequence: value.sequence,
+            priority: value.priority,
+            objective: value.objective,
+            status: value.status,
+            ready: value.ready,
+            token_budget: value.token_budget,
+            tokens_used: value.tokens_used,
+            time_used_seconds: value.time_used_seconds,
+            projected_goal_id: value.projected_goal_id,
+            depends_on: value.depends_on,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -961,6 +1100,10 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
             node_id: value.node_id,
             plan_id: value.plan_id,
             thread_id: value.thread_id.to_string(),
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or(value.thread_id)
+                .to_string(),
             key: value.key,
             sequence: value.sequence,
             priority: value.priority,

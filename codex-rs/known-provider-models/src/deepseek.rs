@@ -6,13 +6,13 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "deepseek-v4-flash",
         "DeepSeek V4 Flash",
         "DeepSeek's high-speed coding model. Requires DEEPSEEK_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "deepseek-v4-pro",
         "DeepSeek V4 Pro",
         "DeepSeek's higher-capability V4 model for agentic coding and long-context work.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
@@ -27,7 +27,7 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
 const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
     KnownProviderModelMetadata::new(
         display_name,
-        1_048_576,
+        /*context_window*/ 1_048_576,
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
         /*supports_reasoning*/ false,

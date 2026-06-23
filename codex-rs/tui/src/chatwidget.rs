@@ -40,6 +40,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use ratatui::style::Styled;
 
@@ -53,6 +55,7 @@ use crate::approval_events::ApplyPatchApprovalRequestEvent;
 use crate::approval_events::ExecApprovalRequestEvent;
 #[cfg(not(target_os = "linux"))]
 use crate::audio_device::list_realtime_audio_device_names;
+use crate::bottom_pane::MessageSummarySetupView;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::StatusLineSetupView;
 use crate::bottom_pane::StatusSurfacePreviewData;
@@ -124,6 +127,11 @@ use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
+use codex_app_server_protocol::ThreadScheduleRun;
+use codex_app_server_protocol::ThreadScheduleRunStatus;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
@@ -376,6 +384,7 @@ mod mcp_manager;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
+mod queued_messages;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;
@@ -393,6 +402,7 @@ use self::plugins::PluginInstallAuthFlowState;
 use self::plugins::PluginListFetchState;
 use self::plugins::PluginsCacheState;
 mod plan_implementation;
+mod pull_request_display;
 use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popups;
 mod notifications;
@@ -430,6 +440,7 @@ use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
 mod status_controls;
+mod status_panel;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
@@ -587,6 +598,7 @@ pub(crate) struct ChatWidget {
     auth_profile_rate_limit_snapshots_by_profile:
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
+    auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap<Option<String>, Instant>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
@@ -667,6 +679,11 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     announced_loop_schedule_ids: HashSet<String>,
+    status_line_schedule_thread_id: Option<ThreadId>,
+    status_line_schedules_by_id: HashMap<String, ThreadSchedule>,
+    status_line_schedules_pending: bool,
+    status_line_schedules_loaded: bool,
+    status_line_running_schedule_ids: HashSet<String>,
     announced_monitor_ids: HashSet<String>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
@@ -721,6 +738,8 @@ pub(crate) struct ChatWidget {
     current_cwd: Option<PathBuf>,
     // App-server-backed command runner for status-line workspace metadata lookups.
     workspace_command_runner: Option<WorkspaceCommandRunner>,
+    // Latest async `/pr` overview request accepted by the popup renderer.
+    pull_request_overview_request_id: u64,
     // Instruction source files loaded for the current session, supplied by app-server.
     instruction_source_paths: Vec<AbsolutePathBuf>,
     // Runtime network proxy bind addresses from SessionConfigured.
@@ -1218,10 +1237,11 @@ impl ChatWidget {
         }
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
-        if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
-            self.refresh_terminal_title();
-        }
-        if self.should_animate_terminal_title_spinner()
+        if self.terminal_title_requires_action() != self.last_terminal_title_requires_action
+            || self.status_line_uses_schedule_countdown()
+        {
+            self.refresh_status_surfaces();
+        } else if self.should_animate_terminal_title_spinner()
             || self.should_animate_terminal_title_action_required()
         {
             self.refresh_terminal_title();
@@ -1584,11 +1604,6 @@ impl ChatWidget {
     pub(crate) fn add_error_message(&mut self, message: String) {
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
-    }
-
-    fn add_app_server_stub_message(&mut self, feature: &str) {
-        warn!(feature, "stubbed unsupported TUI feature");
-        self.add_error_message(format!("{feature}: {TUI_STUB_MESSAGE}"));
     }
 
     fn rename_confirmation_cell(name: &str, thread_id: Option<ThreadId>) -> PlainHistoryCell {

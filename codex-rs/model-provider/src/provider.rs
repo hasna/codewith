@@ -7,7 +7,6 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ANTHROPIC_BASE_URL;
-use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -16,13 +15,9 @@ use codex_model_provider_info::OPENAI_API_BASE_URL;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_BASE_URL;
 use codex_model_provider_info::QWEN_BASE_URL;
-use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::XAI_BASE_URL;
-use codex_model_provider_info::XAI_PROVIDER_ID;
 use codex_model_provider_info::XIAOMI_BASE_URL;
-use codex_model_provider_info::XIAOMI_PROVIDER_ID;
 use codex_model_provider_info::ZAI_BASE_URL;
-use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_model_provider_info::provider_base_url_matches;
 use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
@@ -660,10 +655,15 @@ impl ConfiguredModelProvider {
 mod tests {
     use std::num::NonZeroU64;
 
+    use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
     use codex_model_provider_info::GOOGLE_PROVIDER_ID;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+    use codex_model_provider_info::QWEN_PROVIDER_ID;
     use codex_model_provider_info::WireApi;
+    use codex_model_provider_info::XAI_PROVIDER_ID;
+    use codex_model_provider_info::XIAOMI_PROVIDER_ID;
+    use codex_model_provider_info::ZAI_PROVIDER_ID;
     use codex_models_manager::manager::RefreshStrategy;
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use codex_protocol::openai_models::ModelInfo;

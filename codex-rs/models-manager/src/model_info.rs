@@ -122,7 +122,7 @@ pub(crate) fn model_info_from_slug_for_provider(
             } else {
                 Vec::new()
             },
-            input_modalities: default_input_modalities(),
+            input_modalities: metadata.input_modalities.to_vec(),
             used_fallback_model_metadata: false,
             supports_search_tool: metadata.supports_search_tool,
             use_responses_lite: false,

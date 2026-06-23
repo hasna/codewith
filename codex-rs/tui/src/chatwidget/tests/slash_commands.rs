@@ -2,6 +2,10 @@ use super::*;
 use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::tmux_handoff::TmuxHandoffDestination;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::TimeZone;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -1594,6 +1598,32 @@ async fn background_agent_slash_command_emits_manage_events() {
 }
 
 #[tokio::test]
+async fn pr_slash_command_opens_read_only_overview() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let _ = drain_insert_history(&mut rx);
+
+    submit_composer_text(&mut chat, "/pr");
+
+    let event = rx.try_recv().expect("expected pr overview event");
+    match event {
+        AppEvent::OpenPullRequestOverview => {}
+        other => panic!("expected OpenPullRequestOverview event, got {other:?}"),
+    }
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::AppendMessageHistoryEntry {
+            thread_id: event_thread_id,
+            text,
+        }) if event_thread_id == thread_id && text == "/pr"
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/pr");
+}
+
+#[tokio::test]
 async fn worktree_slash_command_emits_manage_events() {
     let cases = [
         ("/worktree", "list", None),
@@ -1708,14 +1738,42 @@ async fn worktree_slash_command_emits_manage_events() {
 async fn background_agent_manager_grouped_roster_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_background_agent_manager(vec![
-        test_background_agent("done-agent", AgentRunStatus::Completed, 3),
-        test_background_agent("run-agent", AgentRunStatus::Running, 2),
-        test_background_agent("wait-agent", AgentRunStatus::WaitingOnUser, 1),
-        test_background_agent("stop-agent", AgentRunStatus::Cancelled, 4),
+        test_background_agent(
+            "done-agent",
+            AgentRunStatus::Completed,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 3),
+        ),
+        test_background_agent(
+            "run-agent",
+            AgentRunStatus::Running,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 2),
+        ),
+        test_background_agent(
+            "wait-agent",
+            AgentRunStatus::WaitingOnUser,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 1),
+        ),
+        test_background_agent(
+            "stop-agent",
+            AgentRunStatus::Cancelled,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 4),
+        ),
     ]);
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert_chatwidget_snapshot!("background_agent_manager_grouped_roster", popup);
+}
+
+fn local_timestamp_for_snapshot(hour: u32, minute: u32, second: u32) -> i64 {
+    let naive = NaiveDate::from_ymd_opt(1970, 1, 1)
+        .expect("valid snapshot date")
+        .and_hms_opt(hour, minute, second)
+        .expect("valid snapshot time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(datetime) => datetime.timestamp(),
+        LocalResult::Ambiguous(datetime, _) => datetime.timestamp(),
+        LocalResult::None => naive.and_utc().timestamp(),
+    }
 }
 
 #[tokio::test]
@@ -2591,25 +2649,6 @@ async fn unavailable_slash_command_is_available_from_local_recall() {
 }
 
 #[tokio::test]
-async fn no_op_stub_slash_command_is_available_from_local_recall() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    submit_composer_text(&mut chat, "/debug-m-drop");
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|cell| lines_to_single_string(cell))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        rendered.contains("Memory maintenance"),
-        "expected stub message, got: {rendered:?}"
-    );
-    assert_eq!(recall_latest_after_clearing(&mut chat), "/debug-m-drop");
-}
-
-#[tokio::test]
 async fn slash_quit_requests_exit() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -2623,6 +2662,24 @@ async fn slash_logout_requests_app_server_logout() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.dispatch_command(SlashCommand::Logout);
+
+    assert!(
+        rx.try_recv().is_err(),
+        "logout should wait for confirmation"
+    );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("slash_logout_confirmation_popup", popup.clone());
+    assert!(
+        popup.contains("Log out of Codewith?"),
+        "expected logout confirmation popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("No, keep working"),
+        "expected non-destructive default option, got:\n{popup}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::Logout));
 }
@@ -3115,22 +3172,6 @@ async fn slash_changelog_prints_release_notes() {
 }
 
 #[tokio::test]
-async fn slash_stop_submits_background_terminal_cleanup() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.dispatch_command(SlashCommand::Stop);
-
-    assert_matches!(op_rx.try_recv(), Ok(Op::CleanBackgroundTerminals));
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected cleanup confirmation message");
-    let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains("Stopping all background terminals."),
-        "expected cleanup confirmation, got {rendered:?}"
-    );
-}
-
-#[tokio::test]
 async fn slash_clear_requests_ui_clear_when_idle() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -3231,26 +3272,6 @@ async fn slash_archive_is_disabled_while_task_running() {
         other => panic!("expected InsertHistoryCell error, got {other:?}"),
     }
     assert!(rx.try_recv().is_err(), "expected no follow-up events");
-}
-
-#[tokio::test]
-async fn slash_memory_drop_reports_stubbed_feature() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.dispatch_command(SlashCommand::MemoryDrop);
-
-    let event = rx.try_recv().expect("expected unsupported-feature error");
-    match event {
-        AppEvent::InsertHistoryCell(cell) => {
-            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
-            assert!(rendered.contains("Memory maintenance: Not available in TUI yet."));
-        }
-        other => panic!("expected InsertHistoryCell error, got {other:?}"),
-    }
-    assert!(
-        op_rx.try_recv().is_err(),
-        "expected no memory op to be sent"
-    );
 }
 
 #[tokio::test]
@@ -3393,26 +3414,6 @@ async fn slash_memories_opens_memory_menu() {
     assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Use memories"));
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
-}
-
-#[tokio::test]
-async fn slash_memory_update_reports_stubbed_feature() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.dispatch_command(SlashCommand::MemoryUpdate);
-
-    let event = rx.try_recv().expect("expected unsupported-feature error");
-    match event {
-        AppEvent::InsertHistoryCell(cell) => {
-            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
-            assert!(rendered.contains("Memory maintenance: Not available in TUI yet."));
-        }
-        other => panic!("expected InsertHistoryCell error, got {other:?}"),
-    }
-    assert!(
-        op_rx.try_recv().is_err(),
-        "expected no memory op to be sent"
-    );
 }
 
 #[tokio::test]
@@ -3664,6 +3665,22 @@ async fn slash_fork_requests_current_fork() {
     chat.dispatch_command(SlashCommand::Fork);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
+}
+
+#[tokio::test]
+async fn slash_fork_with_thread_but_no_rollout_shows_starting_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command(SlashCommand::Fork);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected fork startup error");
+    assert_chatwidget_snapshot!(
+        "slash_fork_with_thread_but_no_rollout_shows_starting_error",
+        lines_to_single_string(&cells[0])
+    );
+    assert!(rx.try_recv().is_err(), "fork should not call app-server");
 }
 
 #[tokio::test]
@@ -3996,6 +4013,136 @@ async fn queued_fast_slash_applies_before_next_queued_message() {
         ),
         other => panic!("expected queued message to submit with fast tier, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn queued_slash_edits_and_moves_local_user_queue() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queue_user_message(UserMessage::from("first queued"));
+    chat.queue_user_message(UserMessage::from("second queued"));
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit 2 changed queued".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["first queued", "changed queued"]
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Queued, "up 2".to_string(), Vec::new());
+
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["changed queued", "first queued"]
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_slash_edits_and_moves_retry_first_queue() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("first retry"));
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("second retry"));
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit retry:2 changed retry".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        chat.input_queue
+            .rejected_steers_queue
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first retry", "changed retry"]
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Queued, "up retry:2".to_string(), Vec::new());
+
+    assert_eq!(
+        chat.input_queue
+            .rejected_steers_queue
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["changed retry", "first retry"]
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.show_queued_messages(/*agent_messages*/ None);
+    let rendered = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Retry-first queue"),
+        "expected retry-first queue in /queued output, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("retry:1."),
+        "expected retry target in /queued output, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn queued_slash_dispatches_agent_queue_updates() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit agent:msg-1 revised agent message".to_string(),
+        Vec::new(),
+    );
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "down agent:msg-1".to_string(),
+        Vec::new(),
+    );
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateQueuedThreadMessage {
+                thread_id: actual_thread_id,
+                message_id,
+                text,
+            } if *actual_thread_id == thread_id
+                && message_id == "msg-1"
+                && text == "revised agent message"
+        )),
+        "expected queued agent update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::MoveQueuedThreadMessage {
+                thread_id: actual_thread_id,
+                message_id,
+                direction,
+            } if *actual_thread_id == thread_id
+                && message_id == "msg-1"
+                && *direction == ThreadQueuedMessageMoveDirection::Down
+        )),
+        "expected queued agent move event; events: {events:?}"
+    );
 }
 
 #[tokio::test]

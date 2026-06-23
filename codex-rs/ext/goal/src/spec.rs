@@ -51,6 +51,16 @@ pub fn create_create_goal_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "post_goal_context".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("keep"), json!("compact")],
+                Some(
+                    "Optional context lifecycle action after this goal completes. `keep` preserves the current context. `compact` queues native Codewith context compaction after completion. Full clear/fresh-thread handoff is not available on this tool yet."
+                        .to_string(),
+                ),
+            ),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
@@ -60,6 +70,7 @@ pub fn create_create_goal_tool() -> ToolSpec {
 Do not use this as the default for ordinary coding, investigation, verification, or multi-step tasks; use update_plan/TODOs for short-horizon task tracking.
 Skip it for simple requests such as greetings, direct factual answers, quick command outputs, brief clarifications, or other one-step work.
 Set token_budget only when an explicit token budget is requested.
+Set post_goal_context only when the user or system/developer instructions explicitly request post-goal context lifecycle behavior; omit it to use the thread's [goals] config default.
 If a goal already exists, this fails by default. Set clear_existing_goal to true only when the user or system/developer instructions explicitly tell you to clear, replace, restart, or start a new goal. Use {UPDATE_GOAL_TOOL_NAME} only for terminal status.
 {ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
         ),
@@ -159,6 +170,26 @@ pub fn create_create_goal_plan_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "post_goal_context".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("keep"), json!("compact")],
+                Some(
+                    "Optional context lifecycle action after a completed plan goal when no next node is immediately activated. `compact` queues native Codewith context compaction. Omit to use the thread's [goals] config default."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "post_goal_plan_context".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("keep"), json!("compact")],
+                Some(
+                    "Optional context lifecycle action after the goal plan completes. `compact` queues native Codewith context compaction. Full clear/fresh-thread handoff is not available on this tool yet."
+                        .to_string(),
+                ),
+            ),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
@@ -171,6 +202,7 @@ This is goal orchestration, not workflows. Workflows are higher-level reusable p
 Automatic execution between ready goals is controlled by global config. When enabled, the next ready goal can be activated without asking the user again. When disabled, the plan is still saved but ready goals wait for explicit activation.
 If update_plan is available, maintain TODOs for the current goal's concrete tasks and tool-prep steps; the goal plan is the durable high-level execution graph, not the short-horizon checklist.
 Omit token_budget for unlimited per-goal tokens. Omit max_tokens_per_goal_plan for an unlimited plan-level budget.
+Set post_goal_context or post_goal_plan_context only when the user or system/developer instructions explicitly request post-goal or post-plan context lifecycle behavior.
 {ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
         ),
         strict: false,
