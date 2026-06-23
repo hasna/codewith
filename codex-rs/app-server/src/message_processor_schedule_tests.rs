@@ -9,8 +9,10 @@ use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::AppServerTransport;
 use anyhow::Result;
+use app_test_support::create_fake_rollout;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::write_mock_responses_config_toml;
+use chrono::Utc;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
@@ -55,6 +57,7 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db::StateDbHandle;
 use pretty_assertions::assert_eq;
@@ -81,6 +84,7 @@ struct ScheduleHarness {
     _server: MockServer,
     _codex_home: TempDir,
     workspace: TempDir,
+    state_db: StateDbHandle,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
@@ -111,11 +115,12 @@ impl ScheduleHarness {
             config.model_provider_id.clone(),
         )
         .await?;
-        let (processor, outgoing_rx) = build_test_processor(config, Some(state_db)).await;
+        let (processor, outgoing_rx) = build_test_processor(config, Some(state_db.clone())).await;
         let mut harness = Self {
             _server: server,
             _codex_home: codex_home,
             workspace,
+            state_db,
             processor,
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
@@ -789,25 +794,41 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
             .await;
         harness.read_schedule_updated(&thread_id).await;
 
-        let request_id = harness.request_id();
-        let pause_response: ThreadScheduleUpdateResponse = harness
-            .request(ClientRequest::ThreadScheduleUpdate {
-                request_id,
-                params: ThreadScheduleUpdateParams {
-                    thread_id: thread_id.clone(),
-                    schedule_id: create_response.schedule.schedule_id.clone(),
-                    prompt: None,
-                    schedule: None,
-                    timezone: None,
-                    status: Some(ThreadScheduleStatus::Paused),
-                    next_run_at: Some(None),
-                    expires_at: None,
-                },
-            })
-            .await;
-        assert_eq!(ThreadScheduleStatus::Paused, pause_response.schedule.status);
-        assert_eq!(None, pause_response.schedule.next_run_at);
-        harness.read_schedule_updated(&thread_id).await;
+        let claim = harness
+            .state_db
+            .thread_schedules()
+            .claim_thread_schedule_now(
+                create_response.schedule.schedule_id.as_str(),
+                Utc::now(),
+                "lease-fail",
+                std::time::Duration::from_secs(300),
+            )
+            .await?
+            .expect("schedule should claim for seeded failure");
+        harness
+            .state_db
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                create_response.schedule.schedule_id.as_str(),
+                claim.run.run_id.as_str(),
+                "lease-fail",
+                Utc::now(),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await?;
+        let failed_schedule = harness
+            .state_db
+            .thread_schedules()
+            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
+            .await?
+            .expect("schedule should still exist after failure");
+        assert_eq!(
+            codex_state::ThreadScheduleStatus::Expired,
+            failed_schedule.status
+        );
+        assert_eq!(None, failed_schedule.next_run_at);
+        assert_eq!(1, failed_schedule.failure_count);
 
         let request_id = harness.request_id();
         let resume_response: ThreadScheduleResumeResponse = harness
@@ -824,6 +845,7 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
             resume_response.schedule.status
         );
         assert!(resume_response.schedule.next_run_at.is_some());
+        assert_eq!(0, resume_response.schedule.failure_count);
         assert_eq!(
             resume_response.schedule,
             harness.read_schedule_updated(&thread_id).await.schedule
@@ -1061,6 +1083,53 @@ fn thread_schedule_crud_requests_round_trip_through_app_server() -> Result<()> {
             })
             .await;
         assert!(after_delete.data.is_empty());
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread_id = create_fake_rollout(
+            harness._codex_home.path(),
+            "2026-06-21T10-00-00",
+            "2026-06-21T10:00:00Z",
+            "previous scheduled thread",
+            Some("mock_provider"),
+            /*git_info*/ None,
+        )?;
+        let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check the deploy".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+
+        let stored = harness
+            .state_db
+            .thread_schedules()
+            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
+            .await?
+            .expect("created schedule should be persisted");
+        assert_eq!(parsed_thread_id, stored.thread_id);
+        assert_eq!(Some(None), stored.auth_profile);
 
         harness.shutdown().await;
         Ok(())
