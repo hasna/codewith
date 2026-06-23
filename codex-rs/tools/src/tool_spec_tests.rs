@@ -286,7 +286,7 @@ fn create_tools_json_for_responses_api_rejects_strict_missing_required_array() {
                 "query".to_string(),
                 JsonSchema::string(/*description*/ None),
             )]),
-            None,
+            /*required*/ None,
             Some(false.into()),
         ),
         output_schema: None,
@@ -313,7 +313,7 @@ fn create_tools_json_for_responses_api_rejects_strict_missing_additional_propert
                 JsonSchema::string(/*description*/ None),
             )]),
             Some(vec!["query".to_string()]),
-            None,
+            /*additional_properties*/ None,
         ),
         output_schema: None,
     })])

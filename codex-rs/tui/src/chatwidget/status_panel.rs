@@ -535,18 +535,27 @@ mod tests {
 
     #[test]
     fn gauge_bar_is_clamped_and_proportional() {
-        assert_eq!(gauge_bar(0), format!("[{}]", "░".repeat(GAUGE_WIDTH)));
-        assert_eq!(gauge_bar(100), format!("[{}]", "█".repeat(GAUGE_WIDTH)));
-        assert_eq!(gauge_bar(150), format!("[{}]", "█".repeat(GAUGE_WIDTH)));
-        let half = gauge_bar(50);
+        assert_eq!(
+            gauge_bar(/*used_percent*/ 0),
+            format!("[{}]", "░".repeat(GAUGE_WIDTH))
+        );
+        assert_eq!(
+            gauge_bar(/*used_percent*/ 100),
+            format!("[{}]", "█".repeat(GAUGE_WIDTH))
+        );
+        assert_eq!(
+            gauge_bar(/*used_percent*/ 150),
+            format!("[{}]", "█".repeat(GAUGE_WIDTH))
+        );
+        let half = gauge_bar(/*used_percent*/ 50);
         assert_eq!(half.matches('█').count(), GAUGE_WIDTH / 2);
     }
 
     #[test]
     fn window_label_maps_common_durations() {
-        assert_eq!(window_label(60), "60m limit");
-        assert_eq!(window_label(300), "5h limit");
-        assert_eq!(window_label(1440), "daily limit");
-        assert_eq!(window_label(10080), "1wk limit");
+        assert_eq!(window_label(/*minutes*/ 60), "60m limit");
+        assert_eq!(window_label(/*minutes*/ 300), "5h limit");
+        assert_eq!(window_label(/*minutes*/ 1440), "daily limit");
+        assert_eq!(window_label(/*minutes*/ 10080), "1wk limit");
     }
 }

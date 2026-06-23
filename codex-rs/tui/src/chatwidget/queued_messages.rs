@@ -201,7 +201,7 @@ impl ChatWidget {
                     "  ".into(),
                     format!("retry:{}.", idx + 1).cyan(),
                     " ".into(),
-                    truncate_text(&preview, 140).into(),
+                    truncate_text(&preview, /*max_graphemes*/ 140).into(),
                 ]
                 .into()
             })
@@ -224,7 +224,7 @@ impl ChatWidget {
                     "  ".into(),
                     format!("{}.", idx + 1).cyan(),
                     " ".into(),
-                    truncate_text(&preview, 140).into(),
+                    truncate_text(&preview, /*max_graphemes*/ 140).into(),
                 ]
                 .into()
             })
@@ -265,7 +265,7 @@ fn agent_queued_message_line(message: &ThreadQueuedMessage) -> Line<'static> {
         format!("agent:{}", message.message_id).cyan(),
         format!(" #{}{} ", message.position, wake).dim(),
         format!("{} -> {} ", message.author, message.recipient).dim(),
-        truncate_text(&message.text, 140).into(),
+        truncate_text(&message.text, /*max_graphemes*/ 140).into(),
     ]
     .into()
 }

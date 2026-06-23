@@ -118,7 +118,7 @@ impl ChatWidget {
     }
 
     fn default_auth_profile_item(&self, is_current: bool) -> SelectionItem {
-        let usage_hint = self.auth_profile_usage_hint(None);
+        let usage_hint = self.auth_profile_usage_hint(/*profile*/ None);
         let actions: Vec<SelectionAction> = vec![Box::new(|tx| {
             tx.send(AppEvent::SwitchAuthProfile {
                 profile: None,
@@ -370,7 +370,7 @@ impl ChatWidget {
     ) -> Vec<RateLimitRefreshTarget> {
         let mut targets = Vec::new();
         if self.root_auth_profile_supports_usage()
-            && self.should_request_auth_profile_usage_heartbeat(None)
+            && self.should_request_auth_profile_usage_heartbeat(/*profile*/ None)
         {
             targets.push(RateLimitRefreshTarget::Root);
         }

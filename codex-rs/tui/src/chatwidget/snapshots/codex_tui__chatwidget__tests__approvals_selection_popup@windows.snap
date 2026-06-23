@@ -3,6 +3,7 @@ source: tui/src/chatwidget/tests.rs
 expression: popup
 ---
   Update Model Permissions
+  Saved to config.toml.
 
 › 1. Read Only (current)  Codewith can read files in the current workspace.
                           Approval is required to edit files or access the

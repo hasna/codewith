@@ -817,7 +817,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -854,7 +854,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -883,7 +883,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Create,
                 schedule_id: None,
@@ -918,7 +918,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Update,
                 schedule_id: Some(schedule.schedule_id.clone()),
@@ -971,7 +971,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Resume,
                 schedule_id: Some(schedule.schedule_id),
@@ -1040,7 +1040,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Resume,
                 schedule_id: Some(schedule.schedule_id),
@@ -1088,7 +1088,7 @@ mod tests {
         let error = manage_schedule(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Resume,
                 schedule_id: Some(schedule.schedule_id),
@@ -1119,7 +1119,7 @@ mod tests {
         let response = manage_schedule(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageScheduleArgs {
                 action: ScheduleAction::Delete,
                 schedule_id: Some(first.schedule_id.clone()),

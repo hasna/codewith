@@ -1,0 +1,8 @@
+---
+source: tui/src/app.rs
+expression: "lines.join(\"\\n\")"
+---
+initial_selected_idx=Some(1)
+0: New agent | Start a new child agent thread from the current thread. | current=false
+1: • Main [default] | 00000000-0000-0000-0000-000000000001 | current=true
+2: • Scout [worker] | 00000000-0000-0000-0000-000000000002 | current=false

@@ -7,19 +7,111 @@
 use super::*;
 use crate::style::accent_color;
 
-fn agent_picker_hint_line() -> Line<'static> {
-    Line::from(vec![
-        "Press ".into(),
-        crate::key_hint::plain(KeyCode::Enter).into(),
-        " to watch, ".into(),
-        crate::key_hint::plain(KeyCode::Char('r')).into(),
-        " to rename, or ".into(),
-        crate::key_hint::plain(KeyCode::Esc).into(),
-        " to go back".into(),
-    ])
+const NEW_AGENT_NAME: &str = "New agent";
+const NEW_AGENT_DESCRIPTION: &str = "Start a new child agent thread from the current thread.";
+
+fn agent_picker_hint_line(can_create_agent: bool) -> Line<'static> {
+    if can_create_agent {
+        Line::from(vec![
+            "Press ".into(),
+            crate::key_hint::plain(KeyCode::Enter).into(),
+            " to select, ".into(),
+            crate::key_hint::plain(KeyCode::Char('n')).into(),
+            " for new, ".into(),
+            crate::key_hint::plain(KeyCode::Char('r')).into(),
+            " to rename, or ".into(),
+            crate::key_hint::plain(KeyCode::Esc).into(),
+            " to go back".into(),
+        ])
+    } else {
+        Line::from(vec![
+            "Press ".into(),
+            crate::key_hint::plain(KeyCode::Enter).into(),
+            " to watch, ".into(),
+            crate::key_hint::plain(KeyCode::Char('r')).into(),
+            " to rename, or ".into(),
+            crate::key_hint::plain(KeyCode::Esc).into(),
+            " to go back".into(),
+        ])
+    }
 }
 
 impl App {
+    pub(super) fn agent_picker_selection_items(
+        &self,
+        can_create_agent: bool,
+    ) -> (Vec<SelectionItem>, Option<usize>) {
+        let mut initial_selected_idx = None;
+        let mut first_agent_idx = None;
+        let mut items = Vec::new();
+        if can_create_agent {
+            items.push(SelectionItem {
+                name: NEW_AGENT_NAME.to_string(),
+                display_shortcut: Some(crate::key_hint::plain(KeyCode::Char('n'))),
+                description: Some(NEW_AGENT_DESCRIPTION.to_string()),
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::CreateAgentThread);
+                })],
+                dismiss_on_select: true,
+                search_value: Some("new agent create child thread".to_string()),
+                ..Default::default()
+            });
+        }
+
+        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            let item_idx = items.len();
+            first_agent_idx.get_or_insert(item_idx);
+            if self.active_thread_id == Some(thread_id) {
+                initial_selected_idx = Some(item_idx);
+            }
+            let is_primary = self.primary_thread_id == Some(thread_id);
+            let name = format_agent_picker_entry_name(entry, is_primary);
+            let current_name = entry.thread_name.clone();
+            let uuid = thread_id.to_string();
+            let rename_label = name.clone();
+            let mut shortcut_actions = Vec::new();
+            if can_create_agent {
+                shortcut_actions.push(SelectionShortcutAction {
+                    binding: crate::key_hint::plain(KeyCode::Char('n')),
+                    action: Box::new(|tx| {
+                        tx.send(AppEvent::CreateAgentThread);
+                    }),
+                    dismiss_on_select: true,
+                });
+            }
+            shortcut_actions.push(SelectionShortcutAction {
+                binding: crate::key_hint::plain(KeyCode::Char('r')),
+                action: Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAgentRenamePrompt {
+                        thread_id,
+                        current_name: current_name.clone(),
+                        label: rename_label.clone(),
+                    });
+                }),
+                dismiss_on_select: true,
+            });
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                description: Some(uuid.clone()),
+                is_current: self.active_thread_id == Some(thread_id),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SelectAgentThread(thread_id));
+                })],
+                shortcut_actions,
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {uuid}")),
+                ..Default::default()
+            });
+        }
+
+        if initial_selected_idx.is_none() {
+            initial_selected_idx = first_agent_idx;
+        }
+
+        (items, initial_selected_idx)
+    }
+
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let mut thread_ids = self.agent_navigation.tracked_thread_ids();
         for thread_id in self.thread_event_channels.keys().copied() {
@@ -47,59 +139,19 @@ impl App {
             return;
         }
 
-        if self.agent_navigation.is_empty() {
+        let can_create_agent = self.config.features.enabled(Feature::Collab);
+        if self.agent_navigation.is_empty() && !can_create_agent {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), /*hint*/ None);
             return;
         }
 
-        let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = self
-            .agent_navigation
-            .ordered_threads()
-            .iter()
-            .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if self.active_thread_id == Some(*thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = *thread_id;
-                let is_primary = self.primary_thread_id == Some(*thread_id);
-                let name = format_agent_picker_entry_name(entry, is_primary);
-                let current_name = entry.thread_name.clone();
-                let uuid = thread_id.to_string();
-                let rename_thread_id = id;
-                let rename_label = name.clone();
-                SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
-                    is_current: self.active_thread_id == Some(*thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    shortcut_actions: vec![SelectionShortcutAction {
-                        binding: crate::key_hint::plain(KeyCode::Char('r')),
-                        action: Box::new(move |tx| {
-                            tx.send(AppEvent::OpenAgentRenamePrompt {
-                                thread_id: rename_thread_id,
-                                current_name: current_name.clone(),
-                                label: rename_label.clone(),
-                            });
-                        }),
-                        dismiss_on_select: true,
-                    }],
-                    dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
-                    ..Default::default()
-                }
-            })
-            .collect();
+        let (items, initial_selected_idx) = self.agent_picker_selection_items(can_create_agent);
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Agents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(agent_picker_hint_line()),
+            footer_hint: Some(agent_picker_hint_line(can_create_agent)),
             items,
             initial_selected_idx,
             ..Default::default()

@@ -11,10 +11,10 @@ where
     Fut: Future<Output = anyhow::Result<T>>,
 {
     let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
+    for attempt in 0..8 {
         match f().await {
             Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
+            Err(err) if is_transient_sqlite_busy(&err) && attempt < 7 => {
                 debug!(
                     operation,
                     attempt = attempt + 1,

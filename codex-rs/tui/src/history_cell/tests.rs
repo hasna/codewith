@@ -2173,7 +2173,7 @@ fn plan_update_with_note_and_wrapping_snapshot() {
             ],
         };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     // Narrow width to force wrapping for both the note and steps
     let lines = cell.display_lines(/*width*/ 32);
     let rendered = render_lines(&lines).join("\n");
@@ -2196,7 +2196,7 @@ fn plan_update_without_note_snapshot() {
         ],
     };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     let lines = cell.display_lines(/*width*/ 40);
     let rendered = render_lines(&lines).join("\n");
     insta::assert_snapshot!(rendered);
@@ -2241,7 +2241,7 @@ fn plan_update_does_not_split_url_like_tokens_in_note_or_step() {
         }],
     };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     let rendered = render_lines(&cell.display_lines(/*width*/ 30));
 
     assert_eq!(

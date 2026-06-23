@@ -507,9 +507,20 @@ const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
 const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe.";
+const PERMISSIONS_SAVED_SUBTITLE: &str = "Saved to config.toml.";
+const AUTH_PROFILE_PERMISSIONS_SAVED_SUBTITLE: &str =
+    "Saved to config.toml; this auth profile remembers the choice.";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 2] = ["model-with-reasoning", "current-dir"];
 const MAX_AGENT_COPY_HISTORY: usize = 32;
+
+fn permissions_saved_subtitle(config: &Config) -> &'static str {
+    if config.selected_auth_profile.is_some() {
+        AUTH_PROFILE_PERMISSIONS_SAVED_SUBTITLE
+    } else {
+        PERMISSIONS_SAVED_SUBTITLE
+    }
+}
 
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {

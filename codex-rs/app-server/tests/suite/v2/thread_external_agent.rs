@@ -36,8 +36,8 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         codex_home.as_path(),
         &server.uri(),
         &BTreeMap::new(),
-        200_000,
-        None,
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         "compact",
     )?;

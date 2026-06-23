@@ -778,7 +778,8 @@ mod tests {
             reason: Some("target is not loaded".to_string()),
         };
 
-        let output = active_session_send_tool_json(response, "peer-1".to_string(), true);
+        let output =
+            active_session_send_tool_json(response, "peer-1".to_string(), /*wake*/ true);
 
         assert_eq!(output["status"], json!("notLoaded"));
         assert_eq!(output["delivered"], json!(false));

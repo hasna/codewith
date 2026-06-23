@@ -234,7 +234,7 @@ mod thread_processor_behavior_tests {
                     recipient.clone(),
                     Vec::new(),
                     "first queued".to_string(),
-                    false,
+                    /*trigger_turn*/ false,
                 ),
             },
             QueuedMailboxMessage {
@@ -244,7 +244,7 @@ mod thread_processor_behavior_tests {
                     recipient.clone(),
                     Vec::new(),
                     "second queued".to_string(),
-                    true,
+                    /*trigger_turn*/ true,
                 ),
             },
         ];
