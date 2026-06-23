@@ -126,18 +126,16 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_tools*/ true,
             /*supports_reasoning*/ true,
         )),
-        "deepseek/deepseek-v4-flash" => Some(KnownProviderModelMetadata::new(
+        "deepseek/deepseek-v4-flash" => Some(model(
             "DeepSeek V4 Flash",
             /*context_window*/ 1_048_576,
             /*supports_tools*/ true,
-            /*supports_parallel_tool_calls*/ false,
             /*supports_reasoning*/ false,
         )),
-        "deepseek/deepseek-v4-pro" => Some(KnownProviderModelMetadata::new(
+        "deepseek/deepseek-v4-pro" => Some(model(
             "DeepSeek V4 Pro",
             /*context_window*/ 1_048_576,
             /*supports_tools*/ true,
-            /*supports_parallel_tool_calls*/ false,
             /*supports_reasoning*/ false,
         )),
         "nvidia/nemotron-3.5-content-safety:free" => Some(KnownProviderModelMetadata::new(
