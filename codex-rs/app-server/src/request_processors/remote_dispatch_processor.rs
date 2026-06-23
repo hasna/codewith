@@ -44,6 +44,7 @@ use super::thread_pending_interaction_processor::api_pending_interaction_termina
 use super::thread_pending_interaction_processor::read_pending_interaction;
 use super::thread_pending_interaction_processor::redacted_response_payload;
 use super::thread_pending_interaction_processor::validate_response_matches_interaction;
+use super::thread_pending_interaction_processor::validate_response_status_matches_payload;
 
 const DEFAULT_REMOTE_DISPATCH_MAX_ATTEMPTS: u32 = 10;
 const MAX_REMOTE_DISPATCH_MAX_ATTEMPTS: u32 = 25;
@@ -480,6 +481,12 @@ impl RemoteDispatchRequestProcessor {
         )
         .await?;
         validate_response_matches_interaction(interaction.kind, &operation.response)?;
+        validate_response_status_matches_payload(&operation.response, operation.terminal_status)?;
+        if interaction.server_request_id_json.is_some() {
+            return Err(invalid_request(
+                "pending interaction is tied to a live client request; use the app-server pending-interaction response path so the waiting client is notified",
+            ));
+        }
         if submit_params.dry_run {
             return Ok(Some(
                 RemoteDispatchSubmitResponse {
@@ -1327,6 +1334,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_respond_interaction_rejects_status_payload_mismatch() {
+        let state_db = test_state_db().await;
+        setup_trusted_local(&state_db).await;
+        upsert_target_thread(&state_db).await;
+        create_pending_user_input_interaction(&state_db, "interaction-status-mismatch").await;
+        let mut params =
+            test_respond_pending_submit_params("trusted", "local", "interaction-status-mismatch");
+        let RemoteDispatchOperation::RespondInteraction {
+            params: interaction_params,
+        } = &mut params.operation
+        else {
+            panic!("expected respond interaction operation");
+        };
+        interaction_params.terminal_status = ThreadPendingInteractionTerminalStatus::Denied;
+
+        let err = RemoteDispatchRequestProcessor::new(Some(state_db))
+            .submit(params)
+            .await
+            .expect_err("status/payload mismatch should fail");
+
+        assert!(
+            err.message.contains("must be responded"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_respond_interaction_rejects_live_client_requests() {
+        let state_db = test_state_db().await;
+        setup_trusted_local(&state_db).await;
+        upsert_target_thread(&state_db).await;
+        create_pending_user_input_interaction_with_server_request(
+            &state_db,
+            "interaction-live-client",
+            /*server_request_id_json*/
+            Some(json!(7)),
+        )
+        .await;
+
+        let mut dry_run_params =
+            test_respond_pending_submit_params("trusted", "local", "interaction-live-client");
+        dry_run_params.dry_run = true;
+        let err = RemoteDispatchRequestProcessor::new(Some(state_db.clone()))
+            .submit(dry_run_params)
+            .await
+            .expect_err("live client-bound interaction dry-run should fail");
+
+        assert!(
+            err.message
+                .contains("pending interaction is tied to a live client request"),
+            "unexpected error: {}",
+            err.message
+        );
+
+        let stored = state_db
+            .get_thread_pending_interaction("interaction-live-client")
+            .await
+            .expect("pending interaction should reload")
+            .expect("pending interaction should exist");
+        assert_eq!(
+            codex_state::PendingInteractionStatus::Pending,
+            stored.status
+        );
+
+        let err = RemoteDispatchRequestProcessor::new(Some(state_db))
+            .submit(test_respond_pending_submit_params(
+                "trusted",
+                "local",
+                "interaction-live-client",
+            ))
+            .await
+            .expect_err("live client-bound interaction should fail");
+
+        assert!(
+            err.message
+                .contains("pending interaction is tied to a live client request"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
     async fn receipt_read_is_denied_before_receipt_persistence_exists() {
         let err = RemoteDispatchRequestProcessor::new(/*state_db*/ None)
             .receipt_read(RemoteDispatchReceiptReadParams {
@@ -1402,6 +1492,19 @@ mod tests {
     }
 
     async fn create_pending_user_input_interaction(state_db: &StateDbHandle, interaction_id: &str) {
+        create_pending_user_input_interaction_with_server_request(
+            state_db,
+            interaction_id,
+            /*server_request_id_json*/ None,
+        )
+        .await;
+    }
+
+    async fn create_pending_user_input_interaction_with_server_request(
+        state_db: &StateDbHandle,
+        interaction_id: &str,
+        server_request_id_json: Option<serde_json::Value>,
+    ) {
         let thread_id = ThreadId::from_string(TARGET_THREAD_ID)
             .expect("target thread id should parse for fixture");
         state_db
@@ -1412,7 +1515,7 @@ mod tests {
                 source_id: None,
                 turn_id: Some("turn-1".to_string()),
                 worker_request_id: Some(interaction_id.to_string()),
-                server_request_id_json: None,
+                server_request_id_json,
                 kind: codex_state::PendingInteractionKind::UserInput,
                 request_payload_json: json!({
                     "type": "requestUserInput",

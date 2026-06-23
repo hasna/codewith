@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/status_command_tests.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  gpt-5.5
+
+  [Overview]  Usage  Tools  Session
+
+  Search
+› Model      gpt-5.5
+  Provider   openai
+  Directory  /tmp/project
+  Version    0.1.43
+
+  Press enter to confirm or esc to go back

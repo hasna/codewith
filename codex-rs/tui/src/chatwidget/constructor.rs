@@ -213,6 +213,7 @@ impl ChatWidget {
             current_rollout_path: None,
             current_cwd,
             workspace_command_runner,
+            pull_request_overview_request_id: 0,
             instruction_source_paths: Vec::new(),
             session_network_proxy: None,
             status_line_invalid_items_warned,
