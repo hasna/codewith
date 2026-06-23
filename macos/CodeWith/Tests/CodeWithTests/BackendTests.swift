@@ -426,7 +426,7 @@ final class AppServerRequestShapeTests: XCTestCase {
                 provider: "openai",
                 effort: "high",
                 permissions: ":workspace",
-                authProfile: "work"),
+                authProfile: .set("work")),
             obj([
                 "threadId": .string("thread-1"),
                 "model": .string("gpt-5.5-codex"),
@@ -435,5 +435,45 @@ final class AppServerRequestShapeTests: XCTestCase {
                 "permissions": .string(":workspace"),
                 "authProfile": .string("work"),
             ]))
+    }
+
+    func testThreadSettingsUpdateParamsCanClearAuthProfile() {
+        XCTAssertEqual(
+            AppServerClient.threadSettingsUpdateParams(
+                threadId: "thread-1",
+                authProfile: .clearDefault),
+            obj([
+                "threadId": .string("thread-1"),
+                "authProfile": .null,
+            ]))
+    }
+
+    func testThreadSessionSettingsParseCamelAndSnakeCase() {
+        XCTAssertEqual(
+            ThreadSessionSettings(from: obj([
+                "threadSettings": obj([
+                    "model": .string("gpt-5.5-codex"),
+                    "model_provider": .string("openai"),
+                    "effort": .string("high"),
+                    "active_permission_profile": obj(["id": .string(":workspace")]),
+                    "auth_profile": .string("work"),
+                ]),
+            ])),
+            ThreadSessionSettings(
+                model: "gpt-5.5-codex",
+                provider: "openai",
+                effort: "high",
+                permissionProfileId: ":workspace",
+                authProfile: "work"))
+    }
+
+    func testConfigRequirementsKeepGranularApprovalPolicy() {
+        let requirements = ConfigRequirementsInfo(from: obj([
+            "allowedApprovalPolicies": .array([
+                .string("on-request"),
+                obj(["granular": obj(["read": .string("ask")])]),
+            ]),
+        ]))
+        XCTAssertEqual(requirements.allowedApprovalPolicies, ["on-request", "granular"])
     }
 }

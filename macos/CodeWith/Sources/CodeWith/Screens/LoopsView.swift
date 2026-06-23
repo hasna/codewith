@@ -5,7 +5,7 @@ struct LoopsView: View {
     var loops: [LoopInfo] = []
     var error: String? = nil
     var onToggle: (LoopInfo) -> Void = { _ in }
-    var onCreate: (LoopCreationDraft) -> Void = { _ in }
+    var onCreate: () -> Void = {}
     var onRunNow: (LoopInfo) -> Void = { _ in }
     var onDelete: (LoopInfo) -> Void = { _ in }
 
@@ -42,7 +42,7 @@ struct LoopsView: View {
         HStack {
             Text("Loops").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
             Spacer()
-            Button { onCreate(LoopCreationDraft()) } label: {
+            Button { onCreate() } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
                     Text("New loop").font(.system(size: 11.5, weight: .medium))

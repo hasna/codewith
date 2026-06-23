@@ -29,6 +29,7 @@ struct HomeView: View {
             Composer(text: $model.composerText,
                      model: model,
                      onSubmit: onSubmit,
+                     onPlus: { model.toggleAddMenu() },
                      onConfigTap: onToggleConfig,
                      modelLabel: model.model ?? "gpt-5.5",
                      effortLabel: model.effort)
@@ -38,5 +39,19 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .overlay {
+            if model.showAddMenu {
+                ZStack {
+                    Color.black.opacity(0.001).contentShape(Rectangle())
+                        .onTapGesture { model.showAddMenu = false }
+                    AddMenu(
+                        onAction: { model.handleAddAction($0) },
+                        activePeers: model.activePeers,
+                        agentRuns: model.addMenuAgentRuns
+                    )
+                    .offset(y: 40)
+                }
+            }
+        }
     }
 }

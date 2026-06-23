@@ -59,12 +59,24 @@ struct ChatView: View {
                      stopMode: model.turnInProgress,
                      text: $model.composerText, model: model, onSubmit: onSubmit,
                      onStop: { Task { await model.interrupt() } },
+                     onPlus: { model.toggleAddMenu() },
                      onConfigTap: onToggleConfig,
                      modelLabel: model.model ?? "gpt-5.5", effortLabel: model.effort)
                 .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .overlay(alignment: .bottomLeading) {
+            if model.showAddMenu {
+                AddMenu(
+                    onAction: { model.handleAddAction($0) },
+                    activePeers: model.activePeers,
+                    agentRuns: model.addMenuAgentRuns
+                )
+                .padding(.leading, 24)
+                .padding(.bottom, 68)
+            }
+        }
     }
 
     @ViewBuilder

@@ -67,6 +67,50 @@ struct ThreadInfo: Identifiable, Hashable {
     }
 }
 
+/// Thread-scoped settings returned by thread read/resume/update RPCs.
+struct ThreadSessionSettings: Hashable {
+    var model: String?
+    var provider: String?
+    var effort: String?
+    var permissionProfileId: String?
+    var authProfile: String?
+
+    init(
+        model: String? = nil,
+        provider: String? = nil,
+        effort: String? = nil,
+        permissionProfileId: String? = nil,
+        authProfile: String? = nil
+    ) {
+        self.model = model
+        self.provider = provider
+        self.effort = effort
+        self.permissionProfileId = permissionProfileId
+        self.authProfile = authProfile
+    }
+
+    init?(from v: JSONValue) {
+        let settings = v["threadSettings"] ?? v["settings"] ?? v["thread"]?["threadSettings"] ?? v["thread"]?["settings"] ?? v
+        self.init(
+            model: settings["model"]?.string,
+            provider: settings["modelProvider"]?.string ?? settings["model_provider"]?.string,
+            effort: settings["effort"]?.string,
+            permissionProfileId: settings["activePermissionProfile"]?["id"]?.string
+                ?? settings["active_permission_profile"]?["id"]?.string
+                ?? settings["permissions"]?.string,
+            authProfile: settings["authProfile"]?.string ?? settings["auth_profile"]?.string
+        )
+        if model == nil, provider == nil, effort == nil, permissionProfileId == nil, authProfile == nil {
+            return nil
+        }
+    }
+}
+
+struct ThreadReadResult: Hashable {
+    var messages: [ChatMessage]
+    var settings: ThreadSessionSettings?
+}
+
 /// A project = a repo / working directory that has sessions. Grouped by git
 /// origin when available (so sub-dirs of one repo are one project), else cwd.
 struct ProjectInfo: Identifiable, Hashable {
@@ -257,8 +301,17 @@ struct ConfigRequirementsInfo: Hashable {
     var allowedSandboxModes: [String]?
 
     init(from v: JSONValue) {
-        allowedApprovalPolicies = Self.stringArray(v["allowedApprovalPolicies"])
+        allowedApprovalPolicies = Self.approvalPolicyArray(v["allowedApprovalPolicies"])
         allowedSandboxModes = Self.stringArray(v["allowedSandboxModes"])
+    }
+
+    static func approvalPolicyArray(_ value: JSONValue?) -> [String]? {
+        guard let array = value?.array else { return nil }
+        return array.compactMap { item in
+            if let string = item.string { return string }
+            if item["granular"] != nil { return "granular" }
+            return nil
+        }
     }
 
     static func stringArray(_ value: JSONValue?) -> [String]? {

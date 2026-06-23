@@ -258,6 +258,50 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1"])
     }
 
+    func testLocalMachineScopeIncludesLegacyThreadsWhenMetadataIsMixed() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "local", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "remote", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("legacy"), "cwd": .string("/legacy")])),
+            ThreadInfo(from: obj(["id": .string("local-thread"), "cwd": .string("/local"), "machineId": .string("local")])),
+            ThreadInfo(from: obj(["id": .string("remote-thread"), "cwd": .string("/remote"), "machineId": .string("remote")])),
+        ]
+        m.selectedMachineId = "local"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["legacy", "local-thread"])
+    }
+
+    func testSelectingDifferentMachineClearsActiveSessionAndSearch() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "a", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "b", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.selectedMachineId = "a"
+        m.activeThreadId = "thread-a"
+        m.activeMessages = [ChatMessage(role: .assistant, text: "old")]
+        m.pendingServerRequests = [
+            PendingServerRequest(
+                requestId: .number(1),
+                threadId: "thread-a",
+                method: "serverRequest/permissions",
+                kind: .permissionsApproval,
+                title: "Approve?",
+                detail: "Approve?")
+        ]
+        m.remoteSearchThreads = [ThreadInfo(from: obj(["id": .string("thread-a"), "machineId": .string("a")]))]
+
+        m.selectMachine(m.machines[1])
+
+        XCTAssertEqual(m.selectedMachineId, "b")
+        XCTAssertNil(m.activeThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertTrue(m.pendingServerRequests.isEmpty)
+        XCTAssertTrue(m.remoteSearchThreads.isEmpty)
+    }
+
     func testSelectingMachineClearsProjectContext() {
         let m = AppModel()
         m.currentProjectPath = "/old/project"
@@ -272,6 +316,15 @@ final class AppModelTests: XCTestCase {
         await m.submitComposer()
         XCTAssertTrue(m.activeMessages.isEmpty)
         XCTAssertEqual(m.composerText, "hello")
+    }
+
+    func testPrepareLoopComposerDoesNotCreateLoopImmediately() {
+        let m = AppModel()
+        m.prepareLoopComposer()
+        XCTAssertEqual(m.route, .home)
+        XCTAssertEqual(m.sidebarSelection, "New loop")
+        XCTAssertTrue(m.composerText.hasPrefix("Loop: "))
+        XCTAssertTrue(m.loops.isEmpty)
     }
 
     func testSampleModelHasData() {

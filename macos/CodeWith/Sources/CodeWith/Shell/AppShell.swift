@@ -68,7 +68,7 @@ struct AppShell: View {
                         loops: model.loops,
                         error: model.loopsError,
                         onToggle: { l in Task { await model.toggleLoop(l) } },
-                        onCreate: { draft in Task { await model.createLoop(draft) } },
+                        onCreate: { model.prepareLoopComposer() },
                         onRunNow: { l in Task { await model.runLoopNow(l) } },
                         onDelete: { l in Task { await model.deleteLoop(l) } })
                 case .goals:
@@ -110,7 +110,7 @@ struct AppShell: View {
 
     private func handleTap(_ title: String) {
         switch title {
-        case "Home":     model.open(.home, label: title)
+        case "Home":     model.openHome()
         case "New chat": model.newChat()
         case "Search":   model.open(.search, label: title)
         case "Apps":     model.open(.apps, label: title)

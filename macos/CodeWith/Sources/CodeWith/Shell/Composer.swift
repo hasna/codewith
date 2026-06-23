@@ -10,6 +10,7 @@ struct Composer: View {
     var model: AppModel? = nil
     var onSubmit: (() -> Void)? = nil
     var onStop: (() -> Void)? = nil
+    var onPlus: (() -> Void)? = nil
     var onConfigTap: (() -> Void)? = nil
     var modelLabel: String = "gpt-5.5"
     var effortLabel: String = "Low"
@@ -43,6 +44,15 @@ struct Composer: View {
             .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
 
             HStack(spacing: 10) {
+                Button { onPlus?() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(Theme.textTertiary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(onPlus == nil)
+
                 if let model {
                     permissionMenu(model)
                 }
@@ -53,7 +63,9 @@ struct Composer: View {
                     modelMenu(model)
                     providerMenu(model)
                     effortMenu(model)
-                    authProfileMenu(model)
+                    if !model.authProfiles.isEmpty {
+                        authProfileMenu(model)
+                    }
                 } else {
                     Button { onConfigTap?() } label: {
                         HStack(spacing: 3) {
@@ -77,13 +89,15 @@ struct Composer: View {
                         }
                     } label: {
                         Circle()
-                            .fill(Color(hex: 0x202020))
+                            .fill(stopMode || hasText ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
                             .frame(width: 22, height: 22)
                             .overlay(Image(systemName: icon)
                                 .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(!stopMode && !hasText)
+                    .accessibilityLabel(stopMode ? "Stop" : (hasText ? "Send" : "Send unavailable"))
                 }
             }
             .padding(.horizontal, 12).padding(.bottom, 10)
@@ -163,7 +177,8 @@ struct Composer: View {
     }
 
     private func activeProfileLabel(_ model: AppModel) -> String {
-        model.authProfiles.first(where: { $0.active })?.name
+        model.sessionAuthProfileName
+            ?? model.authProfiles.first(where: { $0.active })?.name
             ?? (model.account.name == "Signed out" ? "Profile" : model.account.name)
     }
 
@@ -181,5 +196,6 @@ struct Composer: View {
                 .foregroundStyle(Theme.textTertiary)
         }
         .contentShape(Rectangle())
+        .frame(maxWidth: 120)
     }
 }

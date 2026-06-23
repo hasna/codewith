@@ -2,6 +2,11 @@ import Foundation
 
 /// Typed, high-level calls over the raw `AppServerClient` JSON-RPC transport.
 extension AppServerClient {
+    enum ThreadAuthProfileUpdate: Equatable {
+        case keep
+        case set(String)
+        case clearDefault
+    }
 
     // MARK: Threads (sessions)
 
@@ -23,10 +28,18 @@ extension AppServerClient {
 
     /// Read a thread's full message history (parsed into chat messages).
     func readThreadMessages(id: String) async throws -> [ChatMessage] {
+        try await readThread(id: id).messages
+    }
+
+    func readThread(id: String) async throws -> ThreadReadResult {
         let r = try await request("thread/read", .object([
             "threadId": .string(id), "includeTurns": .bool(true),
         ]), timeout: 30)
-        return Self.parseThreadMessages(r["thread"] ?? .null)
+        let thread = r["thread"] ?? .null
+        return ThreadReadResult(
+            messages: Self.parseThreadMessages(thread),
+            settings: ThreadSessionSettings(from: thread) ?? ThreadSessionSettings(from: r)
+        )
     }
 
     func searchThreads(term: String, limit: Int = 40) async throws -> [ThreadInfo] {
@@ -53,8 +66,16 @@ extension AppServerClient {
 
     /// Resume a persisted thread so future `turn/start` requests can continue it.
     func resumeThreadMessages(id: String) async throws -> [ChatMessage] {
+        try await resumeThread(id: id).messages
+    }
+
+    func resumeThread(id: String) async throws -> ThreadReadResult {
         let r = try await request("thread/resume", .object(["threadId": .string(id)]), timeout: 30)
-        return Self.parseThreadMessages(r["thread"] ?? .null)
+        let thread = r["thread"] ?? .null
+        return ThreadReadResult(
+            messages: Self.parseThreadMessages(thread),
+            settings: ThreadSessionSettings(from: thread) ?? ThreadSessionSettings(from: r)
+        )
     }
 
     static func parseThreadMessages(_ thread: JSONValue) -> [ChatMessage] {
@@ -901,10 +922,10 @@ extension AppServerClient {
         provider: String? = nil,
         effort: String? = nil,
         permissions: String? = nil,
-        authProfile: String? = nil,
+        authProfile: ThreadAuthProfileUpdate = .keep,
         personality: String? = nil
-    ) async throws {
-        _ = try await request(
+    ) async throws -> ThreadSessionSettings? {
+        let r = try await request(
             "thread/settings/update",
             Self.threadSettingsUpdateParams(
                 threadId: threadId,
@@ -915,10 +936,11 @@ extension AppServerClient {
                 authProfile: authProfile,
                 personality: personality),
             timeout: 15)
+        return ThreadSessionSettings(from: r)
     }
 
     func updateThreadPersonality(threadId: String, personality: String) async throws {
-        try await updateThreadSettings(threadId: threadId, personality: personality)
+        _ = try await updateThreadSettings(threadId: threadId, personality: personality)
     }
 
     func setThreadMemoryMode(threadId: String, enabled: Bool) async throws {
@@ -938,7 +960,7 @@ extension AppServerClient {
         provider: String? = nil,
         effort: String? = nil,
         permissions: String? = nil,
-        authProfile: String? = nil,
+        authProfile: ThreadAuthProfileUpdate = .keep,
         personality: String? = nil
     ) -> JSONValue {
         var params: [String: JSONValue] = ["threadId": .string(threadId)]
@@ -946,7 +968,14 @@ extension AppServerClient {
         if let provider { params["modelProvider"] = .string(provider) }
         if let effort { params["effort"] = .string(effort) }
         if let permissions { params["permissions"] = .string(permissions) }
-        if let authProfile { params["authProfile"] = .string(authProfile) }
+        switch authProfile {
+        case .keep:
+            break
+        case .set(let name):
+            params["authProfile"] = .string(name)
+        case .clearDefault:
+            params["authProfile"] = .null
+        }
         if let personality { params["personality"] = .string(personality) }
         return .object(params)
     }
