@@ -192,8 +192,8 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
         worktree_action_item(
             "Read details",
             "Show lease, path, branch, cleanup, and owner state",
-            false,
-            None,
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
             move || AppEvent::ReadWorktree {
                 worktree_id: Some(read_worktree_id.clone()),
                 base_repo_path: read_base_repo_path.clone(),
@@ -267,8 +267,8 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
     items.push(worktree_action_item(
         "Back to worktrees",
         "Return to all managed worktrees",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         || AppEvent::OpenWorktreeManager,
     ));
 
@@ -412,28 +412,28 @@ fn worktree_detail_lines(worktree: &Worktree) -> Vec<Line<'static>> {
     ]));
     lines.push(Line::from(vec![
         "  base ".dim(),
-        truncate_text(&worktree.base_repo_path, 120).into(),
+        truncate_text(&worktree.base_repo_path, /*max_graphemes*/ 120).into(),
     ]));
     lines.push(Line::from(vec![
         "  path ".dim(),
-        truncate_text(&worktree.worktree_path, 120).into(),
+        truncate_text(&worktree.worktree_path, /*max_graphemes*/ 120).into(),
     ]));
     if let Some(branch) = worktree.branch.as_ref() {
         lines.push(Line::from(vec![
             "  branch ".dim(),
-            truncate_text(branch, 96).into(),
+            truncate_text(branch, /*max_graphemes*/ 96).into(),
         ]));
     }
     if let Some(head_sha) = worktree.head_sha.as_ref() {
         lines.push(Line::from(vec![
             "  head ".dim(),
-            truncate_text(head_sha, 64).into(),
+            truncate_text(head_sha, /*max_graphemes*/ 64).into(),
         ]));
     }
     if let Some(base_sha) = worktree.base_sha.as_ref() {
         lines.push(Line::from(vec![
             "  base sha ".dim(),
-            truncate_text(base_sha, 64).into(),
+            truncate_text(base_sha, /*max_graphemes*/ 64).into(),
         ]));
     }
     if let Some(cleanup_after) = worktree.cleanup_after {
@@ -456,7 +456,11 @@ fn worktree_detail_lines(worktree: &Worktree) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(vec![
         "  snapshot ".dim(),
-        truncate_text(&json_summary(&worktree.status_snapshot), 120).into(),
+        truncate_text(
+            &json_summary(&worktree.status_snapshot),
+            /*max_graphemes*/ 120,
+        )
+        .into(),
     ]));
     lines
 }
@@ -490,9 +494,15 @@ fn worktree_row_description(worktree: &Worktree) -> String {
         format!("updated {}", format_timestamp(worktree.updated_at)),
     ];
     if let Some(branch) = worktree.branch.as_ref() {
-        parts.push(format!("branch {}", truncate_text(branch, 40)));
+        parts.push(format!(
+            "branch {}",
+            truncate_text(branch, /*max_graphemes*/ 40)
+        ));
     }
-    parts.push(truncate_text(&worktree.worktree_path, 80));
+    parts.push(truncate_text(
+        &worktree.worktree_path,
+        /*max_graphemes*/ 80,
+    ));
     parts.join(" - ")
 }
 
@@ -502,7 +512,7 @@ fn worktree_detail(worktree: &Worktree) -> String {
         worktree_status_name(worktree.lifecycle_status),
         worktree_mode_name(worktree.mode),
         worktree_owner_summary(worktree),
-        truncate_text(&worktree.worktree_path, 96)
+        truncate_text(&worktree.worktree_path, /*max_graphemes*/ 96)
     )
 }
 
@@ -533,12 +543,12 @@ fn worktree_policy_description(policy: &WorktreePolicy) -> String {
         policy
             .root
             .as_ref()
-            .map(|root| format!(" | root {}", truncate_text(root, 60)))
+            .map(|root| format!(" | root {}", truncate_text(root, /*max_graphemes*/ 60)))
             .unwrap_or_default(),
         policy
             .current_base_repo_path
             .as_ref()
-            .map(|path| format!(" | repo {}", truncate_text(path, 60)))
+            .map(|path| format!(" | repo {}", truncate_text(path, /*max_graphemes*/ 60)))
             .unwrap_or_else(|| " | repo unresolved".to_string())
     )
 }
@@ -564,7 +574,7 @@ fn worktree_manager_subtitle(
     policy
         .current_base_repo_path
         .as_ref()
-        .map(|path| format!("{prefix} for {}", truncate_text(path, 72)))
+        .map(|path| format!("{prefix} for {}", truncate_text(path, /*max_graphemes*/ 72)))
         .unwrap_or_else(|| "No git repository detected for this session".to_string())
 }
 

@@ -1904,13 +1904,17 @@ mod tests {
         let rollout_path = codex_home.path().join("owned-rollout.jsonl");
         let now = Utc::now();
 
-        validate_agent_start_rollout_path(state_db.as_ref(), None, None)
-            .await
-            .expect("missing rolloutPath should be accepted");
+        validate_agent_start_rollout_path(
+            state_db.as_ref(),
+            /*thread_id*/ None,
+            /*rollout_path*/ None,
+        )
+        .await
+        .expect("missing rolloutPath should be accepted");
         let missing_rollout_path = validate_agent_start_rollout_path(
             state_db.as_ref(),
             Some(thread_id_string.as_str()),
-            None,
+            /*rollout_path*/ None,
         )
         .await
         .expect_err("threadId without rolloutPath should be rejected");
@@ -1920,7 +1924,7 @@ mod tests {
         );
         let missing_thread_id = validate_agent_start_rollout_path(
             state_db.as_ref(),
-            None,
+            /*thread_id*/ None,
             Some(rollout_path.to_string_lossy().as_ref()),
         )
         .await

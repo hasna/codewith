@@ -273,7 +273,7 @@ fn pull_request_name(pull_request: &PullRequestSummary) -> String {
     format!(
         "#{} {}",
         pull_request.number,
-        truncate_text(&pull_request.title, 72)
+        truncate_text(&pull_request.title, /*max_graphemes*/ 72)
     )
 }
 

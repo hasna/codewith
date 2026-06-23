@@ -167,7 +167,7 @@ impl ThreadGoalRequestProcessor {
             self.emit_thread_goal_plan_snapshot_updated_ordered(
                 thread_id,
                 plan_update.snapshot,
-                None,
+                /*listener_command_tx*/ None,
             )
             .await;
             if let Some(activated_goal) = plan_update.activated_goal {

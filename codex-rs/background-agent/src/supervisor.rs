@@ -543,7 +543,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)
@@ -655,7 +657,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)
@@ -749,7 +753,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)

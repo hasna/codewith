@@ -1361,29 +1361,29 @@ mod tests {
 
     #[test]
     fn schedule_failure_backoff_grows_and_caps() {
-        let completed = at(1_000_000);
-        let natural = at(1_000_060); // natural cadence: 60s after completion.
+        let completed = at(/*seconds*/ 1_000_000);
+        let natural = at(/*seconds*/ 1_000_060); // natural cadence: 60s after completion.
 
         // Early failures: 30s/60s backoff is still earlier than the natural
         // 60s cadence, so the natural next run wins.
         assert_eq!(
             natural,
-            schedule_failure_backoff_run_at(natural, completed, 1)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 1)
         );
         assert_eq!(
             natural,
-            schedule_failure_backoff_run_at(natural, completed, 2)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 2)
         );
 
         // A longer streak backs off past the natural cadence...
         assert_eq!(
             completed + chrono::Duration::seconds(240),
-            schedule_failure_backoff_run_at(natural, completed, 4)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 4)
         );
         // ...and caps at one hour regardless of how long the streak is.
         assert_eq!(
             completed + chrono::Duration::seconds(3600),
-            schedule_failure_backoff_run_at(natural, completed, 50)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 50)
         );
     }
 
@@ -1554,7 +1554,7 @@ mod tests {
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             temp_dir.path().join("thread.jsonl"),
-            at(1_700_000_000),
+            at(/*seconds*/ 1_700_000_000),
             SessionSource::Cli,
         );
         builder.cwd = temp_dir.path().join("workspace");
@@ -1575,7 +1575,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1620,7 +1620,7 @@ mod tests {
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             temp_dir.path().join("thread.jsonl"),
-            at(1_700_000_000),
+            at(/*seconds*/ 1_700_000_000),
             SessionSource::Cli,
         );
         builder.cwd = PathBuf::from("/old-workspace");
@@ -1676,7 +1676,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1712,7 +1712,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1773,7 +1773,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1856,7 +1856,7 @@ mod tests {
         let prompt = scheduled_thread_prompt(
             "ask me a funny question every minute",
             "run-123",
-            Some(at(1_700_000_000)),
+            Some(at(/*seconds*/ 1_700_000_000)),
         );
 
         assert!(prompt.contains("one new scheduled Codewith prompt"));
@@ -1893,7 +1893,7 @@ mod tests {
         let prompt = scheduled_goal_thread_prompt(
             "finish release readiness checks every hour",
             "run-123",
-            Some(at(1_700_000_000)),
+            Some(at(/*seconds*/ 1_700_000_000)),
         );
 
         assert!(prompt.contains("one new scheduled Codewith goal objective"));

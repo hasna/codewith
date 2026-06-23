@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn slash_root_enter_dispatches_first_flat_command() {
-        let mut composer = composer_with_text_at_cursor("/", 1);
+        let mut composer = composer_with_text_at_cursor("/", /*cursor*/ 1);
 
         assert_eq!(
             press(&mut composer, KeyCode::Enter),

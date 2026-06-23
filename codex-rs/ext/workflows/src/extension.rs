@@ -126,7 +126,13 @@ where
         let config = self.config(new_config);
         thread_store.insert(config);
         thread_store
-            .get_or_init(|| WorkflowExtensionState::new(config.enabled, false, None))
+            .get_or_init(|| {
+                WorkflowExtensionState::new(
+                    config.enabled,
+                    /*tools_available_for_thread*/ false,
+                    /*thread_id*/ None,
+                )
+            })
             .set_enabled(config.enabled);
     }
 }
@@ -207,12 +213,15 @@ mod tests {
     #[test]
     fn installed_extension_hides_tool_when_disabled() {
         let mut builder = ExtensionRegistryBuilder::<bool>::new();
-        install(&mut builder, None, |enabled| *enabled);
+        install(&mut builder, /*state_db*/ None, |enabled| *enabled);
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("thread");
         thread_store.insert(WorkflowExtensionConfig { enabled: false });
-        thread_store.insert(WorkflowExtensionState::new(false, false, None));
+        thread_store.insert(WorkflowExtensionState::new(
+            /*enabled*/ false, /*tools_available_for_thread*/ false,
+            /*thread_id*/ None,
+        ));
 
         let tool_names = registry
             .tool_contributors()
@@ -227,12 +236,15 @@ mod tests {
     #[test]
     fn installed_extension_contributes_validation_and_management_tools_when_enabled() {
         let mut builder = ExtensionRegistryBuilder::<bool>::new();
-        install(&mut builder, None, |enabled| *enabled);
+        install(&mut builder, /*state_db*/ None, |enabled| *enabled);
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("thread");
         thread_store.insert(WorkflowExtensionConfig { enabled: true });
-        thread_store.insert(WorkflowExtensionState::new(true, false, None));
+        thread_store.insert(WorkflowExtensionState::new(
+            /*enabled*/ true, /*tools_available_for_thread*/ false,
+            /*thread_id*/ None,
+        ));
 
         let tool_names = registry
             .tool_contributors()
@@ -266,7 +278,11 @@ mod tests {
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new(thread_id.to_string());
         thread_store.insert(WorkflowExtensionConfig { enabled: true });
-        thread_store.insert(WorkflowExtensionState::new(true, true, Some(thread_id)));
+        thread_store.insert(WorkflowExtensionState::new(
+            /*enabled*/ true,
+            /*tools_available_for_thread*/ true,
+            Some(thread_id),
+        ));
 
         let tool_names = registry
             .tool_contributors()
@@ -287,11 +303,14 @@ mod tests {
     #[test]
     fn contributed_tool_observes_later_disable() {
         let mut builder = ExtensionRegistryBuilder::<bool>::new();
-        install(&mut builder, None, |enabled| *enabled);
+        install(&mut builder, /*state_db*/ None, |enabled| *enabled);
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("thread");
-        let state = WorkflowExtensionState::new(true, false, None);
+        let state = WorkflowExtensionState::new(
+            /*enabled*/ true, /*tools_available_for_thread*/ false,
+            /*thread_id*/ None,
+        );
         thread_store.insert(WorkflowExtensionConfig { enabled: true });
         thread_store.insert(state);
 
@@ -301,7 +320,7 @@ mod tests {
         let state = thread_store
             .get::<WorkflowExtensionState>()
             .expect("workflow extension state");
-        state.set_enabled(false);
+        state.set_enabled(/*enabled*/ false);
         let tool_names = registry.tool_contributors()[0]
             .tools(&session_store, &thread_store)
             .into_iter()

@@ -2625,7 +2625,7 @@ mod tests {
                 thread_id,
                 "Manual replacement goal.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("manual replacement should block projected node");
@@ -2674,7 +2674,7 @@ mod tests {
                 thread_id,
                 "Manual active goal.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("manual goal should create");

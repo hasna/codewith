@@ -954,7 +954,7 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
                 claim.run.run_id.as_str(),
                 "lease-fail",
                 Utc::now(),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await?;
@@ -1043,7 +1043,7 @@ fn thread_schedule_update_to_active_resets_failure_count() -> Result<()> {
                 claim.run.run_id.as_str(),
                 "lease-fail",
                 Utc::now(),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await?;
