@@ -859,6 +859,16 @@ fn provider_base_url_matches_ignores_case_and_trailing_slashes() {
 }
 
 #[test]
+fn provider_base_url_is_loopback_accepts_local_test_urls() {
+    assert!(provider_base_url_is_loopback("http://127.0.0.1:1234/v1"));
+    assert!(provider_base_url_is_loopback("http://[::1]:1234/v1"));
+    assert!(provider_base_url_is_loopback("http://localhost:1234/v1"));
+    assert!(!provider_base_url_is_loopback(
+        "https://openai-mirror.example/v1"
+    ));
+}
+
+#[test]
 fn built_in_provider_env_keys_have_trusted_secret_backend_scope() {
     for provider in built_in_model_providers(/*openai_base_url*/ None).values() {
         let Some(env_key) = provider.env_key.as_deref() else {

@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::time::Duration;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -176,6 +177,18 @@ pub fn provider_belongs_to_model_gateway(provider_id: &str, gateway_id: &str) ->
 pub fn provider_base_url_matches(configured_base_url: &str, trusted_base_url: &str) -> bool {
     normalize_provider_base_url(configured_base_url)
         == normalize_provider_base_url(trusted_base_url)
+}
+
+pub fn provider_base_url_is_loopback(configured_base_url: &str) -> bool {
+    let Ok(uri) = configured_base_url.trim().parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 fn normalize_provider_base_url(base_url: &str) -> String {

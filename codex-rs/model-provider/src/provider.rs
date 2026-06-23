@@ -18,6 +18,7 @@ use codex_model_provider_info::QWEN_BASE_URL;
 use codex_model_provider_info::XAI_BASE_URL;
 use codex_model_provider_info::XIAOMI_BASE_URL;
 use codex_model_provider_info::ZAI_BASE_URL;
+use codex_model_provider_info::provider_base_url_is_loopback;
 use codex_model_provider_info::provider_base_url_matches;
 use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
@@ -497,11 +498,10 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        let openai_base_url_is_trusted = self
-            .info
-            .base_url
-            .as_deref()
-            .is_none_or(|base_url| provider_base_url_matches(base_url, OPENAI_API_BASE_URL));
+        let openai_base_url_is_trusted = self.info.base_url.as_deref().is_none_or(|base_url| {
+            provider_base_url_matches(base_url, OPENAI_API_BASE_URL)
+                || provider_base_url_is_loopback(base_url)
+        });
         let web_search = if (self.provider_id == OPENAI_PROVIDER_ID
             || (self.info.requires_openai_auth && self.info.is_openai()))
             && openai_base_url_is_trusted
@@ -781,6 +781,23 @@ mod tests {
                 namespace_tools: true,
                 image_generation: false,
                 web_search: HostedWebSearchProvider::Disabled,
+            }
+        );
+    }
+
+    #[test]
+    fn openai_provider_with_loopback_base_url_keeps_openai_hosted_capabilities() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(Some("http://127.0.0.1:1234/v1".to_string())),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: true,
+                web_search: HostedWebSearchProvider::OpenAiResponses,
             }
         );
     }

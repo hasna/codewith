@@ -4035,8 +4035,8 @@ async fn session_settings_model_provider_update_changes_turn_provider() {
     let snapshot = updated.thread_config_snapshot();
     assert_eq!(updated.provider, openrouter_provider);
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
-    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
+    assert_eq!(updated.collaboration_mode.model(), "z-ai/glm-5.2");
     assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
 }
@@ -4070,8 +4070,8 @@ async fn session_settings_model_provider_update_replaces_stale_provider_model() 
 
     let snapshot = updated.thread_config_snapshot();
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
-    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
+    assert_eq!(updated.collaboration_mode.model(), "z-ai/glm-5.2");
     assert_eq!(updated.collaboration_mode.reasoning_effort(), None);
 }
 
@@ -4083,11 +4083,11 @@ async fn session_settings_provider_only_update_uses_fallback_default_for_all_kno
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
         ("minimax", "MiniMax-M3"),
-        ("nvidia", "openai/gpt-oss-120b"),
-        ("openrouter", "openai/gpt-oss-120b"),
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("openrouter", "z-ai/glm-5.2"),
         ("qwen", "qwen3.5-flash"),
         ("xai", "grok-4.3"),
-        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("xiaomi", "mimo-v2.5-pro"),
         ("zai", "glm-5.2"),
     ];
 
@@ -4126,10 +4126,10 @@ async fn thread_settings_provider_only_update_uses_provider_default_model() -> a
     let state = session.state.lock().await;
     let snapshot = state.session_configuration.thread_config_snapshot();
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
     assert_eq!(
         state.session_configuration.collaboration_mode.model(),
-        "openai/gpt-oss-120b"
+        "z-ai/glm-5.2"
     );
     assert_eq!(
         state
