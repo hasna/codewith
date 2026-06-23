@@ -376,6 +376,7 @@ mod mcp_manager;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
+mod queued_messages;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;

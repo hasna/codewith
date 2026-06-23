@@ -978,6 +978,25 @@ impl App {
                 self.activate_thread_goal_plan_node(app_server, thread_id, node_id)
                     .await;
             }
+            AppEvent::OpenQueuedMessages { thread_id } => {
+                self.open_queued_messages(app_server, thread_id).await;
+            }
+            AppEvent::UpdateQueuedThreadMessage {
+                thread_id,
+                message_id,
+                text,
+            } => {
+                self.update_queued_thread_message(app_server, thread_id, message_id, text)
+                    .await;
+            }
+            AppEvent::MoveQueuedThreadMessage {
+                thread_id,
+                message_id,
+                direction,
+            } => {
+                self.move_queued_thread_message(app_server, thread_id, message_id, direction)
+                    .await;
+            }
             AppEvent::OpenThreadLoopManager { thread_id } => {
                 self.open_thread_loop_manager(app_server, thread_id).await;
             }

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadQueuedMessageMoveDirection": {
+      "enum": [
+        "up",
+        "down"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "direction": {
+      "$ref": "#/definitions/ThreadQueuedMessageMoveDirection"
+    },
+    "messageId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "direction",
+    "messageId",
+    "threadId"
+  ],
+  "title": "ThreadQueuedMessageMoveParams",
+  "type": "object"
+}

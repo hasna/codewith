@@ -153,7 +153,10 @@ impl ActiveChannelRouter {
                     }
                 };
                 match target_thread
-                    .deliver_inter_agent_communication(communication)
+                    .deliver_inter_agent_communication_with_id(
+                        envelope.message_id.clone(),
+                        communication,
+                    )
                     .await
                 {
                     Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {

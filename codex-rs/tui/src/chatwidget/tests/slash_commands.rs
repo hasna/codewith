@@ -4016,6 +4016,136 @@ async fn queued_fast_slash_applies_before_next_queued_message() {
 }
 
 #[tokio::test]
+async fn queued_slash_edits_and_moves_local_user_queue() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.queue_user_message(UserMessage::from("first queued"));
+    chat.queue_user_message(UserMessage::from("second queued"));
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit 2 changed queued".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["first queued", "changed queued"]
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Queued, "up 2".to_string(), Vec::new());
+
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["changed queued", "first queued"]
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_slash_edits_and_moves_retry_first_queue() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("first retry"));
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("second retry"));
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit retry:2 changed retry".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        chat.input_queue
+            .rejected_steers_queue
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first retry", "changed retry"]
+    );
+
+    chat.dispatch_command_with_args(SlashCommand::Queued, "up retry:2".to_string(), Vec::new());
+
+    assert_eq!(
+        chat.input_queue
+            .rejected_steers_queue
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["changed retry", "first retry"]
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.show_queued_messages(/*agent_messages*/ None);
+    let rendered = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Retry-first queue"),
+        "expected retry-first queue in /queued output, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("retry:1."),
+        "expected retry target in /queued output, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn queued_slash_dispatches_agent_queue_updates() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "edit agent:msg-1 revised agent message".to_string(),
+        Vec::new(),
+    );
+    chat.dispatch_command_with_args(
+        SlashCommand::Queued,
+        "down agent:msg-1".to_string(),
+        Vec::new(),
+    );
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateQueuedThreadMessage {
+                thread_id: actual_thread_id,
+                message_id,
+                text,
+            } if *actual_thread_id == thread_id
+                && message_id == "msg-1"
+                && text == "revised agent message"
+        )),
+        "expected queued agent update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::MoveQueuedThreadMessage {
+                thread_id: actual_thread_id,
+                message_id,
+                direction,
+            } if *actual_thread_id == thread_id
+                && message_id == "msg-1"
+                && *direction == ThreadQueuedMessageMoveDirection::Down
+        )),
+        "expected queued agent move event; events: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn user_turn_sends_standard_override_after_fast_is_turned_off() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.thread_id = Some(ThreadId::new());

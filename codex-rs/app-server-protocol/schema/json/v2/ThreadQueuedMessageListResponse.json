@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadQueuedMessage": {
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "position": {
+          "description": "1-based position in the pending agent-message mailbox.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "recipient": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "triggerTurn": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "author",
+        "messageId",
+        "position",
+        "recipient",
+        "text",
+        "threadId",
+        "triggerTurn"
+      ],
+      "type": "object"
+    },
+    "ThreadQueuedMessageStats": {
+      "properties": {
+        "total": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "triggerTurn": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "triggerTurn"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/definitions/ThreadQueuedMessage"
+      },
+      "type": "array"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stats": {
+      "$ref": "#/definitions/ThreadQueuedMessageStats"
+    }
+  },
+  "required": [
+    "data",
+    "stats"
+  ],
+  "title": "ThreadQueuedMessageListResponse",
+  "type": "object"
+}

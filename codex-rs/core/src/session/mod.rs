@@ -202,6 +202,8 @@ mod handlers;
 pub(crate) use handlers::inter_agent_communication as handle_inter_agent_communication;
 mod inject;
 mod input_queue;
+pub use input_queue::QueuedMailboxMessage;
+pub use input_queue::QueuedMailboxMoveDirection;
 mod mcp;
 mod multi_agents;
 mod review;
