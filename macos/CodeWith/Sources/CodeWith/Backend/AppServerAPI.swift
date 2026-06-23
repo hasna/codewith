@@ -117,7 +117,35 @@ extension AppServerClient {
 
     /// Send a user message to a thread. The server streams the reply via
     /// notifications (handled by the client's `onNotification`).
-    func startTurn(threadId: String, input: String, model: String?, provider: String?, effort: String?) async throws -> String? {
+    func startTurn(
+        threadId: String,
+        input: String,
+        model: String?,
+        provider: String?,
+        effort: String?,
+        collaborationMode: JSONValue? = nil
+    ) async throws -> String? {
+        let r = try await request(
+            "turn/start",
+            Self.turnStartParams(
+                threadId: threadId,
+                input: input,
+                model: model,
+                provider: provider,
+                effort: effort,
+                collaborationMode: collaborationMode),
+            timeout: 30)
+        return r["turn"]?["id"]?.string ?? r["turnId"]?.string
+    }
+
+    static func turnStartParams(
+        threadId: String,
+        input: String,
+        model: String?,
+        provider: String?,
+        effort: String?,
+        collaborationMode: JSONValue? = nil
+    ) -> JSONValue {
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
             "input": .array([.object(["type": .string("text"), "text": .string(input)])]),
@@ -125,8 +153,19 @@ extension AppServerClient {
         if let model { params["model"] = .string(model) }
         if let provider { params["modelProvider"] = .string(provider) }
         if let effort { params["effort"] = .string(effort) }
-        let r = try await request("turn/start", .object(params), timeout: 30)
-        return r["turn"]?["id"]?.string ?? r["turnId"]?.string
+        if let collaborationMode { params["collaborationMode"] = collaborationMode }
+        return .object(params)
+    }
+
+    static func planCollaborationMode(model: String?, effort: String?) -> JSONValue {
+        .object([
+            "mode": .string("plan"),
+            "settings": .object([
+                "model": .string(model ?? "gpt-5.5"),
+                "reasoning_effort": effort.map { .string($0) } ?? .null,
+                "developer_instructions": .null,
+            ]),
+        ])
     }
 
     func interruptTurn(threadId: String, turnId: String) async {
@@ -142,29 +181,73 @@ extension AppServerClient {
     /// aggregate across the given threads. Field names per the v2 schema.
     func listLoops(threadIds: [String]) async throws -> [LoopInfo] {
         var loops: [LoopInfo] = []
+        var firstError: Error?
+        var successfulEndpointCount = 0
         for tid in threadIds {
-            var scheduleCursor: String?
-            repeat {
-                var params: [String: JSONValue] = ["threadId": .string(tid), "limit": .number(100)]
-                if let scheduleCursor { params["cursor"] = .string(scheduleCursor) }
-                let sched = try? await request("thread/schedule/list", .object(params), timeout: 15)
-                for s in sched?["data"]?.array ?? [] {
-                    loops.append(Self.loopInfo(fromSchedule: s, fallbackThreadId: tid))
-                }
-                scheduleCursor = sched?["nextCursor"]?.string
-            } while scheduleCursor != nil
+            do {
+                loops.append(contentsOf: try await listScheduleLoops(threadId: tid))
+                successfulEndpointCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
 
-            var monitorCursor: String?
-            repeat {
-                var params: [String: JSONValue] = ["threadId": .string(tid), "limit": .number(100)]
-                if let monitorCursor { params["cursor"] = .string(monitorCursor) }
-                let mon = try? await request("thread/monitor/list", .object(params), timeout: 15)
-                for m in mon?["data"]?.array ?? [] {
-                    loops.append(Self.loopInfo(fromMonitor: m, fallbackThreadId: tid))
-                }
-                monitorCursor = mon?["nextCursor"]?.string
-            } while monitorCursor != nil
+            do {
+                loops.append(contentsOf: try await listMonitorLoops(threadId: tid))
+                successfulEndpointCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
         }
+        if successfulEndpointCount == 0, let firstError { throw firstError }
+        return loops
+    }
+
+    private func listScheduleLoops(threadId: String) async throws -> [LoopInfo] {
+        var loops: [LoopInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/schedule/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let sched = try await request("thread/schedule/list", .object(params), timeout: 15)
+            loops.append(contentsOf: (sched["data"]?.array ?? []).compactMap {
+                guard Self.isLoopSchedule($0) else { return nil }
+                return Self.loopInfo(fromSchedule: $0, fallbackThreadId: threadId)
+            })
+            cursor = sched["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/schedule/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return loops
+    }
+
+    private func listMonitorLoops(threadId: String) async throws -> [LoopInfo] {
+        var loops: [LoopInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/monitor/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let mon = try await request("thread/monitor/list", .object(params), timeout: 15)
+            loops.append(contentsOf: (mon["data"]?.array ?? []).map {
+                Self.loopInfo(fromMonitor: $0, fallbackThreadId: threadId)
+            })
+            cursor = mon["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/monitor/list exceeded pagination limit")
+            }
+        } while cursor != nil
         return loops
     }
 
@@ -207,7 +290,7 @@ extension AppServerClient {
     }
 
     /// Pause/resume a schedule or stop/restart a monitor.
-    func setLoopActive(_ loop: LoopInfo, active: Bool) async {
+    func setLoopActive(_ loop: LoopInfo, active: Bool) async throws {
         let method: String
         switch (loop.kind, active) {
         case (.schedule, false): method = "thread/schedule/pause"
@@ -216,28 +299,28 @@ extension AppServerClient {
         case (.monitor, true):   method = "thread/monitor/restart"
         }
         let idKey = loop.kind == .schedule ? "scheduleId" : "monitorId"
-        _ = try? await request(method, .object([
+        _ = try await request(method, .object([
             "threadId": .string(loop.threadId), idKey: .string(loop.id),
         ]), timeout: 15)
     }
 
-    func deleteLoop(_ loop: LoopInfo) async -> Bool {
+    func deleteLoop(_ loop: LoopInfo) async throws -> Bool {
         let method = loop.kind == .schedule ? "thread/schedule/delete" : "thread/monitor/delete"
         let idKey = loop.kind == .schedule ? "scheduleId" : "monitorId"
-        let r = try? await request(method, .object([
+        let r = try await request(method, .object([
             "threadId": .string(loop.threadId),
             idKey: .string(loop.id),
         ]), timeout: 15)
-        return r?["deleted"]?.bool ?? false
+        return r["deleted"]?.bool ?? false
     }
 
-    func runLoopNow(_ loop: LoopInfo) async -> Bool {
+    func runLoopNow(_ loop: LoopInfo) async throws -> Bool {
         guard loop.kind == .schedule else { return false }
-        let r = try? await request("thread/schedule/runNow", .object([
+        let r = try await request("thread/schedule/runNow", .object([
             "threadId": .string(loop.threadId),
             "scheduleId": .string(loop.id),
         ]), timeout: 15)
-        return r?["run"] != nil
+        return r["run"] != nil
     }
 
     static func threadScheduleCreateParams(
@@ -301,23 +384,31 @@ extension AppServerClient {
         ])
     }
 
+    static func isLoopSchedule(_ s: JSONValue) -> Bool {
+        s["schedule"]?["type"]?.string != "once"
+    }
+
     static func loopInfo(fromSchedule s: JSONValue, fallbackThreadId: String) -> LoopInfo {
-        LoopInfo(
+        let status = s["status"]?.string ?? "active"
+        return LoopInfo(
             id: s["scheduleId"]?.string ?? UUID().uuidString,
             title: s["prompt"]?.string ?? "Schedule",
             subtitle: Self.scheduleDescription(s["schedule"]),
             kind: .schedule,
-            active: (s["status"]?.string ?? "active") == "active",
+            active: status == "active",
+            status: status,
             threadId: s["threadId"]?.string ?? fallbackThreadId)
     }
 
     static func loopInfo(fromMonitor m: JSONValue, fallbackThreadId: String) -> LoopInfo {
-        LoopInfo(
+        let status = m["status"]?.string ?? "running"
+        return LoopInfo(
             id: m["monitorId"]?.string ?? UUID().uuidString,
             title: m["name"]?.string ?? m["prompt"]?.string ?? "Monitor",
             subtitle: m["command"]?.string ?? "monitoring",
             kind: .monitor,
-            active: (m["status"]?.string ?? "running") == "running",
+            active: status == "running",
+            status: status,
             threadId: m["threadId"]?.string ?? fallbackThreadId)
     }
 
@@ -343,16 +434,70 @@ extension AppServerClient {
         return GoalInfo(from: r["goal"] ?? r)
     }
 
+    func setThreadGoal(
+        threadId: String,
+        objective: String? = nil,
+        status: String? = nil,
+        tokenBudgetUpdate: GoalTokenBudgetUpdate
+    ) async throws -> GoalInfo {
+        let r = try await request("thread/goal/set", Self.threadGoalSetParams(
+            threadId: threadId,
+            objective: objective,
+            status: status,
+            tokenBudgetUpdate: tokenBudgetUpdate
+        ), timeout: 20)
+        return GoalInfo(from: r["goal"] ?? r)
+    }
+
     func getThreadGoal(threadId: String) async throws -> GoalInfo? {
         let r = try await request("thread/goal/get", .object(["threadId": .string(threadId)]), timeout: 15)
         guard let goal = r["goal"], !goal.isNull else { return nil }
         return GoalInfo(from: goal)
     }
 
+    func listThreadGoalState(threadId: String, limit: Int = 50) async throws -> ThreadGoalState {
+        var goal: GoalInfo?
+        var goalPlans: [GoalPlanInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/goal/list repeated cursor \(cursor)")
+            }
+            let r = try await request("thread/goal/list", Self.threadGoalListParams(
+                threadId: threadId,
+                cursor: cursor,
+                limit: limit
+            ), timeout: 15)
+            if goal == nil, let currentGoal = r["goal"], !currentGoal.isNull {
+                goal = GoalInfo(from: currentGoal)
+            }
+            goalPlans.append(contentsOf: (r["goalPlans"]?.array ?? []).map(GoalPlanInfo.init(from:)))
+            cursor = r["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/goal/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return ThreadGoalState(threadId: threadId, goal: goal, goalPlans: goalPlans)
+    }
+
+    func activateGoalPlanNode(threadId: String, nodeId: String) async throws -> ThreadGoalState {
+        let r = try await request(
+            "thread/goalPlan/activateNode",
+            Self.threadGoalPlanActivateNodeParams(threadId: threadId, nodeId: nodeId),
+            timeout: 20)
+        let goal = r["goal"].map(GoalInfo.init(from:))
+        let plan = r["plan"].map(GoalPlanInfo.init(from:))
+        return ThreadGoalState(threadId: threadId, goal: goal, goalPlans: plan.map { [$0] } ?? [])
+    }
+
     func listThreadGoals(threadIds: [String]) async throws -> [GoalInfo] {
         var goals: [GoalInfo] = []
         for threadId in threadIds {
-            if let goal = try? await getThreadGoal(threadId: threadId) {
+            if let state = try? await listThreadGoalState(threadId: threadId),
+               let goal = state.goal {
                 goals.append(goal)
             }
         }
@@ -375,6 +520,200 @@ extension AppServerClient {
         if let status { params["status"] = .string(status) }
         if let tokenBudget { params["tokenBudget"] = .number(Double(tokenBudget)) }
         return .object(params)
+    }
+
+    static func threadGoalSetParams(
+        threadId: String,
+        objective: String? = nil,
+        status: String? = nil,
+        tokenBudgetUpdate: GoalTokenBudgetUpdate = .keep
+    ) -> JSONValue {
+        var params: [String: JSONValue] = ["threadId": .string(threadId)]
+        if let objective { params["objective"] = .string(objective) }
+        if let status { params["status"] = .string(status) }
+        switch tokenBudgetUpdate {
+        case .keep:
+            break
+        case .set(let tokenBudget):
+            params["tokenBudget"] = .number(Double(tokenBudget))
+        case .clear:
+            params["tokenBudget"] = .null
+        }
+        return .object(params)
+    }
+
+    static func threadGoalListParams(threadId: String, cursor: String? = nil, limit: Int = 50) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "threadId": .string(threadId),
+            "limit": .number(Double(limit)),
+        ]
+        if let cursor { params["cursor"] = .string(cursor) }
+        return .object(params)
+    }
+
+    static func threadGoalPlanActivateNodeParams(threadId: String, nodeId: String) -> JSONValue {
+        .object([
+            "threadId": .string(threadId),
+            "nodeId": .string(nodeId),
+        ])
+    }
+
+    // MARK: Active sessions
+
+    func listActiveSessions(limit: Int = 50) async throws -> [ActiveSessionPeerInfo] {
+        var out: [ActiveSessionPeerInfo] = []
+        var cursor: String?
+        var guardCount = 0
+        repeat {
+            var params: [String: JSONValue] = ["limit": .number(Double(limit))]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("activeSession/list", .object(params), timeout: 15)
+            out.append(contentsOf: (r["data"]?.array ?? []).map(ActiveSessionPeerInfo.init(from:)))
+            cursor = r["nextCursor"]?.string
+            guardCount += 1
+        } while cursor != nil && guardCount < 20
+        return out
+    }
+
+    func sendActiveSessionMessage(
+        targetPeerId: String,
+        message: String,
+        senderThreadId: String?,
+        senderLabel: String = "CodeWith.app",
+        delivery: String = "triggerTurn"
+    ) async throws -> String {
+        let r = try await request("activeSession/send", Self.activeSessionSendParams(
+            targetPeerId: targetPeerId,
+            message: message,
+            senderThreadId: senderThreadId,
+            senderLabel: senderLabel,
+            delivery: delivery
+        ), timeout: 20)
+        return r["status"]?.string ?? "unsupported"
+    }
+
+    static func activeSessionSendParams(
+        targetPeerId: String,
+        message: String,
+        senderThreadId: String? = nil,
+        senderLabel: String? = "CodeWith.app",
+        delivery: String? = "triggerTurn"
+    ) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "targetPeerId": .string(targetPeerId),
+            "message": .string(message),
+        ]
+        if let senderThreadId { params["senderThreadId"] = .string(senderThreadId) }
+        if let senderLabel { params["senderLabel"] = .string(senderLabel) }
+        if let delivery { params["delivery"] = .string(delivery) }
+        return .object(params)
+    }
+
+    // MARK: Durable agents
+
+    func listAgentRuns(limit: Int = 50) async throws -> [AgentRunInfo] {
+        var out: [AgentRunInfo] = []
+        var cursor: String?
+        var guardCount = 0
+        repeat {
+            let r = try await request("agent/list", Self.agentListParams(cursor: cursor, limit: limit), timeout: 15)
+            out.append(contentsOf: (r["data"]?.array ?? []).map(AgentRunInfo.init(from:)))
+            cursor = r["nextCursor"]?.string
+            guardCount += 1
+        } while cursor != nil && guardCount < 20
+        return out
+    }
+
+    func readAgentRun(agentId: String) async throws -> AgentAttachmentInfo {
+        let r = try await request("agent/read", Self.agentIdParams(agentId: agentId), timeout: 15)
+        return AgentAttachmentInfo(from: r, fallbackAgentId: agentId)
+    }
+
+    func attachAgentRun(agentId: String, cursor: String? = nil, limit: Int = 50) async throws -> AgentAttachmentInfo {
+        let r = try await request(
+            "agent/attach",
+            Self.agentAttachParams(agentId: agentId, cursor: cursor, limit: limit),
+            timeout: 20)
+        return AgentAttachmentInfo(from: r, fallbackAgentId: agentId)
+    }
+
+    func detachAgentRun(agentId: String) async throws -> AgentRunInfo? {
+        let r = try await request("agent/detach", Self.agentIdParams(agentId: agentId), timeout: 15)
+        guard let agent = r["agent"], !agent.isNull else { return nil }
+        return AgentRunInfo(from: agent)
+    }
+
+    func stopAgentRun(agentId: String) async throws -> AgentRunInfo? {
+        let r = try await request("agent/stop", Self.agentIdParams(agentId: agentId), timeout: 15)
+        guard let agent = r["agent"], !agent.isNull else { return nil }
+        return AgentRunInfo(from: agent)
+    }
+
+    func deleteAgentRun(agentId: String) async throws -> Bool {
+        let r = try await request("agent/delete", Self.agentIdParams(agentId: agentId), timeout: 15)
+        return r["deleted"]?.bool ?? false
+    }
+
+    func listAgentEvents(agentId: String, cursor: String? = nil, limit: Int = 50) async throws -> (data: [JSONValue], nextCursor: String?) {
+        let r = try await request(
+            "agent/events/list",
+            Self.agentEventsListParams(agentId: agentId, cursor: cursor, limit: limit),
+            timeout: 15)
+        return (r["data"]?.array ?? [], r["nextCursor"]?.string)
+    }
+
+    func respondToAgentPendingInteraction(
+        agentId: String,
+        interactionId: String,
+        response: JSONValue,
+        terminalStatus: String
+    ) async throws -> Bool {
+        let r = try await request(
+            "agent/pendingInteraction/respond",
+            Self.agentPendingInteractionRespondParams(
+                agentId: agentId,
+                interactionId: interactionId,
+                response: response,
+                terminalStatus: terminalStatus),
+            timeout: 20)
+        return r["updated"]?.bool ?? false
+    }
+
+    static func agentListParams(cursor: String? = nil, limit: Int = 50) -> JSONValue {
+        var params: [String: JSONValue] = ["limit": .number(Double(limit))]
+        if let cursor { params["cursor"] = .string(cursor) }
+        return .object(params)
+    }
+
+    static func agentIdParams(agentId: String) -> JSONValue {
+        .object(["agentId": .string(agentId)])
+    }
+
+    static func agentAttachParams(agentId: String, cursor: String? = nil, limit: Int = 50) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "agentId": .string(agentId),
+            "limit": .number(Double(limit)),
+        ]
+        if let cursor { params["cursor"] = .string(cursor) }
+        return .object(params)
+    }
+
+    static func agentEventsListParams(agentId: String, cursor: String? = nil, limit: Int = 50) -> JSONValue {
+        agentAttachParams(agentId: agentId, cursor: cursor, limit: limit)
+    }
+
+    static func agentPendingInteractionRespondParams(
+        agentId: String,
+        interactionId: String,
+        response: JSONValue,
+        terminalStatus: String
+    ) -> JSONValue {
+        .object([
+            "agentId": .string(agentId),
+            "interactionId": .string(interactionId),
+            "response": response,
+            "terminalStatus": .string(terminalStatus),
+        ])
     }
 
     // MARK: Account & config
@@ -402,7 +741,15 @@ extension AppServerClient {
     }
 
     /// Read model + provider + approval policy + sandbox mode from config.
-    func readFullConfig() async throws -> (model: String?, provider: String?, effort: String?, approval: String?, sandbox: String?) {
+    func readFullConfig() async throws -> (
+        model: String?,
+        provider: String?,
+        effort: String?,
+        approval: String?,
+        sandbox: String?,
+        developerInstructions: String?,
+        desktop: DesktopSettingsInfo
+    ) {
         let r = try await request("config/read", .object([:]), timeout: 20)
         let cfg = r["config"] ?? r
         let approval: String?
@@ -413,16 +760,106 @@ extension AppServerClient {
                 cfg["model_provider"]?.string ?? cfg["modelProvider"]?.string,
                 cfg["model_reasoning_effort"]?.string ?? cfg["modelReasoningEffort"]?.string,
                 approval,
-                cfg["sandbox_mode"]?.string)
+                cfg["sandbox_mode"]?.string,
+                cfg["developer_instructions"]?.string ?? cfg["developerInstructions"]?.string,
+                DesktopSettingsInfo(desktop: cfg["desktop"] ?? .null, config: cfg))
+    }
+
+    func readConfigRequirements() async throws -> ConfigRequirementsInfo? {
+        let r = try await request("configRequirements/read", .null, timeout: 20)
+        guard let requirements = r["requirements"], !requirements.isNull else { return nil }
+        return ConfigRequirementsInfo(from: requirements)
     }
 
     /// Write a single config value (config/write, replace strategy).
-    func writeConfig(keyPath: String, value: JSONValue) async {
-        _ = try? await request("config/value/write", .object([
+    @discardableResult
+    func writeConfig(keyPath: String, value: JSONValue) async throws -> JSONValue {
+        try await request("config/value/write", Self.configWriteParams(keyPath: keyPath, value: value), timeout: 20)
+    }
+
+    @discardableResult
+    func batchWriteConfig(edits: [(keyPath: String, value: JSONValue)], reloadUserConfig: Bool) async throws -> JSONValue {
+        try await request("config/batchWrite", Self.configBatchWriteParams(edits: edits, reloadUserConfig: reloadUserConfig), timeout: 20)
+    }
+
+    static func configWriteParams(keyPath: String, value: JSONValue) -> JSONValue {
+        .object([
             "keyPath": .string(keyPath),
             "value": value,
             "mergeStrategy": .string("replace"),
-        ]), timeout: 20)
+        ])
+    }
+
+    static func configBatchWriteParams(edits: [(keyPath: String, value: JSONValue)], reloadUserConfig: Bool) -> JSONValue {
+        .object([
+            "edits": .array(edits.map { edit in
+                .object([
+                    "keyPath": .string(edit.keyPath),
+                    "value": edit.value,
+                    "mergeStrategy": .string("replace"),
+                ])
+            }),
+            "reloadUserConfig": .bool(reloadUserConfig),
+        ])
+    }
+
+    func updateThreadSettings(
+        threadId: String,
+        model: String? = nil,
+        provider: String? = nil,
+        effort: String? = nil,
+        personality: String? = nil
+    ) async throws {
+        _ = try await request(
+            "thread/settings/update",
+            Self.threadSettingsUpdateParams(
+                threadId: threadId,
+                model: model,
+                provider: provider,
+                effort: effort,
+                personality: personality),
+            timeout: 15)
+    }
+
+    func updateThreadPersonality(threadId: String, personality: String) async throws {
+        try await updateThreadSettings(threadId: threadId, personality: personality)
+    }
+
+    func setThreadMemoryMode(threadId: String, enabled: Bool) async throws {
+        _ = try await request(
+            "thread/memoryMode/set",
+            Self.threadMemoryModeSetParams(threadId: threadId, enabled: enabled),
+            timeout: 15)
+    }
+
+    func resetMemories() async throws {
+        _ = try await request("memory/reset", .null, timeout: 30)
+    }
+
+    static func threadSettingsUpdateParams(
+        threadId: String,
+        model: String? = nil,
+        provider: String? = nil,
+        effort: String? = nil,
+        personality: String? = nil
+    ) -> JSONValue {
+        var params: [String: JSONValue] = ["threadId": .string(threadId)]
+        if let model { params["model"] = .string(model) }
+        if let provider { params["modelProvider"] = .string(provider) }
+        if let effort { params["effort"] = .string(effort) }
+        if let personality { params["personality"] = .string(personality) }
+        return .object(params)
+    }
+
+    static func threadSettingsUpdatePersonalityParams(threadId: String, personality: String) -> JSONValue {
+        threadSettingsUpdateParams(threadId: threadId, personality: personality)
+    }
+
+    static func threadMemoryModeSetParams(threadId: String, enabled: Bool) -> JSONValue {
+        .object([
+            "threadId": .string(threadId),
+            "mode": .string(enabled ? "enabled" : "disabled"),
+        ])
     }
 
     // MARK: Models / providers / machines
@@ -468,6 +905,33 @@ extension AppServerClient {
             guardCount += 1
         } while cursor != nil && guardCount < 20
         return out
+    }
+
+    func startMachinePairing(manualCode: Bool = true) async throws -> MachinePairingInfo {
+        let r = try await request(
+            "remoteControl/pairing/start",
+            Self.remoteControlPairingStartParams(manualCode: manualCode),
+            timeout: 20)
+        return MachinePairingInfo(from: r)
+    }
+
+    func machinePairingClaimed(_ pairing: MachinePairingInfo) async throws -> Bool {
+        let r = try await request(
+            "remoteControl/pairing/status",
+            Self.remoteControlPairingStatusParams(pairing: pairing),
+            timeout: 20)
+        return r["claimed"]?.bool ?? false
+    }
+
+    static func remoteControlPairingStartParams(manualCode: Bool) -> JSONValue {
+        .object(["manualCode": .bool(manualCode)])
+    }
+
+    static func remoteControlPairingStatusParams(pairing: MachinePairingInfo) -> JSONValue {
+        if let manualPairingCode = pairing.manualPairingCode, !manualPairingCode.isEmpty {
+            return .object(["manualPairingCode": .string(manualPairingCode)])
+        }
+        return .object(["pairingCode": .string(pairing.pairingCode)])
     }
 
     func listApps() async throws -> [AppItemInfo] {
