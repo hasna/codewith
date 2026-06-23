@@ -1370,6 +1370,10 @@ mod tests {
             .expect("valid thread id")
     }
 
+    fn yaml_single_quoted(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
     async fn upsert_test_thread(runtime: &StateRuntime, thread_id: ThreadId) {
         let metadata = test_thread_metadata(
             runtime.codex_home(),
@@ -1500,9 +1504,10 @@ mod tests {
     async fn verifier_commands_are_persisted_as_inert_data() {
         let runtime = test_runtime().await;
         let marker = unique_temp_dir().join("workflow-verifier-command-ran");
+        let marker_command = format!("touch {}", marker.display());
         let yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replace(
-            "npm test -- --runInBand",
-            &format!("touch {}", marker.display()),
+            "\"npm test -- --runInBand\"",
+            &yaml_single_quoted(&marker_command),
         );
 
         let saved = runtime
@@ -1514,11 +1519,7 @@ mod tests {
             .await
             .expect("workflow spec should save");
 
-        assert!(
-            saved
-                .source_yaml
-                .contains(&format!("touch {}", marker.display()))
-        );
+        assert!(saved.source_yaml.contains(marker_command.as_str()));
         assert!(
             !marker.exists(),
             "saving workflow specs must not execute verifier commands"
@@ -1618,9 +1619,10 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 1);
         upsert_test_thread(&runtime, thread_id).await;
         let marker = unique_temp_dir().join("workflow-run-verifier-command-ran");
+        let marker_command = format!("touch {}", marker.display());
         let yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replace(
-            "npm test -- --runInBand",
-            &format!("touch {}", marker.display()),
+            "\"npm test -- --runInBand\"",
+            &yaml_single_quoted(&marker_command),
         );
         let saved = runtime
             .workflows()

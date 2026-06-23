@@ -25,7 +25,7 @@ use codex_cloud_tasks_client::AttemptStatus;
 use codex_cloud_tasks_client::TaskStatus;
 use codex_tui::render_markdown_text;
 
-const CODEWITH_EMERALD: Color = Color::Rgb(5, 150, 105);
+const CODEWITH_EMERALD: Color = Color::Green;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
