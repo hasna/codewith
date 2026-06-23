@@ -4406,10 +4406,13 @@ mod tests {
             "Ship statusline titles"
         );
         assert_eq!(
-            thread_goal_display_title(None, "ship the statusline title work before release"),
+            thread_goal_display_title(
+                /*title*/ None,
+                "ship the statusline title work before release"
+            ),
             "ship the statusline title work"
         );
-        assert_eq!(thread_goal_display_title(None, "   "), "Goal");
+        assert_eq!(thread_goal_display_title(/*title*/ None, "   "), "Goal");
     }
 
     #[test]

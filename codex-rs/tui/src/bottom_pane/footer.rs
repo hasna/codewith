@@ -2365,7 +2365,7 @@ mod tests {
             "profile".fg(crate::style::accent_color()),
         ]);
 
-        let rows = pack_status_line_items(line, 13, 20);
+        let rows = pack_status_line_items(line, /*row_width*/ 13, /*final_row_width*/ 20);
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "model · /repo");
@@ -2383,7 +2383,7 @@ mod tests {
             "three".magenta(),
         ]);
 
-        let rows = pack_status_line_items(line, 5, 5);
+        let rows = pack_status_line_items(line, /*row_width*/ 5, /*final_row_width*/ 5);
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "one");
@@ -2401,7 +2401,7 @@ mod tests {
             "gamma".magenta(),
         ]);
 
-        let rows = pack_status_line_items(line, 20, 5);
+        let rows = pack_status_line_items(line, /*row_width*/ 20, /*final_row_width*/ 5);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(line_text(&rows[0]), "alpha · beta");
@@ -2416,7 +2416,7 @@ mod tests {
             "beta beta".green(),
         ]);
 
-        let rows = pack_status_line_items(line, 20, 5);
+        let rows = pack_status_line_items(line, /*row_width*/ 20, /*final_row_width*/ 5);
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "alpha");

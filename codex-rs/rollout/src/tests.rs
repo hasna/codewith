@@ -390,6 +390,7 @@ fn write_goal_started_session_file(
             thread_id,
             goal_id: "goal-rollout".to_string(),
             objective: objective.to_string(),
+            title: None,
             status: ThreadGoalStatus::Active,
             token_budget: None,
             tokens_used: 0,
