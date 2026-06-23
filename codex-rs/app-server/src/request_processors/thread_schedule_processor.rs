@@ -432,6 +432,14 @@ impl ThreadScheduleRequestProcessor {
             effective_next_run_at = Some(computed_next_run_at);
         }
         let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
+        if effective_status == codex_state::ThreadScheduleStatus::Active
+            && let Some(expires_at) = effective_expires_at
+            && expires_at <= Utc::now()
+        {
+            return Err(invalid_request(
+                "schedule expiresAt must be in the future to resume",
+            ));
+        }
         validate_schedule_expiry(effective_next_run_at, effective_expires_at)?;
         let schedule = state_db
             .thread_schedules()
@@ -482,6 +490,14 @@ impl ThreadScheduleRequestProcessor {
         let existing = self
             .load_schedule_for_thread(&state_db, thread_id, schedule_id.as_str())
             .await?;
+        if status == codex_state::ThreadScheduleStatus::Active
+            && let Some(expires_at) = existing.expires_at
+            && expires_at <= Utc::now()
+        {
+            return Err(invalid_request(
+                "schedule expiresAt must be in the future to resume",
+            ));
+        }
         let schedule = if status == codex_state::ThreadScheduleStatus::Active
             && existing.next_run_at.is_none()
         {

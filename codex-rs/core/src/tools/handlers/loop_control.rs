@@ -229,15 +229,24 @@ async fn manage_loop(
                 }
             };
             let schedule = if action == LoopAction::Resume {
+                let now = Utc::now();
+                if let Some(expires_at) = existing.expires_at
+                    && expires_at <= now
+                {
+                    return Err(FunctionCallError::RespondToModel(
+                        "loop expires_at must be in the future to resume".to_string(),
+                    ));
+                }
                 if existing.next_run_at.is_none() {
                     let next_run_at =
-                        next_loop_run_at(&existing.schedule, &existing.timezone, Utc::now())?
-                            .ok_or_else(|| {
+                        next_loop_run_at(&existing.schedule, &existing.timezone, now)?.ok_or_else(
+                            || {
                                 FunctionCallError::RespondToModel(
                                     "cannot resume loop because no next run time could be computed"
                                         .to_string(),
                                 )
-                            })?;
+                            },
+                        )?;
                     if let Some(expires_at) = existing.expires_at
                         && expires_at <= next_run_at
                     {
@@ -1322,6 +1331,56 @@ mod tests {
             .expect("affected schedule should be returned");
         assert_eq!(Some(next_run_at.timestamp()), affected_schedule.next_run_at);
         assert_eq!(0, affected_schedule.failure_count);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_loop_with_past_expiry() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Paused,
+        )
+        .await;
+        runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                codex_state::ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: Some(Some(at(/*seconds*/ 1_700_000_600))),
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+
+        let error = manage_loop(
+            runtime,
+            thread_id,
+            None,
+            ManageLoopArgs {
+                schedule_id: Some(schedule.schedule_id),
+                ..loop_args(LoopAction::Resume)
+            },
+        )
+        .await
+        .expect_err("expired loop should not resume");
+
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "loop expires_at must be in the future to resume".to_string()
+            )
+        );
     }
 
     #[tokio::test]
