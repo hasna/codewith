@@ -1020,7 +1020,7 @@ INSERT INTO background_agent_runs (
     .execute(&mut **tx)
     .await?;
 
-    let event_id = append_background_agent_event_in_tx(
+    let event = append_background_agent_event_in_tx(
         tx,
         background_agent_run_id,
         "agent.started",
@@ -1032,10 +1032,6 @@ INSERT INTO background_agent_runs (
         now,
     )
     .await?;
-    let event_seq: i64 = sqlx::query_scalar("SELECT seq FROM background_agent_events WHERE id = ?")
-        .bind(event_id)
-        .fetch_one(&mut **tx)
-        .await?;
     let status_payload = json!({
         "phase": "queued",
         "workflowRunId": run.run_id.as_str(),
@@ -1045,7 +1041,7 @@ INSERT INTO background_agent_runs (
         tx,
         BackgroundAgentStatusSnapshotUpsert {
             run_id: background_agent_run_id,
-            seq: event_seq,
+            seq: event.seq,
             status: BackgroundAgentRunStatus::Queued,
             desired_state: BackgroundAgentDesiredState::Running,
             summary: "Queued",
@@ -1718,7 +1714,7 @@ WHERE id = ?
             now,
         )
         .await?;
-        let event_id = append_background_agent_event_in_tx(
+        let event = append_background_agent_event_in_tx(
             tx,
             background_agent_run_id.as_str(),
             "agent.stopRequested",
@@ -1731,11 +1727,6 @@ WHERE id = ?
         )
         .await?;
         if terminalize_immediately {
-            let event_seq: i64 =
-                sqlx::query_scalar("SELECT seq FROM background_agent_events WHERE id = ?")
-                    .bind(event_id)
-                    .fetch_one(&mut **tx)
-                    .await?;
             let status_payload = json!({
                 "phase": "cancelled",
                 "reason": "workflow_cancelled",
@@ -1746,7 +1737,7 @@ WHERE id = ?
                 tx,
                 BackgroundAgentStatusSnapshotUpsert {
                     run_id: background_agent_run_id.as_str(),
-                    seq: event_seq,
+                    seq: event.seq,
                     status: BackgroundAgentRunStatus::Cancelled,
                     desired_state: BackgroundAgentDesiredState::Stopped,
                     summary: "Cancelled",

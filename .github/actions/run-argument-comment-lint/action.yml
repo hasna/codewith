@@ -31,15 +31,10 @@ runs:
         BUILDBUDDY_API_KEY: ${{ inputs.buildbuddy-api-key }}
       shell: bash
       run: |
-        bazel_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
-        ./.github/scripts/run-bazel-ci.sh \
-          -- \
-          build \
+        ./.github/scripts/run-argument-comment-lint-bazel.sh \
           --config=argument-comment-lint \
           --keep_going \
-          --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
-          -- \
-          ${bazel_targets}
+          --build_metadata=COMMIT_SHA=${GITHUB_SHA}
 
     - name: Run argument comment lint on codex-rs via Bazel
       if: ${{ runner.os == 'Windows' }}

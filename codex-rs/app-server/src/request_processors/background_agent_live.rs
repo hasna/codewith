@@ -3210,9 +3210,8 @@ async fn handle_background_agent_event(
                 }),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish completed background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
@@ -3220,7 +3219,8 @@ async fn handle_background_agent_event(
                     /*exit_signal*/ None,
                     Some("completed"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         EventMsg::TurnAborted(event) => {
@@ -3247,9 +3247,8 @@ async fn handle_background_agent_event(
                 }),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish aborted background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
@@ -3257,7 +3256,8 @@ async fn handle_background_agent_event(
                     /*exit_signal*/ None,
                     Some("turn aborted"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         EventMsg::ShutdownComplete => {
@@ -3271,9 +3271,8 @@ async fn handle_background_agent_event(
                 json!({}),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish shutdown background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
@@ -3281,7 +3280,8 @@ async fn handle_background_agent_event(
                     /*exit_signal*/ None,
                     Some("worker shutdown completed"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         other => {

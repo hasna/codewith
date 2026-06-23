@@ -7,8 +7,9 @@ pub(in crate::runtime) async fn append_background_agent_event_in_tx(
     event_type: &str,
     payload_json: &serde_json::Value,
     now: i64,
-) -> anyhow::Result<i64> {
-    let payload_json = serde_json::to_string(payload_json)?;
+) -> anyhow::Result<BackgroundAgentEvent> {
+    let event_payload_json = payload_json.clone();
+    let payload_json = serde_json::to_string(&event_payload_json)?;
     let seq: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_events WHERE run_id = ?",
     )
@@ -42,7 +43,16 @@ WHERE id = ?
     .bind(run_id)
     .execute(&mut **tx)
     .await?;
-    Ok(id)
+    let created_at = DateTime::<Utc>::from_timestamp(now, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {now}"))?;
+    Ok(BackgroundAgentEvent {
+        id,
+        run_id: run_id.to_string(),
+        seq,
+        event_type: event_type.to_string(),
+        payload_json: event_payload_json,
+        created_at,
+    })
 }
 
 impl StateRuntime {
@@ -54,14 +64,11 @@ impl StateRuntime {
     ) -> anyhow::Result<BackgroundAgentEvent> {
         let now = Utc::now().timestamp();
         let mut tx = self.pool.begin().await?;
-        let id =
+        let event =
             append_background_agent_event_in_tx(&mut tx, run_id, event_type, payload_json, now)
                 .await?;
         tx.commit().await?;
-
-        self.get_background_agent_event(id).await?.ok_or_else(|| {
-            anyhow::anyhow!("failed to load background agent event {id} for run {run_id}")
-        })
+        Ok(event)
     }
 
     pub async fn list_background_agent_events_after(
@@ -149,22 +156,5 @@ GROUP BY r.id
             _ => {}
         }
         Ok(())
-    }
-
-    pub(super) async fn get_background_agent_event(
-        &self,
-        event_id: i64,
-    ) -> anyhow::Result<Option<BackgroundAgentEvent>> {
-        let row = sqlx::query_as::<_, BackgroundAgentEventRow>(
-            r#"
-SELECT id, run_id, seq, event_type, payload_json, created_at
-FROM background_agent_events
-WHERE id = ?
-            "#,
-        )
-        .bind(event_id)
-        .fetch_optional(self.pool.as_ref())
-        .await?;
-        row.map(BackgroundAgentEvent::try_from).transpose()
     }
 }

@@ -246,6 +246,13 @@ async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
     for index in 0..501 {
         let agent_id = format!("paged-run-{index:03}");
         seed_queued_agent_run(state_db.as_ref(), agent_id.as_str(), None, "paged run").await?;
+        state_db
+            .update_background_agent_run_status(
+                agent_id.as_str(),
+                StateBackgroundAgentRunStatus::Completed,
+                Some("completed by pagination test"),
+            )
+            .await?;
     }
     let mut mcp = init_mcp(codex_home.path()).await?;
 
