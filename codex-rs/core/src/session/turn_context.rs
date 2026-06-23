@@ -80,6 +80,8 @@ pub struct TurnContext {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
+    pub(crate) machine_id: String,
+    pub(crate) machine_name: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
     pub(crate) compact_prompt: Option<String>,
@@ -272,6 +274,8 @@ impl TurnContext {
             cwd: self.cwd.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            machine_id: self.machine_id.clone(),
+            machine_name: self.machine_name.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
@@ -377,6 +381,8 @@ impl TurnContext {
             workspace_roots: (!workspace_roots.is_empty()).then_some(workspace_roots),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            machine_id: Some(self.machine_id.clone()),
+            machine_name: self.machine_name.clone(),
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy(),
             permission_profile: Some(self.permission_profile()),
@@ -538,6 +544,7 @@ impl Session {
         auth_manager: Option<Arc<AuthManager>>,
         session_telemetry: &SessionTelemetry,
         provider: ModelProviderInfo,
+        machine_id: String,
         session_configuration: &SessionConfiguration,
         multi_agent_version: MultiAgentVersion,
         user_shell: &shell::Shell,
@@ -629,6 +636,13 @@ impl Session {
             cwd,
             current_date: Some(current_date),
             timezone: Some(timezone),
+            machine_id,
+            machine_name: codex_config::host_name().map(|host_name| {
+                host_name
+                    .split_once('.')
+                    .map_or(host_name.as_str(), |(short_name, _)| short_name)
+                    .to_string()
+            }),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
@@ -917,6 +931,7 @@ impl Session {
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.session_telemetry,
             session_configuration.provider.clone(),
+            self.installation_id.clone(),
             &session_configuration,
             multi_agent_version,
             self.services.user_shell.as_ref(),

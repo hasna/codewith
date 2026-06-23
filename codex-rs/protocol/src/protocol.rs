@@ -2975,6 +2975,13 @@ pub struct TurnContextItem {
     pub current_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// Stable local Codewith installation id for the machine that produced the
+    /// turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// Best-effort normalized host name for the machine that produced the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<String>,
     pub approval_policy: AskForApproval,
     pub sandbox_policy: SandboxPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5380,6 +5387,8 @@ mod tests {
         }))?;
 
         assert_eq!(item.network, None);
+        assert_eq!(item.machine_id, None);
+        assert_eq!(item.machine_name, None);
         assert_eq!(item.file_system_sandbox_policy, None);
         Ok(())
     }
@@ -5426,6 +5435,8 @@ mod tests {
             workspace_roots: None,
             current_date: None,
             timezone: None,
+            machine_id: None,
+            machine_name: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             permission_profile: None,

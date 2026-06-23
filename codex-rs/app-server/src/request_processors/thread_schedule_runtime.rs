@@ -1057,6 +1057,8 @@ mod tests {
                     workspace_roots: None,
                     current_date: None,
                     timezone: None,
+                    machine_id: None,
+                    machine_name: None,
                     approval_policy: AskForApproval::OnRequest,
                     sandbox_policy: SandboxPolicy::DangerFullAccess,
                     permission_profile: None,

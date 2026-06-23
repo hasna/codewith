@@ -2723,6 +2723,8 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         workspace_roots: None,
         current_date: turn_context.current_date.clone(),
         timezone: turn_context.timezone.clone(),
+        machine_id: None,
+        machine_name: None,
         approval_policy: turn_context.approval_policy.value(),
         sandbox_policy: turn_context.sandbox_policy(),
         permission_profile: None,
@@ -5594,6 +5596,7 @@ async fn make_session_and_context_with_events()
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -7683,6 +7686,7 @@ where
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -7941,6 +7945,48 @@ async fn build_settings_update_items_emits_environment_item_for_time_changes() {
         .expect("environment update item should be emitted");
     assert!(environment_update.contains("<current_date>2026-02-27</current_date>"));
     assert!(environment_update.contains("<timezone>Europe/Berlin</timezone>"));
+}
+
+#[tokio::test]
+async fn build_settings_update_items_emits_environment_item_for_machine_changes() {
+    let (session, previous_context) = make_session_and_context().await;
+    let previous_context = Arc::new(previous_context);
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.machine_id = "current-machine".to_string();
+    current_context.machine_name = Some("spark02".to_string());
+
+    let mut reference_context_item = previous_context.to_turn_context_item();
+    reference_context_item.machine_id = Some("previous-machine".to_string());
+    reference_context_item.machine_name = Some("spark01".to_string());
+    let update_items = session
+        .build_settings_update_items(Some(&reference_context_item), &current_context)
+        .await;
+
+    let environment_update = user_input_texts(&update_items)
+        .into_iter()
+        .find(|text| text.contains("<environment_context>"))
+        .expect("environment update item should be emitted");
+    assert!(
+        environment_update
+            .contains("<machine><id>current-machine</id><name>spark02</name></machine>")
+    );
+
+    let updated_reference_context_item = current_context.to_turn_context_item();
+    let repeated_update_items = session
+        .build_settings_update_items(Some(&updated_reference_context_item), &current_context)
+        .await;
+    let repeated_user_texts = user_input_texts(&repeated_update_items);
+    assert!(
+        !repeated_user_texts
+            .iter()
+            .any(|text| text.contains("<environment_context>")),
+        "did not expect machine context to be re-emitted after baseline update, got {repeated_user_texts:?}"
+    );
 }
 
 #[tokio::test]
@@ -8692,6 +8738,19 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
 
     let item = turn_context.to_turn_context_item();
 
+    assert_eq!(
+        item.machine_id,
+        Some("11111111-1111-4111-8111-111111111111".to_string())
+    );
+    assert_eq!(
+        item.machine_name,
+        codex_config::host_name().map(|host_name| {
+            host_name
+                .split_once('.')
+                .map_or(host_name.as_str(), |(short_name, _)| short_name)
+                .to_string()
+        })
+    );
     assert_eq!(item.file_system_sandbox_policy, None);
     assert_eq!(
         item.permission_profile,
