@@ -32,6 +32,8 @@ fn resume_history(
         workspace_roots: None,
         current_date: None,
         timezone: None,
+        machine_id: None,
+        machine_name: None,
         approval_policy: config.permissions.approval_policy.value(),
         sandbox_policy: config.legacy_sandbox_policy(),
         permission_profile: None,

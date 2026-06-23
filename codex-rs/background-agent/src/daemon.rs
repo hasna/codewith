@@ -105,7 +105,7 @@ impl BackgroundAgentDaemon {
                         .output(
                             BackgroundAgentDaemonStatus::AlreadyRunning,
                             Some(record),
-                            None,
+                            /*stop_report*/ None,
                         )
                         .await;
                 }
@@ -128,15 +128,23 @@ impl BackgroundAgentDaemon {
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
         write_pid_record(&self.paths.pid_file(), &record).await?;
-        self.output(BackgroundAgentDaemonStatus::Started, Some(record), None)
-            .await
+        self.output(
+            BackgroundAgentDaemonStatus::Started,
+            Some(record),
+            /*stop_report*/ None,
+        )
+        .await
     }
 
     pub async fn status(&self) -> Result<BackgroundAgentDaemonOutput> {
         ensure_supported_platform()?;
         let Some(record) = read_pid_record(&self.paths.pid_file()).await? else {
             return self
-                .output(BackgroundAgentDaemonStatus::NotRunning, None, None)
+                .output(
+                    BackgroundAgentDaemonStatus::NotRunning,
+                    /*record*/ None,
+                    /*stop_report*/ None,
+                )
                 .await;
         };
         let status = match self.controller.status(&record.handle).await? {
@@ -145,7 +153,8 @@ impl BackgroundAgentDaemon {
                 BackgroundAgentDaemonStatus::StalePidRecord
             }
         };
-        self.output(status, Some(record), None).await
+        self.output(status, Some(record), /*stop_report*/ None)
+            .await
     }
 
     pub async fn stop(&self) -> Result<BackgroundAgentDaemonOutput> {
@@ -161,7 +170,11 @@ impl BackgroundAgentDaemon {
         let _lock = acquire_lock(&self.paths.lock_file()).await?;
         let Some(record) = read_pid_record(&self.paths.pid_file()).await? else {
             return self
-                .output(BackgroundAgentDaemonStatus::NotRunning, None, None)
+                .output(
+                    BackgroundAgentDaemonStatus::NotRunning,
+                    /*record*/ None,
+                    /*stop_report*/ None,
+                )
                 .await;
         };
         let status = self.controller.status(&record.handle).await?;
@@ -188,7 +201,7 @@ impl BackgroundAgentDaemon {
         let stderr_tail = match &record {
             Some(record) => self
                 .controller
-                .stderr_tail(&record.handle, None)
+                .stderr_tail(&record.handle, /*byte_limit*/ None)
                 .await
                 .unwrap_or(None),
             None => None,

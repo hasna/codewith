@@ -3989,6 +3989,9 @@
     },
     "ThreadGoalPlanNode": {
       "properties": {
+        "assignedThreadId": {
+          "type": "string"
+        },
         "createdAt": {
           "format": "int64",
           "type": "integer"
@@ -4055,6 +4058,7 @@
         }
       },
       "required": [
+        "assignedThreadId",
         "createdAt",
         "dependsOn",
         "key",

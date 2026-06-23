@@ -125,6 +125,8 @@ fn reference_context_item() -> TurnContextItem {
         workspace_roots: None,
         current_date: Some("2026-03-23".to_string()),
         timezone: Some("America/Los_Angeles".to_string()),
+        machine_id: None,
+        machine_name: None,
         approval_policy: AskForApproval::OnRequest,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         permission_profile: None,

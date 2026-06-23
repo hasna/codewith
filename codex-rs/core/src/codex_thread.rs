@@ -116,6 +116,40 @@ impl TryStartTurnIfIdleError {
     }
 }
 
+/// Error returned when a caller asks to start a user-input turn only if the
+/// thread is idle.
+#[derive(Debug)]
+pub enum TryStartUserInputTurnIfIdleError {
+    /// No user input was provided, so there is no turn to start.
+    EmptyInput,
+    /// The thread was not eligible to start an idle-only turn.
+    Rejected(TryStartTurnIfIdleRejectionReason),
+    /// The requested turn settings were rejected before the turn started.
+    InvalidRequest(CodexErr),
+}
+
+impl TryStartUserInputTurnIfIdleError {
+    pub fn reason(&self) -> Option<TryStartTurnIfIdleRejectionReason> {
+        match self {
+            Self::EmptyInput => None,
+            Self::Rejected(reason) => Some(*reason),
+            Self::InvalidRequest(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for TryStartUserInputTurnIfIdleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "turn input must not be empty"),
+            Self::Rejected(reason) => write!(f, "thread is not idle: {reason:?}"),
+            Self::InvalidRequest(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for TryStartUserInputTurnIfIdleError {}
+
 impl ThreadConfigSnapshot {
     pub fn sandbox_policy(&self) -> SandboxPolicy {
         codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
@@ -323,6 +357,25 @@ impl CodexThread {
         items: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
         self.codex.session.try_start_turn_if_idle(items).await
+    }
+
+    /// Starts a regular user-input turn only when the thread is idle.
+    ///
+    /// Unlike `submit(Op::UserInput)`, this never steers the input into an
+    /// already-running turn. It is intended for server-owned work that must have
+    /// its own turn lifecycle, such as scheduled runs.
+    pub async fn try_start_user_input_turn_if_idle(
+        &self,
+        sub_id: String,
+        items: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        overrides: CodexThreadSettingsOverrides,
+    ) -> Result<String, TryStartUserInputTurnIfIdleError> {
+        let updates = self.thread_settings_update(overrides).await;
+        self.codex
+            .session
+            .try_start_user_input_turn_if_idle(sub_id, items, additional_context, updates)
+            .await
     }
 
     /// Starts a regular turn when trigger-turn mailbox work is pending and the

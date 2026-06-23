@@ -51,3 +51,5 @@ pub use worktree::list_git_worktrees;
 pub use worktree::merge_tree_dry_run;
 pub use worktree::remove_linked_git_worktree;
 pub use worktree::resolve_git_ref;
+pub use worktree::validate_git_branch_name;
+pub use worktree::worktree_has_commits_after;

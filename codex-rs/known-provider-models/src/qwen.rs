@@ -6,19 +6,19 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "qwen3.5-flash",
         "Qwen3.5 Flash",
         "Alibaba Qwen's fast model with native Model Studio web search support.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "qwen3.5-plus",
         "Qwen3.5 Plus",
         "Alibaba Qwen's balanced model with native Model Studio web search support.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "qwen3-max",
         "Qwen3 Max",
         "Alibaba Qwen's highest-capability model with native Model Studio web search support.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "qwen3.7-plus",
@@ -49,7 +49,7 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
 const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
     KnownProviderModelMetadata::with_search_tool(
         display_name,
-        1_000_000,
+        /*context_window*/ 1_000_000,
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
         /*supports_reasoning*/ true,

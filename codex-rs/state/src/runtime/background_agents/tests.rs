@@ -4,11 +4,24 @@ use crate::BackgroundAgentExecutionHandleParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
+use crate::runtime::managed_worktrees::path_to_db_string;
 use crate::runtime::test_support::test_thread_metadata;
 use crate::runtime::test_support::unique_temp_dir;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::path::PathBuf;
 use std::time::Duration;
+
+fn repo_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "codewith-background-agent-{}",
+        name.trim_start_matches('/').replace('/', "-")
+    ))
+}
+
+fn worktree_path(name: &str) -> PathBuf {
+    repo_path("/repo").join(".git").join("worktrees").join(name)
+}
 
 async fn create_run(runtime: &StateRuntime) -> anyhow::Result<BackgroundAgentRun> {
     runtime
@@ -1010,6 +1023,267 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
 }
 
 #[tokio::test]
+async fn stopped_worker_process_is_cancelled_and_lease_stopped_immediately() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+
+    let generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    runtime
+        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+            run_id: "run-1",
+            supervisor_id: "supervisor-1",
+            generation,
+            pid: Some(100),
+            pgid: Some(100),
+            job_id: Some("job-1"),
+            start_token: Some("start-1"),
+            stderr_log_path: Some("/tmp/run-1.stderr.log"),
+        })
+        .await?;
+    runtime
+        .create_background_agent_pending_interaction(
+            &BackgroundAgentPendingInteractionCreateParams {
+                id: "pending-1".to_string(),
+                run_id: "run-1".to_string(),
+                worker_request_id: Some("worker-request-1".to_string()),
+                kind: BackgroundAgentPendingInteractionKind::Approval,
+                request_payload_json: json!({"command": "deploy"}),
+                no_client_policy: "deny".to_string(),
+                timeout_at: None,
+            },
+        )
+        .await?;
+    runtime
+        .set_background_agent_desired_state("run-1", BackgroundAgentDesiredState::Stopped)
+        .await?;
+    runtime
+        .update_background_agent_run_status(
+            "run-1",
+            BackgroundAgentRunStatus::Stopping,
+            Some("stop requested"),
+        )
+        .await?;
+
+    assert!(
+        runtime
+            .finalize_stopped_background_agent_process(
+                "run-1",
+                "supervisor-1",
+                generation,
+                "worker process stopped after stop request",
+                &json!({
+                    "reason": "worker_process_stopped_after_desired_state_change",
+                }),
+            )
+            .await?
+    );
+    assert!(
+        !runtime
+            .finalize_stopped_background_agent_process(
+                "run-1",
+                "supervisor-1",
+                generation,
+                "worker process stopped after stop request",
+                &json!({
+                    "reason": "worker_process_stopped_after_desired_state_change",
+                }),
+            )
+            .await?
+    );
+
+    let run = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+    assert_eq!(
+        run.status_reason.as_deref(),
+        Some("worker process stopped after stop request")
+    );
+    let process_lease: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, exit_reason FROM background_agent_process_leases WHERE run_id = ? AND generation = ?",
+    )
+    .bind("run-1")
+    .bind(generation)
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(
+        process_lease,
+        (
+            "stopped".to_string(),
+            Some("worker process stopped after stop request".to_string())
+        )
+    );
+    let status_snapshot = runtime
+        .get_background_agent_status_snapshot("run-1")
+        .await?
+        .expect("status snapshot should exist");
+    assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Cancelled);
+    assert_eq!(
+        status_snapshot.desired_state,
+        BackgroundAgentDesiredState::Stopped
+    );
+    assert_eq!(status_snapshot.pending_interaction_count, 0);
+    assert_eq!(
+        status_snapshot.summary.as_deref(),
+        Some("worker process stopped after stop request")
+    );
+    assert_eq!(status_snapshot.last_event_seq, run.last_event_seq);
+    let interaction = runtime
+        .get_background_agent_pending_interaction("pending-1")
+        .await?
+        .expect("interaction should exist");
+    assert_eq!(
+        interaction.status,
+        BackgroundAgentPendingInteractionStatus::Cancelled
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unclaimed_worker_process_spawn_failure_marks_run_failed() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+
+    assert!(
+        runtime
+            .fail_unclaimed_background_agent_process_spawn(
+                "run-1",
+                "worker process exited before claiming run",
+                &json!({
+                    "reason": "worker_process_exited_before_claim",
+                }),
+            )
+            .await?
+    );
+    assert!(
+        !runtime
+            .fail_unclaimed_background_agent_process_spawn(
+                "run-1",
+                "worker process exited before claiming run",
+                &json!({
+                    "reason": "worker_process_exited_before_claim",
+                }),
+            )
+            .await?
+    );
+
+    let run = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(run.status, BackgroundAgentRunStatus::Failed);
+    assert_eq!(
+        run.status_reason.as_deref(),
+        Some("worker process exited before claiming run")
+    );
+    assert_eq!(
+        run.crash_reason.as_deref(),
+        Some("worker process exited before claiming run")
+    );
+    let status_snapshot = runtime
+        .get_background_agent_status_snapshot("run-1")
+        .await?
+        .expect("status snapshot should exist");
+    assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Failed);
+    assert_eq!(status_snapshot.last_event_seq, run.last_event_seq);
+    Ok(())
+}
+
+#[tokio::test]
+async fn claimed_queued_run_is_not_failed_as_unclaimed_process_spawn() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    runtime
+        .append_background_agent_status_event_for_supervisor(
+            BackgroundAgentStatusEventForSupervisorParams {
+                run_id: "run-1",
+                supervisor_id: "supervisor-1",
+                generation,
+                status: BackgroundAgentRunStatus::Queued,
+                status_reason: Some("waiting for usage profile reset"),
+                event_type: "agent.usageProfileWait",
+                event_payload_json: &json!({"retryAt": 100}),
+                summary: Some("Queued"),
+                pending_interaction_count: 0,
+                status_payload_json: &json!({"phase": "usage profile wait"}),
+            },
+        )
+        .await?
+        .expect("run should accept queued status from supervisor");
+
+    assert!(
+        !runtime
+            .fail_unclaimed_background_agent_process_spawn(
+                "run-1",
+                "worker process exited before claiming run",
+                &json!({
+                    "reason": "worker_process_exited_before_claim",
+                }),
+            )
+            .await?
+    );
+
+    let run = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(run.status, BackgroundAgentRunStatus::Queued);
+    assert_eq!(
+        run.status_reason.as_deref(),
+        Some("waiting for usage profile reset")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphaned_run_is_not_failed_as_unclaimed_process_spawn() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    runtime
+        .claim_background_agent_supervisor("run-1", "old-supervisor", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    runtime
+        .update_background_agent_run_status(
+            "run-1",
+            BackgroundAgentRunStatus::Orphaned,
+            Some("supervisor heartbeat stale"),
+        )
+        .await?;
+
+    assert!(
+        !runtime
+            .fail_unclaimed_background_agent_process_spawn(
+                "run-1",
+                "worker process exited before claiming run",
+                &json!({
+                    "reason": "worker_process_exited_before_claim",
+                }),
+            )
+            .await?
+    );
+
+    let run = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(run.status, BackgroundAgentRunStatus::Orphaned);
+    assert_eq!(
+        run.status_reason.as_deref(),
+        Some("supervisor heartbeat stale")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn delete_request_for_claimed_run_becomes_stopping_and_stale_cancelled() -> anyhow::Result<()>
 {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -1137,6 +1411,8 @@ async fn active_process_handles_include_persisted_start_token_and_stderr_path() 
 async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run(runtime.as_ref()).await?;
+    let repo = repo_path("/repo");
+    let worktree = worktree_path("run-1");
 
     let lease = runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1144,8 +1420,8 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/run-1".to_string(),
+            base_repo_path: path_to_db_string(&repo),
+            worktree_path: path_to_db_string(&worktree),
             branch: Some("codewith/bg-run-1".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1308,6 +1584,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
+    let repo = repo_path("/repo");
+    let repo = path_to_db_string(&repo);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1315,8 +1593,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo.clone(),
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1335,8 +1613,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo.clone(),
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1351,7 +1629,7 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
         .expect_err("parallel shared-repository lease should be rejected");
     assert!(
         err.to_string()
-            .contains("shared repository /repo is already leased")
+            .contains(&format!("shared repository {repo} is already leased"))
     );
 
     runtime
@@ -1363,8 +1641,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo,
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1385,6 +1663,10 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
+    let repo = repo_path("/repo");
+    let worktree = worktree_path("bg-run-1");
+    let repo = path_to_db_string(&repo);
+    let worktree = path_to_db_string(&worktree);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1392,8 +1674,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-1".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1412,8 +1694,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1426,10 +1708,9 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         })
         .await
         .expect_err("active isolated worktree path should be protected");
-    assert!(
-        err.to_string()
-            .contains("isolated worktree path /repo/.git/worktrees/bg-run-1 is already leased")
-    );
+    assert!(err.to_string().contains(&format!(
+        "isolated worktree path {worktree} is already leased"
+    )));
 
     runtime
         .release_background_agent_worktree_lease(
@@ -1443,8 +1724,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1457,11 +1738,9 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         })
         .await
         .expect_err("released isolated worktree path should stay protected until cleanup succeeds");
-    assert!(
-        still_protected
-            .to_string()
-            .contains("isolated worktree path /repo/.git/worktrees/bg-run-1 is already leased")
-    );
+    assert!(still_protected.to_string().contains(&format!(
+        "isolated worktree path {worktree} is already leased"
+    )));
 
     let cleanup_candidate = runtime
         .managed_worktrees()
@@ -1480,8 +1759,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo,
+            worktree_path: worktree,
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
