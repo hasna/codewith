@@ -249,7 +249,7 @@ RETURNING
         &self,
         schedule_id: &str,
     ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
-        self.resume_thread_schedule_with_next_run_at(schedule_id, None)
+        self.resume_thread_schedule_with_next_run_at(schedule_id, /*next_run_at*/ None)
             .await
     }
 
