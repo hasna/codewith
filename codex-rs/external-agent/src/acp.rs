@@ -817,8 +817,12 @@ impl AcpStdioProcess {
                         .get("id")
                         .cloned()
                         .unwrap_or(JsonValue::String("unknown".to_string()));
-                    self.write_error(id, -32050, "ACP server request session mismatch")
-                        .await?;
+                    self.write_error(
+                        id,
+                        /*code*/ -32050,
+                        "ACP server request session mismatch",
+                    )
+                    .await?;
                     continue;
                 }
                 self.handle_server_request(&message, host, &context).await?;
@@ -934,7 +938,7 @@ impl AcpStdioProcess {
             _ => {
                 self.write_error(
                     id,
-                    -32601,
+                    /*code*/ -32601,
                     format!("unsupported ACP server request `{method}`"),
                 )
                 .await
@@ -1016,12 +1020,16 @@ impl AcpStdioProcess {
             FileSystemCapability::None
         ) {
             return self
-                .write_error(id, -32010, "filesystem reads are not allowed for this run")
+                .write_error(
+                    id,
+                    /*code*/ -32010,
+                    "filesystem reads are not allowed for this run",
+                )
                 .await;
         }
         let path = match confined_path_from_params(context.request, &params, "path") {
             Ok(path) => path,
-            Err(message) => return self.write_error(id, -32011, message).await,
+            Err(message) => return self.write_error(id, /*code*/ -32011, message).await,
         };
         match host
             .perform_action(ExternalAgentActionRequest::ReadFile { path })
@@ -1031,11 +1039,15 @@ impl AcpStdioProcess {
                 self.write_result(id, json!({ "content": content })).await
             }
             ExternalAgentActionResult::Rejected { reason } => {
-                self.write_error(id, -32012, reason).await
+                self.write_error(id, /*code*/ -32012, reason).await
             }
             _ => {
-                self.write_error(id, -32013, "host returned an invalid read result")
-                    .await
+                self.write_error(
+                    id,
+                    /*code*/ -32013,
+                    "host returned an invalid read result",
+                )
+                .await
             }
         }
     }
@@ -1052,12 +1064,16 @@ impl AcpStdioProcess {
     {
         if context.request.capabilities.filesystem != FileSystemCapability::ManagedReadWrite {
             return self
-                .write_error(id, -32020, "filesystem writes require managed mode")
+                .write_error(
+                    id,
+                    /*code*/ -32020,
+                    "filesystem writes require managed mode",
+                )
                 .await;
         }
         let path = match confined_path_from_params(context.request, &params, "path") {
             Ok(path) => path,
-            Err(message) => return self.write_error(id, -32021, message).await,
+            Err(message) => return self.write_error(id, /*code*/ -32021, message).await,
         };
         let content = params
             .get("content")
@@ -1079,16 +1095,22 @@ impl AcpStdioProcess {
         .await?;
         if host.request_permission(permission).await? != ExternalAgentPermissionDecision::AllowOnce
         {
-            return self.write_error(id, -32022, "write rejected").await;
+            return self
+                .write_error(id, /*code*/ -32022, "write rejected")
+                .await;
         }
         match host.perform_action(action).await? {
             ExternalAgentActionResult::WriteAccepted => self.write_result(id, json!({})).await,
             ExternalAgentActionResult::Rejected { reason } => {
-                self.write_error(id, -32023, reason).await
+                self.write_error(id, /*code*/ -32023, reason).await
             }
             _ => {
-                self.write_error(id, -32024, "host returned an invalid write result")
-                    .await
+                self.write_error(
+                    id,
+                    /*code*/ -32024,
+                    "host returned an invalid write result",
+                )
+                .await
             }
         }
     }
@@ -1105,12 +1127,16 @@ impl AcpStdioProcess {
     {
         if context.request.capabilities.terminal != TerminalCapability::Managed {
             return self
-                .write_error(id, -32030, "terminal access requires managed mode")
+                .write_error(
+                    id,
+                    /*code*/ -32030,
+                    "terminal access requires managed mode",
+                )
                 .await;
         }
         let action = match terminal_action(context.request, &params) {
             Ok(action) => action,
-            Err(message) => return self.write_error(id, -32034, message).await,
+            Err(message) => return self.write_error(id, /*code*/ -32034, message).await,
         };
         let permission = ExternalAgentPermissionRequest {
             id: json_id_to_string(&id),
@@ -1127,7 +1153,7 @@ impl AcpStdioProcess {
         if host.request_permission(permission).await? != ExternalAgentPermissionDecision::AllowOnce
         {
             return self
-                .write_error(id, -32031, "terminal command rejected")
+                .write_error(id, /*code*/ -32031, "terminal command rejected")
                 .await;
         }
         match host.perform_action(action).await? {
@@ -1150,11 +1176,15 @@ impl AcpStdioProcess {
                     .await
             }
             ExternalAgentActionResult::Rejected { reason } => {
-                self.write_error(id, -32032, reason).await
+                self.write_error(id, /*code*/ -32032, reason).await
             }
             _ => {
-                self.write_error(id, -32033, "host returned an invalid terminal result")
-                    .await
+                self.write_error(
+                    id,
+                    /*code*/ -32033,
+                    "host returned an invalid terminal result",
+                )
+                .await
             }
         }
     }
@@ -1169,7 +1199,9 @@ impl AcpStdioProcess {
             .and_then(JsonValue::as_str)
             .unwrap_or_default();
         let Some(output) = self.terminals.get(terminal_id) else {
-            return self.write_error(id, -32040, "unknown terminal").await;
+            return self
+                .write_error(id, /*code*/ -32040, "unknown terminal")
+                .await;
         };
         self.write_result(
             id,
@@ -1194,7 +1226,9 @@ impl AcpStdioProcess {
             .and_then(JsonValue::as_str)
             .unwrap_or_default();
         let Some(output) = self.terminals.get(terminal_id) else {
-            return self.write_error(id, -32041, "unknown terminal").await;
+            return self
+                .write_error(id, /*code*/ -32041, "unknown terminal")
+                .await;
         };
         self.write_result(id, json!({ "exitCode": output.exit_code }))
             .await
@@ -2644,15 +2678,20 @@ for line in sys.stdin:
 
     #[test]
     fn confined_path_rejects_parent_traversal() {
-        let cwd = Path::new("/repo/project");
+        let cwd = normalize_lexical(Path::new("/repo/project"));
+        let sibling_path = normalize_lexical(Path::new("/repo/secret.txt"));
 
         assert_eq!(
-            confine_path(cwd, Path::new("src/lib.rs")),
-            Ok(PathBuf::from("/repo/project/src/lib.rs"))
+            confine_path(&cwd, Path::new("src/lib.rs")),
+            Ok(cwd.join("src/lib.rs"))
         );
         assert_eq!(
-            confine_path(cwd, Path::new("../secret.txt")),
-            Err("path `/repo/secret.txt` is outside cwd `/repo/project`".to_string())
+            confine_path(&cwd, Path::new("../secret.txt")),
+            Err(format!(
+                "path `{}` is outside cwd `{}`",
+                sibling_path.display(),
+                cwd.display()
+            ))
         );
     }
 
@@ -2673,7 +2712,11 @@ for line in sys.stdin:
                     "cwd": "/repo/other",
                 }),
             ),
-            Err("path `/repo/other` is outside cwd `/repo/project`".to_string())
+            Err(format!(
+                "path `{}` is outside cwd `{}`",
+                normalize_lexical(Path::new("/repo/other")).display(),
+                normalize_lexical(Path::new("/repo/project")).display()
+            ))
         );
     }
 

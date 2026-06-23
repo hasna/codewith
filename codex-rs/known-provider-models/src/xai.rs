@@ -6,20 +6,26 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "grok-4.3",
         "Grok 4.3",
         "xAI Grok chat model. Requires XAI_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "grok-build-0.1",
         "Grok Build 0.1",
         "xAI coding model for agentic coding workflows.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
-        "grok-4.3" => Some(model("Grok 4.3", 1_000_000, true)),
-        "grok-build-0.1" => Some(model("Grok Build 0.1", 256_000, false)),
+        "grok-4.3" => Some(model(
+            "Grok 4.3", /*context_window*/ 1_000_000, /*supports_search_tool*/ true,
+        )),
+        "grok-build-0.1" => Some(model(
+            "Grok Build 0.1",
+            /*context_window*/ 256_000,
+            /*supports_search_tool*/ false,
+        )),
         _ => None,
     }
 }

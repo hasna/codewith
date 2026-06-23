@@ -209,10 +209,9 @@ mod tests {
             last_seen_at: 1_781_512_883,
         };
 
-        insta::assert_snapshot!(format_active_session_peer(
-            &peer,
-            Some(peer.thread_id.as_str())
-        ));
+        let row = format_active_session_peer(&peer, Some(peer.thread_id.as_str()))
+            .replace(&peer.cwd.display().to_string(), "/workspace/open-codewith");
+        insta::assert_snapshot!(row);
     }
 
     #[test]

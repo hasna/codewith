@@ -2,6 +2,10 @@ use super::*;
 use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::tmux_handoff::TmuxHandoffDestination;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::TimeZone;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -1708,14 +1712,42 @@ async fn worktree_slash_command_emits_manage_events() {
 async fn background_agent_manager_grouped_roster_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_background_agent_manager(vec![
-        test_background_agent("done-agent", AgentRunStatus::Completed, 3),
-        test_background_agent("run-agent", AgentRunStatus::Running, 2),
-        test_background_agent("wait-agent", AgentRunStatus::WaitingOnUser, 1),
-        test_background_agent("stop-agent", AgentRunStatus::Cancelled, 4),
+        test_background_agent(
+            "done-agent",
+            AgentRunStatus::Completed,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 3),
+        ),
+        test_background_agent(
+            "run-agent",
+            AgentRunStatus::Running,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 2),
+        ),
+        test_background_agent(
+            "wait-agent",
+            AgentRunStatus::WaitingOnUser,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 1),
+        ),
+        test_background_agent(
+            "stop-agent",
+            AgentRunStatus::Cancelled,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 4),
+        ),
     ]);
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert_chatwidget_snapshot!("background_agent_manager_grouped_roster", popup);
+}
+
+fn local_timestamp_for_snapshot(hour: u32, minute: u32, second: u32) -> i64 {
+    let naive = NaiveDate::from_ymd_opt(1970, 1, 1)
+        .expect("valid snapshot date")
+        .and_hms_opt(hour, minute, second)
+        .expect("valid snapshot time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(datetime) => datetime.timestamp(),
+        LocalResult::Ambiguous(datetime, _) => datetime.timestamp(),
+        LocalResult::None => naive.and_utc().timestamp(),
+    }
 }
 
 #[tokio::test]

@@ -239,9 +239,13 @@ mod tests {
         let config = ExternalAgentSandboxConfig::new(PermissionProfile::External {
             network: NetworkSandboxPolicy::Restricted,
         });
+        let mut launch = launch_spec();
+        #[cfg(windows)]
+        {
+            launch.cwd = PathBuf::from(r"C:\tmp");
+        }
 
-        let err =
-            platform_sandbox_external_agent_launch(launch_spec(), &config).expect_err("error");
+        let err = platform_sandbox_external_agent_launch(launch, &config).expect_err("error");
         assert_eq!(
             err.to_string(),
             "external agent runtime `fake` is not ready: platform sandbox is not available for external-agent subprocesses"
