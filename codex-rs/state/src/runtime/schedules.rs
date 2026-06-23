@@ -180,6 +180,8 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let prompt_source = update.prompt_source.unwrap_or(existing.prompt_source);
         let schedule = update.schedule.unwrap_or(existing.schedule);
         let timezone = update.timezone.unwrap_or(existing.timezone);
+        let reset_failure_count =
+            matches!(update.status, Some(crate::ThreadScheduleStatus::Active));
         let status = update.status.unwrap_or(existing.status);
         let next_run_at = update.next_run_at.unwrap_or(existing.next_run_at);
         let expires_at = update.expires_at.unwrap_or(existing.expires_at);
@@ -198,6 +200,7 @@ SET
     status = ?,
     next_run_at_ms = ?,
     expires_at_ms = ?,
+    failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,
     updated_at_ms = ?
 WHERE schedule_id = ?
 RETURNING
@@ -214,6 +217,7 @@ RETURNING
             .bind(status.as_str())
             .bind(next_run_at.map(datetime_to_epoch_millis))
             .bind(expires_at.map(datetime_to_epoch_millis))
+            .bind(reset_failure_count)
             .bind(datetime_to_epoch_millis(Utc::now()))
             .bind(schedule_id)
             .fetch_optional(self.pool.as_ref())
@@ -239,6 +243,50 @@ RETURNING
             },
         )
         .await
+    }
+
+    pub async fn resume_thread_schedule(
+        &self,
+        schedule_id: &str,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        self.resume_thread_schedule_with_next_run_at(schedule_id, None)
+            .await
+    }
+
+    pub async fn resume_thread_schedule_at(
+        &self,
+        schedule_id: &str,
+        next_run_at: DateTime<Utc>,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        self.resume_thread_schedule_with_next_run_at(schedule_id, Some(next_run_at))
+            .await
+    }
+
+    async fn resume_thread_schedule_with_next_run_at(
+        &self,
+        schedule_id: &str,
+        next_run_at: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        let sql = schedule_returning(
+            r#"
+UPDATE thread_schedules
+SET
+    status = ?,
+    next_run_at_ms = COALESCE(?, next_run_at_ms),
+    failure_count = 0,
+    updated_at_ms = ?
+WHERE schedule_id = ?
+RETURNING
+"#,
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(crate::ThreadScheduleStatus::Active.as_str())
+            .bind(next_run_at.map(datetime_to_epoch_millis))
+            .bind(datetime_to_epoch_millis(Utc::now()))
+            .bind(schedule_id)
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+        row.map(|row| thread_schedule_from_row(&row)).transpose()
     }
 
     pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
@@ -1436,6 +1484,126 @@ mod tests {
                 .get_thread_schedule_run(&failed_claim.run.run_id)
                 .await
                 .expect("failed run should load through the schedule store")
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_thread_schedule_resets_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 14);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = create_interval_schedule(&runtime, thread_id, "retry me", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-fail", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                now + chrono::Duration::seconds(10),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
+
+        let after_failure = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, after_failure.status);
+        assert_eq!(None, after_failure.next_run_at);
+        assert_eq!(1, after_failure.failure_count);
+
+        let resumed_at = now + chrono::Duration::minutes(5);
+        let resumed = runtime
+            .thread_schedules()
+            .resume_thread_schedule_at(&schedule.schedule_id, resumed_at)
+            .await
+            .expect("schedule should resume")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(resumed_at),
+                failure_count: 0,
+                updated_at: resumed.updated_at,
+                ..after_failure
+            },
+            resumed
+        );
+    }
+
+    #[tokio::test]
+    async fn update_thread_schedule_to_active_resets_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 15);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = create_interval_schedule(&runtime, thread_id, "retry me", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-fail", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                now + chrono::Duration::seconds(10),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
+
+        let after_failure = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, after_failure.status);
+        assert_eq!(1, after_failure.failure_count);
+
+        let resumed_at = now + chrono::Duration::minutes(5);
+        let resumed = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(crate::ThreadScheduleStatus::Active),
+                    next_run_at: Some(Some(resumed_at)),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(resumed_at),
+                failure_count: 0,
+                updated_at: resumed.updated_at,
+                ..after_failure
+            },
+            resumed
         );
     }
 

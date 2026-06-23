@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
+use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
 use codex_core::ThreadManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
@@ -387,6 +388,12 @@ impl MissionControlToolKind {
                         JsonSchema::string(Some("Pending interaction id.".to_string())),
                     ),
                     (
+                        "thread_id".to_string(),
+                        nullable_string(
+                            "Optional thread id; defaults to the calling thread and is required when responding to another thread's interaction.",
+                        ),
+                    ),
+                    (
                         "terminal_status".to_string(),
                         JsonSchema::string_enum(
                             vec![
@@ -401,7 +408,11 @@ impl MissionControlToolKind {
                     ),
                     (
                         "response".to_string(),
-                        JsonSchema::object(BTreeMap::new(), None, Some(true.into())),
+                        JsonSchema::object(
+                            BTreeMap::new(),
+                            /*required*/ None,
+                            Some(true.into()),
+                        ),
                     ),
                     (
                         "response_preview".to_string(),
@@ -609,18 +620,33 @@ impl MissionControlRuntime {
         args: RespondInteractionArgs,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let interaction_id = validate_required_text("interaction_id", args.interaction_id)?;
+        let thread_id = args
+            .thread_id
+            .as_deref()
+            .map(|thread_id| parse_thread_id("thread_id", thread_id))
+            .transpose()?
+            .unwrap_or(self.current_thread_id);
         let terminal_status = parse_terminal_status(args.terminal_status.as_str())?;
-        let interaction = self
-            .state_db
-            .get_thread_pending_interaction(interaction_id.as_str())
+        let terminal_status_state =
+            crate::request_processors::thread_pending_interaction_processor::api_pending_interaction_terminal_status_to_state(
+                terminal_status,
+            );
+        let interaction =
+            crate::request_processors::thread_pending_interaction_processor::read_pending_interaction(
+                self.state_db.as_ref(),
+                interaction_id.as_str(),
+                Some(thread_id),
+            )
             .await
-            .map_err(|err| model_error(format!("failed to read pending interaction: {err}")))?
-            .ok_or_else(|| {
-                model_error(format!("pending interaction not found: {interaction_id}"))
-            })?;
+            .map_err(model_error_from_json_rpc)?;
         crate::request_processors::thread_pending_interaction_processor::validate_response_matches_interaction(
             interaction.kind,
             &args.response,
+        )
+        .map_err(model_error_from_json_rpc)?;
+        crate::request_processors::thread_pending_interaction_processor::validate_response_status_matches_payload(
+            &args.response,
+            terminal_status,
         )
         .map_err(model_error_from_json_rpc)?;
         let stored_response =
@@ -638,6 +664,12 @@ impl MissionControlRuntime {
             stored_response.preview.clone()
         };
 
+        if interaction.server_request_id_json.is_some() {
+            return Err(model_error(
+                "pending interaction is tied to a live client request; use the app-server pending-interaction response path so the waiting client is notified",
+            ));
+        }
+
         if args.dry_run.unwrap_or(false) {
             return Ok(json_output(json!({
                 "dryRun": true,
@@ -647,12 +679,6 @@ impl MissionControlRuntime {
             })));
         }
 
-        if interaction.server_request_id_json.is_some() {
-            return Err(model_error(
-                "pending interaction is tied to a live client request; use the app-server pending-interaction response path so the waiting client is notified",
-            ));
-        }
-
         let updated = self
             .state_db
             .respond_thread_pending_interaction(&codex_state::PendingInteractionRespondParams {
@@ -660,7 +686,7 @@ impl MissionControlRuntime {
                 response_payload_json: stored_response.payload,
                 response_payload_preview: response_preview.clone(),
                 response_redactions_json: json!(stored_response.redactions),
-                terminal_status,
+                terminal_status: terminal_status_state,
             })
             .await
             .map_err(|err| {
@@ -713,6 +739,7 @@ struct MailboxReceiptsArgs {
 #[serde(deny_unknown_fields)]
 struct RespondInteractionArgs {
     interaction_id: String,
+    thread_id: Option<String>,
     terminal_status: String,
     response: ThreadPendingInteractionResponsePayload,
     response_preview: Option<String>,
@@ -752,21 +779,30 @@ fn non_strict_object(properties: BTreeMap<String, JsonSchema>, required: Vec<&st
 
 fn nullable_string(description: &str) -> JsonSchema {
     JsonSchema::any_of(
-        vec![JsonSchema::string(None), JsonSchema::null(None)],
+        vec![
+            JsonSchema::string(/*description*/ None),
+            JsonSchema::null(/*description*/ None),
+        ],
         Some(description.to_string()),
     )
 }
 
 fn nullable_integer(description: &str) -> JsonSchema {
     JsonSchema::any_of(
-        vec![JsonSchema::integer(None), JsonSchema::null(None)],
+        vec![
+            JsonSchema::integer(/*description*/ None),
+            JsonSchema::null(/*description*/ None),
+        ],
         Some(description.to_string()),
     )
 }
 
 fn nullable_boolean(description: &str) -> JsonSchema {
     JsonSchema::any_of(
-        vec![JsonSchema::boolean(None), JsonSchema::null(None)],
+        vec![
+            JsonSchema::boolean(/*description*/ None),
+            JsonSchema::null(/*description*/ None),
+        ],
         Some(description.to_string()),
     )
 }
@@ -795,13 +831,13 @@ async fn ensure_thread_exists(
 
 fn parse_terminal_status(
     value: &str,
-) -> Result<codex_state::PendingInteractionStatus, FunctionCallError> {
+) -> Result<ThreadPendingInteractionTerminalStatus, FunctionCallError> {
     let status = match value {
-        "responded" => codex_state::PendingInteractionStatus::Responded,
-        "expired" => codex_state::PendingInteractionStatus::Expired,
-        "cancelled" => codex_state::PendingInteractionStatus::Cancelled,
-        "denied" => codex_state::PendingInteractionStatus::Denied,
-        "no_longer_waiting" => codex_state::PendingInteractionStatus::NoLongerWaiting,
+        "responded" => ThreadPendingInteractionTerminalStatus::Responded,
+        "expired" => ThreadPendingInteractionTerminalStatus::Expired,
+        "cancelled" => ThreadPendingInteractionTerminalStatus::Cancelled,
+        "denied" => ThreadPendingInteractionTerminalStatus::Denied,
+        "no_longer_waiting" => ThreadPendingInteractionTerminalStatus::NoLongerWaiting,
         other => {
             return Err(model_error(format!(
                 "terminal_status must be one of responded, expired, cancelled, denied, no_longer_waiting; got {other}"
@@ -1251,7 +1287,7 @@ mod tests {
             .await
             .expect("schedule should be created");
         let runtime = MissionControlRuntime {
-            state_db: state_db.clone(),
+            state_db,
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
             scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
@@ -1320,6 +1356,7 @@ mod tests {
             runtime
                 .handle_respond_interaction(RespondInteractionArgs {
                     interaction_id: interaction_id.to_string(),
+                    thread_id: None,
                     terminal_status: "responded".to_string(),
                     response: ThreadPendingInteractionResponsePayload::Terminal {
                         reason: "go ahead".to_string(),
@@ -1338,6 +1375,7 @@ mod tests {
             runtime
                 .handle_respond_interaction(RespondInteractionArgs {
                     interaction_id: interaction_id.to_string(),
+                    thread_id: None,
                     terminal_status: "responded".to_string(),
                     response: ThreadPendingInteractionResponsePayload::Terminal {
                         reason: "go ahead".to_string(),
@@ -1378,7 +1416,7 @@ mod tests {
             .await
             .expect("pending interaction should be created");
         let runtime = MissionControlRuntime {
-            state_db,
+            state_db: state_db.clone(),
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
             scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
@@ -1388,6 +1426,7 @@ mod tests {
         let Err(err) = runtime
             .handle_respond_interaction(RespondInteractionArgs {
                 interaction_id: interaction_id.to_string(),
+                thread_id: None,
                 terminal_status: "responded".to_string(),
                 response: ThreadPendingInteractionResponsePayload::Terminal {
                     reason: "wrong shape".to_string(),
@@ -1404,6 +1443,134 @@ mod tests {
             err.to_string()
                 .contains("pending interaction response kind mismatch"),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_interaction_rejects_status_payload_mismatch() {
+        let state_db = test_state_db().await;
+        let thread_id = test_thread_id();
+        let interaction_id = "int-status-mismatch";
+        state_db
+            .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+                interaction_id: interaction_id.to_string(),
+                thread_id,
+                source_kind: codex_state::PendingInteractionSourceKind::Thread,
+                source_id: None,
+                turn_id: Some("turn-1".to_string()),
+                worker_request_id: Some("worker-1".to_string()),
+                server_request_id_json: None,
+                kind: codex_state::PendingInteractionKind::UserInput,
+                request_payload_json: json!({ "questions": [] }),
+                request_payload_preview: "question".to_string(),
+                request_redactions_json: json!([]),
+                no_client_policy: "persist".to_string(),
+                timeout_at: None,
+            })
+            .await
+            .expect("pending interaction should be created");
+        let runtime = MissionControlRuntime {
+            state_db: state_db.clone(),
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id: thread_id,
+        };
+
+        let Err(err) = runtime
+            .handle_respond_interaction(RespondInteractionArgs {
+                interaction_id: interaction_id.to_string(),
+                thread_id: None,
+                terminal_status: "denied".to_string(),
+                response: ThreadPendingInteractionResponsePayload::RequestUserInput {
+                    answers: HashMap::new(),
+                },
+                response_preview: None,
+                dry_run: Some(true),
+            })
+            .await
+        else {
+            panic!("status/payload mismatch should be rejected");
+        };
+
+        assert!(err.to_string().contains("must be responded"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn respond_interaction_defaults_to_current_thread_scope() {
+        let state_db = test_state_db().await;
+        let current_thread_id = test_thread_id();
+        let other_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread id");
+        upsert_test_thread(state_db.as_ref(), other_thread_id).await;
+        let interaction_id = "int-other-thread";
+        state_db
+            .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+                interaction_id: interaction_id.to_string(),
+                thread_id: other_thread_id,
+                source_kind: codex_state::PendingInteractionSourceKind::Thread,
+                source_id: None,
+                turn_id: Some("turn-1".to_string()),
+                worker_request_id: Some("worker-1".to_string()),
+                server_request_id_json: None,
+                kind: codex_state::PendingInteractionKind::Blocked,
+                request_payload_json: json!({ "reason": "needs user decision" }),
+                request_payload_preview: "needs user decision".to_string(),
+                request_redactions_json: json!([]),
+                no_client_policy: "persist".to_string(),
+                timeout_at: None,
+            })
+            .await
+            .expect("pending interaction should be created");
+        let runtime = MissionControlRuntime {
+            state_db,
+            thread_manager: Weak::new(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
+            current_thread_id,
+        };
+
+        let Err(err) = runtime
+            .handle_respond_interaction(RespondInteractionArgs {
+                interaction_id: interaction_id.to_string(),
+                thread_id: None,
+                terminal_status: "responded".to_string(),
+                response: ThreadPendingInteractionResponsePayload::Terminal {
+                    reason: "go ahead".to_string(),
+                },
+                response_preview: None,
+                dry_run: Some(true),
+            })
+            .await
+        else {
+            panic!("unqualified cross-thread interaction response should be rejected");
+        };
+        assert!(
+            err.to_string()
+                .contains("pending interaction not found: int-other-thread"),
+            "{err}"
+        );
+
+        let output = output_json(
+            runtime
+                .handle_respond_interaction(RespondInteractionArgs {
+                    interaction_id: interaction_id.to_string(),
+                    thread_id: Some(other_thread_id.to_string()),
+                    terminal_status: "responded".to_string(),
+                    response: ThreadPendingInteractionResponsePayload::Terminal {
+                        reason: "go ahead".to_string(),
+                    },
+                    response_preview: None,
+                    dry_run: None,
+                })
+                .await
+                .expect("explicit target thread should be allowed"),
+        )
+        .await;
+        assert_eq!(output["updated"], true);
+        assert_eq!(
+            output["interaction"]["threadId"],
+            other_thread_id.to_string()
         );
     }
 
@@ -1450,6 +1617,7 @@ mod tests {
             runtime
                 .handle_respond_interaction(RespondInteractionArgs {
                     interaction_id: interaction_id.to_string(),
+                    thread_id: None,
                     terminal_status: "responded".to_string(),
                     response,
                     response_preview: Some("secret-value".to_string()),
@@ -1508,7 +1676,7 @@ mod tests {
             .await
             .expect("pending interaction should be created");
         let runtime = MissionControlRuntime {
-            state_db,
+            state_db: state_db.clone(),
             thread_manager: Weak::new(),
             enabled: Arc::new(AtomicBool::new(true)),
             scheduled_tasks_enabled: Arc::new(AtomicBool::new(true)),
@@ -1518,6 +1686,39 @@ mod tests {
         let Err(err) = runtime
             .handle_respond_interaction(RespondInteractionArgs {
                 interaction_id: interaction_id.to_string(),
+                thread_id: None,
+                terminal_status: "responded".to_string(),
+                response: ThreadPendingInteractionResponsePayload::Terminal {
+                    reason: "go ahead".to_string(),
+                },
+                response_preview: None,
+                dry_run: Some(true),
+            })
+            .await
+        else {
+            panic!("live client request dry-run should be rejected");
+        };
+
+        assert!(
+            err.to_string()
+                .contains("pending interaction is tied to a live client request"),
+            "{err}"
+        );
+
+        let stored = state_db
+            .get_thread_pending_interaction(interaction_id)
+            .await
+            .expect("pending interaction should reload")
+            .expect("pending interaction should exist");
+        assert_eq!(
+            codex_state::PendingInteractionStatus::Pending,
+            stored.status
+        );
+
+        let Err(err) = runtime
+            .handle_respond_interaction(RespondInteractionArgs {
+                interaction_id: interaction_id.to_string(),
+                thread_id: None,
                 terminal_status: "responded".to_string(),
                 response: ThreadPendingInteractionResponsePayload::Terminal {
                     reason: "go ahead".to_string(),
@@ -1639,6 +1840,7 @@ mod tests {
                     tool_json.pointer("/parameters/additionalProperties"),
                     Some(&json!(false))
                 );
+                assert_nullable_property(tool_json, "thread_id");
             }
         }
     }

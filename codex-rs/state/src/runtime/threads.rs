@@ -2120,5 +2120,14 @@ INSERT INTO thread_spawn_edges (
         .await
         .expect("assignment count should query");
         assert_eq!(0, active_assignment_count);
+        let worktree = runtime
+            .managed_worktrees()
+            .get_managed_worktree("thread-delete-worktree")
+            .await
+            .expect("worktree should query")
+            .expect("worktree should remain");
+        assert_eq!(ManagedWorktreeOwnerKind::Manual, worktree.owner_kind);
+        assert_eq!(None, worktree.owner_thread_id);
+        assert_eq!(None, worktree.owner_agent_run_id);
     }
 }

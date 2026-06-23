@@ -125,6 +125,7 @@ mod common_config_options;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
+mod pull_request_summary;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;

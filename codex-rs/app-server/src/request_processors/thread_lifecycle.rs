@@ -317,7 +317,9 @@ pub(super) async fn ensure_listener_task_running(
                         thread_state.track_current_turn_event(&event.id, &event.msg);
                         let terminal_scheduled_run = if matches!(
                             event.msg,
-                            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                            EventMsg::TurnComplete(_)
+                                | EventMsg::TurnAborted(_)
+                                | EventMsg::Error(_)
                         ) {
                             thread_state
                                 .take_scheduled_run(&event.id)

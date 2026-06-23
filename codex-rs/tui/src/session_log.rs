@@ -81,6 +81,44 @@ fn now_ts() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+fn pull_request_status_kind(
+    status: &crate::pull_request_summary::PullRequestQueryStatus,
+) -> &'static str {
+    use crate::pull_request_summary::PullRequestQueryStatus;
+
+    match status {
+        PullRequestQueryStatus::Ready => "ready",
+        PullRequestQueryStatus::RunnerUnavailable => "runner_unavailable",
+        PullRequestQueryStatus::NotGitRepository => "not_git_repository",
+        PullRequestQueryStatus::GhUnavailable(_) => "gh_unavailable",
+        PullRequestQueryStatus::AuthRequired(_) => "auth_required",
+        PullRequestQueryStatus::NoCurrentPullRequest => "no_current_pull_request",
+        PullRequestQueryStatus::RateLimited(_) => "rate_limited",
+        PullRequestQueryStatus::CommandFailed(_) => "command_failed",
+        PullRequestQueryStatus::ParseFailed(_) => "parse_failed",
+    }
+}
+
+fn redacted_app_event_value(event: &AppEvent) -> serde_json::Value {
+    json!({
+        "ts": now_ts(),
+        "dir": "to_tui",
+        "kind": "app_event",
+        "variant": app_event_variant_name(event),
+    })
+}
+
+fn app_event_variant_name(event: &AppEvent) -> String {
+    match event {
+        AppEvent::OpenUrlInBrowser { .. } => "OpenUrlInBrowser".to_string(),
+        other => format!("{other:?}")
+            .split(['(', '{'])
+            .next()
+            .unwrap_or("app_event")
+            .to_string(),
+    }
+}
+
 pub(crate) fn maybe_init(config: &Config) {
     let enabled = std::env::var("CODEX_TUI_RECORD_SESSION")
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -197,15 +235,29 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
-        // Noise or control flow – record variant only
-        other => {
+        AppEvent::PullRequestOverviewLoaded {
+            request_id,
+            overview,
+        } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "app_event",
-                "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
+                "variant": "PullRequestOverviewLoaded",
+                "request_id": request_id,
+                "current_status": pull_request_status_kind(&overview.current.status),
+                "current_count": overview.current.items.len(),
+                "open_status": pull_request_status_kind(&overview.open.status),
+                "open_count": overview.open.items.len(),
             });
             LOGGER.write_json_line(value);
+        }
+        AppEvent::OpenUrlInBrowser { .. } => {
+            LOGGER.write_json_line(redacted_app_event_value(event));
+        }
+        // Noise or control flow – record variant only
+        other => {
+            LOGGER.write_json_line(redacted_app_event_value(other));
         }
     }
 }
@@ -240,4 +292,22 @@ where
         "payload": obj,
     });
     LOGGER.write_json_line(value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn open_url_browser_event_log_record_redacts_url() {
+        let value = redacted_app_event_value(&AppEvent::OpenUrlInBrowser {
+            url: "https://github.com/hasna/codewith/pull/42".to_string(),
+        });
+
+        assert_eq!(value["variant"], "OpenUrlInBrowser");
+        let serialized = serde_json::to_string(&value).expect("serialize log value");
+        assert!(!serialized.contains("github.com"));
+        assert!(!serialized.contains("pull/42"));
+    }
 }

@@ -174,7 +174,7 @@ impl ThreadGoalRequestProcessor {
                 self.emit_thread_goal_updated_ordered(
                     thread_id,
                     api_thread_goal_from_state(activated_goal),
-                    None,
+                    /*listener_command_tx*/ None,
                 )
                 .await;
             }

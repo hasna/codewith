@@ -143,6 +143,26 @@ async fn worktree_actions_snapshot() {
 }
 
 #[tokio::test]
+async fn worktree_actions_dirty_active_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut worktree = test_worktree(
+        "018f-dirty-active",
+        WorktreeLifecycleStatus::Active,
+        WorktreeOwnerKind::SubSession,
+        Some("thread-sub-session"),
+        Some("agent-actions-owner"),
+    );
+    worktree.dirty = true;
+
+    chat.show_worktree_actions(worktree, test_policy());
+
+    assert_chatwidget_snapshot!(
+        "worktree_actions_dirty_active",
+        render_bottom_popup(&chat, /*width*/ 120)
+    );
+}
+
+#[tokio::test]
 async fn worktree_actions_use_emits_event_with_repo_scope() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
