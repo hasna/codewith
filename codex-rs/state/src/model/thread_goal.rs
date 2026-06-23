@@ -311,15 +311,23 @@ impl ThreadGoalPlanSnapshot {
             return Vec::new();
         }
 
+        let visible_nodes = self
+            .nodes
+            .iter()
+            .filter(|node| self.node_is_visible_to_thread(node, thread_id))
+            .collect::<Vec<_>>();
+        if visible_nodes.len() <= limit {
+            return visible_nodes;
+        }
+
         let ready_node_ids = self
             .ready_node_ids_for_thread(thread_id)
             .into_iter()
             .collect::<HashSet<_>>();
         let mut selected = Vec::new();
         let mut selected_node_ids = HashSet::new();
-        for node in self.nodes.iter().filter(|node| {
-            self.node_is_visible_to_thread(node, thread_id)
-                && node.assigned_thread_id == thread_id
+        for node in visible_nodes.iter().copied().filter(|node| {
+            node.assigned_thread_id == thread_id
                 && (node.status == ThreadGoalPlanNodeStatus::Active
                     || ready_node_ids.contains(&node.node_id))
         }) {
@@ -330,11 +338,7 @@ impl ThreadGoalPlanSnapshot {
             }
         }
 
-        for node in self
-            .nodes
-            .iter()
-            .filter(|node| self.node_is_visible_to_thread(node, thread_id))
-        {
+        for node in visible_nodes {
             if selected_node_ids.insert(node.node_id.clone()) {
                 selected.push(node);
                 if selected.len() == limit {
