@@ -473,11 +473,11 @@ mod tests {
             ("deepseek", "deepseek-v4-flash"),
             ("google", "gemini-3.5-flash"),
             ("minimax", "MiniMax-M3"),
-            ("nvidia", "openai/gpt-oss-120b"),
-            ("openrouter", "openai/gpt-oss-120b"),
+            ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+            ("openrouter", "z-ai/glm-5.2"),
             ("qwen", "qwen3.5-flash"),
             ("xai", "grok-4.3"),
-            ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+            ("xiaomi", "mimo-v2.5-pro"),
             ("zai", "glm-5.2"),
         ];
 
@@ -516,7 +516,7 @@ mod tests {
                 .supports_search_tool
         );
         assert!(
-            !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro-ultraspeed")
+            !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro")
                 .expect("xiaomi metadata should exist")
                 .supports_search_tool
         );
@@ -574,10 +574,7 @@ mod tests {
     #[test]
     fn provider_for_fallback_model_finds_unique_configured_provider() {
         assert_eq!(
-            provider_for_fallback_model(
-                "mimo-v2.5-pro-ultraspeed",
-                ["openai", "xiaomi", "anthropic"]
-            ),
+            provider_for_fallback_model("mimo-v2.5-pro", ["openai", "xiaomi", "anthropic"]),
             Some("xiaomi")
         );
     }
@@ -585,7 +582,7 @@ mod tests {
     #[test]
     fn provider_for_fallback_model_ignores_unconfigured_provider() {
         assert_eq!(
-            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["openai", "anthropic"]),
+            provider_for_fallback_model("mimo-v2.5-pro", ["openai", "anthropic"]),
             None
         );
     }
@@ -593,7 +590,7 @@ mod tests {
     #[test]
     fn provider_for_fallback_model_requires_unique_match() {
         assert_eq!(
-            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["xiaomi", "xiaomi"]),
+            provider_for_fallback_model("mimo-v2.5-pro", ["xiaomi", "xiaomi"]),
             None
         );
     }

@@ -12,6 +12,7 @@ use tokio::time::timeout;
 
 const PROFILE_BROKER_RATE_LIMIT_FETCH_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 const PROFILE_BROKER_PROFILE_LEASE_DURATION: Duration = Duration::from_secs(60);
+const PROFILE_BROKER_UNKNOWN_HEALTH_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const PRIMARY_LIMIT_FALLBACK_LABEL: &str = "usage";
 const SECONDARY_LIMIT_FALLBACK_LABEL: &str = "secondary usage";
 const FIVE_HOUR_LIMIT_LABEL: &str = "5h";
@@ -19,6 +20,26 @@ const WEEKLY_LIMIT_LABEL: &str = "weekly";
 
 static PROFILE_BROKER_PROFILE_LEASES: LazyLock<StdMutex<BTreeMap<String, Instant>>> =
     LazyLock::new(|| StdMutex::new(BTreeMap::new()));
+static PROFILE_BROKER_USAGE_HEALTH_CACHE: LazyLock<
+    StdMutex<BTreeMap<ProfileBrokerUsageCacheKey, CachedProfileHealth>>,
+> = LazyLock::new(|| StdMutex::new(BTreeMap::new()));
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ProfileBrokerUsageCacheKey {
+    codex_home: String,
+    chatgpt_base_url: String,
+    profile: Option<String>,
+    on_5h_limit: bool,
+    on_weekly_limit: bool,
+    heartbeat_interval_secs: u64,
+    heartbeat_freshness_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CachedProfileHealth {
+    health: UsageProfileHealth,
+    expires_at: Instant,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct UsageProfileBrokerDecision {
@@ -150,6 +171,22 @@ async fn fetch_profile_health(
     profile: Option<&str>,
 ) -> UsageProfileHealth {
     let profile = profile.map(str::to_string);
+    let cache_key = profile_health_cache_key(config, profile.as_deref());
+    let now = Instant::now();
+    if let Some(health) = cached_profile_health(&cache_key, now) {
+        return health;
+    }
+
+    let health = fetch_profile_health_uncached(auth_manager, config, profile).await;
+    cache_profile_health(cache_key, health, &config.auth_profile_auto_switch, now);
+    health
+}
+
+async fn fetch_profile_health_uncached(
+    auth_manager: &Arc<AuthManager>,
+    config: &Config,
+    profile: Option<String>,
+) -> UsageProfileHealth {
     let scoped_auth_manager = auth_manager.shared_scoped_auth_profile(profile).await;
     let health = async {
         let Some(auth) = scoped_auth_manager.auth().await else {
@@ -175,6 +212,60 @@ async fn fetch_profile_health(
     match timeout(PROFILE_BROKER_RATE_LIMIT_FETCH_TIMEOUT, health).await {
         Ok(health) => health,
         Err(_) => UsageProfileHealth::Unknown,
+    }
+}
+
+fn profile_health_cache_key(config: &Config, profile: Option<&str>) -> ProfileBrokerUsageCacheKey {
+    ProfileBrokerUsageCacheKey {
+        codex_home: config.codex_home.display().to_string(),
+        chatgpt_base_url: config.chatgpt_base_url.clone(),
+        profile: profile.map(str::to_string),
+        on_5h_limit: config.auth_profile_auto_switch.on_5h_limit,
+        on_weekly_limit: config.auth_profile_auto_switch.on_weekly_limit,
+        heartbeat_interval_secs: config.auth_profile_auto_switch.heartbeat_interval_secs,
+        heartbeat_freshness_secs: config.auth_profile_auto_switch.heartbeat_freshness_secs,
+    }
+}
+
+fn cached_profile_health(
+    key: &ProfileBrokerUsageCacheKey,
+    now: Instant,
+) -> Option<UsageProfileHealth> {
+    let Ok(mut cache) = PROFILE_BROKER_USAGE_HEALTH_CACHE.lock() else {
+        return None;
+    };
+    cache.retain(|_, cached| cached.expires_at > now);
+    cache.get(key).map(|cached| cached.health)
+}
+
+fn cache_profile_health(
+    key: ProfileBrokerUsageCacheKey,
+    health: UsageProfileHealth,
+    config: &AuthProfileAutoSwitchConfig,
+    now: Instant,
+) {
+    let Ok(mut cache) = PROFILE_BROKER_USAGE_HEALTH_CACHE.lock() else {
+        return;
+    };
+    cache.insert(
+        key,
+        CachedProfileHealth {
+            health,
+            expires_at: now + profile_health_cache_duration(health, config),
+        },
+    );
+}
+
+fn profile_health_cache_duration(
+    health: UsageProfileHealth,
+    config: &AuthProfileAutoSwitchConfig,
+) -> Duration {
+    match health {
+        UsageProfileHealth::Healthy { .. } | UsageProfileHealth::Exhausted { .. } => {
+            Duration::from_secs(config.heartbeat_freshness_secs)
+        }
+        UsageProfileHealth::Unknown => PROFILE_BROKER_UNKNOWN_HEALTH_BACKOFF
+            .max(Duration::from_secs(config.heartbeat_interval_secs)),
     }
 }
 
@@ -492,6 +583,21 @@ mod tests {
         }
     }
 
+    fn usage_cache_key(
+        profile: Option<&str>,
+        config: &AuthProfileAutoSwitchConfig,
+    ) -> ProfileBrokerUsageCacheKey {
+        ProfileBrokerUsageCacheKey {
+            codex_home: "/tmp/codewith-usage-broker-test".to_string(),
+            chatgpt_base_url: "https://chatgpt.example.test".to_string(),
+            profile: profile.map(str::to_string),
+            on_5h_limit: config.on_5h_limit,
+            on_weekly_limit: config.on_weekly_limit,
+            heartbeat_interval_secs: config.heartbeat_interval_secs,
+            heartbeat_freshness_secs: config.heartbeat_freshness_secs,
+        }
+    }
+
     #[test]
     fn dispatch_candidates_rotate_after_current_profile() {
         let profiles = vec![
@@ -645,6 +751,52 @@ mod tests {
             UsageProfileHealth::Healthy {
                 remaining_percent: 60.0,
             }
+        );
+    }
+
+    #[test]
+    fn usage_health_cache_reuses_fresh_health_and_expires_stale_health() {
+        let config = config();
+        let key = usage_cache_key(Some("work"), &config);
+        let now = Instant::now();
+        let health = UsageProfileHealth::Healthy {
+            remaining_percent: 42.0,
+        };
+
+        cache_profile_health(key.clone(), health, &config, now);
+
+        assert_eq!(
+            cached_profile_health(&key, now + Duration::from_secs(119)),
+            Some(health)
+        );
+        assert_eq!(
+            cached_profile_health(&key, now + Duration::from_secs(121)),
+            None
+        );
+    }
+
+    #[test]
+    fn usage_health_cache_key_tracks_policy_bits() {
+        let mut config = config();
+        let key = usage_cache_key(Some("work"), &config);
+
+        config.on_weekly_limit = false;
+        assert_ne!(usage_cache_key(Some("work"), &config), key);
+    }
+
+    #[test]
+    fn unknown_usage_health_is_backed_off_longer_than_default_heartbeat() {
+        let mut config = config();
+
+        assert_eq!(
+            profile_health_cache_duration(UsageProfileHealth::Unknown, &config),
+            Duration::from_secs(300)
+        );
+
+        config.heartbeat_interval_secs = 600;
+        assert_eq!(
+            profile_health_cache_duration(UsageProfileHealth::Unknown, &config),
+            Duration::from_secs(600)
         );
     }
 }

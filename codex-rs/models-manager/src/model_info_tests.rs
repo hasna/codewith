@@ -127,6 +127,20 @@ fn known_nvidia_glm_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_nvidia_nemotron_ultra_model_uses_local_metadata() {
+    let model =
+        model_info_from_slug_for_provider("nvidia/nemotron-3-ultra-550b-a55b", Some("nvidia"));
+
+    assert_eq!(model.display_name, "NVIDIA Nemotron 3 Ultra");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn known_anthropic_fable_model_uses_local_metadata() {
     let model = model_info_from_slug_for_provider("claude-fable-5", Some("anthropic"));
 
@@ -180,6 +194,7 @@ fn known_openrouter_deepseek_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
     assert!(!model.used_fallback_model_metadata);
 }
 
@@ -199,6 +214,54 @@ fn known_openrouter_glm_5_1_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_openrouter_current_models_use_local_metadata() {
+    let cases = [
+        (
+            "z-ai/glm-5.2",
+            "Z.ai GLM 5.2",
+            1_048_576,
+            vec![InputModality::Text],
+        ),
+        (
+            "qwen/qwen3.7-plus",
+            "Qwen3.7 Plus",
+            1_000_000,
+            vec![InputModality::Text, InputModality::Image],
+        ),
+        (
+            "x-ai/grok-4.20",
+            "Grok 4.20",
+            2_000_000,
+            vec![InputModality::Text, InputModality::Image],
+        ),
+        (
+            "xiaomi/mimo-v2.5-pro",
+            "MiMo V2.5 Pro",
+            1_048_576,
+            vec![InputModality::Text],
+        ),
+        (
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "NVIDIA Nemotron 3 Ultra",
+            1_000_000,
+            vec![InputModality::Text],
+        ),
+    ];
+
+    for (slug, display_name, context_window, input_modalities) in cases {
+        let model = model_info_from_slug_for_provider(slug, Some("openrouter"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(context_window));
+        assert_eq!(model.max_context_window, Some(context_window));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(!model.supports_parallel_tool_calls);
+        assert_eq!(model.input_modalities, input_modalities);
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
 fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
     let model = model_info_from_slug_for_provider("z-ai/glm-4.7", Some("openrouter"));
 
@@ -211,10 +274,10 @@ fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
 }
 
 #[test]
-fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("mimo-v2.5-pro-ultraspeed", Some("xiaomi"));
+fn known_xiaomi_v25_pro_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("mimo-v2.5-pro", Some("xiaomi"));
 
-    assert_eq!(model.display_name, "MiMo V2.5 Pro UltraSpeed");
+    assert_eq!(model.display_name, "MiMo V2.5 Pro");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
@@ -234,6 +297,27 @@ fn known_qwen_model_uses_local_metadata_with_search_support() {
     assert_eq!(model.max_context_window, Some(1_000_000));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert!(model.supports_search_tool);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_qwen_37_model_uses_local_metadata_with_search_support() {
+    let model = model_info_from_slug_for_provider("qwen3.7-max", Some("qwen"));
+
+    assert_eq!(model.display_name, "Qwen3.7 Max");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
     assert!(model.supports_search_tool);
     assert!(!model.used_fallback_model_metadata);
 }
