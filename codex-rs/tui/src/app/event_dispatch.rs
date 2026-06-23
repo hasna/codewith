@@ -978,6 +978,25 @@ impl App {
                 self.activate_thread_goal_plan_node(app_server, thread_id, node_id)
                     .await;
             }
+            AppEvent::OpenQueuedMessages { thread_id } => {
+                self.open_queued_messages(app_server, thread_id).await;
+            }
+            AppEvent::UpdateQueuedThreadMessage {
+                thread_id,
+                message_id,
+                text,
+            } => {
+                self.update_queued_thread_message(app_server, thread_id, message_id, text)
+                    .await;
+            }
+            AppEvent::MoveQueuedThreadMessage {
+                thread_id,
+                message_id,
+                direction,
+            } => {
+                self.move_queued_thread_message(app_server, thread_id, message_id, direction)
+                    .await;
+            }
             AppEvent::OpenThreadLoopManager { thread_id } => {
                 self.open_thread_loop_manager(app_server, thread_id).await;
             }
@@ -2650,6 +2669,27 @@ impl App {
                 self.chat_widget.set_status_line_git_summary(cwd, summary);
                 self.refresh_status_line();
             }
+            AppEvent::StatusLineSchedulesRefresh { thread_id } => {
+                let result = app_server.thread_schedule_list(thread_id).await;
+                if self.current_displayed_thread_id() != Some(thread_id) {
+                    return Ok(AppRunControl::Continue);
+                }
+                match result {
+                    Ok(response) => {
+                        self.chat_widget
+                            .set_status_line_schedules(thread_id, response.data);
+                        self.refresh_status_line();
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            error = %err,
+                            "failed to refresh status-line schedules"
+                        );
+                        self.chat_widget
+                            .finish_status_line_schedule_refresh_failed(thread_id);
+                    }
+                }
+            }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
@@ -2679,6 +2719,29 @@ impl App {
             }
             AppEvent::TerminalTitleSetupCancelled => {
                 self.chat_widget.cancel_terminal_title_setup();
+            }
+            AppEvent::MessageSummarySetup { items } => {
+                let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let edit = crate::legacy_core::config::edit::message_summary_items_edit(&ids);
+                let apply_result = ConfigEditsBuilder::for_config(&self.config)
+                    .with_edits([edit])
+                    .apply()
+                    .await;
+                match apply_result {
+                    Ok(()) => {
+                        self.config.tui_message_summary = Some(ids.clone());
+                        self.chat_widget.setup_message_summary(items);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist message summary items; keeping previous selection");
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save message summary items: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::MessageSummarySetupCancelled => {
+                self.chat_widget.cancel_message_summary_setup();
             }
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = crate::legacy_core::config::edit::syntax_theme_edit(&name);
@@ -3026,6 +3089,9 @@ impl App {
         result: Result<Vec<RateLimitSnapshot>, String>,
     ) -> RateLimitRefreshCompletion {
         let is_current_profile = auth_profile == self.config.selected_auth_profile;
+        let heartbeat_profile = matches!(origin, RateLimitRefreshOrigin::Heartbeat)
+            .then(|| target.auth_profile_key(self.config.selected_auth_profile.as_deref()))
+            .flatten();
         if target.targets_selected_profile() && !is_current_profile {
             tracing::debug!(
                 request_auth_profile = ?auth_profile,
@@ -3041,6 +3107,10 @@ impl App {
 
         match result {
             Ok(snapshots) => {
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
+                }
                 if is_current_profile {
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
@@ -3062,6 +3132,10 @@ impl App {
                 }
             }
             Err(err) => {
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_failure(heartbeat_profile);
+                }
                 if matches!(origin, RateLimitRefreshOrigin::StatusCommand { .. })
                     || target.targets_selected_profile()
                     || is_current_profile

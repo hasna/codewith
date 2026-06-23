@@ -58,6 +58,7 @@ pub enum SlashCommand {
     MissionControl,
     Workflow,
     Loop,
+    Queued,
     Schedule,
     Monitor,
     #[strum(
@@ -88,6 +89,7 @@ pub enum SlashCommand {
     DebugConfig,
     Title,
     Statusline,
+    Summary,
     Theme,
     #[strum(to_string = "pets", serialize = "pet")]
     Pets,
@@ -141,6 +143,7 @@ impl SlashCommand {
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
+            SlashCommand::Summary => "configure what appears after final messages",
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Pets => "choose or hide the terminal pet",
             SlashCommand::Ps => "list background terminals",
@@ -159,6 +162,7 @@ impl SlashCommand {
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
+            SlashCommand::Queued => "view and manage queued messages",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
             SlashCommand::Session => "switch the active session or agent thread",
@@ -205,6 +209,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
+                | SlashCommand::Queued
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Agent
@@ -286,6 +291,7 @@ impl SlashCommand {
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
+            | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::BackgroundAgent
@@ -296,6 +302,7 @@ impl SlashCommand {
             | SlashCommand::Plugins
             | SlashCommand::Title
             | SlashCommand::Statusline
+            | SlashCommand::Summary
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
             | SlashCommand::Ide
@@ -459,6 +466,8 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Queued.available_during_task());
+        assert!(SlashCommand::Queued.supports_inline_args());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
@@ -466,6 +475,7 @@ mod tests {
         assert!(SlashCommand::Changelog.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
+        assert!(SlashCommand::Summary.available_during_task());
         assert!(SlashCommand::MissionControl.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
@@ -480,11 +490,14 @@ mod tests {
             SlashCommand::Profile,
             SlashCommand::Goal,
             SlashCommand::Loop,
+            SlashCommand::Queued,
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
             SlashCommand::Pr,
             SlashCommand::Worktree,
             SlashCommand::Status,
+            SlashCommand::Statusline,
+            SlashCommand::Summary,
             SlashCommand::Changelog,
         ];
         for command in available {
@@ -514,6 +527,23 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("changelog"),
             Ok(SlashCommand::Changelog)
+        );
+    }
+
+    #[test]
+    fn summary_command_configures_final_message_summary() {
+        assert_eq!(SlashCommand::Summary.command(), "summary");
+        assert_eq!(
+            SlashCommand::Summary.description(),
+            "configure what appears after final messages"
+        );
+        assert!(!SlashCommand::Summary.supports_inline_args());
+        assert!(SlashCommand::Summary.available_during_task());
+        assert!(!SlashCommand::Summary.available_in_side_conversation());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "summary" && *command == SlashCommand::Summary)
         );
     }
 

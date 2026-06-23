@@ -359,7 +359,7 @@ pub async fn inter_agent_communication(
             .await;
     }
     sess.input_queue
-        .enqueue_mailbox_communication(communication)
+        .enqueue_mailbox_communication_with_id(sub_id.clone(), communication)
         .await;
     if trigger_turn {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)

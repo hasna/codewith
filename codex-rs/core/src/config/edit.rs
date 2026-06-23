@@ -140,6 +140,19 @@ pub fn terminal_title_items_edit(items: &[String]) -> ConfigEdit {
     }
 }
 
+/// Produces a config edit that sets `[tui].message_summary` to an explicit ordered list.
+///
+/// The array is written even when it is empty so "hide the message summary" stays
+/// distinct from "unset, so use defaults".
+pub fn message_summary_items_edit(items: &[String]) -> ConfigEdit {
+    let array = items.iter().cloned().collect::<toml_edit::Array>();
+
+    ConfigEdit::SetPath {
+        segments: vec!["tui".to_string(), "message_summary".to_string()],
+        value: TomlItem::Value(array.into()),
+    }
+}
+
 fn keymap_binding_value(keys: &[String]) -> TomlItem {
     if let [key] = keys {
         value(key.to_string())

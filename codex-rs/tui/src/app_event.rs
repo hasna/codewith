@@ -31,6 +31,7 @@ use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadPendingInteraction;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_file_search::FileMatch;
@@ -420,6 +421,25 @@ pub(crate) enum AppEvent {
     ActivateThreadGoalPlanNode {
         thread_id: ThreadId,
         node_id: String,
+    },
+
+    /// Show queued user inputs and queued agent mailbox messages.
+    OpenQueuedMessages {
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Update one queued agent mailbox message.
+    UpdateQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        text: String,
+    },
+
+    /// Move one queued agent mailbox message.
+    MoveQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        direction: ThreadQueuedMessageMoveDirection,
     },
 
     /// Open the current thread loop schedule summary.
@@ -1559,6 +1579,10 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         summary: crate::chatwidget::StatusLineGitSummary,
     },
+    /// Request the current native schedules for status-line countdown rendering.
+    StatusLineSchedulesRefresh {
+        thread_id: ThreadId,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
@@ -1577,6 +1601,13 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the terminal-title setup UI without changing config.
     TerminalTitleSetupCancelled,
+
+    /// Apply a user-confirmed final message summary item ordering/selection.
+    MessageSummarySetup {
+        items: Vec<crate::history_cell::MessageSummaryItem>,
+    },
+    /// Dismiss the final message summary setup UI without changing config.
+    MessageSummarySetupCancelled,
 
     /// Apply a user-confirmed syntax theme selection.
     SyntaxThemeSelected {

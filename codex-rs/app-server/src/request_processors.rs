@@ -269,6 +269,15 @@ use codex_app_server_protocol::ThreadMonitorStopParams;
 use codex_app_server_protocol::ThreadMonitorStopResponse;
 use codex_app_server_protocol::ThreadMonitorUpdatedNotification;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
+use codex_app_server_protocol::ThreadQueuedMessage;
+use codex_app_server_protocol::ThreadQueuedMessageListParams;
+use codex_app_server_protocol::ThreadQueuedMessageListResponse;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
+use codex_app_server_protocol::ThreadQueuedMessageMoveParams;
+use codex_app_server_protocol::ThreadQueuedMessageMoveResponse;
+use codex_app_server_protocol::ThreadQueuedMessageStats;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateParams;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -400,6 +409,8 @@ use codex_core::CodexThread;
 use codex_core::CodexThreadSettingsOverrides;
 use codex_core::ForkSnapshot;
 use codex_core::NewThread;
+use codex_core::QueuedMailboxMessage;
+use codex_core::QueuedMailboxMoveDirection as CoreQueuedMailboxMoveDirection;
 #[cfg(test)]
 use codex_core::SessionMeta;
 use codex_core::StartThreadOptions;
@@ -591,6 +602,9 @@ fn infer_model_provider_from_model<'a>(
 
     let model = model?;
     let provider_ids = provider_ids.into_iter().collect::<Vec<_>>();
+    if provider_for_fallback_model(model, [current_provider]).is_some() {
+        return None;
+    }
     if let Some((provider_id, _)) = model.split_once('/') {
         if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
             return None;

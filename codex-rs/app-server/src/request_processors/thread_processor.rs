@@ -5,6 +5,7 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const MAX_THREAD_QUEUED_MESSAGE_BYTES: usize = 4 * 1024;
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -647,6 +648,33 @@ impl ThreadRequestProcessor {
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_read_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_queued_message_list(
+        &self,
+        params: ThreadQueuedMessageListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_list_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_queued_message_update(
+        &self,
+        params: ThreadQueuedMessageUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_update_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_queued_message_move(
+        &self,
+        params: ThreadQueuedMessageMoveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_move_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2100,6 +2128,109 @@ impl ThreadRequestProcessor {
             .await
             .map_err(thread_read_view_error)?;
         Ok(ThreadReadResponse { thread })
+    }
+
+    async fn thread_queued_message_list_inner(
+        &self,
+        params: ThreadQueuedMessageListParams,
+    ) -> Result<ThreadQueuedMessageListResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageListParams {
+            thread_id,
+            cursor,
+            limit,
+        } = params;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let messages = thread.queued_mailbox_messages().await;
+        let stats = queued_message_stats(&messages);
+        let data = queued_messages_api_view(thread_uuid, &messages);
+
+        if data.is_empty() {
+            return Ok(ThreadQueuedMessageListResponse {
+                data,
+                next_cursor: None,
+                stats,
+            });
+        }
+
+        let total = data.len();
+        let start = match cursor {
+            Some(cursor) => data
+                .iter()
+                .position(|message| message.message_id == cursor)
+                .map(|idx| idx + 1)
+                .ok_or_else(|| invalid_request(format!("invalid cursor: {cursor}")))?,
+            None => 0,
+        };
+        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
+        let end = start.saturating_add(effective_limit).min(total);
+        let page = data[start..end].to_vec();
+        let next_cursor = page
+            .last()
+            .filter(|_| end < total)
+            .map(|message| message.message_id.clone());
+
+        Ok(ThreadQueuedMessageListResponse {
+            data: page,
+            next_cursor,
+            stats,
+        })
+    }
+
+    async fn thread_queued_message_update_inner(
+        &self,
+        params: ThreadQueuedMessageUpdateParams,
+    ) -> Result<ThreadQueuedMessageUpdateResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageUpdateParams {
+            thread_id,
+            message_id,
+            text,
+        } = params;
+        validate_queued_message_id(&message_id)?;
+        validate_queued_message_text(&text)?;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let updated = thread
+            .update_queued_mailbox_message(&message_id, text)
+            .await
+            .is_some();
+        let message = if updated {
+            let messages = thread.queued_mailbox_messages().await;
+            queued_messages_api_view(thread_uuid, &messages)
+                .into_iter()
+                .find(|message| message.message_id == message_id)
+        } else {
+            None
+        };
+        Ok(ThreadQueuedMessageUpdateResponse { message })
+    }
+
+    async fn thread_queued_message_move_inner(
+        &self,
+        params: ThreadQueuedMessageMoveParams,
+    ) -> Result<ThreadQueuedMessageMoveResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageMoveParams {
+            thread_id,
+            message_id,
+            direction,
+        } = params;
+        validate_queued_message_id(&message_id)?;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let messages_before_move = thread.queued_mailbox_messages().await;
+        let current_message = queued_messages_api_view(thread_uuid, &messages_before_move)
+            .into_iter()
+            .find(|message| message.message_id == message_id);
+        let moved = thread
+            .move_queued_mailbox_message(&message_id, core_queued_message_move_direction(direction))
+            .await
+            .is_some();
+        let message = if moved {
+            let messages = thread.queued_mailbox_messages().await;
+            queued_messages_api_view(thread_uuid, &messages)
+                .into_iter()
+                .find(|message| message.message_id == message_id)
+        } else {
+            current_message
+        };
+        Ok(ThreadQueuedMessageMoveResponse { moved, message })
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
@@ -4229,6 +4360,67 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
             None => preview,
         })
         .unwrap_or_default()
+}
+
+fn queued_messages_api_view(
+    thread_id: ThreadId,
+    messages: &[QueuedMailboxMessage],
+) -> Vec<ThreadQueuedMessage> {
+    messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| ThreadQueuedMessage {
+            message_id: message.id.clone(),
+            thread_id: thread_id.to_string(),
+            position: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            author: message.communication.author.to_string(),
+            recipient: message.communication.recipient.to_string(),
+            text: message.communication.content.clone(),
+            trigger_turn: message.communication.trigger_turn,
+        })
+        .collect()
+}
+
+fn queued_message_stats(messages: &[QueuedMailboxMessage]) -> ThreadQueuedMessageStats {
+    ThreadQueuedMessageStats {
+        total: u32::try_from(messages.len()).unwrap_or(u32::MAX),
+        trigger_turn: u32::try_from(
+            messages
+                .iter()
+                .filter(|message| message.communication.trigger_turn)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+    }
+}
+
+fn validate_queued_message_id(message_id: &str) -> Result<(), JSONRPCErrorError> {
+    if message_id.trim().is_empty() {
+        return Err(invalid_request("messageId must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_queued_message_text(text: &str) -> Result<(), JSONRPCErrorError> {
+    if text.trim().is_empty() {
+        return Err(invalid_request("text must not be empty"));
+    }
+    if text.len() > MAX_THREAD_QUEUED_MESSAGE_BYTES {
+        return Err(invalid_request(format!(
+            "text is too large: {} bytes exceeds the {MAX_THREAD_QUEUED_MESSAGE_BYTES} byte limit",
+            text.len()
+        )));
+    }
+    Ok(())
+}
+
+fn core_queued_message_move_direction(
+    direction: ThreadQueuedMessageMoveDirection,
+) -> CoreQueuedMailboxMoveDirection {
+    match direction {
+        ThreadQueuedMessageMoveDirection::Up => CoreQueuedMailboxMoveDirection::Up,
+        ThreadQueuedMessageMoveDirection::Down => CoreQueuedMailboxMoveDirection::Down,
+    }
 }
 
 fn requested_permissions_trust_project(overrides: &ConfigOverrides, cwd: &Path) -> bool {

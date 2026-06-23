@@ -1,3 +1,5 @@
+use crate::QueuedMailboxMessage;
+use crate::QueuedMailboxMoveDirection;
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
@@ -219,16 +221,57 @@ impl CodexThread {
         &self,
         communication: InterAgentCommunication,
     ) -> CodexResult<()> {
+        self.deliver_inter_agent_communication_with_id(
+            uuid::Uuid::now_v7().to_string(),
+            communication,
+        )
+        .await
+    }
+
+    /// Delivers local inter-agent communication with a caller-supplied queued-message id.
+    pub async fn deliver_inter_agent_communication_with_id(
+        &self,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
         if !self.is_running() {
             return Err(CodexErr::InternalAgentDied);
         }
         crate::session::handle_inter_agent_communication(
             &self.codex.session,
-            uuid::Uuid::now_v7().to_string(),
+            message_id,
             communication,
         )
         .await;
         Ok(())
+    }
+
+    pub async fn queued_mailbox_messages(&self) -> Vec<QueuedMailboxMessage> {
+        self.codex.session.input_queue.list_mailbox_messages().await
+    }
+
+    pub async fn update_queued_mailbox_message(
+        &self,
+        message_id: &str,
+        text: String,
+    ) -> Option<QueuedMailboxMessage> {
+        self.codex
+            .session
+            .input_queue
+            .update_mailbox_message(message_id, text)
+            .await
+    }
+
+    pub async fn move_queued_mailbox_message(
+        &self,
+        message_id: &str,
+        direction: QueuedMailboxMoveDirection,
+    ) -> Option<QueuedMailboxMessage> {
+        self.codex
+            .session
+            .input_queue
+            .move_mailbox_message(message_id, direction)
+            .await
     }
 
     /// Generate a lightweight, out-of-band recap of the current session.

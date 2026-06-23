@@ -159,6 +159,7 @@ impl ChatWidget {
         {
             return;
         }
+        self.upsert_status_line_schedule(schedule.clone());
         let kind = display_kind_for_schedule(&schedule);
         if matches!(schedule.status, ThreadScheduleStatus::Expired) {
             self.add_info_message(
@@ -190,6 +191,7 @@ impl ChatWidget {
             .thread_id
             .is_some_and(|active_thread_id| active_thread_id.to_string() == thread_id)
         {
+            self.remove_status_line_schedule(thread_id, schedule_id);
             tracing::debug!(schedule_id, "thread loop schedule deleted");
         }
     }
@@ -201,6 +203,7 @@ impl ChatWidget {
         {
             return;
         }
+        self.on_status_line_schedule_run_updated(&run);
         match run.status {
             ThreadScheduleRunStatus::Running => self.add_info_message(
                 "Loop run started".to_string(),
