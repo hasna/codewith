@@ -932,13 +932,14 @@ pub enum ThreadGoalPlanNodeStatus {
     Cancelled,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: String,
+    pub assigned_thread_id: String,
     pub key: String,
     #[ts(type = "number")]
     pub sequence: i64,
@@ -960,6 +961,59 @@ pub struct ThreadGoalPlanNode {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+}
+
+impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireThreadGoalPlanNode {
+            node_id: String,
+            plan_id: String,
+            thread_id: String,
+            #[serde(default)]
+            assigned_thread_id: Option<String>,
+            key: String,
+            sequence: i64,
+            priority: i64,
+            objective: String,
+            status: ThreadGoalPlanNodeStatus,
+            ready: bool,
+            token_budget: Option<i64>,
+            tokens_used: i64,
+            time_used_seconds: i64,
+            projected_goal_id: Option<String>,
+            depends_on: Vec<String>,
+            created_at: i64,
+            updated_at: i64,
+        }
+
+        let value = WireThreadGoalPlanNode::deserialize(deserializer)?;
+        Ok(Self {
+            node_id: value.node_id,
+            plan_id: value.plan_id,
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or_else(|| value.thread_id.clone()),
+            thread_id: value.thread_id,
+            key: value.key,
+            sequence: value.sequence,
+            priority: value.priority,
+            objective: value.objective,
+            status: value.status,
+            ready: value.ready,
+            token_budget: value.token_budget,
+            tokens_used: value.tokens_used,
+            time_used_seconds: value.time_used_seconds,
+            projected_goal_id: value.projected_goal_id,
+            depends_on: value.depends_on,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1043,6 +1097,10 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
             node_id: value.node_id,
             plan_id: value.plan_id,
             thread_id: value.thread_id.to_string(),
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or(value.thread_id)
+                .to_string(),
             key: value.key,
             sequence: value.sequence,
             priority: value.priority,

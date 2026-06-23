@@ -394,6 +394,7 @@ use self::plugins::PluginInstallAuthFlowState;
 use self::plugins::PluginListFetchState;
 use self::plugins::PluginsCacheState;
 mod plan_implementation;
+mod pull_request_display;
 use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popups;
 mod notifications;
@@ -431,6 +432,7 @@ use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
 mod status_controls;
+mod status_panel;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
@@ -577,6 +579,7 @@ pub(crate) struct ChatWidget {
     auth_profile_rate_limit_snapshots_by_profile:
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
+    auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap<Option<String>, Instant>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
@@ -711,6 +714,8 @@ pub(crate) struct ChatWidget {
     current_cwd: Option<PathBuf>,
     // App-server-backed command runner for status-line workspace metadata lookups.
     workspace_command_runner: Option<WorkspaceCommandRunner>,
+    // Latest async `/pr` overview request accepted by the popup renderer.
+    pull_request_overview_request_id: u64,
     // Instruction source files loaded for the current session, supplied by app-server.
     instruction_source_paths: Vec<AbsolutePathBuf>,
     // Runtime network proxy bind addresses from SessionConfigured.
@@ -1574,11 +1579,6 @@ impl ChatWidget {
     pub(crate) fn add_error_message(&mut self, message: String) {
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
-    }
-
-    fn add_app_server_stub_message(&mut self, feature: &str) {
-        warn!(feature, "stubbed unsupported TUI feature");
-        self.add_error_message(format!("{feature}: {TUI_STUB_MESSAGE}"));
     }
 
     fn rename_confirmation_cell(name: &str, thread_id: Option<ThreadId>) -> PlainHistoryCell {

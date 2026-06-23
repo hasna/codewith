@@ -1,0 +1,18 @@
+---
+source: tui/src/chatwidget/tests/worktree_display.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Worktree 018f-dir
+  active - isolated - agent agent-ac waitingOnUser - /tmp/project/.codewith/worktrees/018f-dirty-active
+
+› 1. Read details                  Show lease, path, branch, cleanup, and owner state
+  2. Use in current session        Retarget the current session cwd to this managed worktree
+  3. Start agent here              Prefill a background-agent start command for this worktree
+  4. Open owning agent             Open the background-agent action menu for this worktree owner
+     Merge candidate (disabled)    Dry-run merge this worktree into the current target (disabled: Dirty worktrees must
+                                   be cleaned up before refreshing merge candidates)
+  5. Release                       Release this worktree and retain it on disk
+  6. Cleanup                       Release and delete if the worktree is clean
+  7. Back to worktrees             Return to all managed worktrees
+
+  Press enter to confirm or esc to go back

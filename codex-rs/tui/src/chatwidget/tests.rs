@@ -234,6 +234,7 @@ mod mission_control;
 mod permissions;
 mod plan_mode;
 mod popups_and_settings;
+mod pull_request_display;
 mod review_mode;
 mod side;
 mod slash_commands;

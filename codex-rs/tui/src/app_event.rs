@@ -59,6 +59,7 @@ use codex_realtime_webrtc::RealtimeWebrtcEvent;
 use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
 use crate::history_cell::HistoryCell;
+use crate::slash_command::SlashCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioDeviceKind {
@@ -831,6 +832,15 @@ pub(crate) enum AppEvent {
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
+    /// Open the read-only pull request overview.
+    OpenPullRequestOverview,
+
+    /// Result of loading pull request data for the read-only overview.
+    PullRequestOverviewLoaded {
+        request_id: u64,
+        overview: crate::pull_request_summary::PullRequestOverview,
+    },
+
     /// Open the app link view in the bottom pane.
     OpenAppLink {
         app_id: String,
@@ -1492,6 +1502,15 @@ pub(crate) enum AppEvent {
 
     /// Re-open the permissions presets popup.
     OpenPermissionsPopup,
+
+    /// Run a built-in slash command, as if the user had typed it. Used by the
+    /// interactive `/status` panel to launch pickers (model, permissions, MCP…)
+    /// from its actionable rows.
+    DispatchSlashCommand(SlashCommand),
+
+    /// Append the detailed, text-based status report to the transcript. Reached
+    /// from the `/status` panel's "Full report" row as a drill-down.
+    ShowStatusReport,
 
     /// Live update for the in-progress voice recording placeholder. Carries
     /// the placeholder `id` and the text to display (e.g., an ASCII meter).

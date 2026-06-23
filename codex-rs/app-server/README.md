@@ -854,7 +854,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag indicate pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -878,12 +878,14 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
         "blockedNodeCount": 0,
         "usageLimitedNodeCount": 0,
         "budgetLimitedNodeCount": 0,
+        "cancelledNodeCount": 0,
         "createdAt": 1776272400,
         "updatedAt": 1776272400,
         "nodes": [{
             "nodeId": "node_123",
             "planId": "plan_123",
             "threadId": "thr_123",
+            "assignedThreadId": "thr_123",
             "key": "implement",
             "sequence": 0,
             "priority": 10,

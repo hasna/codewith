@@ -739,7 +739,8 @@ async fn external_subscription_profile_does_not_fall_back_to_openai_auth() -> an
 
 #[tokio::test]
 #[serial(codex_auth_env)]
-async fn running_session_switch_rejects_external_subscription_profile() -> anyhow::Result<()> {
+async fn running_session_switch_accepts_external_subscription_profile_without_openai_auth()
+-> anyhow::Result<()> {
     let _access_token_guard = remove_access_token_env_var();
     let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
     let dir = tempdir()?;
@@ -763,32 +764,12 @@ async fn running_session_switch_rejects_external_subscription_profile() -> anyho
     )
     .await;
 
-    assert!(matches!(
-        manager
-            .prepare_auth_profile_switch(Some("claude".to_string()))
-            .await,
-        Err(AuthProfileError::NonChatGptProfile {
-            name,
-            provider: AuthProfileSubscriptionProvider::ClaudeAi,
-        }) if name == "claude"
-    ));
-    assert!(matches!(
-        manager
-            .switch_auth_profile(Some("claude".to_string()))
-            .await,
-        Err(AuthProfileError::NonChatGptProfile {
-            name,
-            provider: AuthProfileSubscriptionProvider::ClaudeAi,
-        }) if name == "claude"
-    ));
-    assert_eq!(manager.selected_auth_profile(), None);
-    assert_eq!(
-        manager
-            .auth_cached()
-            .expect("root auth should stay selected")
-            .api_key(),
-        Some("root-key")
-    );
+    let prepared = manager
+        .prepare_auth_profile_switch(Some("claude".to_string()))
+        .await?;
+    assert!(manager.apply_prepared_auth_profile_switch(prepared));
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("claude"));
+    assert_eq!(manager.auth_cached(), None);
 
     Ok(())
 }

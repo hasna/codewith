@@ -1,7 +1,10 @@
 use super::background_agent_processor::BackgroundAgentRequestProcessor;
 use super::background_agent_processor::api_worktree_from_state;
 use super::background_agent_processor::api_worktree_merge_candidate_from_state;
+use super::sqlite_retry::retry_transient_sqlite_busy;
 use super::thread_processor::ThreadRequestProcessor;
+use super::worktree_paths::path_to_api_string;
+use super::worktree_paths::paths_equivalent;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use anyhow::Context;
@@ -86,6 +89,8 @@ use codex_git_utils::merge_tree_dry_run;
 use codex_git_utils::remove_linked_git_worktree;
 use codex_git_utils::resolve_git_ref;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_git_utils::validate_git_branch_name;
+use codex_git_utils::worktree_has_commits_after;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
@@ -109,7 +114,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -215,8 +219,11 @@ impl ThreadRequestProcessor {
             let mut interval = tokio::time::interval(BACKGROUND_AGENT_RECONCILE_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                if let Err(err) =
-                    reconcile_background_agent_worker_processes(context.clone(), None).await
+                if let Err(err) = reconcile_background_agent_worker_processes(
+                    context.clone(),
+                    /*only_run_id*/ None,
+                )
+                .await
                 {
                     warn!("background agent process reconcile failed: {err}");
                 }
@@ -415,7 +422,7 @@ impl ThreadRequestProcessor {
                 .into(),
             ));
         };
-        params.base_repo_path = Some(base_repo_path.to_string_lossy().into_owned());
+        params.base_repo_path = Some(path_to_api_string(base_repo_path.as_path()));
         self.background_agent_state_processor()
             .worktree_list_inner(params, policy)
             .await
@@ -474,6 +481,17 @@ impl ThreadRequestProcessor {
             params.name.as_deref(),
             worktree_id.as_str(),
         )?;
+        let valid_branch_name = run_git_worktree_task("failed to validate worktree branch name", {
+            let base_repo_path = base_repo_path.clone();
+            let branch = branch.clone();
+            move || validate_git_branch_name(base_repo_path.as_path(), branch.as_str())
+        })
+        .await?;
+        if !valid_branch_name {
+            return Err(invalid_params(format!(
+                "worktree/create branch `{branch}` is not a valid git branch name"
+            )));
+        }
         let start_point = params
             .start_point
             .as_deref()
@@ -718,7 +736,7 @@ impl ThreadRequestProcessor {
             .background_agent_state_processor()
             .worktree_list_inner(
                 WorktreeListParams {
-                    base_repo_path: Some(base_repo_path.display().to_string()),
+                    base_repo_path: Some(path_to_api_string(base_repo_path.as_path())),
                     include_deleted: Some(true),
                     cursor: None,
                     limit: Some(codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT),
@@ -933,6 +951,27 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(params.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        }
         let status = params.status.map(state_worktree_merge_candidate_status);
         let candidates = state_db
             .managed_worktrees()
@@ -1020,20 +1059,19 @@ impl ThreadRequestProcessor {
                 "worktree/mergeCandidate/refresh targetRef `{target_ref}` does not resolve"
             ))
         })?;
-        let head_ref = worktree
-            .branch
+        let head_sha = worktree
+            .head_sha
             .clone()
-            .or_else(|| worktree.head_sha.clone())
-            .ok_or_else(|| invalid_params("worktree has no branch or head SHA to merge"))?;
+            .ok_or_else(|| invalid_params("worktree has no head SHA to merge"))?;
         let dry_run = run_git_worktree_task("failed to dry-run worktree merge", {
             let base_repo_path = worktree.base_repo_path.clone();
-            let target_ref = target_ref.clone();
-            let head_ref = head_ref.clone();
+            let target_sha = target_sha.clone();
+            let head_sha = head_sha.clone();
             move || {
                 merge_tree_dry_run(
                     base_repo_path.as_path(),
-                    target_ref.as_str(),
-                    head_ref.as_str(),
+                    target_sha.as_str(),
+                    head_sha.as_str(),
                 )
             }
         })
@@ -1046,7 +1084,7 @@ impl ThreadRequestProcessor {
                 target_ref,
                 target_sha: Some(target_sha.clone()),
                 base_sha: worktree.base_sha.unwrap_or(target_sha),
-                head_sha: worktree.head_sha.unwrap_or_else(|| head_ref.clone()),
+                head_sha,
                 status: if dry_run.clean {
                     codex_state::ManagedWorktreeMergeCandidateStatus::Open
                 } else {
@@ -1071,6 +1109,7 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateApplyParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
         let candidate = state_db
             .managed_worktrees()
             .get_merge_candidate(params.candidate_id.as_str())
@@ -1092,15 +1131,49 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
             .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        }
+        if worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires an active worktree",
+            ));
+        }
+        let worktree_status = run_git_worktree_task("failed to inspect merge source worktree", {
+            let worktree_path = worktree.worktree_path.clone();
+            move || get_git_worktree_status_snapshot(worktree_path.as_path())
+        })
+        .await?;
+        if worktree_status.dirty {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires a clean source worktree",
+            ));
+        }
+        if worktree_status.head_sha.as_deref() != Some(candidate.head_sha.as_str()) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply source changed; refresh before applying",
+            ));
+        }
+        let target_status = run_git_worktree_task("failed to inspect merge target checkout", {
+            let base_repo_path = worktree.base_repo_path.clone();
+            move || get_git_worktree_status_snapshot(base_repo_path.as_path())
+        })
+        .await?;
+        if status_snapshot_has_merge_target_changes(&target_status) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/apply requires a clean target checkout",
+            ));
+        }
         if candidate.target_ref != "HEAD" {
             let target_branch = short_branch_name(candidate.target_ref.as_str());
-            let status_snapshot =
-                run_git_worktree_task("failed to inspect merge target checkout", {
-                    let base_repo_path = worktree.base_repo_path.clone();
-                    move || get_git_worktree_status_snapshot(base_repo_path.as_path())
-                })
-                .await?;
-            if status_snapshot.branch.as_deref() != Some(target_branch.as_str()) {
+            if target_status.branch.as_deref() != Some(target_branch.as_str()) {
                 return Err(invalid_params(format!(
                     "worktree/mergeCandidate/apply requires the base repo checkout to be on targetRef `{}`",
                     candidate.target_ref
@@ -1150,12 +1223,45 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateDismissParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
+        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
         let candidate = state_db
             .managed_worktrees()
-            .mark_merge_candidate_status(
-                params.candidate_id.as_str(),
-                codex_state::ManagedWorktreeMergeCandidateStatus::Dismissed,
-            )
+            .get_merge_candidate(params.candidate_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read merge candidate: {err}")))?;
+        let Some(candidate) = candidate else {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        };
+        let worktree = state_db
+            .managed_worktrees()
+            .get_managed_worktree(candidate.worktree_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
+            .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        }
+        if !matches!(
+            candidate.status,
+            codex_state::ManagedWorktreeMergeCandidateStatus::Open
+                | codex_state::ManagedWorktreeMergeCandidateStatus::Blocked
+        ) {
+            return Err(invalid_params(
+                "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+            ));
+        }
+        let candidate = state_db
+            .managed_worktrees()
+            .dismiss_merge_candidate(params.candidate_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to dismiss merge candidate: {err}")))?
             .map(api_worktree_merge_candidate_from_state);
@@ -1201,8 +1307,7 @@ impl ThreadRequestProcessor {
             cleanup_default: api_worktree_cleanup_policy_from_config(config.cleanup_default),
             main_sessions: api_worktree_session_mode_from_config(config.main_sessions),
             sub_sessions: api_worktree_session_mode_from_config(config.sub_sessions),
-            current_base_repo_path: current_base_repo_path
-                .map(|path| path.to_string_lossy().into_owned()),
+            current_base_repo_path: current_base_repo_path.map(path_to_api_string),
         }
     }
 
@@ -1396,18 +1501,13 @@ async fn reconcile_background_agents(
                 || run.status == BackgroundAgentRunStatus::Orphaned
                 || is_terminal_background_agent_status(run.status))
         {
-            let controller = WorkerProcessController::default();
-            if let Err(err) = controller.stop(&handle).await {
-                warn!(
-                    run_id = %run.id,
-                    "failed to stop inactive background-agent worker process: {err}"
-                );
-            }
-            context
-                .active_worker_processes
-                .lock()
-                .await
-                .remove(run.id.as_str());
+            stop_tracked_background_agent_worker_process(
+                &context.state_db,
+                &context.active_worker_processes,
+                &run,
+                &handle,
+            )
+            .await?;
             continue;
         }
         if !should_start_background_run(&run) {
@@ -1457,7 +1557,7 @@ async fn reconcile_background_agent_worker_processes(
         .await?;
     reconcile_managed_worktree_cleanup(&context.state_db).await?;
     rehydrate_background_agent_worker_processes(&context).await?;
-    prune_finished_background_agent_worker_processes(&context).await;
+    prune_finished_background_agent_worker_processes(&context).await?;
     let runs = match only_run_id {
         Some(run_id) => context
             .state_db
@@ -1479,18 +1579,13 @@ async fn reconcile_background_agent_worker_processes(
                 || run.status == BackgroundAgentRunStatus::Orphaned
                 || is_terminal_background_agent_status(run.status))
         {
-            let controller = WorkerProcessController::default();
-            if let Err(err) = controller.stop(&handle).await {
-                warn!(
-                    run_id = %run.id,
-                    "failed to stop inactive background-agent worker process: {err}"
-                );
-            }
-            context
-                .active_worker_processes
-                .lock()
-                .await
-                .remove(run.id.as_str());
+            stop_tracked_background_agent_worker_process(
+                &context.state_db,
+                &context.active_worker_processes,
+                &run,
+                &handle,
+            )
+            .await?;
             if run.desired_state != BackgroundAgentDesiredState::Running {
                 continue;
             }
@@ -1536,6 +1631,70 @@ async fn reconcile_background_agent_worker_processes(
     Ok(())
 }
 
+async fn stop_tracked_background_agent_worker_process(
+    state_db: &StateDbHandle,
+    active_worker_processes: &Arc<Mutex<HashMap<String, WorkerProcessHandle>>>,
+    run: &BackgroundAgentRun,
+    handle: &WorkerProcessHandle,
+) -> anyhow::Result<()> {
+    let controller = WorkerProcessController::default();
+    let stop_report = match controller.stop(handle).await {
+        Ok(report) => Some(report),
+        Err(err) => {
+            warn!(
+                run_id = %run.id,
+                "failed to stop inactive background-agent worker process: {err}"
+            );
+            None
+        }
+    };
+    active_worker_processes.lock().await.remove(run.id.as_str());
+    let Some(stop_report) = stop_report else {
+        return Ok(());
+    };
+    if run.desired_state == BackgroundAgentDesiredState::Running {
+        return Ok(());
+    }
+    finalize_stopped_background_agent_process_for_run(
+        state_db,
+        run,
+        json!({
+            "reason": "worker_process_stopped_after_desired_state_change",
+            "stopReport": stop_report,
+        }),
+    )
+    .await
+}
+
+async fn finalize_stopped_background_agent_process_for_run(
+    state_db: &StateDbHandle,
+    run: &BackgroundAgentRun,
+    payload_json: Value,
+) -> anyhow::Result<()> {
+    if run.desired_state == BackgroundAgentDesiredState::Running {
+        return Ok(());
+    }
+    let Some(supervisor_id) = run.supervisor_id.as_deref() else {
+        return Ok(());
+    };
+    let status_reason =
+        if run.retention_state == codex_state::BackgroundAgentRetentionState::DeleteRequested {
+            "worker process stopped after delete request"
+        } else {
+            "worker process stopped after stop request"
+        };
+    state_db
+        .finalize_stopped_background_agent_process(
+            run.id.as_str(),
+            supervisor_id,
+            run.generation,
+            status_reason,
+            &payload_json,
+        )
+        .await?;
+    Ok(())
+}
+
 async fn reconcile_managed_worktree_cleanup(state_db: &StateDbHandle) -> anyhow::Result<()> {
     let candidates = state_db
         .managed_worktrees()
@@ -1553,6 +1712,24 @@ async fn cleanup_managed_worktree_candidate(
     state_db: &StateDbHandle,
     worktree: codex_state::ManagedWorktree,
 ) -> anyhow::Result<()> {
+    if let Some(agent_run_id) = worktree.owner_agent_run_id.as_deref()
+        && let Some(run) = state_db.get_run(agent_run_id).await?
+        && !is_terminal_background_agent_status(run.status)
+    {
+        record_managed_worktree_cleanup_failure(
+            state_db,
+            worktree.worktree_id.as_str(),
+            format!(
+                "background agent run {} is still {}; stop or wait for it to finish before cleanup",
+                run.id,
+                run.status.as_str()
+            ),
+            stored_status_snapshot_for_cleanup(&worktree),
+            /*force_delete_required*/ false,
+        )
+        .await?;
+        return Ok(());
+    }
     let base_repo_path = worktree.base_repo_path.clone();
     let worktree_path = worktree.worktree_path.clone();
     let status_result = tokio::task::spawn_blocking({
@@ -1598,6 +1775,47 @@ async fn cleanup_managed_worktree_candidate(
         .await?;
         return Ok(());
     }
+    let has_new_commits_result = match worktree.base_sha.clone() {
+        Some(base_sha) => {
+            let worktree_path = worktree_path.clone();
+            tokio::task::spawn_blocking(move || {
+                worktree_has_commits_after(&worktree_path, base_sha.as_str())
+            })
+            .await?
+        }
+        None => Ok(true),
+    };
+    match has_new_commits_result {
+        Ok(true) if !force_delete => {
+            record_managed_worktree_cleanup_failure(
+                state_db,
+                worktree.worktree_id.as_str(),
+                "worktree has commits after its managed base",
+                status_snapshot,
+                /*force_delete_required*/ true,
+            )
+            .await?;
+            return Ok(());
+        }
+        Ok(_) => {}
+        Err(err) if !force_delete => {
+            record_managed_worktree_cleanup_failure(
+                state_db,
+                worktree.worktree_id.as_str(),
+                format!("git worktree commit-safety check failed: {err}"),
+                status_snapshot,
+                /*force_delete_required*/ false,
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(err) => {
+            warn!(
+                worktree_id = worktree.worktree_id.as_str(),
+                "force cleanup continuing after commit-safety check failed: {err}"
+            );
+        }
+    }
 
     let remove_result = tokio::task::spawn_blocking({
         let base_repo_path = base_repo_path.clone();
@@ -1637,13 +1855,7 @@ async fn linked_worktree_is_absent(
 }
 
 fn paths_match(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    paths_equivalent(left, right)
 }
 
 fn ensure_worktree_policy_enabled(policy: &WorktreePolicy) -> Result<(), JSONRPCErrorError> {
@@ -1704,11 +1916,27 @@ async fn release_background_agent_worktree_lease_if_present(
                 "failed to read background agent worktree lease: {err}"
             ))
         })?;
-    if background_agent_lease
-        .as_ref()
-        .is_none_or(|lease| lease.deleted_at.is_some())
-    {
+    let Some(lease) = background_agent_lease.as_ref() else {
         return Ok(None);
+    };
+    if lease.deleted_at.is_some() {
+        return Ok(None);
+    }
+    let run = state_db
+        .get_run(lease.run_id.as_str())
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to read background agent run for worktree lease: {err}"
+            ))
+        })?;
+    if let Some(run) = run
+        && !is_terminal_background_agent_status(run.status)
+    {
+        return Err(invalid_params(format!(
+            "worktree is owned by active background agent run {}; stop the agent before release or cleanup",
+            run.id
+        )));
     }
 
     let status_snapshot_json = git_status_snapshot_json(status_snapshot.clone());
@@ -1870,6 +2098,13 @@ async fn load_all_managed_worktrees(
     }
 }
 
+fn worktree_matches_base_repo(
+    worktree: &codex_state::ManagedWorktree,
+    base_repo_path: &Path,
+) -> bool {
+    worktree.base_repo_path.as_path() == base_repo_path
+}
+
 async fn status_snapshot_for_release(
     worktree: &codex_state::ManagedWorktree,
     force_delete: Option<bool>,
@@ -1888,6 +2123,62 @@ async fn status_snapshot_for_release(
             records: vec![format!("status probe failed before force cleanup: {err:?}")],
         }),
         Err(err) => Err(err),
+    }
+}
+
+fn status_snapshot_has_merge_target_changes(status_snapshot: &GitWorktreeStatusSnapshot) -> bool {
+    status_snapshot.records.iter().any(|record| {
+        if record.starts_with("# ") {
+            return false;
+        }
+        if let Some(path) = record.strip_prefix("? ") {
+            return !path.starts_with(".codewith/worktrees/");
+        }
+        !record.trim().is_empty()
+    })
+}
+
+fn stored_status_snapshot_for_cleanup(
+    worktree: &codex_state::ManagedWorktree,
+) -> GitWorktreeStatusSnapshot {
+    let records = worktree
+        .status_snapshot_json
+        .get("records")
+        .and_then(Value::as_array)
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|records| !records.is_empty())
+        .unwrap_or_else(|| {
+            vec![format!(
+                "cleanup blocked for owner background agent {:?}",
+                worktree.owner_agent_run_id
+            )]
+        });
+    GitWorktreeStatusSnapshot {
+        dirty: worktree
+            .status_snapshot_json
+            .get("dirty")
+            .and_then(Value::as_bool)
+            .unwrap_or(worktree.dirty),
+        branch: worktree
+            .status_snapshot_json
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.branch.clone()),
+        head_sha: worktree
+            .status_snapshot_json
+            .get("headSha")
+            .or_else(|| worktree.status_snapshot_json.get("head_sha"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.head_sha.clone()),
+        records,
     }
 }
 
@@ -1975,7 +2266,7 @@ async fn rehydrate_background_agent_worker_processes(
 
 async fn prune_finished_background_agent_worker_processes(
     context: &BackgroundAgentProcessSupervisorContext,
-) {
+) -> anyhow::Result<()> {
     let handles = context
         .active_worker_processes
         .lock()
@@ -1984,7 +2275,7 @@ async fn prune_finished_background_agent_worker_processes(
         .map(|(run_id, handle)| (run_id.clone(), handle.clone()))
         .collect::<Vec<_>>();
     if handles.is_empty() {
-        return;
+        return Ok(());
     }
     let controller = WorkerProcessController::default();
     let mut finished = Vec::new();
@@ -1992,6 +2283,36 @@ async fn prune_finished_background_agent_worker_processes(
         match controller.status(&handle).await {
             Ok(WorkerProcessStatus::Running) => {}
             Ok(WorkerProcessStatus::Missing | WorkerProcessStatus::StalePidRecord) => {
+                if let Some(run) = context
+                    .state_db
+                    .get_background_agent_run(run_id.as_str())
+                    .await?
+                {
+                    finalize_stopped_background_agent_process_for_run(
+                        &context.state_db,
+                        &run,
+                        json!({
+                            "reason": "worker_process_missing_after_desired_state_change",
+                            "pid": handle.pid,
+                            "pgid": handle.pgid,
+                            "stderrLogPath": handle.stderr_log_path.display().to_string(),
+                        }),
+                    )
+                    .await?;
+                }
+                context
+                    .state_db
+                    .fail_unclaimed_background_agent_process_spawn(
+                        run_id.as_str(),
+                        "worker process exited before claiming run",
+                        &json!({
+                            "reason": "worker_process_exited_before_claim",
+                            "pid": handle.pid,
+                            "pgid": handle.pgid,
+                            "stderrLogPath": handle.stderr_log_path.display().to_string(),
+                        }),
+                    )
+                    .await?;
                 finished.push(run_id);
             }
             Err(err) => {
@@ -2008,6 +2329,7 @@ async fn prune_finished_background_agent_worker_processes(
             active.remove(run_id.as_str());
         }
     }
+    Ok(())
 }
 
 fn background_agent_worker_stderr_log_path(
@@ -2091,14 +2413,14 @@ async fn run_background_agent_worker(
         run.id,
         run.generation.saturating_add(1)
     );
-    let Some(generation) = context
-        .state_db
-        .claim_background_agent_supervisor(
+    let Some(generation) = retry_transient_sqlite_busy("claim background agent supervisor", || {
+        context.state_db.claim_background_agent_supervisor(
             run.id.as_str(),
             context.supervisor_id.as_str(),
             process_lease_id.as_str(),
         )
-        .await?
+    })
+    .await?
     else {
         debug!(run_id = %run.id, "background agent run was not claimable");
         return Ok(());
@@ -2136,19 +2458,21 @@ async fn run_background_agent_worker(
     let stderr_log_path_string = stderr_log_path
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
-    if !context
-        .state_db
-        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
-            run_id: run.id.as_str(),
-            supervisor_id: context.supervisor_id.as_str(),
-            generation,
-            pid,
-            pgid,
-            job_id: job_id.as_deref(),
-            start_token: process_start_token.as_deref(),
-            stderr_log_path: stderr_log_path_string.as_deref(),
-        })
-        .await?
+    if !retry_transient_sqlite_busy("record background agent execution handle", || {
+        context.state_db.record_background_agent_execution_handle(
+            BackgroundAgentExecutionHandleParams {
+                run_id: run.id.as_str(),
+                supervisor_id: context.supervisor_id.as_str(),
+                generation,
+                pid,
+                pgid,
+                job_id: job_id.as_deref(),
+                start_token: process_start_token.as_deref(),
+                stderr_log_path: stderr_log_path_string.as_deref(),
+            },
+        )
+    })
+    .await?
     {
         return Err(background_agent_ownership_lost(run.id.as_str(), generation));
     }
@@ -2215,7 +2539,13 @@ async fn run_background_agent_worker(
     if !bound {
         return Err(background_agent_ownership_lost(run.id.as_str(), generation));
     }
-    ensure_background_agent_worker_current(&context, run.id.as_str(), generation, false).await?;
+    ensure_background_agent_worker_current(
+        &context,
+        run.id.as_str(),
+        generation,
+        /*allow_terminal_current*/ false,
+    )
+    .await?;
     retry_transient_sqlite_busy("create background agent execution snapshot", || {
         context
             .state_db
@@ -2631,7 +2961,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2647,7 +2977,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2663,7 +2993,7 @@ async fn handle_background_agent_event(
                     "itemId": delta.item_id,
                     "delta": delta.delta,
                 }),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -2887,7 +3217,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(0),
-                    None,
+                    /*exit_signal*/ None,
                     Some("completed"),
                 )
                 .await?;
@@ -2924,7 +3254,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("turn aborted"),
                 )
                 .await?;
@@ -2948,7 +3278,7 @@ async fn handle_background_agent_event(
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("worker shutdown completed"),
                 )
                 .await?;
@@ -2962,7 +3292,7 @@ async fn handle_background_agent_event(
                 generation,
                 event_type,
                 &json!({}),
-                false,
+                /*allow_terminal_current*/ false,
             )
             .await?;
         }
@@ -3035,28 +3365,37 @@ async fn wait_for_pending_interaction(
                 anyhow::bail!("background agent stopped while waiting for interaction");
             }
             _ = poll.tick() => {
-                context.state_db.expire_timed_out_interactions().await?;
-                if !context
-                    .state_db
-                    .heartbeat_background_agent_run(
+                retry_transient_sqlite_busy("expire background agent interactions", || {
+                    context.state_db.expire_timed_out_interactions()
+                })
+                .await?;
+                if !retry_transient_sqlite_busy("heartbeat background agent interaction wait", || {
+                    context.state_db.heartbeat_background_agent_run(
                         run_id,
                         context.supervisor_id.as_str(),
                         generation,
                     )
-                    .await?
+                })
+                .await?
                 {
                     return Err(background_agent_ownership_lost(run_id, generation));
                 }
-                let Some(run) = context.state_db.get_run(run_id).await? else {
+                let Some(run) = retry_transient_sqlite_busy(
+                    "load background agent during interaction wait",
+                    || context.state_db.get_run(run_id),
+                )
+                .await?
+                else {
                     anyhow::bail!("background agent run disappeared while waiting");
                 };
                 if run.desired_state != BackgroundAgentDesiredState::Running {
                     anyhow::bail!("background agent no longer wants to run");
                 }
-                let Some(updated) = context
-                    .state_db
-                    .get_pending_interaction(interaction.id.as_str())
-                    .await?
+                let Some(updated) = retry_transient_sqlite_busy(
+                    "load pending background agent interaction",
+                    || context.state_db.get_pending_interaction(interaction.id.as_str()),
+                )
+                .await?
                 else {
                     anyhow::bail!("pending interaction disappeared: {}", interaction.id);
                 };
@@ -3068,16 +3407,19 @@ async fn wait_for_pending_interaction(
                         | BackgroundAgentPendingInteractionStatus::Denied
                         | BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting
                 ) {
-                    if !context
-                        .state_db
-                        .update_background_agent_run_status_for_supervisor(
+                    if !retry_transient_sqlite_busy(
+                        "restore background agent status after interaction",
+                        || {
+                            context.state_db.update_background_agent_run_status_for_supervisor(
                             run_id,
                             context.supervisor_id.as_str(),
                             generation,
                             BackgroundAgentRunStatus::Running,
                             Some("pending interaction resolved"),
                         )
-                        .await?
+                        },
+                    )
+                    .await?
                     {
                         return Err(background_agent_ownership_lost(run_id, generation));
                     }
@@ -3093,10 +3435,14 @@ async fn refresh_startup_heartbeat(
     run_id: &str,
     generation: i64,
 ) -> anyhow::Result<()> {
-    if context
-        .state_db
-        .heartbeat_background_agent_run(run_id, context.supervisor_id.as_str(), generation)
-        .await?
+    if retry_transient_sqlite_busy("refresh background agent startup heartbeat", || {
+        context.state_db.heartbeat_background_agent_run(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+        )
+    })
+    .await?
     {
         Ok(())
     } else {
@@ -3134,15 +3480,23 @@ async fn heartbeat_and_continue(
     generation: i64,
     thread: &Arc<codex_core::CodexThread>,
 ) -> anyhow::Result<bool> {
-    if !context
-        .state_db
-        .heartbeat_background_agent_run(run_id, context.supervisor_id.as_str(), generation)
-        .await?
+    if !retry_transient_sqlite_busy("heartbeat background agent run", || {
+        context.state_db.heartbeat_background_agent_run(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+        )
+    })
+    .await?
     {
         let _ = thread.submit(Op::Interrupt).await;
         return Ok(false);
     }
-    let Some(run) = context.state_db.get_run(run_id).await? else {
+    let Some(run) = retry_transient_sqlite_busy("load background agent after heartbeat", || {
+        context.state_db.get_run(run_id)
+    })
+    .await?
+    else {
         return Ok(false);
     };
     if run.desired_state == BackgroundAgentDesiredState::Running {
@@ -3179,7 +3533,10 @@ async fn stop_background_thread(
     run_id: &str,
     generation: i64,
 ) -> anyhow::Result<()> {
-    let run = context.state_db.get_run(run_id).await?;
+    let run = retry_transient_sqlite_busy("load background agent before stop", || {
+        context.state_db.get_run(run_id)
+    })
+    .await?;
     let desired_state = run
         .as_ref()
         .map(|run| run.desired_state)
@@ -3209,17 +3566,17 @@ async fn stop_background_thread(
         json!({"reason": reason}),
     )
     .await?;
-    context
-        .state_db
-        .finish_background_agent_process_lease(
+    retry_transient_sqlite_busy("finish stopped background agent process lease", || {
+        context.state_db.finish_background_agent_process_lease(
             run_id,
             context.supervisor_id.as_str(),
             generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some(reason),
         )
-        .await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -3319,11 +3676,13 @@ async fn latest_execution_payload(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
 ) -> anyhow::Result<Option<Value>> {
-    Ok(context
-        .state_db
-        .get_latest_execution_snapshot(run_id)
+    Ok(
+        retry_transient_sqlite_busy("load latest background agent execution snapshot", || {
+            context.state_db.get_latest_execution_snapshot(run_id)
+        })
         .await?
-        .map(|snapshot| snapshot.payload_json))
+        .map(|snapshot| snapshot.payload_json),
+    )
 }
 
 async fn append_background_agent_event_with_retry(
@@ -3350,7 +3709,12 @@ async fn ensure_background_agent_worker_current(
     generation: i64,
     allow_terminal_current: bool,
 ) -> anyhow::Result<()> {
-    let Some(run) = context.state_db.get_run(run_id).await? else {
+    let Some(run) =
+        retry_transient_sqlite_busy("load background agent for ownership check", || {
+            context.state_db.get_run(run_id)
+        })
+        .await?
+    else {
         return Err(background_agent_ownership_lost(run_id, generation));
     };
     if run.supervisor_id.as_deref() != Some(context.supervisor_id.as_str())
@@ -3377,9 +3741,12 @@ async fn count_active_pending_interactions_for_run(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
 ) -> anyhow::Result<i64> {
-    let interactions = context
-        .state_db
-        .list_pending_interactions(run_id, None)
+    let interactions =
+        retry_transient_sqlite_busy("list background agent pending interactions", || {
+            context
+                .state_db
+                .list_pending_interactions(run_id, /*status*/ None)
+        })
         .await?;
     Ok(interactions
         .into_iter()
@@ -3398,7 +3765,11 @@ async fn mark_background_agent_worker_failed(
     run_id: &str,
     err: &anyhow::Error,
 ) -> anyhow::Result<()> {
-    let Some(run) = context.state_db.get_run(run_id).await? else {
+    let Some(run) = retry_transient_sqlite_busy("load failed background agent run", || {
+        context.state_db.get_run(run_id)
+    })
+    .await?
+    else {
         return Ok(());
     };
     if run.supervisor_id.as_deref() != Some(context.supervisor_id.as_str()) {
@@ -3423,17 +3794,17 @@ async fn mark_background_agent_worker_failed(
             json!({"reason": "desired_state_changed"}),
         )
         .await?;
-        context
-            .state_db
-            .finish_background_agent_process_lease(
+        retry_transient_sqlite_busy("finish cancelled background agent failure lease", || {
+            context.state_db.finish_background_agent_process_lease(
                 run_id,
                 context.supervisor_id.as_str(),
                 run.generation,
                 Some(1),
-                None,
+                /*exit_signal*/ None,
                 Some("worker stopped"),
             )
-            .await?;
+        })
+        .await?;
         return Ok(());
     }
     append_status(
@@ -3446,17 +3817,17 @@ async fn mark_background_agent_worker_failed(
         json!({"error": err.to_string()}),
     )
     .await?;
-    context
-        .state_db
-        .finish_background_agent_process_lease(
+    retry_transient_sqlite_busy("finish failed background agent process lease", || {
+        context.state_db.finish_background_agent_process_lease(
             run_id,
             context.supervisor_id.as_str(),
             run.generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some("worker failed"),
         )
-        .await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -3662,38 +4033,6 @@ fn core_event_type(msg: &EventMsg) -> &'static str {
     }
 }
 
-async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
-{
-    let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
-                debug!(
-                    operation,
-                    attempt = attempt + 1,
-                    "retrying background agent operation after SQLite busy: {err}"
-                );
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("retry loop should return on success or final error")
-}
-
-fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("database is locked")
-        || message.contains("database is busy")
-        || message.contains("code: 5")
-        || message.contains("code: 517")
-}
-
 pub(super) fn new_background_agent_supervisor_id() -> String {
     format!(
         "{}:{}:{}",
@@ -3853,19 +4192,37 @@ mod tests {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            prune_finished_background_agent_worker_processes(&context).await;
+            prune_finished_background_agent_worker_processes(&context).await?;
             if !active_worker_processes
                 .lock()
                 .await
                 .contains_key("finished-run")
             {
-                return Ok(());
+                break;
             }
             if tokio::time::Instant::now() >= deadline {
                 anyhow::bail!("timed out waiting for finished worker handle to be pruned");
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+        let run = context
+            .state_db
+            .get_background_agent_run("finished-run")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Failed);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process exited before claiming run")
+        );
+        let snapshot = context
+            .state_db
+            .get_background_agent_status_snapshot("finished-run")
+            .await?
+            .expect("status snapshot should exist");
+        assert_eq!(snapshot.status, BackgroundAgentRunStatus::Failed);
+        assert!(!should_start_background_run(&run));
+        Ok(())
     }
 
     #[tokio::test]
@@ -3982,6 +4339,195 @@ mod tests {
             controller.status(&old_handle).await?,
             WorkerProcessStatus::Running
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_supervisor_finalizes_stopped_live_handle() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "stopping-run").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor("stopping-run", "worker-supervisor", "lease-1")
+            .await?
+            .expect("run should be claimed");
+        let controller = WorkerProcessController::default();
+        let old_handle = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", temp.path().join("stopping.stderr.log"))
+                    .arg("-c")
+                    .arg("sleep 60"),
+            )
+            .await?;
+        let old_stderr_log_path = old_handle.stderr_log_path.to_string_lossy().to_string();
+        state_db
+            .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                run_id: "stopping-run",
+                supervisor_id: "worker-supervisor",
+                generation,
+                pid: Some(i64::from(old_handle.pid)),
+                pgid: old_handle.pgid.map(i64::from),
+                job_id: Some("old-worker"),
+                start_token: old_handle.start_token.as_deref(),
+                stderr_log_path: Some(old_stderr_log_path.as_str()),
+            })
+            .await?;
+        state_db
+            .set_background_agent_desired_state(
+                "stopping-run",
+                BackgroundAgentDesiredState::Stopped,
+            )
+            .await?;
+        state_db
+            .update_background_agent_run_status(
+                "stopping-run",
+                BackgroundAgentRunStatus::Stopping,
+                Some("stop requested"),
+            )
+            .await?;
+        let active_worker_processes = Arc::new(Mutex::new(HashMap::from([(
+            "stopping-run".to_string(),
+            old_handle.clone(),
+        )])));
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "process-supervisor-test".to_string(),
+            active_worker_processes: Arc::clone(&active_worker_processes),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+        };
+
+        reconcile_background_agent_worker_processes(context, Some("stopping-run".to_string()))
+            .await?;
+
+        assert!(
+            !active_worker_processes
+                .lock()
+                .await
+                .contains_key("stopping-run")
+        );
+        assert_ne!(
+            controller.status(&old_handle).await?,
+            WorkerProcessStatus::Running
+        );
+        let run = state_db
+            .get_background_agent_run("stopping-run")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process stopped after stop request")
+        );
+        let snapshot = state_db
+            .get_background_agent_status_snapshot("stopping-run")
+            .await?
+            .expect("status snapshot should exist");
+        assert_eq!(snapshot.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(snapshot.last_event_seq, run.last_event_seq);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_supervisor_finalizes_missing_stopped_handle_during_prune() -> anyhow::Result<()>
+    {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "missing-stopping-run").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor(
+                "missing-stopping-run",
+                "worker-supervisor",
+                "lease-1",
+            )
+            .await?
+            .expect("run should be claimed");
+        let controller = WorkerProcessController::default();
+        let old_handle = controller
+            .spawn(WorkerProcessCommand::new(
+                "/bin/true",
+                temp.path().join("missing-stopping.stderr.log"),
+            ))
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if controller.status(&old_handle).await? != WorkerProcessStatus::Running {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("timed out waiting for worker process to exit");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let old_stderr_log_path = old_handle.stderr_log_path.to_string_lossy().to_string();
+        state_db
+            .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                run_id: "missing-stopping-run",
+                supervisor_id: "worker-supervisor",
+                generation,
+                pid: Some(i64::from(old_handle.pid)),
+                pgid: old_handle.pgid.map(i64::from),
+                job_id: Some("old-worker"),
+                start_token: old_handle.start_token.as_deref(),
+                stderr_log_path: Some(old_stderr_log_path.as_str()),
+            })
+            .await?;
+        state_db
+            .set_background_agent_desired_state(
+                "missing-stopping-run",
+                BackgroundAgentDesiredState::Stopped,
+            )
+            .await?;
+        state_db
+            .update_background_agent_run_status(
+                "missing-stopping-run",
+                BackgroundAgentRunStatus::Stopping,
+                Some("stop requested"),
+            )
+            .await?;
+        let active_worker_processes = Arc::new(Mutex::new(HashMap::from([(
+            "missing-stopping-run".to_string(),
+            old_handle,
+        )])));
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "process-supervisor-test".to_string(),
+            active_worker_processes: Arc::clone(&active_worker_processes),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+        };
+
+        reconcile_background_agent_worker_processes(
+            context,
+            Some("missing-stopping-run".to_string()),
+        )
+        .await?;
+
+        assert!(
+            !active_worker_processes
+                .lock()
+                .await
+                .contains_key("missing-stopping-run")
+        );
+        let run = state_db
+            .get_background_agent_run("missing-stopping-run")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process stopped after stop request")
+        );
+        let snapshot = state_db
+            .get_background_agent_status_snapshot("missing-stopping-run")
+            .await?
+            .expect("status snapshot should exist");
+        assert_eq!(snapshot.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(snapshot.last_event_seq, run.last_event_seq);
         Ok(())
     }
 

@@ -400,6 +400,7 @@ mod tests {
                     node_id: format!("node-{index}"),
                     plan_id: "plan-1".to_string(),
                     thread_id: "thread-1".to_string(),
+                    assigned_thread_id: "thread-1".to_string(),
                     key: format!("goal-{index}"),
                     sequence: i64::try_from(index).unwrap_or(i64::MAX),
                     priority: 0,

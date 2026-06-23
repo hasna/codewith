@@ -3184,6 +3184,22 @@ async fn usage_heartbeat_includes_saved_chatgpt_profile_when_active_session_is_a
     );
 }
 
+#[tokio::test]
+async fn usage_heartbeat_failure_backs_off_profile_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    chat.record_auth_profile_usage_heartbeat_failure(Some("work".to_string()));
+    assert!(chat.auth_profile_usage_refresh_targets().is_empty());
+
+    chat.record_auth_profile_usage_heartbeat_success(Some("work".to_string()));
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+}
+
 fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
     while let Ok(event) = rx.try_recv() {
         assert!(

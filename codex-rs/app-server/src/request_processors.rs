@@ -602,6 +602,9 @@ fn infer_model_provider_from_model<'a>(
 
     let model = model?;
     let provider_ids = provider_ids.into_iter().collect::<Vec<_>>();
+    if provider_for_fallback_model(model, [current_provider]).is_some() {
+        return None;
+    }
     if let Some((provider_id, _)) = model.split_once('/') {
         if current_provider != OPENAI_PROVIDER_ID && provider_id == OPENAI_PROVIDER_ID {
             return None;
@@ -641,6 +644,7 @@ mod process_exec_processor;
 mod remote_control_processor;
 mod remote_dispatch_processor;
 mod search;
+mod sqlite_retry;
 mod thread_external_agent_processor;
 mod thread_mailbox_dispatcher_runtime;
 mod thread_mailbox_processor;
@@ -658,6 +662,7 @@ mod token_usage_replay;
 mod turn_processor;
 mod usage_profile_broker;
 mod windows_sandbox_processor;
+mod worktree_paths;
 
 pub(crate) use account_processor::AccountRequestProcessor;
 pub(crate) use active_session_processor::ActiveSessionRequestProcessor;
@@ -732,6 +737,7 @@ use self::thread_lifecycle::*;
 use self::thread_resume_redaction::*;
 use self::thread_summary::*;
 
+pub(crate) use self::thread_goal_processor::api_thread_goal_plan_from_state_for_thread;
 pub(crate) use self::thread_lifecycle::populate_thread_turns_from_history;
 pub(crate) use self::thread_processor::thread_from_stored_thread;
 #[cfg(test)]

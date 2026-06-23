@@ -22,6 +22,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
 
 impl ChatWidget {
@@ -419,6 +420,16 @@ impl ChatWidget {
 
         let profile = profile.map(str::to_string);
         if self
+            .auth_profile_usage_heartbeat_failed_at_by_profile
+            .get(&profile)
+            .is_some_and(|failed_at| {
+                failed_at.elapsed() < AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF
+            })
+        {
+            return false;
+        }
+
+        if self
             .auth_profile_usage_heartbeat_requested_at_by_profile
             .get(&profile)
             .is_some_and(|requested_at| requested_at.elapsed() < heartbeat_interval)
@@ -429,6 +440,16 @@ impl ChatWidget {
         self.auth_profile_usage_heartbeat_requested_at_by_profile
             .insert(profile, Instant::now());
         true
+    }
+
+    pub(crate) fn record_auth_profile_usage_heartbeat_success(&mut self, profile: Option<String>) {
+        self.auth_profile_usage_heartbeat_failed_at_by_profile
+            .remove(&profile);
+    }
+
+    pub(crate) fn record_auth_profile_usage_heartbeat_failure(&mut self, profile: Option<String>) {
+        self.auth_profile_usage_heartbeat_failed_at_by_profile
+            .insert(profile, Instant::now());
     }
 
     pub(crate) fn open_auth_profile_delete_confirm(&mut self, profile: String) {

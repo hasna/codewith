@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/pull_request_display.rs
+expression: "render_bottom_popup(&chat, 60)"
+---
+  Needs attention
+
+  [Current]  Open
+
+  Search PRs
+› Refresh                  Reload pull requests
+  No current pull request  The checked-out branch is not …
+
+  Read-only: no comments, reviews, pushes, branch updates,
+  merges, or auto-fix actions.
+  Press enter to confirm or esc to go back

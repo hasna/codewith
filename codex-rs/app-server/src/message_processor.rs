@@ -338,7 +338,11 @@ impl MessageProcessor {
                 environment_manager,
                 thread_extensions(
                     guardian_agent_spawner(thread_manager.clone()),
-                    app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone()),
+                    app_server_extension_event_sink(
+                        outgoing.clone(),
+                        thread_state_manager.clone(),
+                        state_db.clone(),
+                    ),
                     auth_manager.clone(),
                     state_db.clone(),
                     thread_manager.clone(),

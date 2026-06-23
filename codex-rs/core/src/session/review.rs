@@ -130,6 +130,8 @@ pub(super) async fn spawn_review_thread(
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         current_date: parent_turn_context.current_date.clone(),
         timezone: parent_turn_context.timezone.clone(),
+        machine_id: parent_turn_context.machine_id.clone(),
+        machine_name: parent_turn_context.machine_name.clone(),
         app_server_client_name: parent_turn_context.app_server_client_name.clone(),
         developer_instructions: None,
         user_instructions: None,
