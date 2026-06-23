@@ -951,7 +951,9 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
-        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
+        let current_base_repo_path = self
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
+            .await?;
         let worktree = state_db
             .managed_worktrees()
             .get_managed_worktree(params.worktree_id.as_str())
@@ -1109,7 +1111,9 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateApplyParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
-        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
+        let current_base_repo_path = self
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
+            .await?;
         let candidate = state_db
             .managed_worktrees()
             .get_merge_candidate(params.candidate_id.as_str())
@@ -1223,7 +1227,9 @@ impl ThreadRequestProcessor {
         params: WorktreeMergeCandidateDismissParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
-        let current_base_repo_path = self.resolve_worktree_base_repo_path(None).await?;
+        let current_base_repo_path = self
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
+            .await?;
         let candidate = state_db
             .managed_worktrees()
             .get_merge_candidate(params.candidate_id.as_str())
@@ -2102,7 +2108,7 @@ fn worktree_matches_base_repo(
     worktree: &codex_state::ManagedWorktree,
     base_repo_path: &Path,
 ) -> bool {
-    worktree.base_repo_path.as_path() == base_repo_path
+    paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
 }
 
 async fn status_snapshot_for_release(
@@ -4083,7 +4089,11 @@ mod tests {
                 .ends_with("background-agent-daemon/workers/run%2Fwith%20path.stderr.log")
         );
         let events = state_db
-            .list_background_agent_events_after("run/with path", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "run/with path",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
             .await?;
         let event_types = events
             .iter()

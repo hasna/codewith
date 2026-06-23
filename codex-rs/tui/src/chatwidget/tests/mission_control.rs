@@ -280,8 +280,8 @@ async fn mission_control_not_loaded_session_row_selects_thread() {
         "Archived operator session",
         "/tmp/codewith/archived",
         LocalSessionStatus::NotLoaded,
-        None,
-        None,
+        /*model*/ None,
+        /*branch*/ None,
     );
     local_session.runtime_session_id = None;
     local_session.peer = None;

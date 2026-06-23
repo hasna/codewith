@@ -1,4 +1,7 @@
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -50,6 +53,7 @@ struct GoalRuntimeInner {
     tools_available_for_thread: bool,
     plan_config: std::sync::RwLock<GoalPlanRuntimeConfig>,
     goal_state_lock: Semaphore,
+    suppressed_idle_continuations: Mutex<HashSet<String>>,
     pending_context_compaction: AtomicBool,
 }
 
@@ -139,6 +143,7 @@ impl GoalRuntimeHandle {
                     post_goal_plan_context: config.post_goal_plan_context,
                 }),
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
+                suppressed_idle_continuations: Mutex::new(HashSet::new()),
                 pending_context_compaction: AtomicBool::new(false),
             }),
         }
@@ -175,6 +180,10 @@ impl GoalRuntimeHandle {
 
     pub(crate) fn accounting_state(&self) -> Arc<GoalAccountingState> {
         Arc::clone(&self.inner.accounting_state)
+    }
+
+    pub(crate) fn suppress_next_idle_continuation(&self, goal_id: impl Into<String>) {
+        self.suppressed_idle_continuations().insert(goal_id.into());
     }
 
     pub(crate) fn plan_config(&self) -> GoalPlanRuntimeConfig {
@@ -573,6 +582,13 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
+        if self
+            .suppressed_idle_continuations()
+            .remove(goal.goal_id.as_str())
+        {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
 
         if let Err(err) = thread.try_start_turn_if_idle(vec![item]).await {
@@ -875,5 +891,12 @@ impl GoalRuntimeHandle {
                 .is_none_or(|expected_goal_id| goal.goal_id == expected_goal_id)
                 .then_some(goal.status)
         }))
+    }
+
+    fn suppressed_idle_continuations(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.inner
+            .suppressed_idle_continuations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }

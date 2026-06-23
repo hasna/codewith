@@ -74,21 +74,42 @@ async fn remote_dispatch_jsonrpc_enforces_trust_capabilities_and_expiry() -> Res
             .contains(&RemoteDispatchCapability::AuditReceipts)
     );
 
-    let untrusted = remote_submit(&mut mcp, "untrusted", "local", None, None).await?;
+    let untrusted = remote_submit(
+        &mut mcp,
+        "untrusted",
+        "local",
+        /*capability_version*/ None,
+        /*expires_at*/ None,
+    )
+    .await?;
     assert_eq!(RemoteDispatchRequestStatus::Denied, untrusted.status);
     assert_eq!(
         Some(RemoteDispatchDenialReason::UntrustedMachine),
         untrusted.receipt.denial.map(|denial| denial.reason)
     );
 
-    let stale_capability = remote_submit(&mut mcp, "trusted", "local", Some("0"), None).await?;
+    let stale_capability = remote_submit(
+        &mut mcp,
+        "trusted",
+        "local",
+        Some("0"),
+        /*expires_at*/ None,
+    )
+    .await?;
     assert_eq!(RemoteDispatchRequestStatus::Denied, stale_capability.status);
     assert_eq!(
         Some(RemoteDispatchDenialReason::CapabilityMismatch),
         stale_capability.receipt.denial.map(|denial| denial.reason)
     );
 
-    let expired = remote_submit(&mut mcp, "trusted", "local", None, Some(1)).await?;
+    let expired = remote_submit(
+        &mut mcp,
+        "trusted",
+        "local",
+        /*capability_version*/ None,
+        Some(1),
+    )
+    .await?;
     assert_eq!(RemoteDispatchRequestStatus::Denied, expired.status);
     assert_eq!(
         Some(RemoteDispatchDenialReason::ExpiredRequest),

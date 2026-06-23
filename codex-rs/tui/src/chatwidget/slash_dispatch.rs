@@ -381,8 +381,11 @@ fn parse_external_agent_args(trimmed: &str) -> Option<ExternalAgentSlashCommand<
     if trimmed.is_empty() {
         return None;
     }
-    let (mode, inline, rest) =
-        parse_external_agent_options(trimmed, ThreadExternalAgentMode::Plan, true)?;
+    let (mode, inline, rest) = parse_external_agent_options(
+        trimmed,
+        ThreadExternalAgentMode::Plan,
+        /*allow_inline*/ true,
+    )?;
     let (head, rest) = split_external_agent_token(rest)?;
     Some(ExternalAgentSlashCommand::Runtime {
         runtime_id: head,

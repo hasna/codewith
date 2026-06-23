@@ -16,15 +16,25 @@ const SECRETS_CLI_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 static SECRETS_CLI_CACHE: OnceLock<Mutex<HashMap<String, CachedSecret>>> = OnceLock::new();
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SecretBackendFallback {
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CachedSecret {
     Found(String),
     Missing { cached_at: Instant },
 }
 
-pub(crate) fn provider_key_from_env_or_secret(env_key: &str) -> Option<String> {
+pub(crate) fn provider_key_from_env_or_secret(
+    env_key: &str,
+    secret_backend_fallback: SecretBackendFallback,
+) -> Option<String> {
     provider_key_from_env_or_secret_with(
         env_key,
+        secret_backend_fallback,
         |env_key| std::env::var(env_key).ok(),
         cached_secret_from_secrets_cli,
     )
@@ -32,11 +42,20 @@ pub(crate) fn provider_key_from_env_or_secret(env_key: &str) -> Option<String> {
 
 fn provider_key_from_env_or_secret_with(
     env_key: &str,
+    secret_backend_fallback: SecretBackendFallback,
     env_var: impl FnOnce(&str) -> Option<String>,
     get_secret: impl FnOnce(&str) -> Option<String>,
 ) -> Option<String> {
-    non_empty_value(env_var(env_key))
-        .or_else(|| provider_key_from_optional_secret_backend_with(env_key, get_secret))
+    if let Some(value) = non_empty_value(env_var(env_key)) {
+        return Some(value);
+    }
+
+    match secret_backend_fallback {
+        SecretBackendFallback::Enabled => {
+            provider_key_from_optional_secret_backend_with(env_key, get_secret)
+        }
+        SecretBackendFallback::Disabled => None,
+    }
 }
 
 fn provider_key_from_optional_secret_backend_with(
@@ -47,7 +66,7 @@ fn provider_key_from_optional_secret_backend_with(
     non_empty_value(get_secret(&secret_name))
 }
 
-fn default_secret_name_for_provider_env_key(env_key: &str) -> Option<String> {
+pub(crate) fn default_secret_name_for_provider_env_key(env_key: &str) -> Option<String> {
     const PROVIDER_SECRET_SUFFIXES: &[(&str, &str)] = &[
         ("_API_KEY", "api_key"),
         ("_ACCESS_TOKEN", "access_token"),
@@ -232,6 +251,7 @@ mod tests {
 
         let provider_key = provider_key_from_env_or_secret_with(
             "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| {
                 env_var_called.set(true);
                 Some(" env-token ".to_string())
@@ -247,6 +267,7 @@ mod tests {
     fn provider_key_from_env_or_secret_falls_back_to_secret_backend_value() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| None,
             |_| Some("secret-token".to_string()),
         );
@@ -258,6 +279,7 @@ mod tests {
     fn provider_key_from_env_or_secret_falls_back_to_env_value() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| Some(" env-token ".to_string()),
             |_| None,
         );
@@ -269,6 +291,7 @@ mod tests {
     fn provider_key_from_env_or_secret_falls_back_to_env_when_secret_is_empty() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| Some(" env-token ".to_string()),
             |_| Some(" \n".to_string()),
         );
@@ -277,9 +300,34 @@ mod tests {
     }
 
     #[test]
+    fn provider_key_from_env_or_secret_prefers_env_value_when_secret_backend_is_disabled() {
+        let provider_key = provider_key_from_env_or_secret_with(
+            "CEREBRAS_API_KEY",
+            SecretBackendFallback::Disabled,
+            |_| Some(" env-token ".to_string()),
+            |_| panic!("disabled secret backend should not be queried"),
+        );
+
+        assert_eq!(provider_key, Some("env-token".to_string()));
+    }
+
+    #[test]
+    fn provider_key_from_env_or_secret_skips_disabled_secret_backend() {
+        let provider_key = provider_key_from_env_or_secret_with(
+            "CEREBRAS_API_KEY",
+            SecretBackendFallback::Disabled,
+            |_| None,
+            |_| panic!("disabled secret backend should not be queried"),
+        );
+
+        assert_eq!(provider_key, None);
+    }
+
+    #[test]
     fn provider_key_from_env_or_secret_uses_default_secret_backend() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| None,
             |secret_name| {
                 assert_eq!(secret_name, "cerebras/api_key");
@@ -292,8 +340,12 @@ mod tests {
 
     #[test]
     fn provider_key_from_env_or_secret_allows_missing_secret_backend_value() {
-        let provider_key =
-            provider_key_from_env_or_secret_with("CEREBRAS_API_KEY", |_| None, |_| None);
+        let provider_key = provider_key_from_env_or_secret_with(
+            "CEREBRAS_API_KEY",
+            SecretBackendFallback::Enabled,
+            |_| None,
+            |_| None,
+        );
 
         assert_eq!(provider_key, None);
     }
@@ -302,6 +354,7 @@ mod tests {
     fn provider_key_from_env_or_secret_derives_secret_backend_mapping() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CUSTOM_PROVIDER_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| None,
             |secret_name| {
                 assert_eq!(secret_name, "custom-provider/api_key");
@@ -316,6 +369,7 @@ mod tests {
     fn provider_key_from_env_or_secret_skips_unknown_credential_suffix() {
         let provider_key = provider_key_from_env_or_secret_with(
             "CUSTOM_PROVIDER_SECRET",
+            SecretBackendFallback::Enabled,
             |_| None,
             |_| panic!("unknown credential suffixes should not query default secret backends"),
         );
@@ -327,6 +381,7 @@ mod tests {
     fn provider_key_from_env_or_secret_ignores_empty_secret_backend_value() {
         let provider_key = provider_key_from_env_or_secret_with(
             "OPENROUTER_API_KEY",
+            SecretBackendFallback::Enabled,
             |_| None,
             |_| Some(" \n".to_string()),
         );

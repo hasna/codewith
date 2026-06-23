@@ -1074,7 +1074,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open state db");
-        migrator_through(&STATE_MIGRATOR, 44)
+        migrator_through(&STATE_MIGRATOR, /*version*/ 44)
             .run(&pool)
             .await
             .expect("apply pre-automation workflow schema");
@@ -1147,7 +1147,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open goals db");
-        migrator_through(&GOALS_MIGRATOR, 2)
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 2)
             .run(&pool)
             .await
             .expect("apply pre-projection goals schema");
@@ -1240,7 +1240,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open goals db");
-        migrator_through(&GOALS_MIGRATOR, 3)
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 3)
             .run(&pool)
             .await
             .expect("apply pre-cancellation goals schema");

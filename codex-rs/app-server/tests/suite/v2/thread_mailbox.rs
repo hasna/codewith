@@ -204,7 +204,7 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
     create_config_toml_with_mailbox_dispatcher(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
     )?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
@@ -255,7 +255,7 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
     create_config_toml_with_mailbox_dispatcher(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
     )?;
 
     let thread_id = seed_unloaded_thread(codex_home.path()).await?;
@@ -323,7 +323,7 @@ async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Re
     create_config_toml_with_mailbox_dispatcher(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
     )?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
@@ -423,7 +423,7 @@ async fn thread_mailbox_dispatcher_retries_and_poisons_offline_targets() -> Resu
     create_config_toml_with_mailbox_dispatcher(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
     )?;
 
     let (retry_thread_id, poison_thread_id) = {
@@ -798,7 +798,9 @@ async fn seed_unloaded_thread(codex_home: &Path) -> Result<String> {
 }
 
 fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()> {
-    create_config_toml_with_mailbox_dispatcher(codex_home, server_uri, /*enabled*/ false)
+    create_config_toml_with_mailbox_dispatcher(
+        codex_home, server_uri, /*mailbox_dispatcher_enabled*/ false,
+    )
 }
 
 fn create_config_toml_with_mailbox_dispatcher(

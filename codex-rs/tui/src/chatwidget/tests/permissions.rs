@@ -141,6 +141,14 @@ async fn approvals_selection_popup_snapshot() {
     chat.open_approvals_popup();
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Saved to config.toml"),
+        "permissions popup should explain persistence scope: {popup}"
+    );
+    assert!(
+        !popup.contains("auth profile remembers"),
+        "permissions popup should not claim auth-profile persistence without a selected profile: {popup}"
+    );
     #[cfg(target_os = "windows")]
     insta::with_settings!({ snapshot_suffix => "windows" }, {
         assert_chatwidget_snapshot!("approvals_selection_popup", popup);
@@ -152,6 +160,7 @@ async fn approvals_selection_popup_snapshot() {
 #[tokio::test]
 async fn profile_permissions_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("work".to_string());
     chat.config.explicit_permission_profile_mode = true;
     chat.config
         .permissions
@@ -163,10 +172,12 @@ async fn profile_permissions_selection_popup_snapshot() {
 
     chat.open_permissions_popup();
 
-    assert_chatwidget_snapshot!(
-        "profile_permissions_selection_popup",
-        render_bottom_popup(&chat, /*width*/ 80)
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("this auth profile remembers the choice"),
+        "profile permissions popup should explain auth-profile persistence: {popup}"
     );
+    assert_chatwidget_snapshot!("profile_permissions_selection_popup", popup);
 }
 
 #[tokio::test]

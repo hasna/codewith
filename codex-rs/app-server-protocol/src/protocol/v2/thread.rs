@@ -151,6 +151,9 @@ pub struct ThreadStartParams {
     /// Optional client-supplied analytics source classification for this thread.
     #[ts(optional = nullable)]
     pub thread_source: Option<ThreadSource>,
+    /// Optional parent thread id when starting a fresh subagent child thread.
+    #[ts(optional = nullable)]
+    pub parent_thread_id: Option<String>,
     /// Optional sticky environments for this thread.
     ///
     /// Omitted selects the default environment when environment access is

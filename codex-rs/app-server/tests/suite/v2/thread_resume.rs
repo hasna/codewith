@@ -727,7 +727,10 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
 
 #[tokio::test]
 async fn thread_resume_initial_turns_page_defaults_to_summary_items() -> Result<()> {
-    let resume = resume_redaction_fixture_with_items_view(None, None).await?;
+    let resume = resume_redaction_fixture_with_items_view(
+        /*client_name*/ None, /*items_view*/ None,
+    )
+    .await?;
     let page_turn = resume
         .initial_turns_page
         .as_ref()

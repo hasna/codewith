@@ -1057,7 +1057,7 @@ mod tests {
                     next_run_at: Some(at(/*seconds*/ 1_700_000_120)),
                     expires_at: None,
                 },
-                None,
+                /*auth_profile*/ None,
             )
             .await
             .expect("schedule should be created");
@@ -1507,7 +1507,7 @@ mod tests {
                 &claim.run.run_id,
                 "lease-fail",
                 now + chrono::Duration::seconds(10),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await
@@ -1562,7 +1562,7 @@ mod tests {
                 &claim.run.run_id,
                 "lease-fail",
                 now + chrono::Duration::seconds(10),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await

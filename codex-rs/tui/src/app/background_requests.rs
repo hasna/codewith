@@ -1348,7 +1348,7 @@ mod tests {
         app.active_thread_id = Some(thread_id);
 
         app.chat_widget
-            .handle_thread_session(test_thread_session(thread_id, None));
+            .handle_thread_session(test_thread_session(thread_id, /*rollout_path*/ None));
 
         assert_eq!(app.connectors_list_thread_id(), None);
 

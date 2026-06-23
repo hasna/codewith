@@ -199,6 +199,7 @@ use uuid::Uuid;
 mod active_session_actions;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_threads;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;

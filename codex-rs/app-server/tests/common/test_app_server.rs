@@ -1344,8 +1344,8 @@ impl TestAppServer {
     ///
     /// In rare races, the turn can also fail or complete on its own after we send
     /// `turn/interrupt` but before the server emits the interrupt response. The helper treats a
-    /// buffered matching `turn/completed` notification as sufficient terminal cleanup in that
-    /// case so teardown does not flap on timing.
+    /// matching `turn/completed` notification as sufficient terminal cleanup in that case so
+    /// teardown does not flap on timing.
     pub async fn interrupt_turn_and_wait_for_aborted(
         &mut self,
         thread_id: String,
@@ -1358,14 +1358,27 @@ impl TestAppServer {
                 turn_id: turn_id.clone(),
             })
             .await?;
-        match tokio::time::timeout(
-            read_timeout,
-            self.read_stream_until_response_message(RequestId::Integer(interrupt_request_id)),
-        )
+        match tokio::time::timeout(read_timeout, async {
+            self.read_stream_until_message(|message| {
+                Self::message_request_id(message) == Some(&RequestId::Integer(interrupt_request_id))
+            })
+            .await
+        })
         .await
         {
-            Ok(result) => {
-                result.with_context(|| "failed while waiting for turn interrupt response")?;
+            Ok(Ok(JSONRPCMessage::Response(_))) => {}
+            Ok(Ok(JSONRPCMessage::Error(err)))
+                if err.error.message.contains("no active turn to interrupt")
+                    && self.pending_turn_completed_notification(&thread_id, &turn_id) =>
+            {
+                return Ok(());
+            }
+            Ok(Ok(message)) => {
+                anyhow::bail!("expected turn interrupt response, got {message:?}");
+            }
+            Ok(Err(err)) => {
+                return Err(err)
+                    .with_context(|| "failed while waiting for turn interrupt response");
             }
             Err(err) => {
                 if self.pending_turn_completed_notification(&thread_id, &turn_id) {

@@ -359,21 +359,21 @@ mod tests {
 
         assert_eq!(paste_burst.enabled, true);
         assert_eq!(
-            paste_burst.value_for_enabled(false),
+            paste_burst.value_for_enabled(/*enabled*/ false),
             serde_json::json!(true)
         );
         assert_eq!(unstable_warnings.enabled, true);
         assert_eq!(
-            unstable_warnings.value_for_enabled(false),
+            unstable_warnings.value_for_enabled(/*enabled*/ false),
             serde_json::json!(true)
         );
         assert_eq!(automated_goal_plans.enabled, false);
         assert_eq!(
-            automated_goal_plans.value_for_enabled(true),
+            automated_goal_plans.value_for_enabled(/*enabled*/ true),
             serde_json::json!("ready-only")
         );
         assert_eq!(
-            automated_goal_plans.value_for_enabled(false),
+            automated_goal_plans.value_for_enabled(/*enabled*/ false),
             serde_json::json!("off")
         );
     }

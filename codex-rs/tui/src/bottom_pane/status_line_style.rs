@@ -356,7 +356,7 @@ mod tests {
 
         assert_eq!(
             soften_status_line_color(color),
-            soften_status_line_rgb_color(0, 255, 128)
+            soften_status_line_rgb_color(/*r*/ 0, /*g*/ 255, /*b*/ 128)
         );
     }
 

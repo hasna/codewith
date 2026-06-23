@@ -172,7 +172,7 @@ impl ThreadGoalRequestProcessor {
             self.emit_thread_goal_plan_snapshot_updated_ordered(
                 thread_id,
                 plan_update.snapshot,
-                None,
+                /*listener_command_tx*/ None,
             )
             .await;
             if let Some(activated_goal) = plan_update.activated_goal {
@@ -555,7 +555,9 @@ pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> Threa
     }
 }
 
-fn goal_auto_execute_from_config(config: &Config) -> codex_state::ThreadGoalPlanAutoExecute {
+pub(super) fn goal_auto_execute_from_config(
+    config: &Config,
+) -> codex_state::ThreadGoalPlanAutoExecute {
     match config.goals.auto_execute {
         codex_core::config::GoalAutoExecuteMode::Off => codex_state::ThreadGoalPlanAutoExecute::Off,
         codex_core::config::GoalAutoExecuteMode::ReadyOnly => {

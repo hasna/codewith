@@ -186,7 +186,8 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         AgentRunStatus::Completed
     );
 
-    let first_events_page = agent_events_page(&mut restarted, &agent_id, None, Some(1)).await?;
+    let first_events_page =
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(1)).await?;
     assert_eq!(first_events_page.data.len(), 1);
     assert_eq!(first_events_page.data[0].event_type, "agent.started");
     assert_eq!(first_events_page.next_cursor, Some("event:1".to_string()));
@@ -204,7 +205,8 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         "agent.workerStarting"
     );
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
-    let all_events = agent_events_page(&mut restarted, &agent_id, None, Some(20)).await?;
+    let all_events =
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
     let event_types = all_events
         .data
         .iter()
@@ -245,7 +247,13 @@ async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
     let state_db = init_state_db(codex_home.path()).await?;
     for index in 0..501 {
         let agent_id = format!("paged-run-{index:03}");
-        seed_queued_agent_run(state_db.as_ref(), agent_id.as_str(), None, "paged run").await?;
+        seed_queued_agent_run(
+            state_db.as_ref(),
+            agent_id.as_str(),
+            /*idempotency_key*/ None,
+            "paged run",
+        )
+        .await?;
         state_db
             .update_background_agent_run_status(
                 agent_id.as_str(),
@@ -484,7 +492,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "picked up by periodic supervisor",
     )
     .await?;
@@ -523,7 +531,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     assert_eq!(agent.agent_id, agent_id);
     assert!(agent.thread_id.is_some());
 
-    let events = agent_events_page(&mut mcp, agent_id.as_str(), None, Some(20)).await?;
+    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(20)).await?;
     let event_types = events
         .data
         .iter()
@@ -548,7 +556,7 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "wait for approval",
     )
     .await?;
@@ -794,7 +802,7 @@ async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "delete then stop",
     )
     .await?;
@@ -850,7 +858,7 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "wait for approval",
     )
     .await?;
@@ -1620,7 +1628,7 @@ async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<(
     seed_queued_agent_run(
         state_db.as_ref(),
         "agent-run-cleanup-guard",
-        None,
+        /*idempotency_key*/ None,
         "guard nonterminal owner cleanup",
     )
     .await?;
@@ -1979,7 +1987,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "later work\n",
-        std::fs::read_to_string(repo_path.join("later.txt"))?
+        std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
     );
 
     let apply_again_error = raw_request_error(
@@ -2027,7 +2035,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
     seed_queued_agent_run(
         state_db.as_ref(),
         "agent-run-attach",
-        None,
+        /*idempotency_key*/ None,
         "attach this agent to a worktree",
     )
     .await?;
@@ -2368,7 +2376,7 @@ async fn create_background_agent_git_worktree_lease(
     seed_queued_agent_run(
         state_db,
         agent_id,
-        None,
+        /*idempotency_key*/ None,
         "release a leased background-agent worktree",
     )
     .await?;

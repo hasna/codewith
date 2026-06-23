@@ -845,7 +845,7 @@ pub(crate) fn goal_response_with_plan(
         activated_goal,
         goal_plans,
         completion_budget_report,
-        None,
+        /*goal_plan_completion_report*/ None,
     )
 }
 
@@ -862,7 +862,7 @@ pub(crate) fn goal_response_with_plan_and_report(
         goal_plans,
         completion_budget_report,
         goal_plan_completion_report,
-        None,
+        /*context_lifecycle_report*/ None,
     )
 }
 

@@ -7,22 +7,19 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ANTHROPIC_BASE_URL;
-use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
+use codex_model_provider_info::OPENAI_API_BASE_URL;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_BASE_URL;
-use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::QWEN_BASE_URL;
-use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::XAI_BASE_URL;
-use codex_model_provider_info::XAI_PROVIDER_ID;
 use codex_model_provider_info::XIAOMI_BASE_URL;
-use codex_model_provider_info::XIAOMI_PROVIDER_ID;
 use codex_model_provider_info::ZAI_BASE_URL;
-use codex_model_provider_info::ZAI_PROVIDER_ID;
+use codex_model_provider_info::provider_base_url_is_loopback;
+use codex_model_provider_info::provider_base_url_matches;
 use codex_models_manager::manager::BundledModelCatalog;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
@@ -501,21 +498,26 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        let web_search = if self.provider_id == OPENAI_PROVIDER_ID
-            || (self.info.requires_openai_auth && self.info.is_openai())
+        let openai_base_url_is_trusted = self.info.base_url.as_deref().is_none_or(|base_url| {
+            provider_base_url_matches(base_url, OPENAI_API_BASE_URL)
+                || provider_base_url_is_loopback(base_url)
+        });
+        let web_search = if (self.provider_id == OPENAI_PROVIDER_ID
+            || (self.info.requires_openai_auth && self.info.is_openai()))
+            && openai_base_url_is_trusted
         {
             HostedWebSearchProvider::OpenAiResponses
-        } else if self.matches_provider(ANTHROPIC_PROVIDER_ID, ANTHROPIC_BASE_URL) {
+        } else if self.matches_provider(ANTHROPIC_BASE_URL) {
             HostedWebSearchProvider::Anthropic
-        } else if self.matches_provider(OPENROUTER_PROVIDER_ID, OPENROUTER_BASE_URL) {
+        } else if self.matches_provider(OPENROUTER_BASE_URL) {
             HostedWebSearchProvider::OpenRouter
-        } else if self.matches_provider(XAI_PROVIDER_ID, XAI_BASE_URL) {
+        } else if self.matches_provider(XAI_BASE_URL) {
             HostedWebSearchProvider::Xai
-        } else if self.matches_provider(XIAOMI_PROVIDER_ID, XIAOMI_BASE_URL) {
+        } else if self.matches_provider(XIAOMI_BASE_URL) {
             HostedWebSearchProvider::Xiaomi
-        } else if self.matches_provider(QWEN_PROVIDER_ID, QWEN_BASE_URL) {
+        } else if self.matches_provider(QWEN_BASE_URL) {
             HostedWebSearchProvider::Qwen
-        } else if self.matches_provider(ZAI_PROVIDER_ID, ZAI_BASE_URL) {
+        } else if self.matches_provider(ZAI_BASE_URL) {
             HostedWebSearchProvider::Zai
         } else {
             HostedWebSearchProvider::Disabled
@@ -639,17 +641,13 @@ impl ModelProvider for ConfiguredModelProvider {
 }
 
 impl ConfiguredModelProvider {
-    fn matches_provider(&self, provider_id: &str, base_url: &str) -> bool {
-        self.provider_id == provider_id
-            || self
-                .info
-                .base_url
-                .as_deref()
-                .is_some_and(|configured_base_url| {
-                    configured_base_url
-                        .to_ascii_lowercase()
-                        .contains(&base_url.to_ascii_lowercase())
-                })
+    fn matches_provider(&self, base_url: &str) -> bool {
+        self.info
+            .base_url
+            .as_deref()
+            .is_some_and(|configured_base_url| {
+                provider_base_url_matches(configured_base_url, base_url)
+            })
     }
 }
 
@@ -657,10 +655,15 @@ impl ConfiguredModelProvider {
 mod tests {
     use std::num::NonZeroU64;
 
+    use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
     use codex_model_provider_info::GOOGLE_PROVIDER_ID;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+    use codex_model_provider_info::QWEN_PROVIDER_ID;
     use codex_model_provider_info::WireApi;
+    use codex_model_provider_info::XAI_PROVIDER_ID;
+    use codex_model_provider_info::XIAOMI_PROVIDER_ID;
+    use codex_model_provider_info::ZAI_PROVIDER_ID;
     use codex_models_manager::manager::RefreshStrategy;
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use codex_protocol::openai_models::ModelInfo;
@@ -764,6 +767,42 @@ mod tests {
     }
 
     #[test]
+    fn openai_provider_with_untrusted_base_url_disables_openai_hosted_capabilities() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(Some(
+                "https://openai-mirror.example/v1".to_string(),
+            )),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: HostedWebSearchProvider::Disabled,
+            }
+        );
+    }
+
+    #[test]
+    fn openai_provider_with_loopback_base_url_keeps_openai_hosted_capabilities() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(Some("http://127.0.0.1:1234/v1".to_string())),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: true,
+                web_search: HostedWebSearchProvider::OpenAiResponses,
+            }
+        );
+    }
+
+    #[test]
     fn custom_provider_disables_hosted_web_search_by_default() {
         let provider = create_model_provider(
             ModelProviderInfo {
@@ -850,6 +889,42 @@ mod tests {
 
             assert_eq!(provider.capabilities().web_search, expected_web_search);
         }
+    }
+
+    #[test]
+    fn built_in_provider_id_with_untrusted_base_url_disables_hosted_web_search_capabilities() {
+        let provider = create_model_provider_with_id(
+            OPENROUTER_PROVIDER_ID,
+            ModelProviderInfo {
+                base_url: Some("https://openrouter-mirror.example/api/v1".to_string()),
+                ..ModelProviderInfo::create_openrouter_provider()
+            },
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities().web_search,
+            HostedWebSearchProvider::Disabled
+        );
+    }
+
+    #[test]
+    fn custom_provider_with_trusted_base_url_enables_matching_hosted_web_search_capability() {
+        let provider = create_model_provider_with_id(
+            "openrouter-corp",
+            ModelProviderInfo {
+                name: "OpenRouter Corp".to_string(),
+                base_url: Some(format!("{OPENROUTER_BASE_URL}/")),
+                wire_api: WireApi::Responses,
+                ..Default::default()
+            },
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities().web_search,
+            HostedWebSearchProvider::OpenRouter
+        );
     }
 
     #[test]

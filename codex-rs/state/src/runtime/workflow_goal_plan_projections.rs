@@ -1004,7 +1004,7 @@ WHERE run_id = ? AND step_id = 'adversarial_review'
                 thread_id,
                 "Manual active goal must stay current.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("manual goal should create");

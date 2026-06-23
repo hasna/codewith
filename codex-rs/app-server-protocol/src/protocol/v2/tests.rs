@@ -194,6 +194,83 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 }
 
 #[test]
+fn thread_workflow_run_snapshot_round_trips_nullable_numbers_and_cancel_status() {
+    let snapshot = ThreadWorkflowRunSnapshot {
+        run: ThreadWorkflowRun {
+            thread_id: Some("thr_123".to_string()),
+            run_id: "run_123".to_string(),
+            workflow_record_id: "workflow_123".to_string(),
+            spec_workflow_id: "wf_123".to_string(),
+            schema_version: "workflow.codex.codewith/v0".to_string(),
+            source_yaml_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            status: ThreadWorkflowRunStatus::CancelRequested,
+            status_reason: Some("stop this workflow".to_string()),
+            reason_code: None,
+            generation: 1,
+            pending_step_count: 0,
+            ready_step_count: 0,
+            active_step_count: 0,
+            waiting_verifier_step_count: 0,
+            blocked_step_count: 0,
+            failed_step_count: 0,
+            succeeded_step_count: 0,
+            skipped_step_count: 1,
+            verifier_count: 1,
+            event_count: 0,
+            created_at: 1_776_272_400,
+            updated_at: 1_776_272_401,
+            started_at: None,
+            completed_at: None,
+        },
+        steps: vec![ThreadWorkflowRunStep {
+            step_run_id: "step_run_123".to_string(),
+            step_id: "step_123".to_string(),
+            sequence: 1,
+            title: "Review workflow".to_string(),
+            agent_id: "agent_123".to_string(),
+            status: ThreadWorkflowRunStepStatus::Skipped,
+            status_reason: None,
+            reason_code: None,
+            depends_on: Vec::new(),
+            background_agent_run_id: None,
+            created_at: 1_776_272_400,
+            updated_at: 1_776_272_401,
+            started_at: None,
+            completed_at: None,
+        }],
+        verifiers: vec![ThreadWorkflowRunStepVerifier {
+            verifier_run_id: "verifier_run_123".to_string(),
+            step_id: "step_123".to_string(),
+            verifier_id: "verifier_123".to_string(),
+            verifier_type: "run_command".to_string(),
+            status: ThreadWorkflowRunStepVerifierStatus::Skipped,
+            status_reason: None,
+            reason_code: None,
+            attempt_count: 0,
+            max_attempts: None,
+            created_at: 1_776_272_400,
+            updated_at: 1_776_272_401,
+            completed_at: None,
+        }],
+        events: Vec::new(),
+    };
+
+    let value = serde_json::to_value(&snapshot).expect("serialize workflow run snapshot");
+    assert_eq!(value["run"]["status"], json!("cancelRequested"));
+    assert_eq!(value["run"]["startedAt"], json!(null));
+    assert_eq!(value["run"]["completedAt"], json!(null));
+    assert_eq!(value["steps"][0]["startedAt"], json!(null));
+    assert_eq!(value["steps"][0]["completedAt"], json!(null));
+    assert_eq!(value["verifiers"][0]["maxAttempts"], json!(null));
+    assert_eq!(value["verifiers"][0]["completedAt"], json!(null));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowRunSnapshot>(value)
+        .expect("deserialize workflow run snapshot");
+    assert_eq!(decoded, snapshot);
+}
+
+#[test]
 fn thread_turns_items_list_round_trips() {
     let params = ThreadTurnsItemsListParams {
         thread_id: "thr_123".to_string(),
@@ -3712,6 +3789,27 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn thread_start_params_accept_parent_thread_id_for_subagents() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "threadSource": "subagent",
+        "parentThreadId": "00000000-0000-0000-0000-000000000123",
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+    assert_eq!(
+        params.parent_thread_id,
+        Some("00000000-0000-0000-0000-000000000123".to_string())
+    );
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(
+        serialized.get("parentThreadId").and_then(JsonValue::as_str),
+        Some("00000000-0000-0000-0000-000000000123")
+    );
 }
 
 #[test]

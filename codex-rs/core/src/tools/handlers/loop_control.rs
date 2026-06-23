@@ -847,7 +847,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Interval {
@@ -982,9 +982,14 @@ mod tests {
             .await
             .expect("second run should fail");
 
-        let response = manage_loop(runtime, thread_id, None, loop_args(LoopAction::List))
-            .await
-            .expect("loop list should succeed");
+        let response = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            loop_args(LoopAction::List),
+        )
+        .await
+        .expect("loop list should succeed");
 
         assert_eq!(response.schedules.len(), 1);
         assert_eq!(
@@ -1013,7 +1018,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Cron {
@@ -1070,7 +1075,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Start)
             },
@@ -1101,7 +1106,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask once".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Once),
@@ -1138,7 +1143,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Stop)
             },
@@ -1219,7 +1224,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(first.schedule_id.clone()),
                 ..loop_args(LoopAction::Clear)
@@ -1297,7 +1302,7 @@ mod tests {
                 &claim.run.run_id,
                 "lease-fail",
                 at(/*seconds*/ 1_700_000_310),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await
@@ -1307,7 +1312,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(schedule.schedule_id.clone()),
                 ..loop_args(LoopAction::Resume)
@@ -1366,7 +1371,7 @@ mod tests {
         let error = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(schedule.schedule_id),
                 ..loop_args(LoopAction::Resume)
@@ -1401,7 +1406,7 @@ mod tests {
         let err = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(other_schedule.schedule_id.clone()),
                 ..loop_args(LoopAction::Stop)
@@ -1445,7 +1450,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Clear)
             },

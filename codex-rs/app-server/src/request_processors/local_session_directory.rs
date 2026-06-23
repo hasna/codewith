@@ -370,7 +370,7 @@ mod tests {
         };
 
         assert_eq!(
-            local_session_status(&id, None, &HashSet::new()),
+            local_session_status(&id, /*live_peer*/ None, &HashSet::new()),
             LocalSessionStatus::NotLoaded
         );
         assert_eq!(
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(
             local_session_status(
                 &id,
-                Some(&live_peer(ThreadStatus::Idle, None)),
+                Some(&live_peer(ThreadStatus::Idle, /*active_peer*/ None)),
                 &HashSet::new()
             ),
             LocalSessionStatus::LoadedWithoutActivePeer
@@ -413,7 +413,7 @@ mod tests {
 
         let pending_thread_unloads = HashSet::from([thread_id]);
         assert_eq!(
-            local_session_status(&id, None, &pending_thread_unloads),
+            local_session_status(&id, /*live_peer*/ None, &pending_thread_unloads),
             LocalSessionStatus::Closing
         );
     }

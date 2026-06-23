@@ -2401,8 +2401,14 @@ WHERE plan_id = ? AND key = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("claim-marker");
-        let (run, _) =
-            create_projected_run(&runtime, thread_id, "wf_claim_fence", &marker, false).await;
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_claim_fence",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
 
         let claimed_a = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
@@ -2458,8 +2464,14 @@ WHERE plan_id = ? AND key = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("verifier-command-ran");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_verifier_block", &marker, true).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_verifier_block",
+            &marker,
+            /*include_second*/ true,
+        )
+        .await;
         let claim = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
@@ -3175,8 +3187,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("cancel-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_cancel_projection", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_cancel_projection",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         let raw_reason = "source_prompt: secret\ncommands:\n  - touch should-not-leak";
 
         let cancelled = runtime
@@ -3243,8 +3261,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("pause-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_pause_projection", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_pause_projection",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         let node_id = projection.snapshot.nodes[0].node_id.clone();
         let activation = runtime
             .thread_goals()
@@ -3370,8 +3394,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("terminal-cancel-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_terminal_cancel", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_terminal_cancel",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         sqlx::query(
             r#"
 UPDATE workflow_runs
@@ -3419,8 +3449,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("final-cancel-marker");
-        let (run, _) =
-            create_projected_run(&runtime, thread_id, "wf_cancel_finalize", &marker, false).await;
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_cancel_finalize",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         runtime
             .request_workflow_run_cancel(WorkflowRunCancelParams {
                 run_id: run.run.run_id.clone(),

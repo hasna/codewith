@@ -306,7 +306,8 @@ mod tests {
         let thread_id = ThreadId::default();
         let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
         thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx.clone());
-        let sink = app_server_extension_event_sink(outgoing, thread_state_manager, None);
+        let sink =
+            app_server_extension_event_sink(outgoing, thread_state_manager, /*state_db*/ None);
 
         for turn_id in ["turn-1", "turn-2"] {
             sink.emit(thread_goal_updated_event(thread_id, turn_id));
@@ -536,7 +537,11 @@ mod tests {
             outgoing_tx,
             AnalyticsEventsClient::disabled(),
         ));
-        let sink = app_server_extension_event_sink(outgoing, ThreadStateManager::new(), None);
+        let sink = app_server_extension_event_sink(
+            outgoing,
+            ThreadStateManager::new(),
+            /*state_db*/ None,
+        );
         let thread_id = ThreadId::default();
 
         sink.emit(Event {
