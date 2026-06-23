@@ -299,10 +299,14 @@ struct DesktopSettingsInfo: Hashable {
 struct ConfigRequirementsInfo: Hashable {
     var allowedApprovalPolicies: [String]?
     var allowedSandboxModes: [String]?
+    var allowedPermissionProfiles: [String]?
+    var defaultPermissions: String?
 
     init(from v: JSONValue) {
         allowedApprovalPolicies = Self.approvalPolicyArray(v["allowedApprovalPolicies"])
         allowedSandboxModes = Self.stringArray(v["allowedSandboxModes"])
+        allowedPermissionProfiles = Self.permissionProfileArray(v["allowedPermissionProfiles"])
+        defaultPermissions = v["defaultPermissions"]?.string
     }
 
     static func approvalPolicyArray(_ value: JSONValue?) -> [String]? {
@@ -319,6 +323,13 @@ struct ConfigRequirementsInfo: Hashable {
         return array.compactMap(\.string)
     }
 
+    static func permissionProfileArray(_ value: JSONValue?) -> [String]? {
+        guard let object = value?.object else { return nil }
+        return object.compactMap { key, enabled in
+            enabled.bool == false ? nil : key
+        }.sorted()
+    }
+
     func approvalOptions(defaults: [String]) -> [String] {
         allowedApprovalPolicies?.filter { defaults.contains($0) } ?? defaults
     }
@@ -329,6 +340,11 @@ struct ConfigRequirementsInfo: Hashable {
 
     func allowsSandbox(_ mode: String) -> Bool {
         allowedSandboxModes?.contains(mode) ?? true
+    }
+
+    func permissionProfileOptions(defaults: [String]) -> [String] {
+        guard let allowedPermissionProfiles else { return defaults }
+        return defaults.filter { allowedPermissionProfiles.contains($0) }
     }
 }
 

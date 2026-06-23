@@ -7,7 +7,21 @@ struct AppShell: View {
 
     var body: some View {
         Group {
-            if model.connection == .connected && !model.isSignedIn {
+            if model.connection == .connecting {
+                ConnectionStatusView(
+                    icon: "hourglass",
+                    title: "Connecting to CodeWith",
+                    message: "Starting the local app-server.",
+                    actionTitle: nil,
+                    action: nil)
+            } else if case .unavailable(let message) = model.connection {
+                ConnectionStatusView(
+                    icon: "exclamationmark.triangle",
+                    title: "CodeWith is unavailable",
+                    message: message,
+                    actionTitle: "Retry",
+                    action: { Task { await model.reconnectAppServer() } })
+            } else if model.connection == .connected && !model.isSignedIn {
                 LoginView(model: model)
             } else if model.showSettings {
                 SettingsShell(
@@ -138,5 +152,39 @@ struct AppShell: View {
         default:                SettingsGeneral(fullAccess: model.fullAccess, sandbox: model.configSandbox,
                                                 onToggleFullAccess: { model.setFullAccess(!model.fullAccess) })
         }
+    }
+}
+
+private struct ConnectionStatusView: View {
+    var icon: String
+    var title: String
+    var message: String
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(message)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .frame(height: 30)
+                    .background(Capsule().fill(Color(hex: 0x202020)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

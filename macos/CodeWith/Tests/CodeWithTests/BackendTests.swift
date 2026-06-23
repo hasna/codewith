@@ -448,6 +448,10 @@ final class AppServerRequestShapeTests: XCTestCase {
             ]))
     }
 
+    func testEmptyThreadSettingsUpdateResponseHasNoSettings() {
+        XCTAssertNil(ThreadSessionSettings(from: obj([:])))
+    }
+
     func testThreadSessionSettingsParseCamelAndSnakeCase() {
         XCTAssertEqual(
             ThreadSessionSettings(from: obj([
@@ -475,5 +479,22 @@ final class AppServerRequestShapeTests: XCTestCase {
             ]),
         ]))
         XCTAssertEqual(requirements.allowedApprovalPolicies, ["on-request", "granular"])
+    }
+
+    func testConfigRequirementsDecodesPermissionProfileConstraints() {
+        let requirements = ConfigRequirementsInfo(from: obj([
+            "allowedPermissionProfiles": obj([
+                ":read-only": .bool(true),
+                ":workspace": .bool(true),
+                ":danger-full-access": .bool(false),
+            ]),
+            "defaultPermissions": .string(":workspace"),
+        ]))
+
+        XCTAssertEqual(requirements.allowedPermissionProfiles, [":read-only", ":workspace"])
+        XCTAssertEqual(requirements.defaultPermissions, ":workspace")
+        XCTAssertEqual(
+            requirements.permissionProfileOptions(defaults: [":read-only", ":workspace", ":danger-full-access"]),
+            [":read-only", ":workspace"])
     }
 }

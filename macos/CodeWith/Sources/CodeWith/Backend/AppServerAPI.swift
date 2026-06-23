@@ -837,13 +837,19 @@ extension AppServerClient {
     }
 
     func listAuthProfiles() async throws -> [AuthProfileInfo] {
-        let r = try await request("authProfile/list", .object([:]), timeout: 20)
-        return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
+        await ProfileRunner.loadProfiles()
     }
 
     func switchAuthProfile(_ name: String) async throws -> AuthProfileInfo {
-        let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
-        return AuthProfileInfo(from: r["profile"] ?? r)
+        await ProfileRunner.switchProfile(name)
+        return AuthProfileInfo(name: name, email: "", provider: "", plan: "", active: true)
+    }
+
+    func listPermissionProfiles(cwd: String? = nil) async throws -> [String] {
+        var params: [String: JSONValue] = [:]
+        if let cwd, !cwd.isEmpty { params["cwd"] = .string(cwd) }
+        let r = try await request("permissionProfile/list", .object(params), timeout: 20)
+        return (r["data"]?.array ?? []).compactMap { $0["id"]?.string }
     }
 
     /// Read the current model + provider from config.
@@ -924,8 +930,8 @@ extension AppServerClient {
         permissions: String? = nil,
         authProfile: ThreadAuthProfileUpdate = .keep,
         personality: String? = nil
-    ) async throws -> ThreadSessionSettings? {
-        let r = try await request(
+    ) async throws {
+        _ = try await request(
             "thread/settings/update",
             Self.threadSettingsUpdateParams(
                 threadId: threadId,
@@ -936,7 +942,6 @@ extension AppServerClient {
                 authProfile: authProfile,
                 personality: personality),
             timeout: 15)
-        return ThreadSessionSettings(from: r)
     }
 
     func updateThreadPersonality(threadId: String, personality: String) async throws {

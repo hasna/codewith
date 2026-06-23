@@ -166,6 +166,31 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.activeMessages.first?.text, "right")
     }
 
+    func testOpeningDifferentThreadDetachesVisibleTurnState() {
+        let m = AppModel()
+        m.activeThreadId = "thread-a"
+        m.activeTurnThreadId = "thread-a"
+        m.activeTurnId = "turn-a"
+        m.turnInProgress = true
+
+        m.activeThreadId = "thread-b"
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testCommandOutputForPreviousTurnIgnoredAfterDetach() {
+        let m = AppModel()
+        m.activeThreadId = "thread-b"
+        m.activeTurnThreadId = "thread-a"
+
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
     func testPermissionsApprovalRequestQueuedAndResolved() {
         let m = AppModel()
         m.activeThreadId = "thread-a"

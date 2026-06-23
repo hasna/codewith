@@ -8,6 +8,7 @@ struct LoopsView: View {
     var onCreate: () -> Void = {}
     var onRunNow: (LoopInfo) -> Void = { _ in }
     var onDelete: (LoopInfo) -> Void = { _ in }
+    @State private var loopPendingDelete: LoopInfo?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +37,24 @@ struct LoopsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
+        .confirmationDialog(
+            "Delete loop?",
+            isPresented: Binding(
+                get: { loopPendingDelete != nil },
+                set: { if !$0 { loopPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(deleteButtonTitle, role: .destructive) {
+                if let loopPendingDelete {
+                    onDelete(loopPendingDelete)
+                }
+                loopPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { loopPendingDelete = nil }
+        } message: {
+            Text(loopPendingDelete?.title ?? "")
+        }
     }
 
     private var topBar: some View {
@@ -54,6 +73,11 @@ struct LoopsView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 22).frame(height: 40)
+    }
+
+    private var deleteButtonTitle: String {
+        guard let loopPendingDelete else { return "Delete" }
+        return "Delete \(loopPendingDelete.kind == .schedule ? "schedule" : "monitor")"
     }
 
     private func loopRow(_ loop: LoopInfo) -> some View {
@@ -88,7 +112,7 @@ struct LoopsView: View {
             Button(loop.toggleLabel) { onToggle(loop) }
                 .disabled(!loop.canToggle)
             Divider()
-            Button("Delete") { onDelete(loop) }
+            Button("Delete", role: .destructive) { loopPendingDelete = loop }
         }
     }
 }

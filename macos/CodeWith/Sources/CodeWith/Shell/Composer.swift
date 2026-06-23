@@ -15,6 +15,7 @@ struct Composer: View {
     var modelLabel: String = "gpt-5.5"
     var effortLabel: String = "Low"
     @Environment(\.snapshotMode) private var snapshot
+    @State private var pendingFullAccessProfile: String?
 
     /// Short model label to match the reference pill (e.g. "gpt-5.5-codex" → "5.5-codex").
     private var shortModel: String {
@@ -107,13 +108,35 @@ struct Composer: View {
                 .fill(Theme.fieldFill)
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
+        .confirmationDialog(
+            "Allow full access?",
+            isPresented: Binding(
+                get: { pendingFullAccessProfile != nil },
+                set: { if !$0 { pendingFullAccessProfile = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Allow full access", role: .destructive) {
+                if let profile = pendingFullAccessProfile {
+                    model?.setPermissionProfile(profile)
+                }
+                pendingFullAccessProfile = nil
+            }
+            Button("Cancel", role: .cancel) { pendingFullAccessProfile = nil }
+        } message: {
+            Text("This lets CodeWith edit any file and use network without approval for this session.")
+        }
     }
 
     private func permissionMenu(_ model: AppModel) -> some View {
         Menu {
             ForEach(model.availablePermissionProfiles, id: \.self) { profile in
                 Button(AppModel.displayPermissionProfile(profile)) {
-                    model.setPermissionProfile(profile)
+                    if profile == ":danger-full-access" && model.permissionProfileId != ":danger-full-access" {
+                        pendingFullAccessProfile = profile
+                    } else {
+                        model.setPermissionProfile(profile)
+                    }
                 }
             }
         } label: {

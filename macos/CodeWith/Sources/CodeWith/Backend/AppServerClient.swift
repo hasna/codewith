@@ -88,6 +88,8 @@ final class AppServerClient: @unchecked Sendable {
     // Rebuilt on each start() so reconnect works.
     private var process: Process?
     private var stdinHandle: FileHandle?
+    private var stdoutHandle: FileHandle?
+    private var processGeneration = 0
 
     private var nextId = 0
     private var pending: [Int: (Result<JSONValue, Error>) -> Void] = [:]
@@ -132,23 +134,30 @@ final class AppServerClient: @unchecked Sendable {
         env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin"
         proc.environment = env
 
+        lock.lock()
+        processGeneration += 1
+        let generation = processGeneration
+        lock.unlock()
+
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             guard let self else { return }
             let data = h.availableData
-            if data.isEmpty { self.parseQueue.async { self.handleEOF() } }
+            if data.isEmpty { self.parseQueue.async { self.handleEOF(generation: generation) } }
             else { self.parseQueue.async { self.ingest(data) } }
         }
         proc.terminationHandler = { [weak self] p in
             guard let self else { return }
-            self.markStopped()
-            self.failAllPending(AppServerError.notRunning)
-            self.onExit?(p.terminationStatus)
+            if self.markStopped(generation: generation) {
+                self.failAllPending(AppServerError.notRunning)
+                self.onExit?(p.terminationStatus)
+            }
         }
 
         try proc.run()
         lock.lock()
         process = proc
         stdinHandle = inPipe.fileHandleForWriting
+        stdoutHandle = outPipe.fileHandleForReading
         running = true
         buffer.removeAll(keepingCapacity: false)
         lock.unlock()
@@ -158,22 +167,43 @@ final class AppServerClient: @unchecked Sendable {
         lock.lock()
         let proc = process
         let sin = stdinHandle
+        let sout = stdoutHandle
+        processGeneration += 1
         running = false
         process = nil
         stdinHandle = nil
+        stdoutHandle = nil
         lock.unlock()
+        sout?.readabilityHandler = nil
         try? sin?.close()
         if proc?.isRunning == true { proc?.terminate() }
         failAllPending(AppServerError.notRunning)
     }
 
-    private func markStopped() {
-        lock.lock(); running = false; process = nil; stdinHandle = nil; lock.unlock()
+    private func markStopped(generation: Int) -> Bool {
+        lock.lock()
+        guard generation == processGeneration else {
+            lock.unlock()
+            return false
+        }
+        running = false
+        process = nil
+        stdinHandle = nil
+        stdoutHandle?.readabilityHandler = nil
+        stdoutHandle = nil
+        lock.unlock()
+        return true
     }
 
-    private func handleEOF() {
-        lock.lock(); let r = running; lock.unlock()
-        if r { markStopped(); failAllPending(AppServerError.notRunning) }
+    private func handleEOF(generation: Int) {
+        lock.lock()
+        let shouldStop = running && generation == processGeneration
+        lock.unlock()
+        if shouldStop {
+            if markStopped(generation: generation) {
+                failAllPending(AppServerError.notRunning)
+            }
+        }
     }
 
     // MARK: Ingest (parseQueue only)

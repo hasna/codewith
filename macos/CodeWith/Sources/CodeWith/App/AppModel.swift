@@ -179,7 +179,7 @@ final class AppModel {
     var sessionAuthProfileName: String? = nil
     var availableModels = ["gpt-5.5-codex", "gpt-5.5", "o3", "gpt-4.1"]
     var availableProviders = ["openai", "azure", "openrouter", "ollama"]
-    let availablePermissionProfiles = [":read-only", ":workspace", ":danger-full-access"]
+    var availablePermissionProfiles = [":read-only", ":workspace", ":danger-full-access"]
     let availableEfforts = ["Low", "Medium", "High", "Extra High"]
 
     // Active chat
@@ -247,9 +247,17 @@ final class AppModel {
         streamingAssistantIndex = nil
         sessionAuthProfileName = nil
         toolOutputMessageIndexes.removeAll()
-        clearPendingServerInteractions()
         cancelTurnWatchdog()
         if clearProject { currentProjectPath = nil }
+    }
+
+    private func detachVisibleTurnState() {
+        activeTurnId = nil
+        activeTurnThreadId = nil
+        turnInProgress = false
+        streamingAssistantIndex = nil
+        toolOutputMessageIndexes.removeAll()
+        cancelTurnWatchdog()
     }
 
     private func beginServerRequestResponse(to requestId: JSONValue) -> Bool {
@@ -697,6 +705,7 @@ final class AppModel {
         remoteSearchThreads = []
         if previousMachineId != selectedMachineId {
             clearActiveSessionState(clearComposer: true, clearProject: false)
+            clearPendingServerInteractions()
         } else {
             clearActiveThreadIfOutsideMachineScope()
         }
@@ -793,11 +802,14 @@ final class AppModel {
             activeGoalPlans = []
             return
         }
+        let requestedThreadId = activeThreadId
         do {
-            let state = try await client.listThreadGoalState(threadId: activeThreadId)
+            let state = try await client.listThreadGoalState(threadId: requestedThreadId)
+            guard self.activeThreadId == requestedThreadId else { return }
             activeGoal = state.goal
             activeGoalPlans = state.goalPlans
         } catch {
+            guard self.activeThreadId == requestedThreadId else { return }
             activeGoal = nil
             activeGoalPlans = []
         }
@@ -828,16 +840,18 @@ final class AppModel {
     func loadConfig() async {
         do {
             let cfg = try await client.readFullConfig()
-            if let configModel = cfg.model { model = configModel }
-            if let configProvider = cfg.provider { provider = configProvider }
-            if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
+            if activeThreadId == nil {
+                if let configModel = cfg.model { model = configModel }
+                if let configProvider = cfg.provider { provider = configProvider }
+                if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
+                fullAccess = cfg.sandbox == "danger-full-access"
+                permissionProfileId = Self.permissionProfileId(forSandbox: cfg.sandbox)
+            }
             configApproval = cfg.approval
             configSandbox = cfg.sandbox
             customInstructions = cfg.developerInstructions ?? ""
             desktopSettings = cfg.desktop
             publishMenuBarPreference(cfg.desktop.showMenuBar)
-            fullAccess = cfg.sandbox == "danger-full-access"
-            permissionProfileId = Self.permissionProfileId(forSandbox: cfg.sandbox)
             if let sandbox = cfg.sandbox, sandbox != "danger-full-access" {
                 previousNonFullSandbox = sandbox
             }
@@ -850,6 +864,7 @@ final class AppModel {
         guard connection == .connected else { return }
         do {
             configRequirements = try await client.readConfigRequirements()
+            refreshAvailablePermissionProfiles()
         } catch {
             configError = error.localizedDescription
         }
@@ -869,10 +884,33 @@ final class AppModel {
         configRequirements?.allowsSandbox("danger-full-access") ?? true
     }
 
+    private func refreshAvailablePermissionProfiles(serverProfiles: [String]? = nil) {
+        let defaults = [":read-only", ":workspace", ":danger-full-access"]
+        var profiles = serverProfiles?.isEmpty == false ? serverProfiles! : defaults
+        if let allowed = configRequirements?.allowedPermissionProfiles {
+            profiles = profiles.filter { allowed.contains($0) }
+        }
+        if profiles.isEmpty {
+            profiles = configRequirements?.permissionProfileOptions(defaults: defaults) ?? defaults
+        }
+        availablePermissionProfiles = profiles
+        if !profiles.contains(permissionProfileId) {
+            permissionProfileId = configRequirements?.defaultPermissions ?? profiles.first ?? ":workspace"
+            fullAccess = permissionProfileId == ":danger-full-access"
+        }
+    }
+
     func loadProfiles() async {
         guard connection == .connected else { return }
-        if let profiles = try? await client.listAuthProfiles() {
-            authProfiles = profiles
+        async let authProfileResult = try? client.listAuthProfiles()
+        async let permissionProfileResult = try? client.listPermissionProfiles(cwd: currentProjectPath)
+        let loadedAuthProfiles = await authProfileResult
+        let loadedPermissionProfiles = await permissionProfileResult
+        if let loadedAuthProfiles {
+            authProfiles = loadedAuthProfiles
+        }
+        if let loadedPermissionProfiles {
+            refreshAvailablePermissionProfiles(serverProfiles: loadedPermissionProfiles)
         }
     }
 
@@ -1027,7 +1065,7 @@ final class AppModel {
         let requestedThreadId = t.id
         activeThreadId = t.id
         if activeTurnThreadId != t.id {
-            activeTurnId = nil
+            detachVisibleTurnState()
         }
         activeMessages = []
         toolOutputMessageIndexes.removeAll()
@@ -1041,17 +1079,19 @@ final class AppModel {
         // plain read if resume isn't available. `await` can't live in a `??`
         // autoclosure, so branch explicitly.
         let messages: [ChatMessage]
+        let settings: ThreadSessionSettings?
         if let resumed = try? await client.resumeThread(id: t.id) {
             messages = resumed.messages
-            applyThreadSettings(resumed.settings)
+            settings = resumed.settings
             resumedThreadIds.insert(t.id)
         } else {
             let read = try? await client.readThread(id: t.id)
             messages = read?.messages ?? []
-            applyThreadSettings(read?.settings)
+            settings = read?.settings
             resumedThreadIds.remove(t.id)
         }
         guard activeThreadId == requestedThreadId else { return }
+        applyThreadSettings(settings)
         activeMessages = messages
         await loadActiveGoal()
         await loadActivePeers()
@@ -1466,7 +1506,7 @@ final class AppModel {
 
     private func notificationBelongsToActiveTurn(_ params: JSONValue) -> Bool {
         guard let threadId = Self.notificationThreadId(params) else { return true }
-        return threadId == activeThreadId || threadId == activeTurnThreadId
+        return threadId == activeThreadId && (activeTurnThreadId == nil || activeTurnThreadId == threadId)
     }
 
     private func notificationIsForActiveThread(_ params: JSONValue) -> Bool {
@@ -2406,25 +2446,13 @@ final class AppModel {
     ) async -> Bool {
         configError = nil
         do {
-            let applied = try await client.updateThreadSettings(
+            try await client.updateThreadSettings(
                 threadId: threadId,
                 model: model,
                 provider: provider,
                 effort: effort,
                 permissions: permissions,
                 authProfile: authProfile)
-            if let permissions, applied?.permissionProfileId != permissions {
-                configError = "Thread settings update was not confirmed by the app-server."
-                return false
-            }
-            if case .set(let name) = authProfile, applied?.authProfile != name {
-                configError = "Thread settings update was not confirmed by the app-server."
-                return false
-            }
-            if case .clearDefault = authProfile, applied == nil {
-                configError = "Thread settings update was not confirmed by the app-server."
-                return false
-            }
             return true
         } catch {
             configError = error.localizedDescription
