@@ -504,6 +504,25 @@ extension AppServerClient {
         return goals
     }
 
+    func listThreadGoalStates(threadIds: [String]) async throws -> [ThreadGoalState] {
+        var states: [ThreadGoalState] = []
+        var firstError: Error?
+        var successCount = 0
+        for threadId in threadIds {
+            do {
+                let state = try await listThreadGoalState(threadId: threadId)
+                if state.goal != nil || !state.goalPlans.isEmpty {
+                    states.append(state)
+                }
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if successCount == 0, let firstError { throw firstError }
+        return states
+    }
+
     func clearThreadGoal(threadId: String) async -> Bool {
         let r = try? await request("thread/goal/clear", .object(["threadId": .string(threadId)]), timeout: 15)
         return r?["cleared"]?.bool ?? false
@@ -556,6 +575,79 @@ extension AppServerClient {
             "threadId": .string(threadId),
             "nodeId": .string(nodeId),
         ])
+    }
+
+    // MARK: Workflows
+
+    func listWorkflows(threadIds: [String]) async throws -> [WorkflowInfo] {
+        var workflows: [WorkflowInfo] = []
+        var firstError: Error?
+        var successCount = 0
+        for threadId in threadIds {
+            do {
+                workflows.append(contentsOf: try await listThreadWorkflows(threadId: threadId))
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+
+            do {
+                workflows.append(contentsOf: try await listThreadWorkflowRuns(threadId: threadId))
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if successCount == 0, let firstError { throw firstError }
+        return workflows.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func listThreadWorkflows(threadId: String) async throws -> [WorkflowInfo] {
+        var items: [WorkflowInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/workflow/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("thread/workflow/list", .object(params), timeout: 15)
+            items.append(contentsOf: (r["data"]?.array ?? []).map {
+                WorkflowInfo(workflow: $0, fallbackThreadId: threadId)
+            })
+            cursor = r["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/workflow/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return items
+    }
+
+    private func listThreadWorkflowRuns(threadId: String) async throws -> [WorkflowInfo] {
+        var items: [WorkflowInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/workflow/run/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("thread/workflow/run/list", .object(params), timeout: 15)
+            items.append(contentsOf: (r["data"]?.array ?? []).map {
+                WorkflowInfo(run: $0, fallbackThreadId: threadId)
+            })
+            cursor = r["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/workflow/run/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return items
     }
 
     // MARK: Active sessions
@@ -808,6 +900,8 @@ extension AppServerClient {
         model: String? = nil,
         provider: String? = nil,
         effort: String? = nil,
+        permissions: String? = nil,
+        authProfile: String? = nil,
         personality: String? = nil
     ) async throws {
         _ = try await request(
@@ -817,6 +911,8 @@ extension AppServerClient {
                 model: model,
                 provider: provider,
                 effort: effort,
+                permissions: permissions,
+                authProfile: authProfile,
                 personality: personality),
             timeout: 15)
     }
@@ -841,12 +937,16 @@ extension AppServerClient {
         model: String? = nil,
         provider: String? = nil,
         effort: String? = nil,
+        permissions: String? = nil,
+        authProfile: String? = nil,
         personality: String? = nil
     ) -> JSONValue {
         var params: [String: JSONValue] = ["threadId": .string(threadId)]
         if let model { params["model"] = .string(model) }
         if let provider { params["modelProvider"] = .string(provider) }
         if let effort { params["effort"] = .string(effort) }
+        if let permissions { params["permissions"] = .string(permissions) }
+        if let authProfile { params["authProfile"] = .string(authProfile) }
         if let personality { params["personality"] = .string(personality) }
         return .object(params)
     }

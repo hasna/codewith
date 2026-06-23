@@ -21,11 +21,13 @@ struct Sidebar: View {
     var onLoadMore: () -> Void = {}
 
     private let topItems: [SidebarItem] = [
+        .init(icon: "house", title: "Home"),
         .init(icon: "square.and.pencil", title: "New chat"),
         .init(icon: "magnifyingglass", title: "Search"),
         .init(icon: "square.grid.2x2", title: "Apps"),
         .init(icon: "arrow.trianglehead.2.clockwise.rotate.90", title: "Loops"),
-        .init(icon: "server.rack", title: "Machines"),
+        .init(icon: "target", title: "Goals"),
+        .init(icon: "point.3.connected.trianglepath.dotted", title: "Workflows"),
     ]
 
     var body: some View {
@@ -34,7 +36,22 @@ struct Sidebar: View {
             Color.clear.frame(height: 28)
 
             ScrollColumn(alignment: .leading, spacing: 1) {
+                HStack(spacing: 8) {
+                    BrandMark()
+                    Text("Codewith")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+
                 ForEach(topItems) { row(for: $0) }
+
+                if !model.machines.isEmpty {
+                    sectionHeader("Machine")
+                    machineSelector()
+                }
 
                 if !model.projects.isEmpty {
                     sectionHeader("Projects")
@@ -44,10 +61,10 @@ struct Sidebar: View {
                 }
 
                 sectionHeader("Chats")
-                if model.threads.isEmpty {
+                if model.machineScopedThreads.isEmpty {
                     emptyHint(model.connection == .connecting ? "Loading…" : "No sessions yet")
                 } else {
-                    ForEach(model.threads) { thread in
+                    ForEach(model.machineScopedThreads) { thread in
                         threadRow(thread)
                     }
                     if model.hasMoreThreads {
@@ -65,7 +82,6 @@ struct Sidebar: View {
             .padding(.horizontal, 8)
             .padding(.top, 2)
 
-            Divider().overlay(Theme.separator)
             row(for: .init(icon: "gearshape", title: "Settings"))
                 .padding(.horizontal, 8).padding(.vertical, 6)
         }
@@ -121,11 +137,39 @@ struct Sidebar: View {
         .buttonStyle(.plain)
     }
 
+    private func machineSelector() -> some View {
+        Menu {
+            ForEach(model.machines) { machine in
+                Button(machine.displayName) { model.selectMachine(machine) }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 16)
+                Text(model.currentMachineLabel)
+                    .font(Theme.sidebarItem)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     private func threadRow(_ thread: ThreadInfo) -> some View {
         let isSel = thread.id == model.activeThreadId
         return Button { onThread(thread) } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left").font(.system(size: 12.5)).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).frame(width: 16)
+            HStack(spacing: 6) {
                 Text(thread.name).font(Theme.sidebarItem).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
                 Spacer(minLength: 4)
                 Text(thread.ageLabel).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)

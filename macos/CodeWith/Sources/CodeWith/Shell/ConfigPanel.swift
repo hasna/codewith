@@ -20,9 +20,17 @@ struct ConfigPanel: View {
             Rectangle().fill(Theme.separator).frame(height: 1)
 
             ScrollColumn(alignment: .leading, spacing: 14) {
-                pickerRow("Model", value: model.model ?? "default", options: model.availableModels) { model.setModel($0) }
-                pickerRow("Gateway", value: model.provider ?? "openai", options: model.availableProviders) { model.setProvider($0) }
+                pickerRow("Model", value: model.model ?? "default", options: model.availableModels, display: AppModel.displayModel) { model.setModel($0) }
+                pickerRow("Gateway", value: model.provider ?? "openai", options: model.availableProviders, display: AppModel.displayProvider) { model.setProvider($0) }
                 pickerRow("Effort", value: model.effort, options: model.availableEfforts) { model.setEffort($0) }
+                pickerRow("Permissions", value: model.permissionProfileId, options: model.availablePermissionProfiles, display: AppModel.displayPermissionProfile) {
+                    model.setPermissionProfile($0)
+                }
+                if !model.authProfiles.isEmpty {
+                    pickerRow("Auth profile", value: activeAuthProfileName, options: model.authProfiles.map(\.name)) {
+                        model.setSessionAuthProfile($0)
+                    }
+                }
 
                 Rectangle().fill(Theme.separator).frame(height: 1).padding(.vertical, 2)
 
@@ -37,7 +45,7 @@ struct ConfigPanel: View {
 
             Spacer()
 
-            // Account footer — tap to manage profiles.
+            // Account footer: tap to manage profiles.
             Button {
                 model.showConfigPanel = false
                 model.open(.profiles, label: "Profiles")
@@ -64,16 +72,26 @@ struct ConfigPanel: View {
         .background(Theme.canvas)
     }
 
-    private func pickerRow(_ label: String, value: String, options: [String], onSelect: @escaping (String) -> Void) -> some View {
+    private var activeAuthProfileName: String {
+        model.authProfiles.first(where: { $0.active })?.name ?? model.authProfiles.first?.name ?? "Profile"
+    }
+
+    private func pickerRow(
+        _ label: String,
+        value: String,
+        options: [String],
+        display: @escaping (String) -> String = { $0 },
+        onSelect: @escaping (String) -> Void
+    ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
             Menu {
                 ForEach(options, id: \.self) { opt in
-                    Button(opt) { onSelect(opt) }
+                    Button(display(opt)) { onSelect(opt) }
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Text(value).font(.system(size: 12)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(display(value)).font(.system(size: 12)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                     Spacer()
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
                 }

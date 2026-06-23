@@ -196,13 +196,13 @@ final class AppModelTests: XCTestCase {
     }
     func testAddActionPlanMode() {
         let m = AppModel(); m.showAddMenu = true
-        m.handleAddAction("Plan mode")
+        m.handleAddAction(.planMode)
         XCTAssertTrue(m.planMode); XCTAssertFalse(m.showAddMenu)
     }
     func testAddActionGoalPrefixesOnce() {
         let m = AppModel(); m.composerText = "ship it"
-        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
-        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
+        m.handleAddAction(.goal); XCTAssertEqual(m.composerText, "Goal: ship it")
+        m.handleAddAction(.goal); XCTAssertEqual(m.composerText, "Goal: ship it")
     }
     func testGoalObjectiveStripsExistingPrefix() {
         XCTAssertEqual(AppModel.goalObjective(from: "Goal: ship it"), "ship it")
@@ -210,11 +210,13 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.goalObjective(from: "ship it"), "ship it")
         XCTAssertEqual(AppModel.goalObjective(from: "Goal:   "), "")
     }
-    func testAddActionAgentMention() {
-        let m = AppModel(); m.composerText = "review"
-        m.handleAddAction("Apollo")
-        XCTAssertEqual(m.composerText, "@Apollo review")
-        XCTAssertFalse(m.showAddMenu)
+    func testActivePeerMessageStripsMention() {
+        let peer = ActiveSessionPeerInfo(from: obj([
+            "peerId": .string("peer-1"),
+            "displayName": .string("Apollo"),
+        ]))
+        XCTAssertEqual(AppModel.activePeerMessage(from: "@Apollo review", peer: peer), "review")
+        XCTAssertEqual(AppModel.activePeerMessage(from: "review", peer: peer), "review")
     }
     func testConfigSetters() {
         let m = AppModel()
@@ -227,6 +229,41 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.providerID(for: "Anthropic"), "anthropic")
         XCTAssertEqual(AppModel.providerID(for: "Azure"), "azure")
         XCTAssertEqual(AppModel.providerID(for: "Ollama"), "ollama")
+    }
+
+    func testPermissionProfileMappingFromSandbox() {
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "danger-full-access"), ":danger-full-access")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "read-only"), ":read-only")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "workspace-write"), ":workspace")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: nil), ":workspace")
+    }
+
+    func testMachineScopedThreadsFallsBackWhenThreadMetadataHasNoMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1", "t2"])
+    }
+
+    func testMachineScopedThreadsFilterWhenMetadataHasMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a"), "machineId": .string("machine-a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b"), "machineId": .string("machine-b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1"])
+    }
+
+    func testSelectingMachineClearsProjectContext() {
+        let m = AppModel()
+        m.currentProjectPath = "/old/project"
+        m.selectMachine(MachineInfo(id: "machine-a", os: "macos", status: "online", role: "local", isLocal: true))
+        XCTAssertNil(m.currentProjectPath)
+        XCTAssertEqual(m.selectedMachineId, "machine-a")
     }
 
     func testSubmitNoOpWhenNotConnected() async {

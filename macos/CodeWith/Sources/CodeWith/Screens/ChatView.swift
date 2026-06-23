@@ -5,8 +5,6 @@ struct ChatView: View {
     @Bindable var model: AppModel
     var threadId: String
     var onSubmit: () -> Void = {}
-    var onPlus: () -> Void = {}
-    var onAddAction: (String) -> Void = { _ in }
     var onToggleConfig: () -> Void = {}
 
     private var title: String {
@@ -15,7 +13,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar — title + project selector, and the right-sidebar (config) opener.
+            // Top bar with the session title and session-details opener.
             HStack(spacing: 8) {
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
@@ -59,23 +57,14 @@ struct ChatView: View {
             // Composer
             Composer(placeholder: "Ask for follow-up changes",
                      stopMode: model.turnInProgress,
-                     text: $model.composerText, onSubmit: onSubmit,
+                     text: $model.composerText, model: model, onSubmit: onSubmit,
                      onStop: { Task { await model.interrupt() } },
-                     onPlus: onPlus, onConfigTap: onToggleConfig,
+                     onConfigTap: onToggleConfig,
                      modelLabel: model.model ?? "gpt-5.5", effortLabel: model.effort)
                 .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
-        .overlay(alignment: .bottomLeading) {
-            if model.showAddMenu {
-                AddMenu(
-                    onAction: onAddAction,
-                    activePeers: model.activePeers,
-                    agentRuns: model.addMenuAgentRuns
-                ).padding(.leading, 24).padding(.bottom, 68)
-            }
-        }
     }
 
     @ViewBuilder
@@ -160,7 +149,7 @@ struct ToolRow: View {
     var icon: String
     var text: String
     var body: some View {
-        // Flat inline tool line (icon + low-contrast text), no chip fill — the
+        // Flat inline tool line (icon + low-contrast text), no chip fill; the
         // reference renders tool calls as plain gray lines, not filled chips.
         HStack(spacing: 6) {
             Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)

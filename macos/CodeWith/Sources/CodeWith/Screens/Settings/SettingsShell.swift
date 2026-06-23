@@ -33,6 +33,7 @@ struct SettingsShell<Content: View>: View {
                 .init(icon: "cursorarrow.rays", title: "Computer use"),
             ]),
             ("Coding", [
+                .init(icon: "server.rack", title: "Machines"),
                 .init(icon: "link", title: "Hooks"),
                 .init(icon: "point.3.connected.trianglepath.dotted", title: "Connections"),
                 .init(icon: "arrow.triangle.branch", title: "Git"),
