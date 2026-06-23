@@ -1466,11 +1466,15 @@ async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 80, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_auth_profile_rate_limit_snapshots(
         Some("backup".to_string()),
-        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 25, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -1504,11 +1508,15 @@ async fn ordered_auto_switch_strategy_preserves_configured_order() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 80, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_auth_profile_rate_limit_snapshots(
         Some("backup".to_string()),
-        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 25, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -1540,7 +1548,9 @@ async fn auto_switch_skips_known_exhausted_profile_for_unknown_candidate() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(100, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -3009,14 +3019,14 @@ async fn status_line_schedule_countdown_uses_soonest_active_native_schedule() {
                 "later-loop",
                 ThreadScheduleStatus::Active,
                 Some(now + 90),
-                None,
+                /*expires_at*/ None,
             ),
             status_line_test_once(
                 thread_id,
                 "inactive-schedule",
                 ThreadScheduleStatus::Paused,
                 Some(now + 10),
-                None,
+                /*expires_at*/ None,
             ),
             status_line_test_once(
                 thread_id,
@@ -3030,7 +3040,7 @@ async fn status_line_schedule_countdown_uses_soonest_active_native_schedule() {
                 "next-schedule",
                 ThreadScheduleStatus::Active,
                 Some(now + 30),
-                None,
+                /*expires_at*/ None,
             ),
         ],
     );
@@ -3054,7 +3064,7 @@ async fn status_line_schedule_countdown_ignores_active_leases_from_native_state(
         "leased-loop",
         ThreadScheduleStatus::Active,
         Some(now + 10),
-        None,
+        /*expires_at*/ None,
     );
     leased_loop.lease_expires_at = Some(now + 300);
     chat.set_status_line_schedules(
@@ -3066,7 +3076,7 @@ async fn status_line_schedule_countdown_ignores_active_leases_from_native_state(
                 "next-schedule",
                 ThreadScheduleStatus::Active,
                 Some(now + 45),
-                None,
+                /*expires_at*/ None,
             ),
         ],
     );
@@ -3102,7 +3112,7 @@ async fn status_line_schedule_countdown_suppresses_running_schedule_and_refetche
             "active-loop",
             ThreadScheduleStatus::Active,
             Some(now + 90),
-            None,
+            /*expires_at*/ None,
         )],
     );
     assert_eq!(
@@ -3181,7 +3191,7 @@ async fn pre_draw_tick_refreshes_schedule_countdown_text() {
             "active-loop",
             ThreadScheduleStatus::Active,
             Some(now + 7_200),
-            None,
+            /*expires_at*/ None,
         )],
     );
     let original = status_line_text(&chat).expect("countdown should render");

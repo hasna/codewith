@@ -28,21 +28,21 @@ async fn worktree_manager_snapshot() {
                 WorktreeLifecycleStatus::Active,
                 WorktreeOwnerKind::MainSession,
                 Some("thread-main-session"),
-                None,
+                /*owner_agent_run_id*/ None,
             ),
             test_worktree(
                 "018f-cleanup-pending",
                 WorktreeLifecycleStatus::CleanupPending,
                 WorktreeOwnerKind::BackgroundAgent,
-                None,
+                /*owner_thread_id*/ None,
                 Some("agent-cleanup-pending"),
             ),
             test_worktree(
                 "018f-deleted-worktree",
                 WorktreeLifecycleStatus::Deleted,
                 WorktreeOwnerKind::Manual,
-                None,
-                None,
+                /*owner_thread_id*/ None,
+                /*owner_agent_run_id*/ None,
             ),
         ],
         test_policy(),
@@ -77,13 +77,13 @@ async fn worktree_read_selector_snapshot() {
                 WorktreeLifecycleStatus::Active,
                 WorktreeOwnerKind::MainSession,
                 Some("thread-main-session"),
-                None,
+                /*owner_agent_run_id*/ None,
             ),
             test_worktree(
                 "018f-cleanup-pending",
                 WorktreeLifecycleStatus::CleanupPending,
                 WorktreeOwnerKind::BackgroundAgent,
-                None,
+                /*owner_thread_id*/ None,
                 Some("agent-cleanup-pending"),
             ),
         ],
@@ -106,7 +106,7 @@ async fn worktree_read_selector_emits_read_event_with_repo_scope() {
             WorktreeLifecycleStatus::Active,
             WorktreeOwnerKind::MainSession,
             Some("thread-main-session"),
-            None,
+            /*owner_agent_run_id*/ None,
         )],
         test_policy(),
     );
@@ -196,7 +196,7 @@ async fn worktree_read_detail_snapshot() {
         "018f-actions-worktree",
         WorktreeLifecycleStatus::CleanupPending,
         WorktreeOwnerKind::BackgroundAgent,
-        None,
+        /*owner_thread_id*/ None,
         Some("agent-actions-owner"),
     ));
 
@@ -233,17 +233,34 @@ fn test_worktree(
         status_snapshot: json!({"status": "ready", "phase": "review"}),
         dirty: lifecycle_status == WorktreeLifecycleStatus::CleanupPending,
         cleanup_policy,
-        cleanup_after: Some(local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40)),
+        cleanup_after: Some(local_timestamp_for_snapshot(
+            /*year*/ 2026, /*month*/ 6, /*day*/ 18, /*hour*/ 12,
+            /*minute*/ 46, /*second*/ 40,
+        )),
         force_delete_requested: cleanup_policy == WorktreeCleanupPolicy::ForceDelete,
         owner_kind,
         owner_thread_id: owner_thread_id.map(str::to_string),
         owner_agent_run_id: owner_agent_run_id.map(str::to_string),
-        created_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 30, 0),
-        updated_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40),
-        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active)
-            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 48, 20)),
-        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted)
-            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 50, 0)),
+        created_at: local_timestamp_for_snapshot(
+            /*year*/ 2026, /*month*/ 6, /*day*/ 18, /*hour*/ 12,
+            /*minute*/ 30, /*second*/ 0,
+        ),
+        updated_at: local_timestamp_for_snapshot(
+            /*year*/ 2026, /*month*/ 6, /*day*/ 18, /*hour*/ 12,
+            /*minute*/ 46, /*second*/ 40,
+        ),
+        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active).then_some(
+            local_timestamp_for_snapshot(
+                /*year*/ 2026, /*month*/ 6, /*day*/ 18, /*hour*/ 12,
+                /*minute*/ 48, /*second*/ 20,
+            ),
+        ),
+        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted).then_some(
+            local_timestamp_for_snapshot(
+                /*year*/ 2026, /*month*/ 6, /*day*/ 18, /*hour*/ 12,
+                /*minute*/ 50, /*second*/ 0,
+            ),
+        ),
         agent: owner_agent_run_id.map(test_agent),
     }
 }

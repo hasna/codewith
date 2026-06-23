@@ -202,10 +202,18 @@ async fn status_command_opens_interactive_panel_instead_of_dumping_text() {
         !chat.bottom_pane.no_modal_or_popup_active(),
         "/status should open the interactive status panel"
     );
-    assert_chatwidget_snapshot!(
-        "status_panel_overview",
-        render_bottom_popup(&chat, /*width*/ 100)
-    );
+    let popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100))
+        .lines()
+        .map(|line| {
+            if let Some(version_start) = line.find("Version    ") {
+                format!("{}Version    <test-version>", &line[..version_start])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_chatwidget_snapshot!("status_panel_overview", popup);
     assert!(
         !std::iter::from_fn(|| rx.try_recv().ok())
             .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),

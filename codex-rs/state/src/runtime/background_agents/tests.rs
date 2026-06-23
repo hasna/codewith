@@ -911,7 +911,7 @@ async fn stale_generation_cannot_update_status_or_create_interactions_after_recl
     assert_eq!(run.supervisor_id.as_deref(), Some("supervisor-2"));
     assert_eq!(
         runtime
-            .list_background_agent_pending_interactions("run-1", None)
+            .list_background_agent_pending_interactions("run-1", /*status*/ None)
             .await?,
         Vec::<BackgroundAgentPendingInteraction>::new()
     );

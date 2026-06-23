@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn normalize_requested_profile_treats_missing_or_blank_as_default() {
-        assert_eq!(normalize_requested_profile(None).unwrap(), None);
+        assert_eq!(normalize_requested_profile(/*profile*/ None).unwrap(), None);
         assert_eq!(
             normalize_requested_profile(Some("  ".to_string())).unwrap(),
             None

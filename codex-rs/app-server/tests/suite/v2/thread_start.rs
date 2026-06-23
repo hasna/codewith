@@ -14,6 +14,7 @@ use codex_app_server_protocol::McpServerStatusUpdatedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -30,6 +31,7 @@ use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -690,6 +692,94 @@ async fn thread_start_fails_when_required_mcp_server_fails_to_initialize() -> Re
         "unexpected error message: {}",
         err.error.message
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_can_create_subagent_child_thread() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let parent_req_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            thread_source: Some(ThreadSource::User),
+            ..Default::default()
+        })
+        .await?;
+    let parent: ThreadStartResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(parent_req_id)),
+        )
+        .await??,
+    )?;
+    let parent_thread_id = parent.thread.id;
+    let _: ThreadStartedNotification = serde_json::from_value(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_matching_notification("parent thread/started", |notification| {
+                notification.method == "thread/started"
+            }),
+        )
+        .await??
+        .params
+        .expect("params must be present"),
+    )?;
+
+    let child_req_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            thread_source: Some(ThreadSource::Subagent),
+            parent_thread_id: Some(parent_thread_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let child: ThreadStartResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(child_req_id)),
+        )
+        .await??,
+    )?;
+
+    assert_eq!(child.thread.thread_source, Some(ThreadSource::Subagent));
+    assert_eq!(
+        child.thread.parent_thread_id.as_deref(),
+        Some(parent_thread_id.as_str())
+    );
+    match &child.thread.source {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: actual_parent_thread_id,
+            depth,
+            agent_nickname,
+            agent_role,
+            ..
+        }) => {
+            assert_eq!(actual_parent_thread_id.to_string(), parent_thread_id);
+            assert_eq!(*depth, 1);
+            assert_eq!(agent_nickname, &None);
+            assert_eq!(agent_role, &None);
+        }
+        other => panic!("expected subagent thread spawn source, got {other:?}"),
+    }
+
+    let started: ThreadStartedNotification = serde_json::from_value(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_matching_notification("child thread/started", |notification| {
+                notification.method == "thread/started"
+            }),
+        )
+        .await??
+        .params
+        .expect("params must be present"),
+    )?;
+    assert_eq!(started.thread, child.thread);
 
     Ok(())
 }

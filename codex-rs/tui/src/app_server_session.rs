@@ -568,6 +568,29 @@ impl AppServerSession {
         started_thread_from_start_response(response, config, self.thread_params_mode()).await
     }
 
+    pub(crate) async fn start_agent_thread(
+        &mut self,
+        config: &Config,
+        parent_thread_id: ThreadId,
+    ) -> Result<AppServerStartedThread> {
+        let request_id = self.next_request_id();
+        let session_config = self.session_config_with_effective_service_tier(config);
+        let response: ThreadStartResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id,
+                params: agent_thread_start_params_from_config(
+                    &session_config,
+                    self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
+                    parent_thread_id,
+                ),
+            })
+            .await
+            .map_err(|err| bootstrap_request_error("thread/start failed for agent thread", err))?;
+        started_thread_from_start_response(response, config, self.thread_params_mode()).await
+    }
+
     pub(crate) async fn resume_thread(
         &mut self,
         config: Config,
@@ -2600,6 +2623,24 @@ fn thread_start_params_from_config(
     }
 }
 
+fn agent_thread_start_params_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
+    parent_thread_id: ThreadId,
+) -> ThreadStartParams {
+    ThreadStartParams {
+        thread_source: Some(ThreadSource::Subagent),
+        parent_thread_id: Some(parent_thread_id.to_string()),
+        ..thread_start_params_from_config(
+            config,
+            thread_params_mode,
+            remote_cwd_override,
+            /*session_start_source*/ None,
+        )
+    }
+}
+
 fn thread_resume_params_from_config(
     config: Config,
     thread_id: ThreadId,
@@ -3502,6 +3543,23 @@ mod tests {
         );
 
         assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+    }
+
+    #[tokio::test]
+    async fn agent_thread_start_params_mark_subagent_parent() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let parent_thread_id = ThreadId::new();
+
+        let params = agent_thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            parent_thread_id,
+        );
+
+        assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+        assert_eq!(params.parent_thread_id, Some(parent_thread_id.to_string()));
     }
 
     #[tokio::test]

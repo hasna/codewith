@@ -531,7 +531,13 @@ async fn mcp_manager_empty_popup_snapshot() {
 #[tokio::test]
 async fn mcp_manager_configured_only_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_mcp_test_config(&mut chat, vec![("docs", mcp_test_config(false, None))]);
+    set_mcp_test_config(
+        &mut chat,
+        vec![(
+            "docs",
+            mcp_test_config(/*enabled*/ false, /*disabled_tools*/ None),
+        )],
+    );
 
     chat.on_mcp_manager_loaded(
         Ok(Vec::new()),
@@ -613,7 +619,10 @@ async fn mcp_manager_server_and_tool_config_actions() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_mcp_test_config(
         &mut chat,
-        vec![("linear", mcp_test_config(true, Some(vec!["create_issue"])))],
+        vec![(
+            "linear",
+            mcp_test_config(/*enabled*/ true, Some(vec!["create_issue"])),
+        )],
     );
     let linear = mcp_test_statuses()
         .into_iter()

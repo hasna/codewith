@@ -268,15 +268,30 @@ mod tests {
     #[test]
     fn terminal_theme_bg_hint_uses_explicit_light_markers() {
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(None, None, Some("1"), None),
+            terminal_theme_bg_hint_from_vars(
+                /*term_theme*/ None,
+                /*vscode_theme*/ None,
+                Some("1"),
+                /*colorfgbg*/ None
+            ),
             Some((255, 255, 255))
         );
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(Some("light"), None, None, None),
+            terminal_theme_bg_hint_from_vars(
+                Some("light"),
+                /*vscode_theme*/ None,
+                /*ansi_light*/ None,
+                /*colorfgbg*/ None
+            ),
             Some((255, 255, 255))
         );
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(None, Some("Light Modern"), None, None),
+            terminal_theme_bg_hint_from_vars(
+                /*term_theme*/ None,
+                Some("Light Modern"),
+                /*ansi_light*/ None,
+                /*colorfgbg*/ None
+            ),
             Some((255, 255, 255))
         );
     }
@@ -317,15 +332,30 @@ mod tests {
     #[test]
     fn terminal_theme_bg_hint_uses_dark_markers_and_colorfgbg() {
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(Some("dark"), None, None, None),
+            terminal_theme_bg_hint_from_vars(
+                Some("dark"),
+                /*vscode_theme*/ None,
+                /*ansi_light*/ None,
+                /*colorfgbg*/ None
+            ),
             Some((0, 0, 0))
         );
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(None, None, None, Some("15;0")),
+            terminal_theme_bg_hint_from_vars(
+                /*term_theme*/ None,
+                /*vscode_theme*/ None,
+                /*ansi_light*/ None,
+                Some("15;0")
+            ),
             Some((0, 0, 0))
         );
         assert_eq!(
-            terminal_theme_bg_hint_from_vars(None, None, None, Some("0;15")),
+            terminal_theme_bg_hint_from_vars(
+                /*term_theme*/ None,
+                /*vscode_theme*/ None,
+                /*ansi_light*/ None,
+                Some("0;15")
+            ),
             Some((255, 255, 255))
         );
     }

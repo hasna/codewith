@@ -2,6 +2,8 @@ use super::*;
 use crate::error_code::method_not_found;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -906,6 +908,7 @@ impl ThreadRequestProcessor {
             ephemeral,
             session_start_source,
             thread_source,
+            parent_thread_id,
             environments,
         } = params;
         if sandbox.is_some() && permissions.is_some() {
@@ -913,6 +916,34 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        let parent_thread_id = parent_thread_id
+            .map(|parent_thread_id| {
+                ThreadId::from_string(&parent_thread_id)
+                    .map_err(|_| invalid_request("`parentThreadId` must be a valid thread id"))
+            })
+            .transpose()?;
+        let (session_source, thread_source) = match (parent_thread_id, thread_source) {
+            (Some(_), Some(codex_app_server_protocol::ThreadSource::User))
+            | (Some(_), Some(codex_app_server_protocol::ThreadSource::MemoryConsolidation)) => {
+                return Err(invalid_request(
+                    "`parentThreadId` can only be used with `threadSource: \"subagent\"`",
+                ));
+            }
+            (Some(parent_thread_id), Some(codex_app_server_protocol::ThreadSource::Subagent))
+            | (Some(parent_thread_id), None) => (
+                Some(CoreSessionSource::SubAgent(
+                    CoreSubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    },
+                )),
+                Some(codex_protocol::protocol::ThreadSource::Subagent),
+            ),
+            (None, thread_source) => (None, thread_source.map(Into::into)),
+        };
         let environment_selections = self.parse_environment_selections(environments)?;
         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
         let mut typesafe_overrides = self.build_thread_config_overrides(
@@ -957,7 +988,8 @@ impl ThreadRequestProcessor {
                 typesafe_overrides,
                 dynamic_tools,
                 session_start_source,
-                thread_source.map(Into::into),
+                session_source,
+                thread_source,
                 environment_selections,
                 service_name,
                 experimental_raw_events,
@@ -1030,6 +1062,7 @@ impl ThreadRequestProcessor {
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
         session_start_source: Option<codex_app_server_protocol::ThreadStartSource>,
+        session_source: Option<CoreSessionSource>,
         thread_source: Option<codex_protocol::protocol::ThreadSource>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         service_name: Option<String>,
@@ -1146,7 +1179,7 @@ impl ThreadRequestProcessor {
                     codex_app_server_protocol::ThreadStartSource::Startup => InitialHistory::New,
                     codex_app_server_protocol::ThreadStartSource::Clear => InitialHistory::Cleared,
                 },
-                session_source: None,
+                session_source,
                 thread_source,
                 dynamic_tools: core_dynamic_tools,
                 metrics_service_name: service_name,
@@ -4469,11 +4502,14 @@ fn build_thread_from_snapshot(
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let parent_thread_id = config_snapshot
+        .parent_thread_id
+        .or_else(|| config_snapshot.session_source.parent_thread_id());
     Thread {
         id: thread_id.to_string(),
         session_id,
         forked_from_id: None,
-        parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
+        parent_thread_id: parent_thread_id.map(|id| id.to_string()),
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),

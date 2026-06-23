@@ -2464,12 +2464,15 @@ mod tests {
         let start_count_for_closure = Arc::clone(&start_count);
         let unexpected_socket_path = codex_home.path().join("unexpected.sock");
 
-        let socket_path =
-            maybe_start_default_daemon_socket_with(codex_home.path(), None, move |_| async move {
+        let socket_path = maybe_start_default_daemon_socket_with(
+            codex_home.path(),
+            /*codex_bin*/ None,
+            move |_| async move {
                 start_count_for_closure.fetch_add(1, Ordering::SeqCst);
                 Ok(unexpected_socket_path)
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert_eq!(socket_path, None);
         assert_eq!(start_count.load(Ordering::SeqCst), 0);
