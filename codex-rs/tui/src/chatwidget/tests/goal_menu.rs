@@ -494,6 +494,7 @@ fn test_goal(
         goal_id: "goal-1".to_string(),
         objective: "Keep improving the bare goal command until it feels calm and useful."
             .to_string(),
+        title: None,
         status,
         token_budget,
         tokens_used: 12_500,
@@ -585,6 +586,7 @@ fn test_plan_node(
         sequence: 0,
         priority: 0,
         objective: objective.to_string(),
+        title: None,
         status,
         ready: status == ThreadGoalPlanNodeStatus::Pending && depends_on.is_empty(),
         token_budget: None,

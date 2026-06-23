@@ -470,6 +470,7 @@ impl GoalRuntimeHandle {
                 self.thread_id(),
                 codex_state::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(status),
                     token_budget: None,
                     expected_goal_id: Some(active_goal.goal_id),

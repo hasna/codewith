@@ -866,6 +866,7 @@ impl ChatWidget {
             self.current_goal_status_indicator = None;
             self.current_goal_status = None;
             self.update_collaboration_mode_indicator();
+            self.refresh_status_line();
             return;
         }
         if goal.status == AppThreadGoalStatus::BudgetLimited
@@ -881,6 +882,7 @@ impl ChatWidget {
             self.turn_lifecycle.goal_status_active_turn_started_at,
         ));
         self.update_collaboration_mode_indicator();
+        self.refresh_status_line();
     }
 
     pub(crate) fn on_thread_goal_plan_updated(&mut self, plan: AppThreadGoalPlan) {

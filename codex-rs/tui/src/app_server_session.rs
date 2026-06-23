@@ -1177,6 +1177,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         objective: Option<String>,
+        title: Option<Option<String>>,
         status: Option<ThreadGoalStatus>,
         token_budget: Option<Option<i64>>,
     ) -> Result<ThreadGoalSetResponse> {
@@ -1187,6 +1188,7 @@ impl AppServerSession {
                 params: ThreadGoalSetParams {
                     thread_id: thread_id.to_string(),
                     objective,
+                    title,
                     status,
                     token_budget,
                 },

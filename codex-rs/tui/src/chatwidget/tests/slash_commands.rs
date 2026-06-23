@@ -3028,6 +3028,7 @@ async fn active_goal_without_follow_up_suppresses_agent_turn_complete_notificati
                     thread_id: "thread-1".to_string(),
                     goal_id: "goal-1".to_string(),
                     objective: "finish the benchmark".to_string(),
+                    title: None,
                     status: codex_app_server_protocol::ThreadGoalStatus::Active,
                     token_budget: None,
                     tokens_used: 0,

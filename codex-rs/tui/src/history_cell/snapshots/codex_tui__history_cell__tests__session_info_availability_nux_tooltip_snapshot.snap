@@ -1,10 +1,9 @@
 ---
 source: tui/src/history_cell/tests.rs
-assertion_line: 638
 expression: rendered
 ---
 ╭─────────────────────────────────────╮
-│ ⎔  Hasna Codewith (v0.1.43)         │
+│ ⎔  Hasna Codewith (v0.1.44)         │
 │                                     │
 │ model:     gpt-5   /model to change │
 │ directory: /tmp/project             │

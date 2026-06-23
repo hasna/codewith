@@ -9,6 +9,7 @@ use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
 use codex_app_server_protocol::ThreadGoalPlanNode;
 use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
+use codex_protocol::protocol::thread_goal_display_title;
 
 impl ChatWidget {
     #[cfg(test)]
@@ -172,6 +173,7 @@ impl ChatWidget {
             self.current_goal_status = None;
             self.current_goal_plan = None;
             self.update_collaboration_mode_indicator();
+            self.refresh_status_line();
         }
     }
 }
@@ -325,10 +327,11 @@ fn goal_plan_node_item(thread_id: ThreadId, node: ThreadGoalPlanNode) -> Selecti
 }
 
 fn goal_row_name(goal: &AppThreadGoal, is_current: bool) -> String {
+    let title = thread_goal_display_title(goal.title.as_deref(), &goal.objective);
     let label = if is_current {
-        format!("Current: {}", goal.objective)
+        format!("Current: {title}")
     } else {
-        goal.objective.clone()
+        title
     };
     middle_dot(vec![
         label,
@@ -338,12 +341,14 @@ fn goal_row_name(goal: &AppThreadGoal, is_current: bool) -> String {
 }
 
 fn current_goal_detail(goal: &AppThreadGoal) -> String {
-    middle_dot(goal_usage_parts(
+    let mut parts = vec![goal.objective.clone()];
+    parts.extend(goal_usage_parts(
         goal.status,
         goal.tokens_used,
         goal.token_budget,
         goal.time_used_seconds,
-    ))
+    ));
+    middle_dot(parts)
 }
 
 fn goal_plan_row_name(plan: &ThreadGoalPlan) -> String {
@@ -399,7 +404,7 @@ fn goal_plan_detail_summary(plan: &ThreadGoalPlan) -> String {
 }
 
 fn goal_plan_node_row_name(node: &ThreadGoalPlanNode) -> String {
-    let mut label = node.objective.clone();
+    let mut label = thread_goal_display_title(node.title.as_deref(), &node.objective);
     if node.status == ThreadGoalPlanNodeStatus::Active {
         label = format!("Current: {label}");
     }
@@ -427,7 +432,7 @@ fn goal_plan_node_selected_detail(node: &ThreadGoalPlanNode) -> String {
                 .join(", ")
         )
     };
-    let mut parts = vec![dependencies];
+    let mut parts = vec![node.objective.clone(), dependencies];
     parts.extend(goal_usage_parts(
         thread_goal_status_from_node_status(node.status),
         node.tokens_used,

@@ -2979,6 +2979,50 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 }
 
 #[tokio::test]
+async fn status_line_goal_title_updates_and_clears_with_goal_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    chat.config.tui_status_line = Some(vec!["goal-title".to_string()]);
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), None);
+
+    let mut goal = test_thread_goal(
+        codex_app_server_protocol::ThreadGoalStatus::Active,
+        /*token_budget*/ None,
+        /*tokens_used*/ 0,
+    );
+    goal.thread_id = thread_id.to_string();
+    goal.title = Some("Ship statusline titles".to_string());
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: goal.thread_id.clone(),
+                turn_id: None,
+                goal,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Ship statusline titles".to_string())
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalCleared(
+            codex_app_server_protocol::ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(status_line_text(&chat), None);
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -3847,6 +3891,7 @@ fn test_thread_goal(
         thread_id: "thread-1".to_string(),
         goal_id: "goal-1".to_string(),
         objective: "Keep improving the benchmark".to_string(),
+        title: None,
         status,
         token_budget,
         tokens_used,

@@ -519,6 +519,7 @@ fn thread_goal_plan_from_workflow_run(
                     key: step.step_id.clone(),
                     objective: workflow_step_objective(run, step),
                     assigned_thread_id: None,
+                    title: None,
                     priority: workflow_step_priority(step.sequence),
                     token_budget: workflow_step_token_budget(
                         &run.run.limits_json,

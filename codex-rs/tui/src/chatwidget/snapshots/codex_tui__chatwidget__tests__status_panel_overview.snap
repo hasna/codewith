@@ -10,6 +10,6 @@ expression: "render_bottom_popup(&chat, 100)"
 › Model      gpt-5.5
   Provider   openai
   Directory  /tmp/project
-  Version    0.1.43
+  Version    0.1.44
 
   Press enter to confirm or esc to go back

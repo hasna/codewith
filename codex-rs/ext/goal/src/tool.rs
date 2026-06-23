@@ -11,6 +11,8 @@ use codex_extension_api::ToolSpec;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
+use codex_protocol::protocol::derive_thread_goal_title_from_objective;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use serde::Deserialize;
 use serde::Serialize;
@@ -66,6 +68,7 @@ enum GoalToolKind {
 #[serde(rename_all = "snake_case")]
 pub struct CreateGoalRequest {
     pub objective: String,
+    pub title: Option<String>,
     pub token_budget: Option<i64>,
     pub post_goal_context: Option<PostGoalContextActionArg>,
     #[serde(default)]
@@ -314,6 +317,9 @@ impl GoalToolExecutor {
         request.objective = request.objective.trim().to_string();
         validate_thread_goal_objective(&request.objective)
             .map_err(FunctionCallError::RespondToModel)?;
+        let title = normalize_thread_goal_title(request.title.as_deref())
+            .map_err(FunctionCallError::RespondToModel)?
+            .unwrap_or_else(|| derive_thread_goal_title_from_objective(&request.objective));
         validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
 
         let existing_goal = if request.clear_existing_goal {
@@ -339,9 +345,10 @@ impl GoalToolExecutor {
         let goal = if request.clear_existing_goal {
             self.state_db
                 .thread_goals()
-                .replace_thread_goal(
+                .replace_thread_goal_with_title(
                     self.thread_id,
                     request.objective.as_str(),
+                    Some(title.as_str()),
                     codex_state::ThreadGoalStatus::Active,
                     request.token_budget,
                 )
@@ -352,9 +359,10 @@ impl GoalToolExecutor {
         } else {
             self.state_db
                 .thread_goals()
-                .insert_thread_goal(
+                .insert_thread_goal_with_title(
                     self.thread_id,
                     request.objective.as_str(),
+                    Some(title.as_str()),
                     codex_state::ThreadGoalStatus::Active,
                     request.token_budget,
                 )
@@ -441,6 +449,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 codex_state::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
                     expected_goal_id: Some(expected_goal_id),
@@ -621,6 +630,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 codex_state::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(codex_state::ThreadGoalStatus::Active),
                     token_budget: None,
                     expected_goal_id: Some(existing_goal.goal_id.clone()),
@@ -960,6 +970,7 @@ pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadG
         thread_id: goal.thread_id,
         goal_id: goal.goal_id,
         objective: goal.objective,
+        title: goal.title,
         status: protocol_status_from_state(goal.status),
         token_budget: goal.token_budget,
         tokens_used: goal.tokens_used,

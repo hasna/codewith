@@ -5,6 +5,7 @@ use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
+use codex_protocol::protocol::thread_goal_display_title;
 use std::time::Instant;
 
 use crate::bottom_pane::GoalStatusIndicator;
@@ -40,6 +41,10 @@ impl GoalStatusState {
 
     pub(super) fn is_active(&self) -> bool {
         self.goal.status == AppThreadGoalStatus::Active
+    }
+
+    pub(super) fn display_title(&self) -> String {
+        thread_goal_display_title(self.goal.title.as_deref(), &self.goal.objective)
     }
 
     pub(super) fn indicator(
@@ -357,6 +362,7 @@ mod tests {
             thread_id: "thread".to_string(),
             goal_id: "goal".to_string(),
             objective: "do the thing".to_string(),
+            title: None,
             status: AppThreadGoalStatus::Active,
             token_budget: None,
             tokens_used: 0,
@@ -405,6 +411,7 @@ mod tests {
                     sequence: i64::try_from(index).unwrap_or(i64::MAX),
                     priority: 0,
                     objective: format!("Goal {index}"),
+                    title: None,
                     status: *status,
                     ready: false,
                     token_budget: None,

@@ -854,8 +854,11 @@ pub(crate) fn passive_footer_status_lines(
     }
 
     let second_row_width = max_left_width_for_right(area, right_width).unwrap_or(available_width);
-    let row_widths = [available_width, second_row_width];
-    Some(pack_status_line_items(line, row_widths))
+    Some(pack_status_line_items(
+        line,
+        available_width,
+        second_row_width,
+    ))
 }
 
 pub(crate) fn passive_footer_status_height(
@@ -863,74 +866,109 @@ pub(crate) fn passive_footer_status_height(
     area: Rect,
     right_width: u16,
 ) -> Option<u16> {
-    let line = passive_footer_status_line(props)?;
-    let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16);
-    if available_width == 0 {
-        return Some(0);
-    }
-
-    let one_row_width = line.width().min(available_width as usize) as u16;
-    if can_show_left_with_context(area, one_row_width, right_width) {
-        return Some(1);
-    }
-
-    if right_width > 0 {
-        return Some(2);
-    }
-
     let lines = passive_footer_status_lines(props, area, right_width)?;
-    Some(lines.len().min(2) as u16)
+    Some(u16::try_from(lines.len()).unwrap_or(u16::MAX))
 }
 
-fn pack_status_line_items(line: Line<'static>, row_widths: [u16; 2]) -> Vec<Line<'static>> {
+fn pack_status_line_items(
+    line: Line<'static>,
+    row_width: u16,
+    final_row_width: u16,
+) -> Vec<Line<'static>> {
+    if row_width == 0 {
+        return Vec::new();
+    }
+
     let items = status_line_items(line);
     if items.is_empty() {
         return Vec::new();
     }
 
-    let mut rows = Vec::new();
-    let mut current = Line::from("");
-    let mut row_idx = 0usize;
+    let mut rows: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut current = Vec::new();
+    let mut current_width = 0usize;
 
     for item in items {
-        let current_width = current.width();
         let item_width = item.width();
-        let separator_width = if current_width == 0 {
+        let separator_width = if current.is_empty() {
             0
         } else {
             STATUS_LINE_SEPARATOR_WIDTH
         };
-        let row_width = row_widths[row_idx] as usize;
-        let would_fit = current_width + separator_width + item_width <= row_width;
+        let would_fit = current_width + separator_width + item_width <= row_width as usize;
 
-        if current_width > 0 && !would_fit && row_idx == 0 {
-            rows.push(truncate_line_with_ellipsis_if_overflow(
-                current,
-                row_widths[row_idx] as usize,
-            ));
-            current = item;
-            row_idx = 1;
-            continue;
+        if !current.is_empty() && !would_fit {
+            rows.push(current);
+            current = Vec::new();
+            current_width = 0;
         }
 
-        if current_width > 0 && !would_fit && row_idx == 1 {
-            break;
+        if !current.is_empty() {
+            current_width += STATUS_LINE_SEPARATOR_WIDTH;
         }
-
-        if current_width > 0 {
-            current.push_span(STATUS_LINE_SEPARATOR.dim());
-        }
-        current.extend(item.spans);
+        current_width += item_width;
+        current.push(item);
     }
 
-    if current.width() > 0 {
-        rows.push(truncate_line_with_ellipsis_if_overflow(
-            current,
-            row_widths[row_idx] as usize,
-        ));
+    if !current.is_empty() {
+        rows.push(current);
     }
 
-    rows
+    let final_row_width = final_row_width.min(row_width);
+    if final_row_width < row_width {
+        while rows.last().is_some_and(|row| {
+            !row.is_empty() && status_items_width(row) > final_row_width as usize
+        }) {
+            if rows.last().is_some_and(|row| row.len() == 1) {
+                rows.push(Vec::new());
+                break;
+            }
+            if let Some(moved) = rows.last_mut().and_then(Vec::pop) {
+                rows.push(vec![moved]);
+            } else {
+                break;
+            }
+        }
+    }
+
+    let row_count = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .map(|(idx, items)| {
+            let max_width = if idx + 1 == row_count {
+                final_row_width
+            } else {
+                row_width
+            };
+            truncate_line_with_ellipsis_if_overflow(
+                line_from_status_items(items),
+                max_width as usize,
+            )
+        })
+        .collect()
+}
+
+fn status_items_width(items: &[Line<'static>]) -> usize {
+    items.iter().enumerate().fold(0, |width, (idx, item)| {
+        width
+            + item.width()
+            + if idx == 0 {
+                0
+            } else {
+                STATUS_LINE_SEPARATOR_WIDTH
+            }
+    })
+}
+
+fn line_from_status_items(items: Vec<Line<'static>>) -> Line<'static> {
+    let mut line = Line::from("");
+    for item in items {
+        if line.width() > 0 {
+            line.push_span(STATUS_LINE_SEPARATOR.dim());
+        }
+        line.extend(item.spans);
+    }
+    line
 }
 
 fn status_line_items(line: Line<'static>) -> Vec<Line<'static>> {
@@ -1471,6 +1509,7 @@ mod tests {
         height: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         context_line: Line<'static>,
     ) {
@@ -1533,13 +1572,13 @@ mod tests {
                 let right_line = if status_line_active {
                     let full = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        /*goal_status_indicator*/ None,
+                        goal_status_indicator,
                         ide_context_active,
                         show_cycle_hint,
                     );
                     let compact = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        /*goal_status_indicator*/ None,
+                        goal_status_indicator,
                         ide_context_active,
                         /*show_cycle_hint*/ false,
                     );
@@ -1660,10 +1699,29 @@ mod tests {
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
         context_line: Line<'static>,
     ) {
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            name,
+            width,
+            props,
+            collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
+            context_line,
+        );
+    }
+
+    fn snapshot_footer_with_mode_indicator_goal_status_and_context(
+        name: &str,
+        width: u16,
+        props: &FooterProps,
+        collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        goal_status_indicator: Option<&GoalStatusIndicator>,
+        context_line: Line<'static>,
+    ) {
         let height = footer_test_height(
             width,
             props,
             collaboration_mode_indicator,
+            goal_status_indicator,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1673,6 +1731,7 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
+            goal_status_indicator,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1689,6 +1748,7 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1698,6 +1758,7 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1716,6 +1777,7 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
             ide_context_active,
             &context_line,
         );
@@ -1725,6 +1787,7 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
+            /*goal_status_indicator*/ None,
             ide_context_active,
             context_line,
         );
@@ -1735,6 +1798,7 @@ mod tests {
         width: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         _context_line: &Line<'static>,
     ) -> u16 {
@@ -1746,7 +1810,7 @@ mod tests {
         let area = Rect::new(0, 0, width, 2);
         let right_line = status_line_right_indicator_line(
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
+            goal_status_indicator,
             ide_context_active,
             show_cycle_hint,
         );
@@ -2227,6 +2291,42 @@ mod tests {
             collaboration_modes_enabled: false,
             is_wsl: false,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: Some(Line::from(vec![
+                "gpt-5.2-codex".fg(crate::style::accent_color()),
+                STATUS_LINE_SEPARATOR.dim(),
+                "open-codewith".green(),
+                STATUS_LINE_SEPARATOR.dim(),
+                "feature/statusline-wrap".magenta(),
+                STATUS_LINE_SEPARATOR.dim(),
+                "work".fg(crate::style::accent_color()),
+                STATUS_LINE_SEPARATOR.dim(),
+                "Ship statusline titles".cyan(),
+            ])),
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            active_agent_label: None,
+        };
+        let goal_status = GoalStatusIndicator::Complete {
+            usage: Some("10h 12m".to_string()),
+        };
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_wraps_items_with_goal_status",
+            /*width*/ 58,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(Some(50), /*used_tokens*/ None),
+        );
+
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
@@ -2254,7 +2354,7 @@ mod tests {
     }
 
     #[test]
-    fn status_line_wraps_by_whole_items_and_caps_at_two_rows() {
+    fn status_line_wraps_by_whole_items_across_rows() {
         let line = Line::from(vec![
             "model".fg(crate::style::accent_color()),
             STATUS_LINE_SEPARATOR.dim(),
@@ -2265,15 +2365,16 @@ mod tests {
             "profile".fg(crate::style::accent_color()),
         ]);
 
-        let rows = pack_status_line_items(line, [13, 20]);
+        let rows = pack_status_line_items(line, 13, 20);
 
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "model · /repo");
-        assert_eq!(line_text(&rows[1]), "branch · profile");
+        assert_eq!(line_text(&rows[1]), "branch");
+        assert_eq!(line_text(&rows[2]), "profile");
     }
 
     #[test]
-    fn status_line_drops_items_that_do_not_fit_in_two_rows() {
+    fn status_line_keeps_items_that_do_not_fit_in_two_rows() {
         let line = Line::from(vec![
             "one".fg(crate::style::accent_color()),
             STATUS_LINE_SEPARATOR.dim(),
@@ -2282,11 +2383,45 @@ mod tests {
             "three".magenta(),
         ]);
 
-        let rows = pack_status_line_items(line, [3, 3]);
+        let rows = pack_status_line_items(line, 5, 5);
 
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "one");
         assert_eq!(line_text(&rows[1]), "two");
+        assert_eq!(line_text(&rows[2]), "three");
+    }
+
+    #[test]
+    fn status_line_reserves_final_row_for_right_indicator() {
+        let line = Line::from(vec![
+            "alpha".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "beta".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "gamma".magenta(),
+        ]);
+
+        let rows = pack_status_line_items(line, 20, 5);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(line_text(&rows[0]), "alpha · beta");
+        assert_eq!(line_text(&rows[1]), "gamma");
+    }
+
+    #[test]
+    fn status_line_moves_single_last_item_above_right_indicator_row() {
+        let line = Line::from(vec![
+            "alpha".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "beta beta".green(),
+        ]);
+
+        let rows = pack_status_line_items(line, 20, 5);
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(line_text(&rows[0]), "alpha");
+        assert_eq!(line_text(&rows[1]), "beta beta");
+        assert_eq!(line_text(&rows[2]), "");
     }
 
     #[test]
