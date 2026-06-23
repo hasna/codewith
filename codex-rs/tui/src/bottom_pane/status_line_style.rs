@@ -52,7 +52,7 @@ impl StatusLineAccent {
             }
             StatusLineItem::Permissions => Self::Mode,
             StatusLineItem::ApprovalMode => Self::Mode,
-            StatusLineItem::ThreadTitle => Self::Thread,
+            StatusLineItem::ThreadTitle | StatusLineItem::GoalTitle => Self::Thread,
             StatusLineItem::TaskProgress => Self::Progress,
         }
     }

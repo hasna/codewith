@@ -5,6 +5,7 @@ use chrono_tz::Tz;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use croner::Cron;
 use std::str::FromStr;
@@ -297,6 +298,7 @@ impl ThreadScheduleRuntime {
                 GoalSetRequest {
                     thread_id,
                     objective: GoalObjectiveUpdate::Set(objective),
+                    title: GoalTitleUpdate::Keep,
                     status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                     token_budget: GoalTokenBudgetUpdate::Keep,
                     auto_execute: thread_goal_processor::goal_auto_execute_from_config(

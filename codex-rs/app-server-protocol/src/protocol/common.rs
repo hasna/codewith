@@ -2413,6 +2413,7 @@ mod tests {
             params: v2::ThreadGoalSetParams {
                 thread_id: "goal-thread".to_string(),
                 objective: Some("ship it".to_string()),
+                title: None,
                 status: None,
                 token_budget: None,
             },
@@ -4162,6 +4163,7 @@ mod tests {
             params: v2::ThreadGoalSetParams {
                 thread_id: "thr_123".to_string(),
                 objective: Some("ship goal mode".to_string()),
+                title: None,
                 status: Some(v2::ThreadGoalStatus::Active),
                 token_budget: Some(Some(10_000)),
             },
@@ -4635,6 +4637,7 @@ mod tests {
             thread_id: "thr_123".to_string(),
             goal_id: "goal_123".to_string(),
             objective: "ship goal mode".to_string(),
+            title: None,
             status: v2::ThreadGoalStatus::Active,
             token_budget: Some(10_000),
             tokens_used: 123,

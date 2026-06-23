@@ -123,6 +123,7 @@ fn protocol_goal_plan_node_from_state(
         sequence: node.sequence,
         priority: node.priority,
         objective,
+        title: node.title,
         status: protocol_goal_plan_node_status_from_state(node.status),
         ready,
         token_budget: node.token_budget,

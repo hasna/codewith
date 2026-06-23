@@ -841,6 +841,10 @@ impl ChatWidget {
                     }
                 },
             ),
+            StatusLineItem::GoalTitle => self
+                .current_goal_status
+                .as_ref()
+                .map(super::goal_status::GoalStatusState::display_title),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
         }
     }
@@ -867,6 +871,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::TaskProgress => return self.terminal_title_task_progress(),
             StatusSurfacePreviewItem::CurrentDir => StatusLineItem::CurrentDir,
             StatusSurfacePreviewItem::ThreadTitle => StatusLineItem::ThreadTitle,
+            StatusSurfacePreviewItem::GoalTitle => StatusLineItem::GoalTitle,
             StatusSurfacePreviewItem::GitBranch => StatusLineItem::GitBranch,
             StatusSurfacePreviewItem::PullRequestNumber => StatusLineItem::PullRequestNumber,
             StatusSurfacePreviewItem::BranchChanges => StatusLineItem::BranchChanges,

@@ -38,6 +38,13 @@ pub fn create_create_goal_tool() -> ToolSpec {
             )),
         ),
         (
+            "title".to_string(),
+            JsonSchema::string(Some(
+                "Required compact display title for the goal, at most 4-5 words. This is shown in the status line and goal summaries."
+                    .to_string(),
+            )),
+        ),
+        (
             "clear_existing_goal".to_string(),
             JsonSchema::boolean(Some(
                 "Optional. Defaults to false. Set to true only when the user or system/developer instructions explicitly tell you to clear, replace, restart, or start a new goal while another goal exists."
@@ -78,7 +85,7 @@ If a goal already exists, this fails by default. Set clear_existing_goal to true
         defer_loading: None,
         parameters: JsonSchema::object(
             properties,
-            /*required*/ Some(vec!["objective".to_string()]),
+            /*required*/ Some(vec!["objective".to_string(), "title".to_string()]),
             Some(false.into()),
         ),
         output_schema: None,
@@ -114,6 +121,13 @@ pub fn create_create_goal_plan_tool() -> ToolSpec {
             )),
         ),
         (
+            "title".to_string(),
+            JsonSchema::string(Some(
+                "Required compact display title for this goal node, at most 4-5 words. This is shown in the status line, goal plan summaries, and when the node becomes the active goal."
+                    .to_string(),
+            )),
+        ),
+        (
             "depends_on".to_string(),
             JsonSchema::array(
                 JsonSchema::string(Some(
@@ -142,7 +156,11 @@ pub fn create_create_goal_plan_tool() -> ToolSpec {
     ]);
     let node_schema = JsonSchema::object(
         node_properties,
-        Some(vec!["key".to_string(), "objective".to_string()]),
+        Some(vec![
+            "key".to_string(),
+            "objective".to_string(),
+            "title".to_string(),
+        ]),
         Some(false.into()),
     );
     let properties = BTreeMap::from([

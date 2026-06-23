@@ -3,6 +3,8 @@ use codex_extension_api::ToolCall;
 use codex_extension_api::ToolOutput;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
+use codex_protocol::protocol::derive_thread_goal_title_from_objective;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use serde::Deserialize;
 use serde::Serialize;
@@ -42,6 +44,7 @@ struct CreateGoalPlanRequest {
 struct CreateGoalPlanNodeRequest {
     key: String,
     objective: String,
+    title: Option<String>,
     #[serde(default)]
     depends_on: Vec<String>,
     #[serde(default)]
@@ -114,6 +117,7 @@ pub(crate) struct GoalPlanCompletionReport {
 struct GoalPlanCompletionNodeReport {
     key: String,
     objective: String,
+    title: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     objective_truncated: bool,
     status: String,
@@ -135,6 +139,7 @@ struct GoalPlanNodeResponse {
     sequence: i64,
     priority: i64,
     objective: String,
+    title: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     objective_truncated: bool,
     status: String,
@@ -185,6 +190,11 @@ impl GoalToolExecutor {
             })?
             .current();
         validate_goal_plan_request(&mut request, plan_config)?;
+        let nodes = request
+            .goals
+            .into_iter()
+            .map(goal_plan_node_create_params)
+            .collect::<Result<Vec<_>, FunctionCallError>>()?;
         let existing_goal = self
             .state_db
             .thread_goals()
@@ -218,17 +228,6 @@ impl GoalToolExecutor {
                 })?;
         }
 
-        let mut nodes = Vec::with_capacity(request.goals.len());
-        for node in request.goals {
-            nodes.push(codex_state::ThreadGoalPlanNodeCreateParams {
-                key: node.key,
-                objective: node.objective,
-                assigned_thread_id: None,
-                priority: node.priority.unwrap_or(0),
-                token_budget: node.token_budget,
-                depends_on: node.depends_on,
-            });
-        }
         let max_tokens = match (
             request.max_tokens_per_goal_plan,
             plan_config.max_tokens_per_goal_plan,
@@ -448,6 +447,23 @@ impl GoalToolExecutor {
     }
 }
 
+fn goal_plan_node_create_params(
+    node: CreateGoalPlanNodeRequest,
+) -> Result<codex_state::ThreadGoalPlanNodeCreateParams, FunctionCallError> {
+    let title = normalize_thread_goal_title(node.title.as_deref())
+        .map_err(FunctionCallError::RespondToModel)?
+        .unwrap_or_else(|| derive_thread_goal_title_from_objective(&node.objective));
+    Ok(codex_state::ThreadGoalPlanNodeCreateParams {
+        key: node.key,
+        objective: node.objective,
+        assigned_thread_id: None,
+        title: Some(title),
+        priority: node.priority.unwrap_or(0),
+        token_budget: node.token_budget,
+        depends_on: node.depends_on,
+    })
+}
+
 fn validate_goal_plan_request(
     request: &mut CreateGoalPlanRequest,
     plan_config: GoalPlanRuntimeConfig,
@@ -629,6 +645,7 @@ impl GoalPlanCompletionReport {
                     GoalPlanCompletionNodeReport {
                         key: node.key.clone(),
                         objective,
+                        title: node.title.clone(),
                         objective_truncated,
                         status: node.status.as_str().to_string(),
                         ready: ready_node_ids.contains(&node.node_id),
@@ -658,6 +675,7 @@ impl GoalPlanNodeResponse {
             sequence: node.sequence,
             priority: node.priority,
             objective,
+            title: node.title,
             objective_truncated,
             status: node.status.as_str().to_string(),
             ready,

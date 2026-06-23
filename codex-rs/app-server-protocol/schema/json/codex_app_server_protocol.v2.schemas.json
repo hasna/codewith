@@ -17213,6 +17213,12 @@
           "format": "int64",
           "type": "integer"
         },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tokenBudget": {
           "format": "int64",
           "type": [
@@ -17579,6 +17585,12 @@
           "format": "int64",
           "type": "integer"
         },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tokenBudget": {
           "format": "int64",
           "type": [
@@ -17682,6 +17694,12 @@
         },
         "threadId": {
           "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tokenBudget": {
           "format": "int64",

@@ -3,6 +3,7 @@ use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 
 #[derive(Clone)]
@@ -134,6 +135,7 @@ impl ThreadGoalRequestProcessor {
         };
         let status = params.status.map(ThreadGoalStatus::to_core);
         let objective = params.objective.as_deref();
+        let title = params.title.as_ref().map(|title| title.as_deref());
 
         let outcome = self
             .goal_service
@@ -144,6 +146,9 @@ impl ThreadGoalRequestProcessor {
                     objective: objective
                         .map(GoalObjectiveUpdate::Set)
                         .unwrap_or(GoalObjectiveUpdate::Keep),
+                    title: title
+                        .map(GoalTitleUpdate::Set)
+                        .unwrap_or(GoalTitleUpdate::Keep),
                     status,
                     token_budget: match params.token_budget {
                         Some(token_budget) => GoalTokenBudgetUpdate::Set(token_budget),
@@ -540,6 +545,7 @@ pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> Threa
         thread_id: goal.thread_id.to_string(),
         goal_id: goal.goal_id,
         objective: goal.objective,
+        title: goal.title,
         status: api_thread_goal_status_from_state(goal.status),
         token_budget: goal.token_budget,
         tokens_used: goal.tokens_used,
@@ -625,6 +631,7 @@ fn api_thread_goal_plan_node_from_state(
         sequence: node.sequence,
         priority: node.priority,
         objective: node.objective,
+        title: node.title,
         status: api_thread_goal_plan_node_status_from_state(node.status),
         ready,
         token_budget: node.token_budget,

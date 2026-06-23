@@ -831,6 +831,8 @@ pub struct ThreadGoal {
     pub thread_id: String,
     pub goal_id: String,
     pub objective: String,
+    #[ts(type = "string | null")]
+    pub title: Option<String>,
     pub status: ThreadGoalStatus,
     #[ts(type = "number | null")]
     pub token_budget: Option<i64>,
@@ -850,6 +852,7 @@ impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
             thread_id: value.thread_id.to_string(),
             goal_id: value.goal_id,
             objective: value.objective,
+            title: value.title,
             status: value.status.into(),
             token_budget: value.token_budget,
             tokens_used: value.tokens_used,
@@ -867,6 +870,14 @@ pub struct ThreadGoalSetParams {
     pub thread_id: String,
     #[ts(optional = nullable)]
     pub objective: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub title: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub status: Option<ThreadGoalStatus>,
     #[serde(
@@ -949,6 +960,8 @@ pub struct ThreadGoalPlanNode {
     #[ts(type = "number")]
     pub priority: i64,
     pub objective: String,
+    #[ts(type = "string | null")]
+    pub title: Option<String>,
     pub status: ThreadGoalPlanNodeStatus,
     pub ready: bool,
     #[ts(type = "number | null")]
@@ -983,6 +996,8 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             sequence: i64,
             priority: i64,
             objective: String,
+            #[serde(default)]
+            title: Option<String>,
             status: ThreadGoalPlanNodeStatus,
             ready: bool,
             token_budget: Option<i64>,
@@ -1006,6 +1021,7 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             sequence: value.sequence,
             priority: value.priority,
             objective: value.objective,
+            title: value.title,
             status: value.status,
             ready: value.ready,
             token_budget: value.token_budget,
@@ -1108,6 +1124,7 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
             sequence: value.sequence,
             priority: value.priority,
             objective: value.objective,
+            title: value.title,
             status: value.status.into(),
             ready: value.ready,
             token_budget: value.token_budget,

@@ -8,6 +8,7 @@ use std::sync::Weak;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 
 use crate::runtime::GoalRuntimeHandle;
@@ -40,6 +41,12 @@ pub enum GoalObjectiveUpdate<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalTitleUpdate<'a> {
+    Keep,
+    Set(Option<&'a str>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoalTokenBudgetUpdate {
     Keep,
     Set(Option<i64>),
@@ -49,6 +56,7 @@ pub enum GoalTokenBudgetUpdate {
 pub struct GoalSetRequest<'a> {
     pub thread_id: ThreadId,
     pub objective: GoalObjectiveUpdate<'a>,
+    pub title: GoalTitleUpdate<'a>,
     pub status: Option<ThreadGoalStatus>,
     pub token_budget: GoalTokenBudgetUpdate,
     pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
@@ -131,6 +139,7 @@ impl GoalService {
         let GoalSetRequest {
             thread_id,
             objective,
+            title,
             status,
             token_budget,
             auto_execute,
@@ -143,6 +152,12 @@ impl GoalService {
         let token_budget = match token_budget {
             GoalTokenBudgetUpdate::Keep => None,
             GoalTokenBudgetUpdate::Set(token_budget) => Some(token_budget),
+        };
+        let title = match title {
+            GoalTitleUpdate::Keep => None,
+            GoalTitleUpdate::Set(title) => {
+                Some(normalize_thread_goal_title(title).map_err(GoalServiceError::InvalidRequest)?)
+            }
         };
 
         if let Some(objective) = objective {
@@ -187,6 +202,7 @@ impl GoalService {
                         thread_id,
                         codex_state::GoalUpdate {
                             objective: Some(objective.to_string()),
+                            title: title.clone(),
                             status,
                             token_budget,
                             expected_goal_id: Some(existing_goal.goal_id.clone()),
@@ -205,9 +221,10 @@ impl GoalService {
             } else {
                 state_db
                     .thread_goals()
-                    .replace_thread_goal(
+                    .replace_thread_goal_with_title(
                         thread_id,
                         objective,
+                        title.as_ref().and_then(|title| title.as_deref()),
                         status.unwrap_or(codex_state::ThreadGoalStatus::Active),
                         token_budget.flatten(),
                     )
@@ -238,6 +255,7 @@ impl GoalService {
                     thread_id,
                     codex_state::GoalUpdate {
                         objective: None,
+                        title,
                         status,
                         token_budget,
                         expected_goal_id: Some(expected_goal_id),

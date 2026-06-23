@@ -27,6 +27,7 @@ use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_goal_extension::install_with_backend;
 use codex_protocol::ThreadId;
@@ -71,6 +72,7 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
                 "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
+                "title": "ship goal extension backend",
                 "status": "active",
                 "tokenBudget": 123,
                 "tokensUsed": 0,
@@ -91,6 +93,40 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     assert_eq!(
         metadata.preview.as_deref(),
         Some("ship goal extension backend")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_rejects_blank_explicit_title() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    let err = match create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "ship goal extension backend",
+                "title": "   ",
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("blank goal title should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("goal title must not be empty".to_string())
+    );
+    assert_eq!(
+        None,
+        runtime.thread_goals().get_thread_goal(thread_id).await?
     );
     Ok(())
 }
@@ -536,6 +572,7 @@ async fn delegated_goal_plan_response_hides_unassigned_nodes_and_includes_ready_
             key: format!("owner-{idx}"),
             objective: format!("Owner-only secret objective {idx}."),
             assigned_thread_id: None,
+            title: None,
             priority: 0,
             token_budget: None,
             depends_on: Vec::new(),
@@ -545,6 +582,7 @@ async fn delegated_goal_plan_response_hides_unassigned_nodes_and_includes_ready_
         key: "delegate".to_string(),
         objective: "Visible delegated objective.".to_string(),
         assigned_thread_id: Some(delegate_thread_id),
+        title: None,
         priority: 0,
         token_budget: None,
         depends_on: Vec::new(),
@@ -903,6 +941,71 @@ async fn create_goal_plan_rejects_invalid_node_keys() -> anyhow::Result<()> {
             "goal plan node key `invalid key` must contain only ASCII letters, numbers, underscores, or hyphens"
                 .to_string()
         )
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_rejects_invalid_title_before_clearing_existing_goal() -> anyhow::Result<()>
+{
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "existing active goal",
+                "title": "Existing active goal",
+            }),
+        ))
+        .await?;
+    let original_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("existing goal should be present"))?;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan-invalid-title",
+            json!({
+                "clear_existing_goal": true,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Replace existing goal only after validation",
+                        "title": "one two three four five six"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("invalid goal plan title should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("goal title must be at most 5 words".to_string())
+    );
+    assert_eq!(
+        Some(original_goal),
+        runtime.thread_goals().get_thread_goal(thread_id).await?
     );
     assert_eq!(
         Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
@@ -1772,6 +1875,7 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
                 "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
+                "title": "ship goal extension backend",
                 "status": "blocked",
                 "tokensUsed": 23,
                 "timeUsedSeconds": 0,
@@ -2274,6 +2378,7 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("new objective"),
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2324,6 +2429,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                     key: "first".to_string(),
                     objective: "Finish first external goal".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2332,6 +2438,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                     key: "second".to_string(),
                     objective: "Continue with second external goal".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: vec!["first".to_string()],
@@ -2353,6 +2460,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Keep,
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Complete),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2413,6 +2521,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
                 key: "blocked".to_string(),
                 objective: "Wait for coordinator input".to_string(),
                 assigned_thread_id: None,
+                title: None,
                 priority: 0,
                 token_budget: None,
                 depends_on: Vec::new(),
@@ -2428,6 +2537,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
         GoalSetRequest {
             thread_id,
             objective: GoalObjectiveUpdate::Keep,
+            title: GoalTitleUpdate::Keep,
             status: Some(ThreadGoalStatus::Blocked),
             token_budget: GoalTokenBudgetUpdate::Keep,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2467,6 +2577,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Keep,
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2514,6 +2625,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("wait for coordinator"),
+                title: GoalTitleUpdate::Keep,
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2542,6 +2654,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
                 GoalSetRequest {
                     thread_id,
                     objective: GoalObjectiveUpdate::Keep,
+                    title: GoalTitleUpdate::Keep,
                     status: Some(status),
                     token_budget: GoalTokenBudgetUpdate::Keep,
                     auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2571,6 +2684,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
                 GoalSetRequest {
                     thread_id,
                     objective: GoalObjectiveUpdate::Keep,
+                    title: GoalTitleUpdate::Keep,
                     status: Some(ThreadGoalStatus::Active),
                     token_budget: GoalTokenBudgetUpdate::Keep,
                     auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2600,6 +2714,7 @@ async fn goal_service_clear_thread_goal_clears_pending_interactions_without_live
         GoalSetRequest {
             thread_id,
             objective: GoalObjectiveUpdate::Set("wait for external unblock"),
+            title: GoalTitleUpdate::Keep,
             status: Some(ThreadGoalStatus::Blocked),
             token_budget: GoalTokenBudgetUpdate::Keep,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2647,6 +2762,7 @@ async fn create_goal_clear_existing_goal_clears_pending_interactions() -> anyhow
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("blocked goal to replace"),
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Blocked),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2791,6 +2907,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set(" ship goal API ownership "),
+                title: GoalTitleUpdate::Keep,
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,

@@ -63,6 +63,7 @@ async fn mission_control_overview_lists_sessions_goal_plans_and_pending_interact
                 key: "blocked".to_string(),
                 objective: "Wait for coordinator input".to_string(),
                 assigned_thread_id: None,
+                title: None,
                 priority: 0,
                 token_budget: None,
                 depends_on: Vec::new(),

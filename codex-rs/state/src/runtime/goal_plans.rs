@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::ThreadGoalPlanNodeRow;
 use crate::model::ThreadGoalPlanRow;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use sqlx::QueryBuilder;
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ pub struct ThreadGoalPlanNodeCreateParams {
     pub key: String,
     pub objective: String,
     pub assigned_thread_id: Option<ThreadId>,
+    pub title: Option<String>,
     pub priority: i64,
     pub token_budget: Option<i64>,
     pub depends_on: Vec<String>,
@@ -191,6 +193,7 @@ OFFSET ?
 	    sequence,
 	    priority,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -599,6 +602,8 @@ INSERT INTO thread_goal_plans (
     let mut node_ids_by_key = HashMap::new();
     for (sequence, node) in params.nodes.iter().enumerate() {
         let node_id = Uuid::new_v4().to_string();
+        let title =
+            normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?;
         node_ids_by_key.insert(node.key.clone(), node_id.clone());
         sqlx::query(
             r#"
@@ -611,12 +616,13 @@ INSERT INTO thread_goal_plans (
 	    sequence,
 	    priority,
     objective,
+    title,
     status,
-	    token_budget,
-	    created_at_ms,
-	    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	            "#,
+    token_budget,
+    created_at_ms,
+    updated_at_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
         )
         .bind(&node_id)
         .bind(&plan_id)
@@ -630,6 +636,7 @@ INSERT INTO thread_goal_plans (
         .bind(i64::try_from(sequence)?)
         .bind(node.priority)
         .bind(&node.objective)
+        .bind(title)
         .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
         .bind(node.token_budget)
         .bind(now_ms)
@@ -719,6 +726,7 @@ SELECT
 	    sequence,
 	    priority,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -765,16 +773,18 @@ INSERT INTO thread_goals (
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
     time_used_seconds,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
+    title = excluded.title,
     status = excluded.status,
     token_budget = excluded.token_budget,
     tokens_used = 0,
@@ -785,6 +795,7 @@ RETURNING
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -796,6 +807,7 @@ RETURNING
     .bind(thread_id.to_string())
     .bind(&projected_goal_id)
     .bind(&node.objective)
+    .bind(&node.title)
     .bind(status.as_str())
     .bind(effective_token_budget)
     .bind(now_ms)
@@ -1184,6 +1196,7 @@ pub(super) async fn snapshot_thread_goal_plan_in_tx(
 	    sequence,
     priority,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -1330,6 +1343,9 @@ fn validate_plan_create_params(params: &ThreadGoalPlanCreateParams) -> anyhow::R
             anyhow::bail!("goal plan node key `{}` is duplicated", node.key);
         }
         validate_thread_goal_objective(node.objective.trim()).map_err(anyhow::Error::msg)?;
+        if let Some(title) = node.title.as_deref() {
+            normalize_thread_goal_title(Some(title)).map_err(anyhow::Error::msg)?;
+        }
         if node.token_budget.is_some_and(|budget| budget <= 0) {
             anyhow::bail!("goal plan node token_budget must be positive when set");
         }
@@ -1468,6 +1484,7 @@ mod tests {
                         key: "investigate".to_string(),
                         objective: "Investigate goal plans.".to_string(),
                         assigned_thread_id: None,
+                        title: Some("Investigate goal plans".to_string()),
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1476,6 +1493,7 @@ mod tests {
                         key: "implement".to_string(),
                         objective: "Implement goal plans.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: Some(10_000),
                         depends_on: vec!["investigate".to_string()],
@@ -1489,6 +1507,7 @@ mod tests {
             .activated_goal
             .expect("first ready goal should activate");
         assert_eq!("Investigate goal plans.", first_goal.objective);
+        assert_eq!(Some("Investigate goal plans".to_string()), first_goal.title);
         assert_eq!(None, first_goal.token_budget);
         assert_eq!(
             crate::ThreadGoalPlanNodeStatus::Active,
@@ -1505,6 +1524,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(first_goal.goal_id),
@@ -1558,6 +1578,7 @@ mod tests {
                         key: "one".to_string(),
                         objective: "Do one independent goal.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1566,6 +1587,7 @@ mod tests {
                         key: "two".to_string(),
                         objective: "Do another independent goal.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1606,6 +1628,7 @@ mod tests {
                         key: format!("goal_{idx}"),
                         objective: format!("Do paged goal {idx}."),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1652,6 +1675,7 @@ mod tests {
                     key: "delegate".to_string(),
                     objective: "Complete the delegated goal node.".to_string(),
                     assigned_thread_id: Some(delegate_thread_id),
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -1732,6 +1756,7 @@ mod tests {
                 delegate_thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(delegated_goal.goal_id),
@@ -1784,6 +1809,7 @@ mod tests {
                         key: "first_delegate_a".to_string(),
                         objective: "Run the first delegate's first goal.".to_string(),
                         assigned_thread_id: Some(first_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1792,6 +1818,7 @@ mod tests {
                         key: "first_delegate_b".to_string(),
                         objective: "Run the first delegate's second goal.".to_string(),
                         assigned_thread_id: Some(first_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1800,6 +1827,7 @@ mod tests {
                         key: "second_delegate".to_string(),
                         objective: "Run the second delegate's goal.".to_string(),
                         assigned_thread_id: Some(second_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -1874,6 +1902,7 @@ mod tests {
                     key: "delegate".to_string(),
                     objective: "Run the delegated ready-only node.".to_string(),
                     assigned_thread_id: Some(delegate_thread_id),
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -1915,6 +1944,7 @@ mod tests {
                         key: "first_delegate".to_string(),
                         objective: "Run the first delegated budgeted goal.".to_string(),
                         assigned_thread_id: Some(first_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: Some(40),
                         depends_on: Vec::new(),
@@ -1923,6 +1953,7 @@ mod tests {
                         key: "second_delegate".to_string(),
                         objective: "Run the second delegated budgeted goal.".to_string(),
                         assigned_thread_id: Some(second_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: Some(80),
                         depends_on: Vec::new(),
@@ -1993,6 +2024,7 @@ mod tests {
                         key: "first_delegate".to_string(),
                         objective: "Run the first cancellable delegated goal.".to_string(),
                         assigned_thread_id: Some(first_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2001,6 +2033,7 @@ mod tests {
                         key: "second_delegate".to_string(),
                         objective: "Run the second delegated goal after cancellation.".to_string(),
                         assigned_thread_id: Some(second_delegate_thread_id),
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2035,6 +2068,7 @@ mod tests {
                 first_delegate_thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Cancelled),
                     token_budget: None,
                     expected_goal_id: Some(first_goal.goal_id),
@@ -2071,6 +2105,7 @@ mod tests {
                 second_delegate_thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(second_goal.goal_id),
@@ -2121,6 +2156,7 @@ mod tests {
                     key: "active".to_string(),
                     objective: "Run the active projected goal.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2169,6 +2205,7 @@ mod tests {
                         key: "first".to_string(),
                         objective: "Spend the whole plan budget.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2177,6 +2214,7 @@ mod tests {
                         key: "second".to_string(),
                         objective: "Should not run after the plan budget is exhausted.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: vec!["first".to_string()],
@@ -2204,6 +2242,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(first_goal.goal_id),
@@ -2262,6 +2301,7 @@ mod tests {
                     key: "active".to_string(),
                     objective: "Spend more than the remaining plan budget.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2322,6 +2362,7 @@ mod tests {
                     key: "active".to_string(),
                     objective: "Cancel the active projected goal.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2338,6 +2379,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Cancelled),
                     token_budget: None,
                     expected_goal_id: Some(active_goal_id.clone()),
@@ -2370,6 +2412,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Active),
                     token_budget: None,
                     expected_goal_id: Some(active_goal_id),
@@ -2451,6 +2494,7 @@ mod tests {
                     key: "pause".to_string(),
                     objective: "Pause and replace the projected goal.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2466,6 +2510,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: None,
                     expected_goal_id: Some(active_goal.goal_id),
@@ -2534,6 +2579,7 @@ mod tests {
                         key: "a".to_string(),
                         objective: "Do goal A.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: vec!["b".to_string()],
@@ -2542,6 +2588,7 @@ mod tests {
                         key: "b".to_string(),
                         objective: "Do goal B.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: vec!["a".to_string()],
@@ -2572,6 +2619,7 @@ mod tests {
                     key: "bad key".to_string(),
                     objective: "Do a goal with a bad key.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2601,6 +2649,7 @@ mod tests {
                         key: "first".to_string(),
                         objective: "Run the first projected goal.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2609,6 +2658,7 @@ mod tests {
                         key: "second".to_string(),
                         objective: "Run the dependent projected goal.".to_string(),
                         assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: vec!["first".to_string()],
@@ -2689,6 +2739,7 @@ mod tests {
                     key: "ready".to_string(),
                     objective: "This goal must not overwrite the manual goal.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2720,6 +2771,7 @@ mod tests {
                 key: format!("goal_{idx}"),
                 objective: format!("Do goal {idx}."),
                 assigned_thread_id: None,
+                title: None,
                 priority: 0,
                 token_budget: None,
                 depends_on: Vec::new(),
@@ -2758,6 +2810,7 @@ mod tests {
                     key: "cleanup".to_string(),
                     objective: "Clean up the plan with the thread.".to_string(),
                     assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2798,6 +2851,7 @@ mod tests {
                     key: "delegate".to_string(),
                     objective: "Clean up the delegated projected goal.".to_string(),
                     assigned_thread_id: Some(delegate_thread_id),
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2865,6 +2919,7 @@ mod tests {
                     objective: "Cancel this pending delegated node when its thread is deleted."
                         .to_string(),
                     assigned_thread_id: Some(delegate_thread_id),
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
