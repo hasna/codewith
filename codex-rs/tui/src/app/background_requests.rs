@@ -203,9 +203,7 @@ impl App {
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
-        let thread_id = self
-            .current_displayed_thread_id()
-            .map(|thread_id| thread_id.to_string());
+        let thread_id = self.connectors_list_thread_id();
         tokio::spawn(async move {
             let result = fetch_connectors_list(request_handle, force_refetch, thread_id)
                 .await
@@ -215,6 +213,13 @@ impl App {
                 is_final: true,
             });
         });
+    }
+
+    fn connectors_list_thread_id(&self) -> Option<String> {
+        self.chat_widget.rollout_path()?;
+
+        self.current_displayed_thread_id()
+            .map(|thread_id| thread_id.to_string())
     }
 
     pub(super) fn fetch_plugins_list(&mut self, app_server: &AppServerSession, cwd: PathBuf) {
@@ -1177,13 +1182,52 @@ pub(super) fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -
 mod tests {
     use super::*;
     use crate::app::test_support::make_test_app;
+    use crate::session_state::ThreadSessionState;
+    use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::PluginMarketplaceEntry;
+    use codex_protocol::ThreadId;
     use codex_protocol::mcp::Tool;
+    use codex_protocol::models::PermissionProfile;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
     fn test_absolute_path(path: &str) -> AbsolutePathBuf {
         AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+    }
+
+    fn test_thread_session(
+        thread_id: ThreadId,
+        rollout_path: Option<PathBuf>,
+    ) -> ThreadSessionState {
+        let cwd = if cfg!(windows) {
+            r"C:\tmp\project"
+        } else {
+            "/tmp/project"
+        };
+
+        ThreadSessionState {
+            thread_id,
+            forked_from_id: None,
+            fork_parent_title: None,
+            thread_name: Some("test thread".to_string()),
+            model: "gpt-test".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
+            permission_profile: PermissionProfile::read_only(),
+            active_permission_profile: None,
+            auth_profile: None,
+            cwd: test_absolute_path(cwd),
+            runtime_workspace_roots: Vec::new(),
+            instruction_source_paths: Vec::new(),
+            reasoning_effort: None,
+            collaboration_mode: None,
+            personality: None,
+            message_history: None,
+            network_proxy: None,
+            rollout_path,
+        }
     }
 
     #[test]
@@ -1295,6 +1339,25 @@ mod tests {
             auth_statuses.get("disabled"),
             Some(&McpAuthStatus::Unsupported)
         );
+    }
+
+    #[tokio::test]
+    async fn connectors_list_thread_id_omits_starting_thread_without_rollout() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, None));
+
+        assert_eq!(app.connectors_list_thread_id(), None);
+
+        app.chat_widget.handle_thread_session(test_thread_session(
+            thread_id,
+            Some(PathBuf::from("/tmp/rollout.jsonl")),
+        ));
+
+        assert_eq!(app.connectors_list_thread_id(), Some(thread_id.to_string()));
     }
 
     #[tokio::test]

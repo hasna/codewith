@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: popup.clone()
+---
+  Log out of Codewith?
+  This clears the active login and exits the TUI after logout succeeds.
+
+› 1. No, keep working       Return to this session without logging out
+  2. Yes, log out and exit  Clear the active login and shut down Codewith
+
+  Press enter to confirm or esc to go back

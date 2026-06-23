@@ -1481,10 +1481,15 @@ WHERE owner_agent_run_id = ?
 }
 
 pub(crate) fn path_to_db_string(path: &Path) -> String {
-    normalize_path_for_db(path).to_string_lossy().into_owned()
+    path_to_string(&normalize_path_for_db(path))
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1497,6 +1502,27 @@ fn normalize_path_for_db(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn path_to_string(path: &Path) -> String {
+    let path = path.to_string_lossy().into_owned();
+    strip_windows_verbatim_prefix(path)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    path
 }
 
 pub(crate) fn managed_worktree_from_row(
@@ -1582,15 +1608,25 @@ mod tests {
             .expect("state db should initialize")
     }
 
+    fn repo_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "codewith-managed-worktrees-{}",
+            name.trim_start_matches('/').replace('/', "-")
+        ))
+    }
+
     fn create_params(worktree_id: &str, base_repo_path: &str) -> ManagedWorktreeCreateParams {
+        let base_repo_path = repo_path(base_repo_path);
+        let worktree_path = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join(worktree_id);
         ManagedWorktreeCreateParams {
             worktree_id: Some(worktree_id.to_string()),
             identity: Some(format!("session:{worktree_id}")),
             mode: crate::ManagedWorktreeMode::IsolatedWorktree,
-            base_repo_path: PathBuf::from(base_repo_path),
-            worktree_path: PathBuf::from(format!(
-                "{base_repo_path}/.codewith/worktrees/{worktree_id}"
-            )),
+            base_repo_path,
+            worktree_path,
             branch: Some(format!("codewith/{worktree_id}")),
             base_sha: Some("base-sha".to_string()),
             head_sha: Some("head-sha".to_string()),
@@ -1617,7 +1653,7 @@ mod tests {
 
         let first_page = store
             .list_managed_worktrees_page(
-                Some(Path::new("/repo-a")),
+                Some(repo_path("/repo-a").as_path()),
                 /*include_deleted*/ false,
                 /*cursor*/ None,
                 /*limit*/ 1,
@@ -1628,7 +1664,7 @@ mod tests {
 
         let second_page = store
             .list_managed_worktrees_page(
-                Some(Path::new("/repo-a")),
+                Some(repo_path("/repo-a").as_path()),
                 /*include_deleted*/ false,
                 first_page.next_cursor.as_deref(),
                 /*limit*/ 1,
@@ -1653,7 +1689,7 @@ mod tests {
 
         let page = store
             .list_managed_worktrees_page(
-                Some(Path::new("/repo-a")),
+                Some(repo_path("/repo-a").as_path()),
                 /*include_deleted*/ false,
                 /*cursor*/ None,
                 DEFAULT_MANAGED_WORKTREE_LIST_LIMIT,
@@ -1724,7 +1760,7 @@ mod tests {
             .await?;
         let thread_id = ThreadId::new();
         let codex_home = unique_temp_dir();
-        let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/repo-a"));
+        let metadata = test_thread_metadata(&codex_home, thread_id, repo_path("/repo-a"));
         runtime.upsert_thread(&metadata).await?;
         let attached = store
             .attach_managed_worktree(ManagedWorktreeAttachParams {
@@ -1774,14 +1810,14 @@ mod tests {
             .upsert_thread(&test_thread_metadata(
                 &codex_home,
                 first_thread_id,
-                PathBuf::from("/repo-a"),
+                repo_path("/repo-a"),
             ))
             .await?;
         runtime
             .upsert_thread(&test_thread_metadata(
                 &codex_home,
                 second_thread_id,
-                PathBuf::from("/repo-a"),
+                repo_path("/repo-a"),
             ))
             .await?;
 
@@ -1830,7 +1866,7 @@ mod tests {
             .upsert_thread(&test_thread_metadata(
                 &codex_home,
                 thread_id,
-                PathBuf::from("/repo-a"),
+                repo_path("/repo-a"),
             ))
             .await?;
         store
@@ -1935,7 +1971,7 @@ mod tests {
             .upsert_thread(&test_thread_metadata(
                 &codex_home,
                 thread_id,
-                PathBuf::from("/repo-a"),
+                repo_path("/repo-a"),
             ))
             .await?;
         store
@@ -2011,6 +2047,8 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
             })
             .await?;
+        let repo = repo_path("/repo");
+        let worktree = repo.join(".git").join("worktrees").join("run-1");
         runtime
             .create_background_agent_worktree_lease(
                 &crate::BackgroundAgentWorktreeLeaseCreateParams {
@@ -2018,8 +2056,8 @@ WHERE worktree_id = ?
                     run_id: "run-1".to_string(),
                     identity: "bg-run-1".to_string(),
                     mode: crate::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                    base_repo_path: "/repo".to_string(),
-                    worktree_path: "/repo/.git/worktrees/run-1".to_string(),
+                    base_repo_path: path_to_db_string(&repo),
+                    worktree_path: path_to_db_string(&worktree),
                     branch: Some("codewith/bg-run-1".to_string()),
                     head_sha: Some("abc123".to_string()),
                     status_snapshot_json: json!({"dirty": false}),
@@ -2129,7 +2167,7 @@ WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
             .upsert_thread(&test_thread_metadata(
                 &codex_home,
                 thread_id,
-                PathBuf::from("/repo-a"),
+                repo_path("/repo-a"),
             ))
             .await?;
         store

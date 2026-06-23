@@ -791,6 +791,7 @@ async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
         "delete then stop",
     )
     .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let delete_id = mcp
@@ -1025,6 +1026,7 @@ async fn worktree_list_without_current_repo_does_not_return_global_worktrees() -
     let state_db = init_state_db(codex_home.path()).await?;
     let other_repo = codex_home.path().join("other-repo");
     create_managed_worktree(state_db.as_ref(), "wt-other-repo", other_repo.as_path()).await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let request_id = mcp
@@ -1064,6 +1066,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             test_summary_json: None,
         })
         .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let list_request_id = mcp
@@ -1072,7 +1075,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let list_response: WorktreeListResponse = read_response(&mut mcp, list_request_id).await?;
     assert_eq!(vec!["wt-current".to_string()], worktree_ids(&list_response));
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         list_response.policy.current_base_repo_path
     );
 
@@ -1087,7 +1090,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let read_other: WorktreeReadResponse = read_response(&mut mcp, read_other_request_id).await?;
     assert_eq!(None, read_other.worktree);
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         read_other.policy.current_base_repo_path
     );
 
@@ -1096,7 +1099,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             "worktree/read",
             Some(json!({
                 "worktreeId": "wt-other",
-                "baseRepoPath": other_repo.display().to_string(),
+                "baseRepoPath": protocol_path(&other_repo),
             })),
         )
         .await?;
@@ -1110,7 +1113,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             .map(|worktree| worktree.worktree_id.clone())
     );
     assert_eq!(
-        Some(other_repo.display().to_string()),
+        Some(protocol_path(&other_repo)),
         read_requested_repo.policy.current_base_repo_path
     );
 
@@ -1304,7 +1307,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert_eq!(1, reconciled.discovered);
     assert!(reconciled.updated >= 1);
     assert!(reconciled.data.iter().any(|worktree| {
-        worktree.worktree_path == manual_path.to_string_lossy()
+        worktree.worktree_path == protocol_path(&manual_path)
             && worktree
                 .identity
                 .as_deref()
@@ -1313,7 +1316,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert!(reconciled.data.iter().any(|worktree| {
         worktree.worktree_id == "outside-root"
             && worktree.lifecycle_status == WorktreeLifecycleStatus::Active
-            && worktree.worktree_path == outside_root_path.to_string_lossy()
+            && worktree.worktree_path == protocol_path(&outside_root_path)
     }));
 
     let cleanup_request_id = mcp
@@ -1965,7 +1968,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "merge candidate\n",
-        std::fs::read_to_string(repo_path.join("feature.txt"))?
+        std::fs::read_to_string(repo_path.join("feature.txt"))?.replace("\r\n", "\n")
     );
     assert_eq!(
         "later work\n",
@@ -2021,17 +2024,29 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         "attach this agent to a worktree",
     )
     .await?;
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-attach",
+            StateBackgroundAgentRunStatus::WaitingOnUser,
+            Some("waiting for attach test"),
+        )
+        .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
-    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
-    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), repo_path.as_path())
-        .await?;
+    let thread_id_string = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach_with_retry(
+        codex_home.path(),
+        thread_id_string.as_str(),
+        repo_path.as_path(),
+    )
+    .await?;
     let attach_request_id = mcp
         .send_raw_request(
             "worktree/attach",
             Some(json!({
                 "worktreeId": "wt-attach",
-                "threadId": thread_id,
+                "threadId": thread_id_string,
                 "agentRunId": null,
             })),
         )
@@ -2039,7 +2054,10 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
     let attach: WorktreeAttachResponse = read_response(&mut mcp, attach_request_id).await?;
     assert_eq!("wt-attach", attach.worktree.worktree_id);
     assert_eq!(WorktreeOwnerKind::MainSession, attach.worktree.owner_kind);
-    assert_eq!(Some(thread_id.clone()), attach.worktree.owner_thread_id);
+    assert_eq!(
+        Some(thread_id_string.clone()),
+        attach.worktree.owner_thread_id
+    );
     assert_eq!(None, attach.worktree.owner_agent_run_id);
 
     let read_request_id = mcp
@@ -2052,7 +2070,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         .await?;
     let read: WorktreeReadResponse = read_response(&mut mcp, read_request_id).await?;
     let worktree = read.worktree.expect("attached worktree should be readable");
-    assert_eq!(Some(thread_id.clone()), worktree.owner_thread_id);
+    assert_eq!(Some(thread_id_string.clone()), worktree.owner_thread_id);
     assert_eq!(None, worktree.owner_agent_run_id);
 
     let detach_request_id = mcp
@@ -2060,7 +2078,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
             "worktree/detach",
             Some(json!({
                 "worktreeId": "wt-attach",
-                "threadId": thread_id,
+                "threadId": thread_id_string,
                 "agentRunId": null,
             })),
         )
@@ -2117,7 +2135,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         "worktree/attach",
         json!({
             "worktreeId": "wt-attach",
-            "threadId": thread_id,
+            "threadId": thread_id_string,
             "agentRunId": "agent-run-1",
         }),
     )
@@ -2276,6 +2294,32 @@ fn git(cwd: &Path, args: &[&str]) -> Result<()> {
     );
 }
 
+fn protocol_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+
+    let path = path.to_string_lossy().into_owned();
+    strip_windows_verbatim_prefix(path)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    path
+}
+
 async fn create_managed_worktree(
     state_db: &codex_state::StateRuntime,
     worktree_id: &str,
@@ -2397,20 +2441,43 @@ async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String
     Ok(response.thread.id)
 }
 
+async fn upsert_thread_for_worktree_attach_with_retry(
+    codex_home: &Path,
+    thread_id: &str,
+    cwd: &Path,
+) -> Result<()> {
+    for attempt in 0..5 {
+        let result = async {
+            let state_db = init_state_db(codex_home).await?;
+            upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id, cwd).await
+        }
+        .await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err) if sqlite_lock_error(&err) && attempt < 4 => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 async fn upsert_thread_for_worktree_attach(
     state_db: &codex_state::StateRuntime,
     thread_id: &str,
     cwd: &Path,
 ) -> Result<()> {
     let thread_id = ThreadId::from_string(thread_id)?;
+    let rollout_path = state_db
+        .codex_home()
+        .join(format!("rollout-{thread_id}.jsonl"));
     let now = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
         .ok_or_else(|| anyhow::anyhow!("timestamp should parse"))?;
     state_db
         .upsert_thread(&codex_state::ThreadMetadata {
             id: thread_id,
-            rollout_path: state_db
-                .codex_home()
-                .join(format!("rollout-{thread_id}.jsonl")),
+            rollout_path,
             created_at: now,
             updated_at: now,
             source: "cli".to_string(),
@@ -2436,6 +2503,14 @@ async fn upsert_thread_for_worktree_attach(
         })
         .await?;
     Ok(())
+}
+
+fn sqlite_lock_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("database is locked")
+        || message.contains("database is busy")
+        || message.contains("code: 5")
+        || message.contains("code: 517")
 }
 
 fn worktree_ids(response: &WorktreeListResponse) -> Vec<String> {

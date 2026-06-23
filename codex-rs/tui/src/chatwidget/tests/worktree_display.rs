@@ -1,4 +1,8 @@
 use super::*;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::TimeZone;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -10,6 +14,8 @@ use codex_app_server_protocol::WorktreeMode;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreePolicy;
 use codex_app_server_protocol::WorktreeSessionMode;
+
+const TEST_BASE_REPO_PATH: &str = "/tmp/project";
 
 #[tokio::test]
 async fn worktree_manager_snapshot() {
@@ -44,7 +50,7 @@ async fn worktree_manager_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_manager",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -86,7 +92,7 @@ async fn worktree_read_selector_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_read_selector",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -111,7 +117,7 @@ async fn worktree_read_selector_emits_read_event_with_repo_scope() {
         Ok(AppEvent::ReadWorktree {
             worktree_id: Some(worktree_id),
             base_repo_path: Some(base_repo_path),
-        }) if worktree_id == "018f-active-worktree" && base_repo_path == test_path_display("/tmp/project")
+        }) if worktree_id == "018f-active-worktree" && base_repo_path == TEST_BASE_REPO_PATH
     );
 }
 
@@ -132,7 +138,7 @@ async fn worktree_actions_snapshot() {
 
     assert_chatwidget_snapshot!(
         "worktree_actions",
-        render_bottom_popup(&chat, /*width*/ 120)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 120))
     );
 }
 
@@ -178,7 +184,7 @@ async fn worktree_actions_use_emits_event_with_repo_scope() {
         Ok(AppEvent::UseWorktree {
             worktree_id,
             base_repo_path: Some(base_repo_path),
-        }) if worktree_id == "018f-actions-worktree" && base_repo_path == test_path_display("/tmp/project")
+        }) if worktree_id == "018f-actions-worktree" && base_repo_path == TEST_BASE_REPO_PATH
     );
 }
 
@@ -198,7 +204,7 @@ async fn worktree_read_detail_snapshot() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert_chatwidget_snapshot!("worktree_read_detail", combined);
+    assert_chatwidget_snapshot!("worktree_read_detail", normalize_snapshot_paths(combined));
 }
 
 fn test_worktree(
@@ -219,37 +225,55 @@ fn test_worktree(
         identity: Some(format!("{owner_kind:?}:{worktree_id}")),
         mode: WorktreeMode::IsolatedWorktree,
         lifecycle_status,
-        base_repo_path: test_path_display("/tmp/project"),
-        worktree_path: test_path_display(&format!(
-            "/tmp/project/.codewith/worktrees/{worktree_id}"
-        )),
+        base_repo_path: TEST_BASE_REPO_PATH.to_string(),
+        worktree_path: format!("{TEST_BASE_REPO_PATH}/.codewith/worktrees/{worktree_id}"),
         branch: Some(format!("codewith/{worktree_id}")),
         base_sha: Some("base-sha-1234567890".to_string()),
         head_sha: Some("head-sha-1234567890".to_string()),
         status_snapshot: json!({"status": "ready", "phase": "review"}),
         dirty: lifecycle_status == WorktreeLifecycleStatus::CleanupPending,
         cleanup_policy,
-        cleanup_after: Some(1_781_776_000),
+        cleanup_after: Some(local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40)),
         force_delete_requested: cleanup_policy == WorktreeCleanupPolicy::ForceDelete,
         owner_kind,
         owner_thread_id: owner_thread_id.map(str::to_string),
         owner_agent_run_id: owner_agent_run_id.map(str::to_string),
-        created_at: 1_781_775_000,
-        updated_at: 1_781_776_000,
-        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active).then_some(1_781_776_100),
-        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted).then_some(1_781_776_200),
+        created_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 30, 0),
+        updated_at: local_timestamp_for_snapshot(2026, 6, 18, 12, 46, 40),
+        released_at: (lifecycle_status != WorktreeLifecycleStatus::Active)
+            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 48, 20)),
+        deleted_at: (lifecycle_status == WorktreeLifecycleStatus::Deleted)
+            .then_some(local_timestamp_for_snapshot(2026, 6, 18, 12, 50, 0)),
         agent: owner_agent_run_id.map(test_agent),
+    }
+}
+
+fn local_timestamp_for_snapshot(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> i64 {
+    let naive = NaiveDate::from_ymd_opt(year, month, day)
+        .expect("valid date")
+        .and_hms_opt(hour, minute, second)
+        .expect("valid time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt.timestamp(),
+        LocalResult::None => naive.and_utc().timestamp(),
     }
 }
 
 fn test_policy() -> WorktreePolicy {
     WorktreePolicy {
         enabled: true,
-        root: Some(test_path_display("/tmp/project/.codewith/worktrees")),
+        root: Some(format!("{TEST_BASE_REPO_PATH}/.codewith/worktrees")),
         cleanup_default: WorktreeCleanupPolicy::DeleteIfClean,
         main_sessions: WorktreeSessionMode::Manual,
         sub_sessions: WorktreeSessionMode::Auto,
-        current_base_repo_path: Some(test_path_display("/tmp/project")),
+        current_base_repo_path: Some(TEST_BASE_REPO_PATH.to_string()),
     }
 }
 

@@ -2171,15 +2171,19 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serial_test::serial;
     use std::sync::Arc;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicUsize;
+    #[cfg(unix)]
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
+    #[cfg(unix)]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
@@ -2190,6 +2194,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             unsafe {
@@ -3209,11 +3214,11 @@ mod tests {
             startup_error.state_db_path(),
             codex_state::state_db_path(occupied_sqlite_home.as_path()).as_path()
         );
+        let detail = startup_error.detail();
         assert!(
-            startup_error
-                .detail()
-                .contains("failed to initialize state runtime"),
-            "startup error should preserve the underlying state db failure"
+            detail.contains("failed to initialize state runtime")
+                || detail.contains("failed to acquire state runtime startup lock"),
+            "startup error should preserve the underlying state runtime failure"
         );
         Ok(())
     }

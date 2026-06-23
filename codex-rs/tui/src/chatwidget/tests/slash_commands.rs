@@ -2,6 +2,10 @@ use super::*;
 use crate::app_event::McpInventoryTarget;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::tmux_handoff::TmuxHandoffDestination;
+use chrono::Local;
+use chrono::LocalResult;
+use chrono::NaiveDate;
+use chrono::TimeZone;
 use codex_app_server_protocol::AgentDesiredState;
 use codex_app_server_protocol::AgentRetentionState;
 use codex_app_server_protocol::AgentRun;
@@ -1734,14 +1738,42 @@ async fn worktree_slash_command_emits_manage_events() {
 async fn background_agent_manager_grouped_roster_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_background_agent_manager(vec![
-        test_background_agent("done-agent", AgentRunStatus::Completed, 3),
-        test_background_agent("run-agent", AgentRunStatus::Running, 2),
-        test_background_agent("wait-agent", AgentRunStatus::WaitingOnUser, 1),
-        test_background_agent("stop-agent", AgentRunStatus::Cancelled, 4),
+        test_background_agent(
+            "done-agent",
+            AgentRunStatus::Completed,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 3),
+        ),
+        test_background_agent(
+            "run-agent",
+            AgentRunStatus::Running,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 2),
+        ),
+        test_background_agent(
+            "wait-agent",
+            AgentRunStatus::WaitingOnUser,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 1),
+        ),
+        test_background_agent(
+            "stop-agent",
+            AgentRunStatus::Cancelled,
+            local_timestamp_for_snapshot(/*hour*/ 2, /*minute*/ 0, /*second*/ 4),
+        ),
     ]);
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert_chatwidget_snapshot!("background_agent_manager_grouped_roster", popup);
+}
+
+fn local_timestamp_for_snapshot(hour: u32, minute: u32, second: u32) -> i64 {
+    let naive = NaiveDate::from_ymd_opt(1970, 1, 1)
+        .expect("valid snapshot date")
+        .and_hms_opt(hour, minute, second)
+        .expect("valid snapshot time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(datetime) => datetime.timestamp(),
+        LocalResult::Ambiguous(datetime, _) => datetime.timestamp(),
+        LocalResult::None => naive.and_utc().timestamp(),
+    }
 }
 
 #[tokio::test]
@@ -2630,6 +2662,24 @@ async fn slash_logout_requests_app_server_logout() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.dispatch_command(SlashCommand::Logout);
+
+    assert!(
+        rx.try_recv().is_err(),
+        "logout should wait for confirmation"
+    );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("slash_logout_confirmation_popup", popup.clone());
+    assert!(
+        popup.contains("Log out of Codewith?"),
+        "expected logout confirmation popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("No, keep working"),
+        "expected non-destructive default option, got:\n{popup}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::Logout));
 }
@@ -3615,6 +3665,22 @@ async fn slash_fork_requests_current_fork() {
     chat.dispatch_command(SlashCommand::Fork);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
+}
+
+#[tokio::test]
+async fn slash_fork_with_thread_but_no_rollout_shows_starting_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command(SlashCommand::Fork);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected fork startup error");
+    assert_chatwidget_snapshot!(
+        "slash_fork_with_thread_but_no_rollout_shows_starting_error",
+        lines_to_single_string(&cells[0])
+    );
+    assert!(rx.try_recv().is_err(), "fork should not call app-server");
 }
 
 #[tokio::test]
