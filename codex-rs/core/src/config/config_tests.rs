@@ -9598,6 +9598,8 @@ model = "gpt-5.4"
 auto_execute = "ai-directed"
 max_auto_goals_per_plan = 9999
 max_tokens_per_goal_plan = 123456
+post_goal_context = "compact"
+post_goal_plan_context = "compact"
 "#,
     )
     .expect("TOML deserialization should succeed for goals config");
@@ -9615,6 +9617,14 @@ max_tokens_per_goal_plan = 123456
         config.goals.max_auto_goals_per_plan
     );
     assert_eq!(Some(123456), config.goals.max_tokens_per_goal_plan);
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_context
+    );
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_plan_context
+    );
     Ok(())
 }
 

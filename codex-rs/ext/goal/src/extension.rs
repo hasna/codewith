@@ -53,6 +53,8 @@ pub struct GoalExtensionConfig {
     pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub max_auto_goals_per_plan: usize,
     pub max_tokens_per_goal_plan: Option<i64>,
+    pub post_goal_context: codex_state::PostGoalContextAction,
+    pub post_goal_plan_context: codex_state::PostGoalContextAction,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,8 @@ where
                     auto_execute: config.auto_execute,
                     max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                     max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                    post_goal_context: config.post_goal_context,
+                    post_goal_plan_context: config.post_goal_plan_context,
                 },
             )
         });
@@ -133,6 +137,8 @@ where
             auto_execute: config.auto_execute,
             max_auto_goals_per_plan: config.max_auto_goals_per_plan,
             max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+            post_goal_context: config.post_goal_context,
+            post_goal_plan_context: config.post_goal_plan_context,
         });
         self.goal_service.register_runtime(&runtime);
     }
@@ -154,6 +160,21 @@ where
         let Some(runtime) = goal_runtime_handle(input.thread_store) else {
             return;
         };
+
+        match runtime.drain_pending_context_compaction_if_idle().await {
+            Ok(Some(report)) => {
+                tracing::info!("{report}");
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    "failed to run pending post-goal context compaction for idle thread {}: {err}",
+                    runtime.thread_id()
+                );
+                return;
+            }
+        }
 
         if let Err(err) = runtime.continue_if_idle().await {
             tracing::warn!(
@@ -190,6 +211,8 @@ where
                 auto_execute: config.auto_execute,
                 max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                post_goal_context: config.post_goal_context,
+                post_goal_plan_context: config.post_goal_plan_context,
             });
         }
     }

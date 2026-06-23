@@ -1078,6 +1078,22 @@
           "format": "int64",
           "minimum": 1.0,
           "type": "integer"
+        },
+        "post_goal_context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PostGoalContextActionToml"
+            }
+          ],
+          "description": "Context lifecycle action after a completed goal when no next goal is immediately activated."
+        },
+        "post_goal_plan_context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PostGoalContextActionToml"
+            }
+          ],
+          "description": "Context lifecycle action after a goal plan completes."
         }
       },
       "type": "object"
@@ -2377,6 +2393,13 @@
         }
       },
       "type": "object"
+    },
+    "PostGoalContextActionToml": {
+      "enum": [
+        "keep",
+        "compact"
+      ],
+      "type": "string"
     },
     "ProfileTui": {
       "additionalProperties": false,

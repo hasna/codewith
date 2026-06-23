@@ -1,6 +1,7 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+use crate::codex_thread::TryStartUserInputTurnIfIdleError;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::test_config;
@@ -2722,6 +2723,8 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         workspace_roots: None,
         current_date: turn_context.current_date.clone(),
         timezone: turn_context.timezone.clone(),
+        machine_id: None,
+        machine_name: None,
         approval_policy: turn_context.approval_policy.value(),
         sandbox_policy: turn_context.sandbox_policy(),
         permission_profile: None,
@@ -3809,6 +3812,17 @@ async fn build_test_config(codex_home: &Path) -> Config {
         .build()
         .await
         .expect("load default test config")
+}
+
+fn api_key_auth_dot_json_for_tests(api_key: &str) -> codex_login::AuthDotJson {
+    codex_login::AuthDotJson {
+        auth_mode: Some(codex_app_server_protocol::AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+    }
 }
 
 fn session_telemetry(
@@ -5179,6 +5193,101 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
 }
 
 #[tokio::test]
+async fn user_input_auth_profile_override_switches_auth_manager() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    assert_eq!(None, session.services.auth_manager.selected_auth_profile());
+
+    session
+        .new_turn_with_sub_id(
+            "auth-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("work"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(
+        Some("work-key"),
+        session
+            .services
+            .auth_manager
+            .auth_cached()
+            .expect("work auth should be cached")
+            .api_key()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_input_external_subscription_profile_override_updates_selection_without_openai_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "claude",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    let turn_context = session
+        .new_turn_with_sub_id(
+            "external-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("claude".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("claude"),
+        turn_context.config.selected_auth_profile.as_deref()
+    );
+    assert_eq!(
+        Some("claude"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(None, session.services.auth_manager.auth_cached());
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let mut config = build_test_config(codex_home.path()).await;
@@ -5487,6 +5596,7 @@ async fn make_session_and_context_with_events()
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -7386,7 +7496,8 @@ where
     let state_db = None;
     let config = Arc::new(config);
     let thread_id = ThreadId::default();
-    let auth_manager = AuthManager::from_auth_for_testing(auth);
+    let auth_manager =
+        AuthManager::from_auth_for_testing_with_home(auth, config.codex_home.to_path_buf());
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         auth_manager.clone(),
@@ -7575,6 +7686,7 @@ where
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -7833,6 +7945,48 @@ async fn build_settings_update_items_emits_environment_item_for_time_changes() {
         .expect("environment update item should be emitted");
     assert!(environment_update.contains("<current_date>2026-02-27</current_date>"));
     assert!(environment_update.contains("<timezone>Europe/Berlin</timezone>"));
+}
+
+#[tokio::test]
+async fn build_settings_update_items_emits_environment_item_for_machine_changes() {
+    let (session, previous_context) = make_session_and_context().await;
+    let previous_context = Arc::new(previous_context);
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.machine_id = "current-machine".to_string();
+    current_context.machine_name = Some("spark02".to_string());
+
+    let mut reference_context_item = previous_context.to_turn_context_item();
+    reference_context_item.machine_id = Some("previous-machine".to_string());
+    reference_context_item.machine_name = Some("spark01".to_string());
+    let update_items = session
+        .build_settings_update_items(Some(&reference_context_item), &current_context)
+        .await;
+
+    let environment_update = user_input_texts(&update_items)
+        .into_iter()
+        .find(|text| text.contains("<environment_context>"))
+        .expect("environment update item should be emitted");
+    assert!(
+        environment_update
+            .contains("<machine><id>current-machine</id><name>spark02</name></machine>")
+    );
+
+    let updated_reference_context_item = current_context.to_turn_context_item();
+    let repeated_update_items = session
+        .build_settings_update_items(Some(&updated_reference_context_item), &current_context)
+        .await;
+    let repeated_user_texts = user_input_texts(&repeated_update_items);
+    assert!(
+        !repeated_user_texts
+            .iter()
+            .any(|text| text.contains("<environment_context>")),
+        "did not expect machine context to be re-emitted after baseline update, got {repeated_user_texts:?}"
+    );
 }
 
 #[tokio::test]
@@ -8584,6 +8738,19 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
 
     let item = turn_context.to_turn_context_item();
 
+    assert_eq!(
+        item.machine_id,
+        Some("11111111-1111-4111-8111-111111111111".to_string())
+    );
+    assert_eq!(
+        item.machine_name,
+        codex_config::host_name().map(|host_name| {
+            host_name
+                .split_once('.')
+                .map_or(host_name.as_str(), |(short_name, _)| short_name)
+                .to_string()
+        })
+    );
     assert_eq!(item.file_system_sandbox_policy, None);
     assert_eq!(
         item.permission_profile,
@@ -9524,6 +9691,71 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_active_turn_without_switching_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (sess, tc, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-turn".to_string(),
+            vec![UserInput::Text {
+                text: "scheduled".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("active turn should reject scheduled idle-only input");
+
+    assert!(matches!(
+        err,
+        TryStartUserInputTurnIfIdleError::Rejected(TryStartTurnIfIdleRejectionReason::Busy)
+    ));
+    assert_eq!(None, sess.services.auth_manager.selected_auth_profile());
+    assert_eq!(
+        Some("root-key"),
+        sess.services
+            .auth_manager
+            .auth_cached()
+            .expect("root auth should remain cached")
+            .api_key()
+    );
+    assert_eq!(
+        Vec::<TurnInput>::new(),
+        sess.input_queue.get_pending_input(&sess.active_turn).await
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    Ok(())
 }
 
 #[tokio::test]

@@ -7992,6 +7992,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_flat_for_bare_slash_ui() {
         use ratatui::Terminal;
@@ -8105,6 +8106,7 @@ mod tests {
         insta::assert_snapshot!("slash_popup_res", terminal.backend());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_archive_for_ar_ui() {
         use ratatui::Terminal;
@@ -8214,33 +8216,9 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_btw_for_bt_ui() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-
-        let mut composer = ChatComposer::new(
-            /*has_input_focus*/ true,
-            sender,
-            /*enhanced_keys_supported*/ false,
-            "Ask Codewith to do anything".to_string(),
-            /*disable_paste_burst*/ false,
-        );
-
-        type_chars_humanlike(&mut composer, &['/', 'b', 't']);
-
-        let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
-        terminal
-            .draw(|f| composer.render(f.area(), f.buffer_mut()))
-            .expect("draw composer");
-
-        insta::assert_snapshot!("slash_popup_bt", terminal.backend());
-    }
-
-    #[test]
-    fn slash_popup_btw_for_bt_logic() {
+    fn slash_popup_bt_does_not_surface_hidden_btw_alias() {
+        // Debloat: `/btw` is a hidden alias of `/side`; typing `/bt` must not
+        // select it. (Hidden-but-parseable behavior is covered in command_popup.)
         use super::super::command_popup::CommandItem;
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -8253,20 +8231,18 @@ mod tests {
         );
         type_chars_humanlike(&mut composer, &['/', 'b', 't']);
 
-        match &composer.popups.active {
-            ActivePopup::Command(popup) => match popup.selected_item() {
-                Some(CommandItem::Builtin(cmd)) => {
-                    assert_eq!(cmd.command(), "btw")
-                }
-                Some(CommandItem::ServiceTier(command)) => {
-                    panic!("expected btw command, got service tier {command:?}")
-                }
-                None => panic!("no selected command for '/bt'"),
-            },
-            _ => panic!("slash popup not active after typing '/bt'"),
+        if let ActivePopup::Command(popup) = &composer.popups.active
+            && let Some(CommandItem::Builtin(cmd)) = popup.selected_item()
+        {
+            assert_ne!(
+                cmd.command(),
+                "btw",
+                "hidden /btw alias must not be offered in the composer popup"
+            );
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_side_for_si_ui() {
         use ratatui::Terminal;

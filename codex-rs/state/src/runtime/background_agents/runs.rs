@@ -707,6 +707,147 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
         Ok(finalized)
     }
 
+    pub async fn finalize_stopped_background_agent_process(
+        &self,
+        run_id: &str,
+        supervisor_id: &str,
+        generation: i64,
+        status_reason: &str,
+        event_payload_json: &serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            r#"
+UPDATE background_agent_runs
+SET
+    status = ?,
+    status_reason = ?,
+    updated_at = ?,
+    completed_at = COALESCE(completed_at, ?)
+WHERE
+    id = ?
+    AND supervisor_id = ?
+    AND generation = ?
+    AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user', 'stopping')
+    AND (desired_state != ? OR retention_state = ?)
+            "#,
+        )
+        .bind(BackgroundAgentRunStatus::Cancelled.as_str())
+        .bind(status_reason)
+        .bind(now)
+        .bind(now)
+        .bind(run_id)
+        .bind(supervisor_id)
+        .bind(generation)
+        .bind(BackgroundAgentDesiredState::Running.as_str())
+        .bind(crate::BackgroundAgentRetentionState::DeleteRequested.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            r#"
+UPDATE background_agent_process_leases
+SET
+    status = 'stopped',
+    exit_reason = COALESCE(exit_reason, ?),
+    updated_at = ?,
+    stopped_at = COALESCE(stopped_at, ?)
+WHERE run_id = ? AND supervisor_id = ? AND generation = ?
+            "#,
+        )
+        .bind(status_reason)
+        .bind(now)
+        .bind(now)
+        .bind(run_id)
+        .bind(supervisor_id)
+        .bind(generation)
+        .execute(&mut *tx)
+        .await?;
+
+        super::interactions::terminalize_active_background_agent_pending_interactions_in_tx(
+            &mut tx,
+            run_id,
+            BackgroundAgentPendingInteractionStatus::Cancelled,
+            event_payload_json,
+            now,
+        )
+        .await?;
+        append_terminal_stale_background_agent_status_in_tx(
+            &mut tx,
+            run_id,
+            BackgroundAgentRunStatus::Cancelled,
+            status_reason,
+            "agent.cancelled",
+            event_payload_json,
+            now,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    pub async fn fail_unclaimed_background_agent_process_spawn(
+        &self,
+        run_id: &str,
+        status_reason: &str,
+        event_payload_json: &serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            r#"
+UPDATE background_agent_runs
+SET
+    status = ?,
+    status_reason = ?,
+    crash_reason = COALESCE(crash_reason, ?),
+    updated_at = ?,
+    completed_at = COALESCE(completed_at, ?)
+WHERE
+    id = ?
+    AND desired_state = ?
+    AND retention_state = ?
+    AND status = ?
+    AND supervisor_id IS NULL
+            "#,
+        )
+        .bind(BackgroundAgentRunStatus::Failed.as_str())
+        .bind(status_reason)
+        .bind(status_reason)
+        .bind(now)
+        .bind(now)
+        .bind(run_id)
+        .bind(BackgroundAgentDesiredState::Running.as_str())
+        .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+        .bind(BackgroundAgentRunStatus::Queued.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        append_terminal_stale_background_agent_status_in_tx(
+            &mut tx,
+            run_id,
+            BackgroundAgentRunStatus::Failed,
+            status_reason,
+            "agent.failed",
+            event_payload_json,
+            now,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn claim_background_agent_supervisor(
         &self,
         run_id: &str,

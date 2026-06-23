@@ -2,6 +2,7 @@ use super::*;
 use crate::model::MachineEndpointRow;
 use crate::model::MachineRecordRow;
 use std::collections::BTreeSet;
+use std::future::Future;
 use uuid::Uuid;
 
 pub const DEFAULT_MACHINE_REGISTRY_LIST_LIMIT: u32 = 50;
@@ -73,6 +74,17 @@ struct NormalizedEndpoint {
 
 impl MachineRegistryStore {
     pub async fn upsert_machine(
+        &self,
+        params: MachineRegistryUpsertParams,
+    ) -> anyhow::Result<crate::MachineRecord> {
+        retry_transient_sqlite_busy("upsert machine registry", || {
+            let params = params.clone();
+            async move { self.upsert_machine_once(params).await }
+        })
+        .await
+    }
+
+    async fn upsert_machine_once(
         &self,
         params: MachineRegistryUpsertParams,
     ) -> anyhow::Result<crate::MachineRecord> {
@@ -166,9 +178,11 @@ ON CONFLICT(machine_id) DO UPDATE SET
         }
 
         tx.commit().await?;
-        self.get_machine(machine_id.as_str())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("machine registry upsert did not return a row"))
+        retry_transient_sqlite_busy("read machine registry upsert result", || {
+            self.get_machine(machine_id.as_str())
+        })
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("machine registry upsert did not return a row"))
     }
 
     pub async fn get_machine(
@@ -300,7 +314,10 @@ WHERE machine_id = ? AND forgotten_at_ms IS NULL
         if result.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get_machine(machine_id).await
+        retry_transient_sqlite_busy("read machine registry trust update result", || {
+            self.get_machine(machine_id)
+        })
+        .await
     }
 
     pub async fn forget_machine(&self, machine_id: &str) -> anyhow::Result<bool> {
@@ -563,6 +580,50 @@ fn machine_endpoint_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> anyhow::Result<crate::MachineEndpoint> {
     MachineEndpointRow::try_from_row(row)?.try_into()
+}
+
+async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    let mut delay = std::time::Duration::from_millis(25);
+    for attempt in 0..5 {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
+                tracing::debug!(
+                    operation,
+                    attempt = attempt + 1,
+                    "retrying machine registry operation after SQLite busy: {err}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("retry loop should return on success or final error")
+}
+
+fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<sqlx::Error>()
+            .is_some_and(is_transient_sqlx_busy)
+    })
+}
+
+fn is_transient_sqlx_busy(err: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(database_err) = err else {
+        return false;
+    };
+    let code = database_err.code();
+    matches!(code.as_deref(), Some("5" | "517"))
+        || matches!(
+            database_err.message(),
+            "database is locked" | "database is busy"
+        )
 }
 
 #[cfg(test)]

@@ -338,7 +338,11 @@ impl MessageProcessor {
                 environment_manager,
                 thread_extensions(
                     guardian_agent_spawner(thread_manager.clone()),
-                    app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone()),
+                    app_server_extension_event_sink(
+                        outgoing.clone(),
+                        thread_state_manager.clone(),
+                        state_db.clone(),
+                    ),
                     auth_manager.clone(),
                     state_db.clone(),
                     thread_manager.clone(),
@@ -1536,6 +1540,21 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
+            }
+            ClientRequest::ThreadQueuedMessageList { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_list(params)
+                    .await
+            }
+            ClientRequest::ThreadQueuedMessageUpdate { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_update(params)
+                    .await
+            }
+            ClientRequest::ThreadQueuedMessageMove { params, .. } => {
+                self.thread_processor
+                    .thread_queued_message_move(params)
+                    .await
             }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await

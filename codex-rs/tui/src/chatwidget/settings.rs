@@ -10,6 +10,15 @@ use codex_login::load_auth_profile;
 use codex_login::load_auth_profile_metadata;
 use codex_model_provider_info::ModelProviderInfo;
 
+fn goal_plan_involves_thread(plan: &AppThreadGoalPlan, thread_id: ThreadId) -> bool {
+    let thread_id = thread_id.to_string();
+    plan.thread_id == thread_id
+        || plan
+            .nodes
+            .iter()
+            .any(|node| node.assigned_thread_id == thread_id)
+}
+
 fn resolved_auth_status_mode(auth: &AuthDotJson) -> AuthMode {
     if let Some(mode) = auth.auth_mode {
         return mode;
@@ -876,7 +885,7 @@ impl ChatWidget {
 
     pub(crate) fn on_thread_goal_plan_updated(&mut self, plan: AppThreadGoalPlan) {
         if let Some(active_thread_id) = self.thread_id
-            && active_thread_id.to_string() != plan.thread_id
+            && !goal_plan_involves_thread(&plan, active_thread_id)
         {
             return;
         }

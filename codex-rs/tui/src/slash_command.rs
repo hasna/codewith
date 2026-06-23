@@ -31,6 +31,13 @@ pub enum SlashCommand {
     Skills,
     Hooks,
     Review,
+    #[strum(
+        to_string = "pr",
+        serialize = "prs",
+        serialize = "pull-request",
+        serialize = "pull-requests"
+    )]
+    Pr,
     Rename,
     New,
     Archive,
@@ -51,6 +58,7 @@ pub enum SlashCommand {
     MissionControl,
     Workflow,
     Loop,
+    Queued,
     Schedule,
     Monitor,
     #[strum(
@@ -95,8 +103,6 @@ pub enum SlashCommand {
     Feedback,
     Rollout,
     Ps,
-    #[strum(to_string = "stop", serialize = "clean")]
-    Stop,
     Clear,
     Personality,
     Realtime,
@@ -104,11 +110,6 @@ pub enum SlashCommand {
     TestApproval,
     #[strum(serialize = "subagents")]
     MultiAgents,
-    // Debugging commands.
-    #[strum(serialize = "debug-m-drop")]
-    MemoryDrop,
-    #[strum(serialize = "debug-m-update")]
-    MemoryUpdate,
 }
 
 impl SlashCommand {
@@ -121,6 +122,7 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Recap => "show a one-line summary or answer a session recap question",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Pr => "inspect GitHub pull requests",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Tmux => "move this session into tmux",
@@ -145,9 +147,6 @@ impl SlashCommand {
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Pets => "choose or hide the terminal pet",
             SlashCommand::Ps => "list background terminals",
-            SlashCommand::Stop => "stop all background terminals",
-            SlashCommand::MemoryDrop => "DO NOT USE",
-            SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Profile => "choose the auth profile for this session",
             SlashCommand::Provider => "choose the default model provider",
@@ -163,6 +162,7 @@ impl SlashCommand {
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
+            SlashCommand::Queued => "view and manage queued messages",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
             SlashCommand::Session => "switch the active session or agent thread",
@@ -209,6 +209,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
+                | SlashCommand::Queued
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Agent
@@ -269,9 +270,7 @@ impl SlashCommand {
             | SlashCommand::Review
             | SlashCommand::Plan
             | SlashCommand::Clear
-            | SlashCommand::Logout
-            | SlashCommand::MemoryDrop
-            | SlashCommand::MemoryUpdate => false,
+            | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Copy
             | SlashCommand::Raw
@@ -285,13 +284,14 @@ impl SlashCommand {
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
+            | SlashCommand::Pr
             | SlashCommand::Ps
-            | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
+            | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::BackgroundAgent
@@ -325,7 +325,14 @@ impl SlashCommand {
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
-            SlashCommand::BackgroundAgent | SlashCommand::MultiAgents => false,
+            // Hidden aliases: these still parse and dispatch (see
+            // `find_builtin_command`) but are kept out of the completion popup to
+            // debloat it. `/exit`→`/quit`, `/btw`→`/side`, `/stats`→`/status`.
+            SlashCommand::BackgroundAgent
+            | SlashCommand::MultiAgents
+            | SlashCommand::Exit
+            | SlashCommand::Btw
+            | SlashCommand::Stats => false,
             _ => true,
         }
     }
@@ -347,13 +354,38 @@ mod tests {
     use super::SlashCommand;
 
     #[test]
-    fn stop_command_is_canonical_name() {
-        assert_eq!(SlashCommand::Stop.command(), "stop");
+    fn removed_commands_no_longer_parse() {
+        // Debloat: `/stop` (+ `/clean` alias) and the dead `/debug-m-*` stubs were
+        // removed entirely. `/clear` is the surviving "start fresh" command.
+        assert!(SlashCommand::from_str("stop").is_err());
+        assert!(SlashCommand::from_str("clean").is_err());
+        assert!(SlashCommand::from_str("debug-m-drop").is_err());
+        assert!(SlashCommand::from_str("debug-m-update").is_err());
+        assert_eq!(SlashCommand::from_str("clear"), Ok(SlashCommand::Clear));
     }
 
     #[test]
-    fn clean_alias_parses_to_stop_command() {
-        assert_eq!(SlashCommand::from_str("clean"), Ok(SlashCommand::Stop));
+    fn hidden_duplicate_aliases_parse_but_are_not_listed() {
+        // `/exit`, `/btw`, `/stats` still dispatch (they parse) but are kept out
+        // of the completion popup to debloat it; their canonical twins stay.
+        for (alias, canonical) in [
+            (SlashCommand::Exit, SlashCommand::Quit),
+            (SlashCommand::Btw, SlashCommand::Side),
+            (SlashCommand::Stats, SlashCommand::Status),
+        ] {
+            assert_eq!(SlashCommand::from_str(alias.command()), Ok(alias));
+            let listed = super::built_in_slash_commands();
+            assert!(
+                !listed.iter().any(|(_, c)| *c == alias),
+                "/{} should be hidden from the popup",
+                alias.command()
+            );
+            assert!(
+                listed.iter().any(|(_, c)| *c == canonical),
+                "/{} should remain listed",
+                canonical.command()
+            );
+        }
     }
 
     #[test]
@@ -370,6 +402,24 @@ mod tests {
             SlashCommand::Mcp.description(),
             "open the MCP control center"
         );
+    }
+
+    #[test]
+    fn pr_command_has_pull_request_aliases() {
+        assert_eq!(SlashCommand::Pr.command(), "pr");
+        assert_eq!(SlashCommand::from_str("prs"), Ok(SlashCommand::Pr));
+        assert_eq!(SlashCommand::from_str("pull-request"), Ok(SlashCommand::Pr));
+        assert_eq!(
+            SlashCommand::from_str("pull-requests"),
+            Ok(SlashCommand::Pr)
+        );
+        assert_eq!(
+            SlashCommand::Pr.description(),
+            "inspect GitHub pull requests"
+        );
+        assert!(SlashCommand::Pr.available_during_task());
+        assert!(!SlashCommand::Pr.available_in_side_conversation());
+        assert!(!SlashCommand::Pr.supports_inline_args());
     }
 
     #[test]
@@ -416,6 +466,8 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Queued.available_during_task());
+        assert!(SlashCommand::Queued.supports_inline_args());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
@@ -438,8 +490,10 @@ mod tests {
             SlashCommand::Profile,
             SlashCommand::Goal,
             SlashCommand::Loop,
+            SlashCommand::Queued,
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
+            SlashCommand::Pr,
             SlashCommand::Worktree,
             SlashCommand::Status,
             SlashCommand::Statusline,

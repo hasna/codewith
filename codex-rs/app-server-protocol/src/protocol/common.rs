@@ -1033,6 +1033,21 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
     },
+    ThreadQueuedMessageList => "thread/queuedMessage/list" {
+        params: v2::ThreadQueuedMessageListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageListResponse,
+    },
+    ThreadQueuedMessageUpdate => "thread/queuedMessage/update" {
+        params: v2::ThreadQueuedMessageUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageUpdateResponse,
+    },
+    ThreadQueuedMessageMove => "thread/queuedMessage/move" {
+        params: v2::ThreadQueuedMessageMoveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageMoveResponse,
+    },
     #[experimental("thread/externalAgent/start")]
     ThreadExternalAgentStart => "thread/externalAgent/start" {
         params: v2::ThreadExternalAgentStartParams,

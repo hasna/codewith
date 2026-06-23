@@ -119,9 +119,9 @@ RETURNING
             insert_mailbox_receipt(
                 &mut tx,
                 &message,
-                None,
+                /*attempt_id*/ None,
                 crate::MailboxReceiptKind::Enqueued,
-                None,
+                /*payload_json*/ None,
                 now_ms,
             )
             .await?;
@@ -176,8 +176,13 @@ RETURNING
         &self,
         params: MailboxDispatchClaimParams,
     ) -> anyhow::Result<Option<MailboxClaim>> {
-        self.claim_next_message_inner(None, params.lease_owner, params.lease_duration, params.now)
-            .await
+        self.claim_next_message_inner(
+            /*target_thread_id*/ None,
+            params.lease_owner,
+            params.lease_duration,
+            params.now,
+        )
+        .await
     }
 
     async fn claim_next_message_inner(
@@ -282,7 +287,7 @@ RETURNING
             &message,
             Some(attempt.attempt_id.as_str()),
             crate::MailboxReceiptKind::Claimed,
-            None,
+            /*payload_json*/ None,
             now_ms,
         )
         .await?;

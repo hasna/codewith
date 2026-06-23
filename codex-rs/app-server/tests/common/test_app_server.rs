@@ -160,6 +160,19 @@ impl TestAppServer {
         Self::new_with_env_and_args(codex_home, &[], &[DISABLE_PLUGIN_STARTUP_TASKS_ARG]).await
     }
 
+    pub async fn new_with_cwd(codex_home: &Path, cwd: &Path) -> anyhow::Result<Self> {
+        let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
+            .context("should find binary for codex-app-server")?;
+        Self::new_with_program_cwd_env_and_args(
+            codex_home,
+            cwd,
+            &program,
+            &[],
+            &[DISABLE_PLUGIN_STARTUP_TASKS_ARG],
+        )
+        .await
+    }
+
     pub async fn new_without_managed_config(codex_home: &Path) -> anyhow::Result<Self> {
         Self::new_with_env(codex_home, &[(DISABLE_MANAGED_CONFIG_ENV_VAR, Some("1"))]).await
     }
@@ -237,12 +250,29 @@ impl TestAppServer {
         env_overrides: &[(&str, Option<&str>)],
         args: &[&str],
     ) -> anyhow::Result<Self> {
+        Self::new_with_program_cwd_env_and_args(
+            codex_home,
+            codex_home,
+            program,
+            env_overrides,
+            args,
+        )
+        .await
+    }
+
+    async fn new_with_program_cwd_env_and_args(
+        codex_home: &Path,
+        cwd: &Path,
+        program: &Path,
+        env_overrides: &[(&str, Option<&str>)],
+        args: &[&str],
+    ) -> anyhow::Result<Self> {
         let mut cmd = Command::new(program);
 
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        cmd.current_dir(codex_home);
+        cmd.current_dir(cwd);
         cmd.env("CODEWITH_HOME", codex_home);
         cmd.env("CODEX_HOME", codex_home);
         cmd.env("RUST_LOG", "warn");

@@ -1675,6 +1675,7 @@ async fn stopped_usage_limited_turn_auto_switches_before_next_prompt_after_being
 async fn usage_limit_self_heal_retries_failed_turn_after_reset() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     configure_test_session(&mut chat);
+    chat.config.usage_self_heal.enabled = true;
     chat.config.usage_self_heal.max_retries = 2;
     chat.config.usage_self_heal.enabled = true;
     chat.config.usage_self_heal.reset_retry_buffer_secs = 0;
@@ -1734,6 +1735,7 @@ async fn usage_self_heal_does_not_retry_when_auth_profile_switch_is_pending() {
     chat.config.auth_profile_auto_switch.enabled = true;
     chat.config.auth_profile_auto_switch.profiles =
         vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_self_heal.enabled = true;
     configure_test_session(&mut chat);
     drain_insert_history(&mut rx);
 
