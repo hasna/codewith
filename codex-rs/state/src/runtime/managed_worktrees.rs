@@ -111,6 +111,7 @@ impl ManagedWorktreeStore {
     ) -> anyhow::Result<u64> {
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
 UPDATE managed_worktree_assignments
@@ -121,8 +122,31 @@ WHERE thread_id = ?
         )
         .bind(now_ms)
         .bind(thread_id.to_string())
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            r#"
+UPDATE managed_worktrees
+SET
+    owner_kind = ?,
+    owner_thread_id = NULL,
+    owner_agent_run_id = NULL,
+    updated_at_ms = ?
+WHERE owner_thread_id = ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM managed_worktree_assignments AS assignment
+    WHERE assignment.worktree_id = managed_worktrees.worktree_id
+      AND assignment.detached_at_ms IS NULL
+  )
+            "#,
+        )
+        .bind(crate::ManagedWorktreeOwnerKind::Manual.as_str())
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 
@@ -751,7 +775,8 @@ WHERE worktree_id = ?
         let lifecycle_status = if deleted_at_ms.is_some() {
             crate::ManagedWorktreeLifecycleStatus::Deleted
         } else if mode == crate::ManagedWorktreeMode::IsolatedWorktree
-            && params.cleanup_policy != crate::ManagedWorktreeCleanupPolicy::Retain
+            && (force_delete_requested
+                || params.cleanup_policy != crate::ManagedWorktreeCleanupPolicy::Retain)
         {
             crate::ManagedWorktreeLifecycleStatus::CleanupPending
         } else {
@@ -890,6 +915,26 @@ WHERE id = ?
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+UPDATE managed_worktree_merge_candidates
+SET
+    status = ?,
+    updated_at_ms = ?,
+    dismissed_at_ms = COALESCE(dismissed_at_ms, ?)
+WHERE worktree_id = ?
+  AND status IN ('open', 'blocked')
+  AND head_sha <> ?
+            "#,
+        )
+        .bind(crate::ManagedWorktreeMergeCandidateStatus::Dismissed.as_str())
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(params.worktree_id.as_str())
+        .bind(params.head_sha.as_str())
+        .execute(&mut *tx)
+        .await?;
         let sql = format!(
             r#"
 INSERT INTO managed_worktree_merge_candidates (
@@ -934,9 +979,11 @@ RETURNING
             .bind(test_summary_json)
             .bind(now_ms)
             .bind(now_ms)
-            .fetch_one(self.pool.as_ref())
+            .fetch_one(&mut *tx)
             .await?;
-        managed_worktree_merge_candidate_from_row(&row)
+        let candidate = managed_worktree_merge_candidate_from_row(&row)?;
+        tx.commit().await?;
+        Ok(candidate)
     }
 
     pub async fn list_merge_candidates(
@@ -1015,6 +1062,39 @@ RETURNING
             .bind(status == crate::ManagedWorktreeMergeCandidateStatus::Applied)
             .bind(now_ms)
             .bind(status == crate::ManagedWorktreeMergeCandidateStatus::Dismissed)
+            .bind(now_ms)
+            .bind(candidate_id)
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+        row.map(|row| managed_worktree_merge_candidate_from_row(&row))
+            .transpose()
+    }
+
+    pub async fn dismiss_merge_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> anyhow::Result<Option<crate::ManagedWorktreeMergeCandidate>> {
+        if candidate_id.trim().is_empty() {
+            anyhow::bail!("managed worktree merge candidate id cannot be empty");
+        }
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let sql = format!(
+            r#"
+UPDATE managed_worktree_merge_candidates
+SET
+    status = ?,
+    updated_at_ms = ?,
+    dismissed_at_ms = COALESCE(dismissed_at_ms, ?)
+WHERE candidate_id = ?
+  AND status IN ('open', 'blocked')
+RETURNING
+{}
+            "#,
+            managed_worktree_merge_candidate_select_columns()
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(crate::ManagedWorktreeMergeCandidateStatus::Dismissed.as_str())
+            .bind(now_ms)
             .bind(now_ms)
             .bind(candidate_id)
             .fetch_optional(self.pool.as_ref())
@@ -1847,6 +1927,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_delete_release_overrides_retain_cleanup_policy() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-a", "/repo-a"))
+            .await?;
+
+        let released = store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: "wt-a".to_string(),
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::Retain,
+                force_delete: true,
+                status_snapshot_json: json!({"dirty": false}),
+                dirty: false,
+            })
+            .await?
+            .expect("worktree should exist");
+
+        assert_eq!(
+            crate::ManagedWorktreeLifecycleStatus::CleanupPending,
+            released.lifecycle_status
+        );
+        assert_eq!(
+            crate::ManagedWorktreeCleanupPolicy::Retain,
+            released.cleanup_policy
+        );
+        assert!(released.force_delete_requested);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn release_rejects_active_assignment() -> anyhow::Result<()> {
         let runtime = test_runtime().await;
         let store = runtime.managed_worktrees();
@@ -2219,5 +2331,134 @@ WHERE worktree_id = ?
         assert_eq!(reopened.candidate_id, "candidate-3");
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn refreshed_merge_candidate_supersedes_stale_open_candidate() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-a", "/repo-a"))
+            .await?;
+
+        let stale = store
+            .record_merge_candidate(ManagedWorktreeMergeCandidateRecordParams {
+                candidate_id: Some("candidate-stale".to_string()),
+                worktree_id: "wt-a".to_string(),
+                target_ref: "HEAD".to_string(),
+                target_sha: Some("target-sha".to_string()),
+                base_sha: "base-sha".to_string(),
+                head_sha: "head-sha-old".to_string(),
+                status: crate::ManagedWorktreeMergeCandidateStatus::Open,
+                conflict_summary: None,
+                test_summary_json: None,
+            })
+            .await?;
+        assert_eq!("candidate-stale", stale.candidate_id);
+        let stale_other_target = store
+            .record_merge_candidate(ManagedWorktreeMergeCandidateRecordParams {
+                candidate_id: Some("candidate-stale-other-target".to_string()),
+                worktree_id: "wt-a".to_string(),
+                target_ref: "refs/heads/release".to_string(),
+                target_sha: Some("release-target-sha".to_string()),
+                base_sha: "base-sha".to_string(),
+                head_sha: "head-sha-old".to_string(),
+                status: crate::ManagedWorktreeMergeCandidateStatus::Open,
+                conflict_summary: None,
+                test_summary_json: None,
+            })
+            .await?;
+        assert_eq!(
+            "candidate-stale-other-target",
+            stale_other_target.candidate_id
+        );
+
+        let current = store
+            .record_merge_candidate(ManagedWorktreeMergeCandidateRecordParams {
+                candidate_id: Some("candidate-current".to_string()),
+                worktree_id: "wt-a".to_string(),
+                target_ref: "HEAD".to_string(),
+                target_sha: Some("target-sha".to_string()),
+                base_sha: "base-sha".to_string(),
+                head_sha: "head-sha-new".to_string(),
+                status: crate::ManagedWorktreeMergeCandidateStatus::Open,
+                conflict_summary: None,
+                test_summary_json: None,
+            })
+            .await?;
+        assert_eq!("candidate-current", current.candidate_id);
+
+        assert_eq!(
+            vec![current],
+            store
+                .list_merge_candidates(
+                    "wt-a",
+                    Some(crate::ManagedWorktreeMergeCandidateStatus::Open),
+                    /*limit*/ 10,
+                )
+                .await?
+        );
+        let dismissed = store
+            .list_merge_candidates(
+                "wt-a",
+                Some(crate::ManagedWorktreeMergeCandidateStatus::Dismissed),
+                /*limit*/ 10,
+            )
+            .await?;
+        let dismissed_ids = merge_candidate_ids(&dismissed);
+        assert!(dismissed_ids.contains(&"candidate-stale"));
+        assert!(dismissed_ids.contains(&"candidate-stale-other-target"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dismiss_merge_candidate_does_not_overwrite_applied_candidate() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-a", "/repo-a"))
+            .await?;
+        store
+            .record_merge_candidate(ManagedWorktreeMergeCandidateRecordParams {
+                candidate_id: Some("candidate-applied".to_string()),
+                worktree_id: "wt-a".to_string(),
+                target_ref: "HEAD".to_string(),
+                target_sha: Some("target-sha".to_string()),
+                base_sha: "base-sha".to_string(),
+                head_sha: "head-sha".to_string(),
+                status: crate::ManagedWorktreeMergeCandidateStatus::Open,
+                conflict_summary: None,
+                test_summary_json: None,
+            })
+            .await?;
+        let applied = store
+            .mark_merge_candidate_status(
+                "candidate-applied",
+                crate::ManagedWorktreeMergeCandidateStatus::Applied,
+            )
+            .await?
+            .expect("candidate should be applied");
+
+        assert_eq!(
+            None,
+            store.dismiss_merge_candidate("candidate-applied").await?
+        );
+        assert_eq!(
+            applied,
+            store
+                .get_merge_candidate("candidate-applied")
+                .await?
+                .expect("candidate should remain")
+        );
+
+        Ok(())
+    }
+
+    fn merge_candidate_ids(candidates: &[crate::ManagedWorktreeMergeCandidate]) -> Vec<&str> {
+        candidates
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect()
     }
 }
