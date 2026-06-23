@@ -581,6 +581,21 @@ fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics
     assert!(rendered[0].contains("Responses API inference: 1.9s"));
     assert!(rendered[0].contains("TTFT: 410ms (iapi) 460ms (service)"));
     assert!(rendered[0].contains("TBT: 1.2s (iapi) 1.2s (service)"));
+
+    let websocket_send = rendered[0]
+        .find("WebSocket: 1 events send")
+        .expect("websocket send label should render");
+    let streams = rendered[0]
+        .find("Streams: 6 events")
+        .expect("stream label should render");
+    let websocket_receive = rendered[0]
+        .find("4 events received")
+        .expect("websocket receive label should render");
+    assert!(
+        websocket_send < streams && streams < websocket_receive,
+        "default summary ordering should match the historical websocket/stream label order: {}",
+        rendered[0]
+    );
 }
 
 #[test]

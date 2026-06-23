@@ -3105,6 +3105,14 @@
           },
           "description": "Keybinding overrides for the TUI.\n\nThis supports rebinding selected actions globally and by context. Context bindings take precedence over `global` bindings."
         },
+        "message_summary": {
+          "default": null,
+          "description": "Ordered list of final assistant-message summary item identifiers.\n\nWhen set, the TUI renders the selected items after completed assistant messages. When unset, the TUI defaults to the full built-in summary.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "model_availability_nux": {
           "allOf": [
             {

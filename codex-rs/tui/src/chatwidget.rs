@@ -40,6 +40,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use ratatui::style::Styled;
 
@@ -53,6 +55,7 @@ use crate::approval_events::ApplyPatchApprovalRequestEvent;
 use crate::approval_events::ExecApprovalRequestEvent;
 #[cfg(not(target_os = "linux"))]
 use crate::audio_device::list_realtime_audio_device_names;
+use crate::bottom_pane::MessageSummarySetupView;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::StatusLineSetupView;
 use crate::bottom_pane::StatusSurfacePreviewData;
@@ -124,6 +127,11 @@ use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalPlan as AppThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
+use codex_app_server_protocol::ThreadScheduleRun;
+use codex_app_server_protocol::ThreadScheduleRunStatus;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
@@ -660,6 +668,11 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     announced_loop_schedule_ids: HashSet<String>,
+    status_line_schedule_thread_id: Option<ThreadId>,
+    status_line_schedules_by_id: HashMap<String, ThreadSchedule>,
+    status_line_schedules_pending: bool,
+    status_line_schedules_loaded: bool,
+    status_line_running_schedule_ids: HashSet<String>,
     announced_monitor_ids: HashSet<String>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
@@ -1213,10 +1226,11 @@ impl ChatWidget {
         }
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
-        if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
-            self.refresh_terminal_title();
-        }
-        if self.should_animate_terminal_title_spinner()
+        if self.terminal_title_requires_action() != self.last_terminal_title_requires_action
+            || self.status_line_uses_schedule_countdown()
+        {
+            self.refresh_status_surfaces();
+        } else if self.should_animate_terminal_title_spinner()
             || self.should_animate_terminal_title_action_required()
         {
             self.refresh_terminal_title();
