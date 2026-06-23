@@ -1,4 +1,7 @@
 use super::MAX_USER_INPUT_TEXT_CHARS;
+use super::sqlite_retry::retry_transient_sqlite_busy;
+use super::worktree_paths::path_to_api_string;
+use super::worktree_paths::paths_equivalent;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
@@ -83,6 +86,7 @@ use codex_rollout::StateDbHandle;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
 use codex_state::ManagedWorktreeDetachParams;
+use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use uuid::Uuid;
@@ -265,20 +269,20 @@ impl BackgroundAgentRequestProcessor {
             }
         };
         let event = if created_new_run {
-            state_db
-                .append_event(
-                    run.id.as_str(),
-                    "agent.started",
-                    &json!({
-                        "cwd": cwd,
-                        "prompt": prompt,
-                        "promptSnapshotRef": run.prompt_snapshot_ref.as_str(),
-                    }),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to append background agent event: {err}"))
-                })?
+            append_background_agent_event_with_retry(
+                state_db.as_ref(),
+                run.id.as_str(),
+                "agent.started",
+                &json!({
+                    "cwd": cwd,
+                    "prompt": prompt,
+                    "promptSnapshotRef": run.prompt_snapshot_ref.as_str(),
+                }),
+            )
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to append background agent event: {err}"))
+            })?
         } else {
             let mut events = state_db
                 .list_events_after(run.id.as_str(), /*after_seq*/ None, Some(1))
@@ -288,18 +292,18 @@ impl BackgroundAgentRequestProcessor {
                 })?;
             match events.pop() {
                 Some(event) => event,
-                None => state_db
-                    .append_event(
-                        run.id.as_str(),
-                        "agent.startRecovered",
-                        &json!({
-                            "reason": "idempotent_start_without_start_event",
-                        }),
-                    )
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!("failed to append background agent event: {err}"))
-                    })?,
+                None => append_background_agent_event_with_retry(
+                    state_db.as_ref(),
+                    run.id.as_str(),
+                    "agent.startRecovered",
+                    &json!({
+                        "reason": "idempotent_start_without_start_event",
+                    }),
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to append background agent event: {err}"))
+                })?,
             }
         };
         let snapshot = match state_db
@@ -589,18 +593,18 @@ impl BackgroundAgentRequestProcessor {
                 .map_err(|err| {
                     internal_error(format!("failed to update background agent status: {err}"))
                 })?;
-            state_db
-                .append_event(
-                    run.id.as_str(),
-                    "agent.stopRequested",
-                    &json!({
-                        "reason": "client_requested_stop",
-                    }),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to append background agent event: {err}"))
-                })?;
+            append_background_agent_event_with_retry(
+                state_db.as_ref(),
+                run.id.as_str(),
+                "agent.stopRequested",
+                &json!({
+                    "reason": "client_requested_stop",
+                }),
+            )
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to append background agent event: {err}"))
+            })?;
             cancel_active_pending_interactions_for_run(
                 state_db.as_ref(),
                 run.id.as_str(),
@@ -668,18 +672,18 @@ impl BackgroundAgentRequestProcessor {
                         internal_error(format!("failed to update background agent status: {err}"))
                     })?;
             }
-            state_db
-                .append_event(
-                    params.agent_id.as_str(),
-                    "agent.deleteRequested",
-                    &json!({
-                        "reason": "client_requested_delete",
-                    }),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to append background agent event: {err}"))
-                })?;
+            append_background_agent_event_with_retry(
+                state_db.as_ref(),
+                params.agent_id.as_str(),
+                "agent.deleteRequested",
+                &json!({
+                    "reason": "client_requested_delete",
+                }),
+            )
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to append background agent event: {err}"))
+            })?;
             if non_terminal_existing_run.is_some() {
                 cancel_active_pending_interactions_for_run(
                     state_db.as_ref(),
@@ -945,7 +949,7 @@ impl BackgroundAgentRequestProcessor {
         let worktree = match worktree {
             Some(worktree) => {
                 if base_repo_path.is_some_and(|base_repo_path| {
-                    worktree.base_repo_path.as_path() != base_repo_path
+                    !paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
                 }) {
                     None
                 } else {
@@ -1297,6 +1301,18 @@ fn map_background_agent_event_replay_error(err: anyhow::Error) -> JSONRPCErrorEr
     }
 }
 
+async fn append_background_agent_event_with_retry(
+    state_db: &codex_state::StateRuntime,
+    run_id: &str,
+    event_type: &str,
+    payload_json: &Value,
+) -> anyhow::Result<BackgroundAgentEvent> {
+    retry_transient_sqlite_busy("append background agent event", || {
+        state_db.append_event(run_id, event_type, payload_json)
+    })
+    .await
+}
+
 fn decode_offset_cursor(cursor: Option<&str>) -> Result<usize, JSONRPCErrorError> {
     let Some(cursor) = cursor else {
         return Ok(0);
@@ -1620,8 +1636,8 @@ pub(crate) async fn api_worktree_from_state(
         identity: value.identity,
         mode: api_worktree_mode(value.mode),
         lifecycle_status: api_worktree_lifecycle_status(value.lifecycle_status),
-        base_repo_path: value.base_repo_path.display().to_string(),
-        worktree_path: value.worktree_path.display().to_string(),
+        base_repo_path: path_to_api_string(value.base_repo_path.as_path()),
+        worktree_path: path_to_api_string(value.worktree_path.as_path()),
         branch: value.branch,
         base_sha: value.base_sha,
         head_sha: value.head_sha,

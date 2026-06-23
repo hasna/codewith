@@ -234,6 +234,14 @@ impl App {
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(thread_id) = self.chat_widget.thread_id() {
+                    if self.chat_widget.rollout_path().is_none() {
+                        self.chat_widget.add_error_message(
+                            "This session is still starting and cannot be forked yet. Send a message first, then try /fork again."
+                                .to_string(),
+                        );
+                        tui.frame_requester().schedule_frame();
+                        return Ok(AppRunControl::Continue);
+                    }
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;
                     match app_server.fork_thread(self.config.clone(), thread_id).await {

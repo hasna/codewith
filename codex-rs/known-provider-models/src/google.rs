@@ -10,25 +10,25 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "gemini-3.5-flash",
         "Gemini 3.5 Flash",
         "Google Gemini's stable frontier Flash model. Requires GEMINI_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "gemini-3.1-pro-preview",
         "Gemini 3.1 Pro Preview",
         "Google Gemini's preview Pro model for complex reasoning and coding.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "gemini-3-flash-preview",
         "Gemini 3 Flash Preview",
         "Google Gemini's preview Flash model with a large context window.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "gemini-3.1-flash-lite",
         "Gemini 3.1 Flash-Lite",
         "Google Gemini's stable low-latency Flash-Lite model.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
@@ -67,7 +67,7 @@ pub(crate) fn reasoning_levels(
 const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
     KnownProviderModelMetadata::new(
         display_name,
-        1_048_576,
+        /*context_window*/ 1_048_576,
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
         /*supports_reasoning*/ true,

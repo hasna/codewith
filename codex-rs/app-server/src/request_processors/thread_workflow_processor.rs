@@ -1,3 +1,5 @@
+use super::sqlite_retry::is_transient_sqlite_busy;
+use super::sqlite_retry::retry_transient_sqlite_busy;
 use super::thread_goal_processor::api_thread_goal_plan_from_state;
 use super::*;
 
@@ -129,12 +131,15 @@ impl ThreadWorkflowRequestProcessor {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
-        let workflow = state_db
-            .workflows()
-            .get_thread_workflow_spec(thread_id, params.workflow_record_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to read thread workflow: {err}")))?
-            .map(|workflow| api_thread_workflow_from_state(thread_id, workflow));
+        let workflow_record_id = params.workflow_record_id;
+        let workflow = retry_transient_sqlite_busy("read thread workflow", || {
+            state_db
+                .workflows()
+                .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to read thread workflow: {err}")))?
+        .map(|workflow| api_thread_workflow_from_state(thread_id, workflow));
         Ok(ThreadWorkflowGetResponse { workflow })
     }
 
@@ -149,11 +154,13 @@ impl ThreadWorkflowRequestProcessor {
         let limit = params
             .limit
             .unwrap_or(codex_state::DEFAULT_THREAD_WORKFLOW_LIST_LIMIT);
-        let page = state_db
-            .workflows()
-            .list_thread_workflow_specs_page(thread_id, cursor, limit)
-            .await
-            .map_err(|err| internal_error(format!("failed to list thread workflows: {err}")))?;
+        let page = retry_transient_sqlite_busy("list thread workflows", || {
+            state_db
+                .workflows()
+                .list_thread_workflow_specs_page(thread_id, cursor, limit)
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to list thread workflows: {err}")))?;
         let data = page
             .data
             .into_iter()
@@ -176,11 +183,13 @@ impl ThreadWorkflowRequestProcessor {
         let limit = params
             .limit
             .unwrap_or(codex_state::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT);
-        let page = state_db
-            .workflows()
-            .list_thread_workflow_runs_page(thread_id, cursor, limit)
-            .await
-            .map_err(|err| internal_error(format!("failed to list thread workflow runs: {err}")))?;
+        let page = retry_transient_sqlite_busy("list thread workflow runs", || {
+            state_db
+                .workflows()
+                .list_thread_workflow_runs_page(thread_id, cursor, limit)
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to list thread workflow runs: {err}")))?;
         let data = page
             .data
             .into_iter()
@@ -199,13 +208,16 @@ impl ThreadWorkflowRequestProcessor {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
-        let run = state_db
-            .workflows()
-            .get_workflow_run_snapshot(params.run_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to read thread workflow run: {err}")))?
-            .filter(|snapshot| snapshot.run.source_thread_id == Some(thread_id))
-            .map(api_thread_workflow_run_snapshot_from_state);
+        let run_id = params.run_id;
+        let run = retry_transient_sqlite_busy("read thread workflow run", || {
+            state_db
+                .workflows()
+                .get_workflow_run_snapshot(run_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to read thread workflow run: {err}")))?
+        .filter(|snapshot| snapshot.run.source_thread_id == Some(thread_id))
+        .map(api_thread_workflow_run_snapshot_from_state);
         Ok(ThreadWorkflowRunGetResponse { run })
     }
 
@@ -218,39 +230,56 @@ impl ThreadWorkflowRequestProcessor {
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
         let idempotency_key = params.idempotency_key.and_then(normalize_optional_string);
         let workflow_record_id = params.workflow_record_id;
-        if state_db
-            .workflows()
-            .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to read thread workflow: {err}")))?
-            .is_none()
-        {
+        let workflow = retry_transient_sqlite_busy("read thread workflow before run start", || {
+            state_db
+                .workflows()
+                .get_thread_workflow_spec(thread_id, workflow_record_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to read thread workflow: {err}")))?;
+        if workflow.is_none() {
             return Err(invalid_request("workflow not found for thread"));
         }
-        let snapshot = state_db
-            .workflows()
-            .create_workflow_run(codex_state::WorkflowRunCreateParams {
-                workflow_record_id,
-                source_thread_id: Some(thread_id),
-                idempotency_key: idempotency_key.clone(),
+        let create_run_params = codex_state::WorkflowRunCreateParams {
+            workflow_record_id,
+            source_thread_id: Some(thread_id),
+            idempotency_key: idempotency_key.clone(),
+        };
+        let create_run_result = if create_run_params.idempotency_key.is_some() {
+            retry_transient_sqlite_busy("start thread workflow run", || {
+                state_db
+                    .workflows()
+                    .create_workflow_run(create_run_params.clone())
             })
             .await
-            .map_err(|err| {
+        } else {
+            state_db
+                .workflows()
+                .create_workflow_run(create_run_params)
+                .await
+        };
+        let snapshot = create_run_result.map_err(|err| {
+            if is_transient_sqlite_busy(&err) {
+                internal_error(format!("failed to start thread workflow run: {err}"))
+            } else {
                 invalid_request(format!("failed to start thread workflow run: {err}"))
-            })?;
-        let goal_plan = state_db
-            .project_workflow_run_to_goal_plan(codex_state::WorkflowGoalPlanProjectionParams {
-                workflow_run_id: snapshot.run.run_id.clone(),
-                thread_id,
-                idempotency_key,
-            })
-            .await
-            .map_err(|err| {
-                internal_error(format!(
-                    "failed to project workflow run into task plan: {err}"
-                ))
-            })?
-            .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
+            }
+        })?;
+        let projection_params = codex_state::WorkflowGoalPlanProjectionParams {
+            workflow_run_id: snapshot.run.run_id.clone(),
+            thread_id,
+            idempotency_key,
+        };
+        let goal_plan = retry_transient_sqlite_busy("project workflow run to goal plan", || {
+            state_db.project_workflow_run_to_goal_plan(projection_params.clone())
+        })
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to project workflow run into task plan: {err}"
+            ))
+        })?
+        .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
         Ok(ThreadWorkflowRunStartResponse {
             run: api_thread_workflow_run_snapshot_from_state(snapshot),
             goal_plan,
@@ -267,14 +296,15 @@ impl ThreadWorkflowRequestProcessor {
         if !workflow_run_belongs_to_thread(&state_db, thread_id, params.run_id.as_str()).await? {
             return Ok(ThreadWorkflowRunPauseResponse { run: None });
         }
+        let pause_params = codex_state::WorkflowRunPauseParams {
+            run_id: params.run_id,
+            reason: params
+                .reason
+                .and_then(normalize_optional_string)
+                .unwrap_or_else(|| "user requested pause".to_string()),
+        };
         let run = state_db
-            .pause_workflow_run(codex_state::WorkflowRunPauseParams {
-                run_id: params.run_id,
-                reason: params
-                    .reason
-                    .and_then(normalize_optional_string)
-                    .unwrap_or_else(|| "user requested pause".to_string()),
-            })
+            .pause_workflow_run(pause_params)
             .await
             .map_err(|err| internal_error(format!("failed to pause thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
@@ -291,10 +321,11 @@ impl ThreadWorkflowRequestProcessor {
         if !workflow_run_belongs_to_thread(&state_db, thread_id, params.run_id.as_str()).await? {
             return Ok(ThreadWorkflowRunResumeResponse { run: None });
         }
+        let resume_params = codex_state::WorkflowRunResumeParams {
+            run_id: params.run_id,
+        };
         let run = state_db
-            .resume_workflow_run(codex_state::WorkflowRunResumeParams {
-                run_id: params.run_id,
-            })
+            .resume_workflow_run(resume_params)
             .await
             .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
@@ -311,14 +342,15 @@ impl ThreadWorkflowRequestProcessor {
         if !workflow_run_belongs_to_thread(&state_db, thread_id, params.run_id.as_str()).await? {
             return Ok(ThreadWorkflowRunCancelResponse { run: None });
         }
+        let cancel_params = codex_state::WorkflowRunCancelParams {
+            run_id: params.run_id,
+            reason: params
+                .reason
+                .and_then(normalize_optional_string)
+                .unwrap_or_else(|| "user requested cancellation".to_string()),
+        };
         let run = state_db
-            .request_workflow_run_cancel(codex_state::WorkflowRunCancelParams {
-                run_id: params.run_id,
-                reason: params
-                    .reason
-                    .and_then(normalize_optional_string)
-                    .unwrap_or_else(|| "user requested cancellation".to_string()),
-            })
+            .request_workflow_run_cancel(cancel_params)
             .await
             .map_err(|err| internal_error(format!("failed to cancel thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
@@ -602,14 +634,14 @@ async fn workflow_run_belongs_to_thread(
     thread_id: ThreadId,
     run_id: &str,
 ) -> Result<bool, JSONRPCErrorError> {
-    state_db
-        .workflows()
-        .get_workflow_run_snapshot(run_id)
-        .await
-        .map_err(|err| internal_error(format!("failed to read thread workflow run: {err}")))
-        .map(|snapshot| {
-            snapshot.is_some_and(|snapshot| snapshot.run.source_thread_id == Some(thread_id))
-        })
+    retry_transient_sqlite_busy("read thread workflow run ownership", || {
+        state_db.workflows().get_workflow_run_snapshot(run_id)
+    })
+    .await
+    .map_err(|err| internal_error(format!("failed to read thread workflow run: {err}")))
+    .map(|snapshot| {
+        snapshot.is_some_and(|snapshot| snapshot.run.source_thread_id == Some(thread_id))
+    })
 }
 
 fn workflow_store_error(err: anyhow::Error) -> JSONRPCErrorError {
