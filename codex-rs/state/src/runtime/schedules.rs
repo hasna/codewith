@@ -46,7 +46,7 @@ impl ScheduleStore {
         &self,
         params: ThreadScheduleCreateParams,
     ) -> anyhow::Result<crate::ThreadSchedule> {
-        self.create_thread_schedule_with_recorded_auth_profile(params, None)
+        self.create_thread_schedule_with_recorded_auth_profile(params, /*auth_profile*/ None)
             .await
     }
 

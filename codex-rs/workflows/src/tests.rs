@@ -385,7 +385,9 @@ fn rejects_unbounded_verifier_retry_policy() {
 
 #[test]
 fn rejects_missing_exact_step_model_route() {
-    let yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replacen(
+    let yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML
+        .replace("\r\n", "\n")
+        .replacen(
         "    model:\n      model_gateway: \"hasna\"\n      provider: \"openai\"\n      model: \"gpt-5.4\"\n      reasoning: \"high\"\n    depends_on: []",
         "    depends_on: []",
         1,
