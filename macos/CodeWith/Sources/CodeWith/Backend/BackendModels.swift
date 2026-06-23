@@ -117,7 +117,9 @@ struct ProjectInfo: Identifiable, Hashable {
 
 /// A machine in the fleet from the app-server machine registry.
 struct MachineInfo: Identifiable, Hashable {
-    var id: String
+    var id: String { machineId }
+    var machineId: String
+    var displayName: String
     var os: String
     var status: String   // online / offline / unknown
     var role: String
@@ -125,7 +127,8 @@ struct MachineInfo: Identifiable, Hashable {
     var online: Bool { status == "online" }
 
     init(id: String, os: String, status: String, role: String, isLocal: Bool) {
-        self.id = id
+        self.machineId = id
+        self.displayName = id
         self.os = os
         self.status = status
         self.role = role
@@ -133,7 +136,8 @@ struct MachineInfo: Identifiable, Hashable {
     }
 
     init(registryValue v: JSONValue) {
-        id = v["displayName"]?.string ?? v["machineId"]?.string ?? UUID().uuidString
+        machineId = v["machineId"]?.string ?? v["displayName"]?.string ?? UUID().uuidString
+        displayName = v["displayName"]?.string ?? machineId
         os = v["capabilities"]?["os"]?.string
             ?? v["capabilities"]?["platform"]?.string
             ?? v["adapterName"]?.string
@@ -147,7 +151,129 @@ struct MachineInfo: Identifiable, Hashable {
     }
 }
 
-/// An auth profile from `codewith profile list`.
+struct MachinePairingInfo: Hashable {
+    var pairingCode: String
+    var manualPairingCode: String?
+    var environmentId: String
+    var expiresAt: Int
+
+    init(from v: JSONValue) {
+        pairingCode = v["pairingCode"]?.string ?? ""
+        manualPairingCode = v["manualPairingCode"]?.string
+        environmentId = v["environmentId"]?.string ?? ""
+        expiresAt = v["expiresAt"]?.int ?? 0
+    }
+
+    var displayCode: String {
+        if let manualPairingCode, !manualPairingCode.isEmpty {
+            return manualPairingCode
+        }
+        return pairingCode
+    }
+}
+
+struct DesktopSettingsInfo: Hashable {
+    var workMode: String
+    var fileOpenDestination: String
+    var language: String
+    var showMenuBar: Bool
+    var bottomPanel: Bool
+    var personality: String
+    var memoryEnabled: Bool
+    var chronicleResearch: Bool
+    var skipToolAssistedChats: Bool
+
+    init(
+        workMode: String = "coding",
+        fileOpenDestination: String = "cursor",
+        language: String = "auto",
+        showMenuBar: Bool = true,
+        bottomPanel: Bool = true,
+        personality: String = "pragmatic",
+        memoryEnabled: Bool = true,
+        chronicleResearch: Bool = false,
+        skipToolAssistedChats: Bool = false
+    ) {
+        self.workMode = workMode
+        self.fileOpenDestination = fileOpenDestination
+        self.language = language
+        self.showMenuBar = showMenuBar
+        self.bottomPanel = bottomPanel
+        self.personality = personality
+        self.memoryEnabled = memoryEnabled
+        self.chronicleResearch = chronicleResearch
+        self.skipToolAssistedChats = skipToolAssistedChats
+    }
+
+    init(from v: JSONValue) {
+        self.init(
+            workMode: v["workMode"]?.string ?? "coding",
+            fileOpenDestination: v["fileOpenDestination"]?.string ?? "cursor",
+            language: v["language"]?.string ?? "auto",
+            showMenuBar: v["showMenuBar"]?.bool ?? true,
+            bottomPanel: v["bottomPanel"]?.bool ?? true,
+            personality: v["personality"]?.string ?? "pragmatic",
+            memoryEnabled: v["memoryEnabled"]?.bool ?? true,
+            chronicleResearch: v["chronicleResearch"]?.bool ?? false,
+            skipToolAssistedChats: v["skipToolAssistedChats"]?.bool ?? false
+        )
+    }
+
+    init(desktop: JSONValue, config: JSONValue) {
+        self.init(from: desktop)
+        if desktop["fileOpenDestination"]?.string == nil {
+            switch config["file_opener"]?.string {
+            case "cursor":
+                fileOpenDestination = "cursor"
+            case "none":
+                fileOpenDestination = "system"
+            default:
+                break
+            }
+        }
+        personality = config["personality"]?.string ?? personality
+
+        let features = config["features"] ?? .null
+        let memories = config["memories"] ?? .null
+        let memoriesFeatureEnabled = features["memories"]?.bool ?? false
+        let useMemories = memories["use_memories"]?.bool ?? true
+        let generateMemories = memories["generate_memories"]?.bool ?? true
+        memoryEnabled = memoriesFeatureEnabled && useMemories && generateMemories
+        chronicleResearch = features["chronicle"]?.bool ?? false
+        skipToolAssistedChats = memories["disable_on_external_context"]?.bool
+            ?? memories["no_memories_if_mcp_or_web_search"]?.bool
+            ?? false
+    }
+}
+
+struct ConfigRequirementsInfo: Hashable {
+    var allowedApprovalPolicies: [String]?
+    var allowedSandboxModes: [String]?
+
+    init(from v: JSONValue) {
+        allowedApprovalPolicies = Self.stringArray(v["allowedApprovalPolicies"])
+        allowedSandboxModes = Self.stringArray(v["allowedSandboxModes"])
+    }
+
+    static func stringArray(_ value: JSONValue?) -> [String]? {
+        guard let array = value?.array else { return nil }
+        return array.compactMap(\.string)
+    }
+
+    func approvalOptions(defaults: [String]) -> [String] {
+        allowedApprovalPolicies?.filter { defaults.contains($0) } ?? defaults
+    }
+
+    func sandboxOptions(defaults: [String]) -> [String] {
+        allowedSandboxModes?.filter { defaults.contains($0) } ?? defaults
+    }
+
+    func allowsSandbox(_ mode: String) -> Bool {
+        allowedSandboxModes?.contains(mode) ?? true
+    }
+}
+
+/// An auth profile from `authProfile/list`.
 struct AuthProfileInfo: Identifiable, Hashable {
     var id: String { name }
     var name: String
@@ -188,12 +314,145 @@ struct LoopInfo: Identifiable, Hashable {
     var subtitle: String
     var kind: Kind
     var active: Bool
+    var status: String = ""
     var threadId: String = ""
     enum Kind: String { case schedule, monitor }
+
+    var canToggle: Bool {
+        switch kind {
+        case .schedule:
+            return status.isEmpty || status == "active" || status == "paused"
+        case .monitor:
+            return status.isEmpty || status == "running" || status == "stopped" || status == "failed"
+        }
+    }
+
+    var canRunNow: Bool {
+        kind == .schedule && (status.isEmpty || status == "active" || status == "paused")
+    }
+
+    var toggleLabel: String {
+        switch (kind, active) {
+        case (.schedule, true): return "Pause"
+        case (.schedule, false): return "Resume"
+        case (.monitor, true): return "Stop"
+        case (.monitor, false): return "Restart"
+        }
+    }
 }
 
-enum LoopScheduleIntervalUnit: String {
+enum LoopScheduleIntervalUnit: String, Hashable {
     case minutes, hours, days
+}
+
+enum LoopCreationKind: String, CaseIterable, Hashable {
+    case schedule, monitor
+}
+
+enum LoopCreationScheduleMode: String, CaseIterable, Hashable {
+    case dynamic, interval, cron
+}
+
+enum LoopMonitorRouting: String, CaseIterable, Hashable {
+    case stream, file, both
+
+    var writesToFile: Bool {
+        self == .file || self == .both
+    }
+}
+
+struct LoopCreationDraft: Hashable {
+    static let defaultPrompt = "Continue this thread and report anything that needs attention."
+
+    var kind: LoopCreationKind = .schedule
+    var prompt: String = defaultPrompt
+    var scheduleMode: LoopCreationScheduleMode = .dynamic
+    var intervalAmount: String = "5"
+    var intervalUnit: LoopScheduleIntervalUnit = .minutes
+    var cronExpression: String = ""
+    var monitorName: String = ""
+    var command: String = ""
+    var cwd: String = ""
+    var routing: LoopMonitorRouting = .stream
+    var outputFile: String = ""
+
+    var normalizedPrompt: String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultPrompt : trimmed
+    }
+
+    var normalizedMonitorName: String {
+        let trimmed = monitorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        let firstLine = normalizedPrompt
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init) ?? "Monitor"
+        return firstLine.isEmpty ? "Monitor" : String(firstLine.prefix(80))
+    }
+
+    var intervalAmountValue: Int? {
+        guard let value = Int(intervalAmount.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value > 0
+        else {
+            return nil
+        }
+        return value
+    }
+
+    var normalizedCronExpression: String {
+        cronExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedCommand: String {
+        command.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedCwd: String? {
+        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var normalizedOutputFile: String? {
+        let trimmed = outputFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var canCreate: Bool {
+        if normalizedPrompt.isEmpty { return false }
+        switch kind {
+        case .schedule:
+            switch scheduleMode {
+            case .dynamic:
+                return true
+            case .interval:
+                return intervalAmountValue != nil
+            case .cron:
+                return !normalizedCronExpression.isEmpty
+            }
+        case .monitor:
+            return !normalizedCommand.isEmpty && (!routing.writesToFile || normalizedOutputFile != nil)
+        }
+    }
+
+    var validationMessage: String {
+        if normalizedPrompt.isEmpty { return "Enter a prompt." }
+        switch kind {
+        case .schedule:
+            if scheduleMode == .interval && intervalAmountValue == nil {
+                return "Enter a positive interval."
+            }
+            if scheduleMode == .cron && normalizedCronExpression.isEmpty {
+                return "Enter a cron expression."
+            }
+        case .monitor:
+            if normalizedCommand.isEmpty { return "Enter a command to monitor." }
+            if routing.writesToFile && normalizedOutputFile == nil {
+                return "Choose an output file for file routing."
+            }
+        }
+        return ""
+    }
 }
 
 /// A persisted goal attached to a thread.
@@ -214,6 +473,113 @@ struct GoalInfo: Identifiable, Hashable {
         tokenBudget = v["tokenBudget"]?.int
         tokensUsed = v["tokensUsed"]?.int ?? 0
         timeUsedSeconds = v["timeUsedSeconds"]?.int ?? 0
+    }
+}
+
+struct AccountUsageInfo: Hashable {
+    var lifetimeTokens: Int?
+    var peakDailyTokens: Int?
+    var longestRunningTurnSec: Int?
+    var currentStreakDays: Int?
+    var longestStreakDays: Int?
+    var dailyBuckets: [AccountUsageBucket]
+
+    init(from v: JSONValue) {
+        let summary = v["summary"] ?? .null
+        lifetimeTokens = summary["lifetimeTokens"]?.int
+        peakDailyTokens = summary["peakDailyTokens"]?.int
+        longestRunningTurnSec = summary["longestRunningTurnSec"]?.int
+        currentStreakDays = summary["currentStreakDays"]?.int
+        longestStreakDays = summary["longestStreakDays"]?.int
+        dailyBuckets = (v["dailyUsageBuckets"]?.array ?? []).map(AccountUsageBucket.init(from:))
+    }
+}
+
+struct AccountUsageBucket: Identifiable, Hashable {
+    var id: String { startDate }
+    var startDate: String
+    var tokens: Int
+
+    init(from v: JSONValue) {
+        startDate = v["startDate"]?.string ?? ""
+        tokens = v["tokens"]?.int ?? 0
+    }
+}
+
+struct McpServerStatusInfo: Identifiable, Hashable {
+    var id: String { name }
+    var name: String
+    var authStatus: String
+    var toolCount: Int
+    var resourceCount: Int
+
+    init(from v: JSONValue) {
+        name = v["name"]?.string ?? "server"
+        authStatus = v["authStatus"]?["type"]?.string ?? v["authStatus"]?.string ?? "unknown"
+        toolCount = v["tools"]?.object?.count ?? 0
+        resourceCount = (v["resources"]?.array ?? []).count
+            + (v["resourceTemplates"]?.array ?? []).count
+    }
+}
+
+struct HookEntryInfo: Identifiable, Hashable {
+    var id: String { cwd }
+    var cwd: String
+    var hooks: [HookInfo]
+    var warnings: [String]
+    var errors: [String]
+
+    init(from v: JSONValue) {
+        cwd = v["cwd"]?.string ?? ""
+        hooks = (v["hooks"]?.array ?? []).map(HookInfo.init(from:))
+        warnings = (v["warnings"]?.array ?? []).compactMap(\.string)
+        errors = (v["errors"]?.array ?? []).compactMap { error in
+            error["message"]?.string
+        }
+    }
+}
+
+struct HookInfo: Identifiable, Hashable {
+    var id: String { key }
+    var key: String
+    var eventName: String
+    var handlerType: String
+    var matcher: String?
+    var command: String?
+    var enabled: Bool
+    var trustStatus: String
+
+    init(from v: JSONValue) {
+        key = v["key"]?.string ?? UUID().uuidString
+        eventName = v["eventName"]?.string ?? ""
+        handlerType = v["handlerType"]?.string ?? ""
+        matcher = v["matcher"]?.string
+        command = v["command"]?.string
+        enabled = v["enabled"]?.bool ?? false
+        trustStatus = v["trustStatus"]?.string ?? "unknown"
+    }
+}
+
+struct WorktreeInfo: Identifiable, Hashable {
+    var id: String { worktreeId }
+    var worktreeId: String
+    var baseRepoPath: String
+    var worktreePath: String
+    var branch: String?
+    var lifecycleStatus: String
+    var dirty: Bool
+    var ownerKind: String
+    var updatedAt: Int
+
+    init(from v: JSONValue) {
+        worktreeId = v["worktreeId"]?.string ?? UUID().uuidString
+        baseRepoPath = v["baseRepoPath"]?.string ?? ""
+        worktreePath = v["worktreePath"]?.string ?? ""
+        branch = v["branch"]?.string
+        lifecycleStatus = v["lifecycleStatus"]?.string ?? "unknown"
+        dirty = v["dirty"]?.bool ?? false
+        ownerKind = v["ownerKind"]?.string ?? ""
+        updatedAt = v["updatedAt"]?.int ?? 0
     }
 }
 

@@ -106,6 +106,79 @@ impl AccountRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn list_auth_profiles(
+        &self,
+        _params: AuthProfileListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let profiles = codex_login::list_auth_profiles(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+        )
+        .map_err(|err| invalid_request(format!("failed to list auth profiles: {err}")))?;
+
+        Ok(Some(
+            AuthProfileListResponse {
+                data: profiles
+                    .into_iter()
+                    .map(Self::auth_profile_summary)
+                    .collect(),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn save_current_auth_profile(
+        &self,
+        params: AuthProfileSaveCurrentParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let profile = codex_login::save_current_auth_profile(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+            &params.name,
+        )
+        .map_err(|err| invalid_request(format!("failed to save auth profile: {err}")))?;
+
+        self.auth_manager
+            .switch_auth_profile(Some(profile.name.clone()))
+            .await
+            .map_err(|err| invalid_request(format!("failed to reload auth profile: {err}")))?;
+
+        self.finish_auth_profile_change().await;
+
+        Ok(Some(
+            AuthProfileSaveCurrentResponse {
+                profile: Self::auth_profile_summary(profile),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn switch_auth_profile(
+        &self,
+        params: AuthProfileSwitchParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let profile = codex_login::switch_auth_profile(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+            &params.name,
+        )
+        .map_err(|err| invalid_request(format!("failed to switch auth profile: {err}")))?;
+
+        self.auth_manager
+            .switch_auth_profile(Some(params.name))
+            .await
+            .map_err(|err| invalid_request(format!("failed to reload auth profile: {err}")))?;
+
+        self.finish_auth_profile_change().await;
+
+        Ok(Some(
+            AuthProfileSwitchResponse {
+                profile: Self::auth_profile_summary(profile),
+            }
+            .into(),
+        ))
+    }
+
     pub(crate) async fn get_account(
         &self,
         params: GetAccountParams,
@@ -167,6 +240,41 @@ impl AccountRequestProcessor {
             auth_mode: auth.as_ref().map(CodexAuth::api_auth_mode),
             plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
         }
+    }
+
+    fn auth_profile_summary(profile: codex_login::AuthProfile) -> AuthProfileSummary {
+        AuthProfileSummary {
+            name: profile.name,
+            subscription_provider: profile.subscription_provider.to_string(),
+            auth_mode: profile.auth_mode,
+            email: profile.email,
+            account_id: profile.account_id,
+            plan: profile.plan,
+            active: profile.active,
+        }
+    }
+
+    async fn finish_auth_profile_change(&self) {
+        self.config_manager.replace_cloud_config_bundle_loader(
+            self.auth_manager.clone(),
+            self.config.chatgpt_base_url.clone(),
+        );
+        self.config_manager
+            .sync_default_client_residency_requirement()
+            .await;
+
+        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+            &self.config_manager,
+            &self.thread_manager,
+            self.auth_manager.auth_cached(),
+        )
+        .await;
+
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountUpdated(
+                self.current_account_updated_notification(),
+            ))
+            .await;
     }
 
     async fn maybe_refresh_remote_installed_plugins_cache_for_current_config(

@@ -6,13 +6,14 @@ extension AppServerClient {
     // MARK: Threads (sessions)
 
     /// List sessions with cursor pagination. `cwd` filters to a project.
-    func listThreads(cursor: String? = nil, limit: Int = 30)
+    func listThreads(cursor: String? = nil, limit: Int = 30, archived: Bool = false)
         async throws -> (threads: [ThreadInfo], nextCursor: String?)
     {
         var params: [String: JSONValue] = [
             "limit": .number(Double(limit)),
             "sortKey": .string("updated_at"),
             "sortDirection": .string("desc"),
+            "archived": .bool(archived),
         ]
         if let cursor { params["cursor"] = .string(cursor) }
         let r = try await request("thread/list", .object(params), timeout: 30)
@@ -55,6 +56,11 @@ extension AppServerClient {
     func resumeThreadMessages(id: String) async throws -> [ChatMessage] {
         let r = try await request("thread/resume", .object(["threadId": .string(id)]), timeout: 30)
         return Self.parseThreadMessages(r["thread"] ?? .null)
+    }
+
+    func unarchiveThread(id: String) async throws -> ThreadInfo {
+        let r = try await request("thread/unarchive", .object(["threadId": .string(id)]), timeout: 30)
+        return ThreadInfo(from: r["thread"] ?? .null)
     }
 
     static func parseThreadMessages(_ thread: JSONValue) -> [ChatMessage] {
@@ -728,9 +734,19 @@ extension AppServerClient {
         return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
     }
 
+    func saveCurrentAuthProfile(_ name: String) async throws -> AuthProfileInfo {
+        let r = try await request("authProfile/saveCurrent", .object(["name": .string(name)]), timeout: 20)
+        return AuthProfileInfo(from: r["profile"] ?? r)
+    }
+
     func switchAuthProfile(_ name: String) async throws -> AuthProfileInfo {
         let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
         return AuthProfileInfo(from: r["profile"] ?? r)
+    }
+
+    func readAccountUsage() async throws -> AccountUsageInfo {
+        let r = try await request("account/usage/read", timeout: 20)
+        return AccountUsageInfo(from: r)
     }
 
     /// Read the current model + provider from config.
@@ -834,6 +850,29 @@ extension AppServerClient {
 
     func resetMemories() async throws {
         _ = try await request("memory/reset", .null, timeout: 30)
+    }
+
+    func listMcpServers(threadId: String? = nil) async throws -> [McpServerStatusInfo] {
+        var params: [String: JSONValue] = [
+            "limit": .number(200),
+            "detail": .string("toolsAndAuthOnly"),
+        ]
+        if let threadId { params["threadId"] = .string(threadId) }
+        let r = try await request("mcpServerStatus/list", .object(params), timeout: 20)
+        return (r["data"]?.array ?? []).map(McpServerStatusInfo.init(from:))
+    }
+
+    func listHooks(cwds: [String] = []) async throws -> [HookEntryInfo] {
+        let params: JSONValue = .object([
+            "cwds": .array(cwds.map(JSONValue.string)),
+        ])
+        let r = try await request("hooks/list", params, timeout: 20)
+        return (r["data"]?.array ?? []).map(HookEntryInfo.init(from:))
+    }
+
+    func listWorktrees() async throws -> [WorktreeInfo] {
+        let r = try await request("worktree/list", .object(["limit": .number(200)]), timeout: 20)
+        return (r["data"]?.array ?? []).map(WorktreeInfo.init(from:))
     }
 
     static func threadSettingsUpdateParams(
