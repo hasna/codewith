@@ -82,7 +82,7 @@ WHERE attempt_id = ? AND status = ?
             &message,
             message.last_attempt_id.as_deref(),
             receipt_kind,
-            None,
+            /*payload_json*/ None,
             now_ms,
         )
         .await?;
@@ -153,9 +153,9 @@ RETURNING
             insert_mailbox_receipt(
                 tx,
                 &message,
-                None,
+                /*attempt_id*/ None,
                 crate::MailboxReceiptKind::Expired,
-                None,
+                /*payload_json*/ None,
                 now_ms,
             )
             .await?;

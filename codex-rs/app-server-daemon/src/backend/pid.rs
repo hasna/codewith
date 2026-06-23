@@ -542,11 +542,6 @@ fn terminate_process(_pid: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn force_terminate_process(_pid: u32) -> Result<()> {
-    bail!("pid-managed app-server shutdown is unsupported on this platform")
-}
-
-#[cfg(not(unix))]
 fn force_terminate_app_server_process(_pid: u32) -> Result<()> {
     bail!("pid-managed app-server shutdown is unsupported on this platform")
 }

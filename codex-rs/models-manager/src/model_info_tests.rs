@@ -245,10 +245,30 @@ fn known_zai_model_uses_local_metadata_with_reasoning_and_search_support() {
     assert_eq!(model.display_name, "GLM-5.2");
     assert_eq!(model.context_window, Some(1_000_000));
     assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
-    assert!(!model.supported_reasoning_levels.is_empty());
+    assert_eq!(
+        model.default_reasoning_level,
+        Some(ReasoningEffort::Custom("max".to_string()))
+    );
+    assert_eq!(
+        model.supported_reasoning_levels,
+        vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::None,
+                description: "Reasoning disabled".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::High,
+                description: "High reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Custom("max".to_string()),
+                description: "Max reasoning".to_string(),
+            },
+        ]
+    );
     assert!(model.supports_reasoning_summaries);
     assert!(model.supports_search_tool);
     assert!(!model.used_fallback_model_metadata);
