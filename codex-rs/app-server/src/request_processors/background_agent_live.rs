@@ -2102,7 +2102,7 @@ fn worktree_matches_base_repo(
     worktree: &codex_state::ManagedWorktree,
     base_repo_path: &Path,
 ) -> bool {
-    worktree.base_repo_path.as_path() == base_repo_path
+    paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
 }
 
 async fn status_snapshot_for_release(
