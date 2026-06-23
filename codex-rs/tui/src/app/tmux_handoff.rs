@@ -148,7 +148,7 @@ mod tests {
 
         assert_eq!(
             tmux_remote_arg_for_endpoint(&endpoint).expect("remote arg"),
-            "unix:///tmp/codewith.sock"
+            format!("unix://{}", test_path_buf("/tmp/codewith.sock").display())
         );
     }
 

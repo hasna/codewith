@@ -56,6 +56,9 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
 - Added `/changelog` in the TUI so release notes are available inside the
   product.
 - Added Mission Control schedule visibility and schedule-aware empty states.
+- Added Z.ai GLM-5.2 model metadata with the documented `glm-5.2` model ID,
+  1M context window, text-only input modality, native tool/web-search support,
+  and GLM-5.2 reasoning presets.
 
 ### Changed
 
