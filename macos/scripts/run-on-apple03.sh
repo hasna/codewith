@@ -131,6 +131,10 @@ rm -rf "\$APP"
 mkdir -p "\$APP/Contents/MacOS" "\$APP/Contents/Resources"
 cp "\$BIN" "\$APP/Contents/MacOS/CodeWith"
 stage_cli "\$CLI_SRC" "\$APP/Contents/Resources"
+CLI_VERSION="\$("\$APP/Contents/Resources/codewith" --version 2>/dev/null | awk '{print \$2; exit}')"
+if [ -z "\$CLI_VERSION" ]; then
+  CLI_VERSION="1.0"
+fi
 cat > "\$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -138,8 +142,8 @@ cat > "\$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>CodeWith</string>
   <key>CFBundleDisplayName</key><string>CodeWith</string>
   <key>CFBundleIdentifier</key><string>com.hasna.codewith</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>\$CLI_VERSION</string>
+  <key>CFBundleShortVersionString</key><string>\$CLI_VERSION</string>
   <key>CFBundleExecutable</key><string>CodeWith</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
