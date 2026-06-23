@@ -1,3 +1,4 @@
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 
@@ -25,6 +26,9 @@ const QWEN_BASE_URL: &str =
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+pub(crate) const DEFAULT_INPUT_MODALITIES: &[InputModality] =
+    &[InputModality::Text, InputModality::Image];
+pub(crate) const TEXT_INPUT_MODALITIES: &[InputModality] = &[InputModality::Text];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KnownProviderModelMetadata {
@@ -34,6 +38,7 @@ pub struct KnownProviderModelMetadata {
     pub supports_parallel_tool_calls: bool,
     pub supports_reasoning: bool,
     pub supports_search_tool: bool,
+    pub input_modalities: &'static [InputModality],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +91,26 @@ impl KnownProviderModelMetadata {
         supports_reasoning: bool,
         supports_search_tool: bool,
     ) -> Self {
+        Self::with_search_tool_and_input_modalities(
+            display_name,
+            context_window,
+            supports_tools,
+            supports_parallel_tool_calls,
+            supports_reasoning,
+            supports_search_tool,
+            DEFAULT_INPUT_MODALITIES,
+        )
+    }
+
+    pub(crate) const fn with_search_tool_and_input_modalities(
+        display_name: &'static str,
+        context_window: i64,
+        supports_tools: bool,
+        supports_parallel_tool_calls: bool,
+        supports_reasoning: bool,
+        supports_search_tool: bool,
+        input_modalities: &'static [InputModality],
+    ) -> Self {
         Self {
             display_name,
             context_window,
@@ -93,6 +118,7 @@ impl KnownProviderModelMetadata {
             supports_parallel_tool_calls,
             supports_reasoning,
             supports_search_tool,
+            input_modalities,
         }
     }
 }
@@ -493,6 +519,55 @@ mod tests {
             !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro-ultraspeed")
                 .expect("xiaomi metadata should exist")
                 .supports_search_tool
+        );
+    }
+
+    #[test]
+    fn zai_glm_5_2_metadata_matches_documented_capabilities() {
+        assert_eq!(
+            metadata_for_local_fallback(Some("zai"), "glm-5.2"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "GLM-5.2",
+                    /*context_window*/ 1_000_000,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ false,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ true,
+                    TEXT_INPUT_MODALITIES,
+                )
+            )
+        );
+        assert_eq!(
+            metadata_for_local_fallback(Some("zai"), "glm-5.2[1m]"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "GLM-5.2 1M",
+                    /*context_window*/ 1_000_000,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ false,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ true,
+                    TEXT_INPUT_MODALITIES,
+                )
+            )
+        );
+
+        let (default_effort, presets) = reasoning_levels_for_local_fallback(Some("zai"), "glm-5.2");
+        assert_eq!(
+            (default_effort, presets),
+            (
+                Some(ReasoningEffort::Custom("max".to_string())),
+                vec![
+                    reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
+                    reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                    reasoning_preset(ReasoningEffort::Custom("max".to_string()), "Max reasoning"),
+                ],
+            )
+        );
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("zai"), "glm-5.1"),
+            (None, Vec::new())
         );
     }
 

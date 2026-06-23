@@ -4,11 +4,24 @@ use crate::BackgroundAgentExecutionHandleParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
+use crate::runtime::managed_worktrees::path_to_db_string;
 use crate::runtime::test_support::test_thread_metadata;
 use crate::runtime::test_support::unique_temp_dir;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::path::PathBuf;
 use std::time::Duration;
+
+fn repo_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "codewith-background-agent-{}",
+        name.trim_start_matches('/').replace('/', "-")
+    ))
+}
+
+fn worktree_path(name: &str) -> PathBuf {
+    repo_path("/repo").join(".git").join("worktrees").join(name)
+}
 
 async fn create_run(runtime: &StateRuntime) -> anyhow::Result<BackgroundAgentRun> {
     runtime
@@ -1398,6 +1411,8 @@ async fn active_process_handles_include_persisted_start_token_and_stderr_path() 
 async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run(runtime.as_ref()).await?;
+    let repo = repo_path("/repo");
+    let worktree = worktree_path("run-1");
 
     let lease = runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1405,8 +1420,8 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/run-1".to_string(),
+            base_repo_path: path_to_db_string(&repo),
+            worktree_path: path_to_db_string(&worktree),
             branch: Some("codewith/bg-run-1".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1569,6 +1584,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
+    let repo = repo_path("/repo");
+    let repo = path_to_db_string(&repo);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1576,8 +1593,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo.clone(),
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1596,8 +1613,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo.clone(),
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1612,7 +1629,7 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
         .expect_err("parallel shared-repository lease should be rejected");
     assert!(
         err.to_string()
-            .contains("shared repository /repo is already leased")
+            .contains(&format!("shared repository {repo} is already leased"))
     );
 
     runtime
@@ -1624,8 +1641,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: repo,
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1646,6 +1663,10 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
+    let repo = repo_path("/repo");
+    let worktree = worktree_path("bg-run-1");
+    let repo = path_to_db_string(&repo);
+    let worktree = path_to_db_string(&worktree);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1653,8 +1674,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-1".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1673,8 +1694,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1687,10 +1708,9 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         })
         .await
         .expect_err("active isolated worktree path should be protected");
-    assert!(
-        err.to_string()
-            .contains("isolated worktree path /repo/.git/worktrees/bg-run-1 is already leased")
-    );
+    assert!(err.to_string().contains(&format!(
+        "isolated worktree path {worktree} is already leased"
+    )));
 
     runtime
         .release_background_agent_worktree_lease(
@@ -1704,8 +1724,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1718,11 +1738,9 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         })
         .await
         .expect_err("released isolated worktree path should stay protected until cleanup succeeds");
-    assert!(
-        still_protected
-            .to_string()
-            .contains("isolated worktree path /repo/.git/worktrees/bg-run-1 is already leased")
-    );
+    assert!(still_protected.to_string().contains(&format!(
+        "isolated worktree path {worktree} is already leased"
+    )));
 
     let cleanup_candidate = runtime
         .managed_worktrees()
@@ -1741,8 +1759,8 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: "/repo".to_string(),
-            worktree_path: "/repo/.git/worktrees/bg-run-1".to_string(),
+            base_repo_path: repo,
+            worktree_path: worktree,
             branch: Some("codewith/bg-run-2".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({

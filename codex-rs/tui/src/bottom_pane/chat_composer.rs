@@ -7992,6 +7992,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_flat_for_bare_slash_ui() {
         use ratatui::Terminal;
@@ -8105,6 +8106,7 @@ mod tests {
         insta::assert_snapshot!("slash_popup_res", terminal.backend());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_archive_for_ar_ui() {
         use ratatui::Terminal;
@@ -8267,6 +8269,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_side_for_si_ui() {
         use ratatui::Terminal;
