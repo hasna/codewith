@@ -249,6 +249,7 @@ pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: ThreadId,
+    pub assigned_thread_id: ThreadId,
     pub key: String,
     pub sequence: i64,
     pub priority: i64,
@@ -293,16 +294,101 @@ impl ThreadGoalPlanSnapshot {
         summary
     }
 
+    pub fn ready_node_ids_for_thread(&self, thread_id: ThreadId) -> Vec<String> {
+        self.ready_nodes()
+            .into_iter()
+            .filter(|node| node.assigned_thread_id == thread_id)
+            .map(|node| node.node_id.clone())
+            .collect()
+    }
+
     pub fn ready_node_ids(&self) -> Vec<String> {
+        self.ready_nodes()
+            .into_iter()
+            .map(|node| node.node_id.clone())
+            .collect()
+    }
+
+    pub fn participant_thread_ids(&self) -> Vec<ThreadId> {
+        let mut seen = HashSet::new();
+        let mut thread_ids = Vec::new();
+        for thread_id in std::iter::once(self.plan.thread_id)
+            .chain(self.nodes.iter().map(|node| node.assigned_thread_id))
+        {
+            if seen.insert(thread_id.to_string()) {
+                thread_ids.push(thread_id);
+            }
+        }
+        thread_ids
+    }
+
+    pub fn visible_node_count_for_thread(&self, thread_id: ThreadId) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| self.node_is_visible_to_thread(node, thread_id))
+            .count()
+    }
+
+    pub fn visible_nodes_for_thread(
+        &self,
+        thread_id: ThreadId,
+        limit: usize,
+    ) -> Vec<&ThreadGoalPlanNode> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let visible_nodes = self
+            .nodes
+            .iter()
+            .filter(|node| self.node_is_visible_to_thread(node, thread_id))
+            .collect::<Vec<_>>();
+        if visible_nodes.len() <= limit {
+            return visible_nodes;
+        }
+
+        let ready_node_ids = self
+            .ready_node_ids_for_thread(thread_id)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut selected = Vec::new();
+        let mut selected_node_ids = HashSet::new();
+        for node in visible_nodes.iter().copied().filter(|node| {
+            node.assigned_thread_id == thread_id
+                && (node.status == ThreadGoalPlanNodeStatus::Active
+                    || ready_node_ids.contains(&node.node_id))
+        }) {
+            selected_node_ids.insert(node.node_id.clone());
+            selected.push(node);
+            if selected.len() == limit {
+                return selected;
+            }
+        }
+
+        for node in visible_nodes {
+            if selected_node_ids.insert(node.node_id.clone()) {
+                selected.push(node);
+                if selected.len() == limit {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    fn node_is_visible_to_thread(&self, node: &ThreadGoalPlanNode, thread_id: ThreadId) -> bool {
+        self.plan.thread_id == thread_id || node.assigned_thread_id == thread_id
+    }
+
+    fn ready_nodes(&self) -> Vec<&ThreadGoalPlanNode> {
         if self.plan.status != ThreadGoalPlanStatus::Active {
             return Vec::new();
         }
 
-        let summary = self.usage_summary_without_ready_nodes();
         if self
             .plan
             .max_tokens
-            .is_some_and(|max_tokens| summary.total_tokens_used >= max_tokens)
+            .is_some_and(|max_tokens| self.reserved_tokens() >= max_tokens)
         {
             return Vec::new();
         }
@@ -323,8 +409,29 @@ impl ThreadGoalPlanSnapshot {
                         .iter()
                         .all(|dependency| completed_keys.contains(dependency.as_str()))
             })
-            .map(|node| node.node_id.clone())
             .collect()
+    }
+
+    fn reserved_tokens(&self) -> i64 {
+        self.nodes
+            .iter()
+            .map(|node| {
+                if matches!(
+                    node.status,
+                    ThreadGoalPlanNodeStatus::Active
+                        | ThreadGoalPlanNodeStatus::Paused
+                        | ThreadGoalPlanNodeStatus::Blocked
+                        | ThreadGoalPlanNodeStatus::UsageLimited
+                ) {
+                    node.token_budget
+                        .unwrap_or(node.tokens_used)
+                        .max(node.tokens_used)
+                } else {
+                    node.tokens_used
+                }
+                .max(0)
+            })
+            .sum()
     }
 
     fn usage_summary_without_ready_nodes(&self) -> ThreadGoalPlanUsageSummary {
@@ -394,6 +501,7 @@ pub(crate) struct ThreadGoalPlanNodeRow {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: String,
+    pub assigned_thread_id: Option<String>,
     pub key: String,
     pub sequence: i64,
     pub priority: i64,
@@ -443,6 +551,7 @@ impl ThreadGoalPlanNodeRow {
             node_id: row.try_get("node_id")?,
             plan_id: row.try_get("plan_id")?,
             thread_id: row.try_get("thread_id")?,
+            assigned_thread_id: row.try_get("assigned_thread_id")?,
             key: row.try_get("key")?,
             sequence: row.try_get("sequence")?,
             priority: row.try_get("priority")?,
@@ -497,10 +606,17 @@ impl ThreadGoalPlanNode {
         row: ThreadGoalPlanNodeRow,
         depends_on: Vec<String>,
     ) -> Result<Self> {
+        let thread_id = ThreadId::try_from(row.thread_id)?;
+        let assigned_thread_id = row
+            .assigned_thread_id
+            .map(ThreadId::try_from)
+            .transpose()?
+            .unwrap_or(thread_id);
         Ok(Self {
             node_id: row.node_id,
             plan_id: row.plan_id,
-            thread_id: ThreadId::try_from(row.thread_id)?,
+            thread_id,
+            assigned_thread_id,
             key: row.key,
             sequence: row.sequence,
             priority: row.priority,

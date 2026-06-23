@@ -1,3 +1,4 @@
+use super::goal_plans::recalculate_goal_plan_status_in_tx;
 use super::*;
 use crate::model::ThreadGoalRow;
 use uuid::Uuid;
@@ -23,6 +24,12 @@ pub struct GoalUpdate {
 pub enum GoalAccountingOutcome {
     Unchanged(Option<crate::ThreadGoal>),
     Updated(crate::ThreadGoal),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalDeleteOutcome {
+    pub deleted: bool,
+    pub plan_updates: Vec<crate::ThreadGoalPlanSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -560,7 +567,10 @@ WHERE thread_id = ?
         self.get_thread_goal(thread_id).await
     }
 
-    pub async fn delete_thread_goal(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+    pub async fn delete_thread_goal_with_plan_updates(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<GoalDeleteOutcome> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let previous_goal_id: Option<String> = sqlx::query_scalar(
@@ -573,10 +583,12 @@ WHERE thread_id = ?
         .bind(thread_id.to_string())
         .fetch_optional(&mut *tx)
         .await?;
-        if let Some(previous_goal_id) = previous_goal_id.as_deref() {
+        let plan_updates = if let Some(previous_goal_id) = previous_goal_id.as_deref() {
             block_projected_goal_plan_nodes_in_tx(&mut tx, thread_id, previous_goal_id, now_ms)
-                .await?;
-        }
+                .await?
+        } else {
+            Vec::new()
+        };
         let result = sqlx::query(
             r#"
 DELETE FROM thread_goals
@@ -588,7 +600,16 @@ WHERE thread_id = ?
         .await?;
         tx.commit().await?;
 
-        Ok(result.rows_affected() > 0)
+        Ok(GoalDeleteOutcome {
+            deleted: result.rows_affected() > 0,
+            plan_updates,
+        })
+    }
+
+    pub async fn delete_thread_goal(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+        self.delete_thread_goal_with_plan_updates(thread_id)
+            .await
+            .map(|outcome| outcome.deleted)
     }
 
     pub async fn account_thread_goal_usage(
@@ -715,16 +736,16 @@ async fn block_projected_goal_plan_nodes_in_tx(
     thread_id: ThreadId,
     projected_goal_id: &str,
     now_ms: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<crate::ThreadGoalPlanSnapshot>> {
     let rows = sqlx::query(
         r#"
 UPDATE thread_goal_plan_nodes
 SET status = ?, updated_at_ms = ?
-WHERE thread_id = ?
+WHERE assigned_thread_id = ?
   AND projected_goal_id = ?
-  AND status != 'complete'
-RETURNING plan_id
-        "#,
+  AND status IN ('active', 'paused', 'blocked', 'usage_limited')
+	RETURNING plan_id
+	        "#,
     )
     .bind(crate::ThreadGoalPlanNodeStatus::Blocked.as_str())
     .bind(now_ms)
@@ -733,23 +754,19 @@ RETURNING plan_id
     .fetch_all(&mut **tx)
     .await?;
 
+    let mut plan_ids = Vec::new();
     for row in rows {
         let plan_id: String = row.try_get("plan_id")?;
-        sqlx::query(
-            r#"
-UPDATE thread_goal_plans
-SET status = ?, updated_at_ms = ?
-WHERE plan_id = ?
-  AND status != 'complete'
-            "#,
-        )
-        .bind(crate::ThreadGoalPlanStatus::Blocked.as_str())
-        .bind(now_ms)
-        .bind(plan_id)
-        .execute(&mut **tx)
-        .await?;
+        if !plan_ids.contains(&plan_id) {
+            plan_ids.push(plan_id);
+        }
     }
-    Ok(())
+    let mut snapshots = Vec::with_capacity(plan_ids.len());
+    for plan_id in plan_ids {
+        recalculate_goal_plan_status_in_tx(tx, &plan_id, now_ms).await?;
+        snapshots.push(super::goal_plans::snapshot_thread_goal_plan_in_tx(tx, &plan_id).await?);
+    }
+    Ok(snapshots)
 }
 
 fn status_after_budget_limit(

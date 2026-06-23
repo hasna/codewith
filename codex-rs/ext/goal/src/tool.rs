@@ -518,26 +518,32 @@ impl GoalToolExecutor {
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
-        let (goal_plans, activated_goal, goal_plan_completion_report) =
-            if let Some(outcome) = plan_outcome {
-                self.event_emitter.thread_goal_plan_updated(
-                    format!("{}-goal-plan", invocation.call_id),
-                    Some(invocation.turn_id.clone()),
-                    outcome.snapshot.clone(),
-                );
-                let goal_plan_completion_report =
-                    GoalPlanCompletionReport::from_snapshot_if_terminal(&outcome.snapshot);
-                let activated_goal = self
-                    .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
-                    .await?;
-                (
-                    vec![GoalPlanResponse::from(outcome.snapshot)],
-                    activated_goal,
-                    goal_plan_completion_report,
-                )
-            } else {
-                (Vec::new(), None, None)
-            };
+        let (goal_plans, activated_goal, goal_plan_completion_report) = if let Some(outcome) =
+            plan_outcome
+        {
+            self.event_emitter.thread_goal_plan_updated(
+                format!("{}-goal-plan", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                outcome.snapshot.clone(),
+            );
+            let goal_plan_completion_report = GoalPlanCompletionReport::from_snapshot_if_terminal(
+                &outcome.snapshot,
+                self.thread_id,
+            );
+            let activated_goal = self
+                .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
+                .await?;
+            (
+                vec![GoalPlanResponse::from_snapshot_for_thread(
+                    outcome.snapshot,
+                    self.thread_id,
+                )],
+                activated_goal,
+                goal_plan_completion_report,
+            )
+        } else {
+            (Vec::new(), None, None)
+        };
         goal_response_with_plan_report_and_context(
             Some(goal),
             activated_goal,
