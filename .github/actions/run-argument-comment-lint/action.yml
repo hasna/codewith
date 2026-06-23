@@ -1,5 +1,5 @@
 name: Run argument comment lint
-description: Run argument-comment-lint on codex-rs.
+description: Run argument-comment-lint on codex-rs via Bazel.
 
 inputs:
   target:
@@ -13,43 +13,28 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install DotSlash
-      if: ${{ runner.os != 'Windows' }}
-      uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
-
-    - name: Make DotSlash available in PATH (Unix)
-      if: ${{ runner.os != 'Windows' }}
-      shell: bash
-      run: cp "$(which dotslash)" /usr/local/bin
-
-    - name: Install nightly argument-comment-lint toolchain
-      if: ${{ runner.os != 'Windows' }}
-      shell: bash
-      run: |
-        rustup toolchain install nightly-2025-09-18 \
-          --profile minimal \
-          --component llvm-tools-preview \
-          --component rustc-dev \
-          --component rust-src \
-          --no-self-update
-
     - uses: ./.github/actions/setup-bazel-ci
-      if: ${{ runner.os == 'Windows' }}
       with:
         target: ${{ inputs.target }}
         install-test-prereqs: true
 
-    - name: Install Linux lint build dependencies
+    - name: Install Linux sandbox build dependencies
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
         sudo DEBIAN_FRONTEND=noninteractive apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
 
-    - name: Run argument comment lint on codex-rs via prebuilt Dylint package
+    - name: Run argument comment lint on codex-rs via Bazel
       if: ${{ runner.os != 'Windows' }}
+      env:
+        BUILDBUDDY_API_KEY: ${{ inputs.buildbuddy-api-key }}
       shell: bash
-      run: ./tools/argument-comment-lint/run-prebuilt-linter.py
+      run: |
+        ./.github/scripts/run-argument-comment-lint-bazel.sh \
+          --config=argument-comment-lint \
+          --keep_going \
+          --build_metadata=COMMIT_SHA=${GITHUB_SHA}
 
     - name: Run argument comment lint on codex-rs via Bazel
       if: ${{ runner.os == 'Windows' }}
