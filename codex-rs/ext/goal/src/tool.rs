@@ -479,12 +479,15 @@ impl GoalToolExecutor {
                     snapshot.clone(),
                 );
                 let goal_plan_completion_report =
-                    GoalPlanCompletionReport::from_snapshot_if_terminal(&snapshot);
+                    GoalPlanCompletionReport::from_snapshot_if_terminal(&snapshot, self.thread_id);
                 let activated_goal = self
                     .apply_activated_goal_from_plan(&invocation, activated_goal)
                     .await?;
                 (
-                    vec![GoalPlanResponse::from(snapshot)],
+                    vec![GoalPlanResponse::from_snapshot_for_thread(
+                        snapshot,
+                        self.thread_id,
+                    )],
                     activated_goal,
                     goal_plan_completion_report,
                 )

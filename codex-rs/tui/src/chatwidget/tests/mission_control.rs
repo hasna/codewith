@@ -669,6 +669,7 @@ fn test_plan_node(
         node_id: format!("node-{key}"),
         plan_id: format!("plan-{thread_id}"),
         thread_id: thread_id.to_string(),
+        assigned_thread_id: thread_id.to_string(),
         key: key.to_string(),
         sequence: 1,
         priority: 0,

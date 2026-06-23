@@ -164,9 +164,10 @@ impl ThreadGoalRequestProcessor {
         self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
             .await;
         if let Some(plan_update) = outcome.plan_update.clone() {
-            let plan = api_thread_goal_plan_from_state(plan_update.snapshot);
-            self.emit_thread_goal_plan_updated_ordered(
-                thread_id, plan, /*listener_command_tx*/ None,
+            self.emit_thread_goal_plan_snapshot_updated_ordered(
+                thread_id,
+                plan_update.snapshot,
+                None,
             )
             .await;
             if let Some(activated_goal) = plan_update.activated_goal {
@@ -231,7 +232,7 @@ impl ThreadGoalRequestProcessor {
         let goal_plans = goal_plan_page
             .data
             .into_iter()
-            .map(api_thread_goal_plan_from_state)
+            .map(|snapshot| api_thread_goal_plan_from_state_for_thread(snapshot, thread_id))
             .collect();
         Ok(ThreadGoalListResponse {
             goal,
@@ -259,18 +260,31 @@ impl ThreadGoalRequestProcessor {
             let thread_state = thread_state.lock().await;
             thread_state.listener_command_tx()
         };
-        let cleared = self
+        let outcome = self
             .goal_service
             .clear_thread_goal(&state_db, thread_id)
             .await
             .map_err(goal_service_error)?;
 
         self.outgoing
-            .send_response(request_id, ThreadGoalClearResponse { cleared })
+            .send_response(
+                request_id,
+                ThreadGoalClearResponse {
+                    cleared: outcome.cleared,
+                },
+            )
             .await;
-        if cleared {
-            self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx)
+        if outcome.cleared {
+            self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx.clone())
                 .await;
+            for plan_update in outcome.plan_updates {
+                self.emit_thread_goal_plan_snapshot_updated_ordered(
+                    thread_id,
+                    plan_update,
+                    listener_command_tx.clone(),
+                )
+                .await;
+            }
         }
         Ok(())
     }
@@ -300,7 +314,7 @@ impl ThreadGoalRequestProcessor {
             .await
             .map_err(goal_service_error)?;
         let goal = ThreadGoal::from(outcome.goal.clone());
-        let plan = api_thread_goal_plan_from_state(outcome.plan.clone());
+        let plan = api_thread_goal_plan_from_state_for_thread(outcome.plan.clone(), thread_id);
         self.outgoing
             .send_response(
                 request_id,
@@ -312,8 +326,12 @@ impl ThreadGoalRequestProcessor {
             .await;
         self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
             .await;
-        self.emit_thread_goal_plan_updated_ordered(thread_id, plan, listener_command_tx)
-            .await;
+        self.emit_thread_goal_plan_snapshot_updated_ordered(
+            thread_id,
+            outcome.plan.clone(),
+            listener_command_tx,
+        )
+        .await;
         outcome.apply_runtime_effects(&self.goal_service).await;
         Ok(())
     }
@@ -467,6 +485,26 @@ impl ThreadGoalRequestProcessor {
             .await;
     }
 
+    async fn emit_thread_goal_plan_snapshot_updated_ordered(
+        &self,
+        request_thread_id: ThreadId,
+        snapshot: codex_state::ThreadGoalPlanSnapshot,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        for target_thread_id in snapshot.participant_thread_ids() {
+            let plan =
+                api_thread_goal_plan_from_state_for_thread(snapshot.clone(), target_thread_id);
+            let listener_command_tx = if target_thread_id == request_thread_id {
+                listener_command_tx.clone()
+            } else {
+                self.thread_state_manager
+                    .current_listener_command_tx(target_thread_id)
+            };
+            self.emit_thread_goal_plan_updated_ordered(target_thread_id, plan, listener_command_tx)
+                .await;
+        }
+    }
+
     async fn emit_thread_goal_plan_updated_ordered(
         &self,
         thread_id: ThreadId,
@@ -526,13 +564,22 @@ fn goal_auto_execute_from_config(config: &Config) -> codex_state::ThreadGoalPlan
 pub(super) fn api_thread_goal_plan_from_state(
     snapshot: codex_state::ThreadGoalPlanSnapshot,
 ) -> ThreadGoalPlan {
+    let thread_id = snapshot.plan.thread_id;
+    api_thread_goal_plan_from_state_for_thread(snapshot, thread_id)
+}
+
+pub(crate) fn api_thread_goal_plan_from_state_for_thread(
+    snapshot: codex_state::ThreadGoalPlanSnapshot,
+    thread_id: ThreadId,
+) -> ThreadGoalPlan {
     let summary = snapshot.usage_summary();
     let ready_node_ids = snapshot
-        .ready_node_ids()
+        .ready_node_ids_for_thread(thread_id)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    let ready_node_count = i64::try_from(ready_node_ids.len()).unwrap_or(i64::MAX);
     ThreadGoalPlan {
-        plan_id: snapshot.plan.plan_id,
+        plan_id: snapshot.plan.plan_id.clone(),
         thread_id: snapshot.plan.thread_id.to_string(),
         status: api_thread_goal_plan_status_from_state(snapshot.plan.status),
         auto_execute: api_thread_goal_plan_auto_execute_from_state(snapshot.plan.auto_execute),
@@ -542,7 +589,7 @@ pub(super) fn api_thread_goal_plan_from_state(
         remaining_tokens: summary.remaining_tokens,
         node_count: summary.node_count,
         completed_node_count: summary.completed_node_count,
-        ready_node_count: summary.ready_node_count,
+        ready_node_count,
         active_node_count: summary.active_node_count,
         pending_node_count: summary.pending_node_count,
         paused_node_count: summary.paused_node_count,
@@ -553,11 +600,11 @@ pub(super) fn api_thread_goal_plan_from_state(
         created_at: snapshot.plan.created_at.timestamp(),
         updated_at: snapshot.plan.updated_at.timestamp(),
         nodes: snapshot
-            .nodes
+            .visible_nodes_for_thread(thread_id, usize::MAX)
             .into_iter()
             .map(|node| {
                 let ready = ready_node_ids.contains(&node.node_id);
-                api_thread_goal_plan_node_from_state(node, ready)
+                api_thread_goal_plan_node_from_state(node.clone(), ready)
             })
             .collect(),
     }
@@ -571,6 +618,7 @@ fn api_thread_goal_plan_node_from_state(
         node_id: node.node_id,
         plan_id: node.plan_id,
         thread_id: node.thread_id.to_string(),
+        assigned_thread_id: node.assigned_thread_id.to_string(),
         key: node.key,
         sequence: node.sequence,
         priority: node.priority,

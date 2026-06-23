@@ -893,6 +893,9 @@ ON CONFLICT(id) DO UPDATE SET
         self.memories.delete_thread_memory(thread_id).await?;
         self.thread_goals.delete_thread_goal(thread_id).await?;
         self.thread_goals
+            .cancel_pending_goal_plan_nodes_assigned_to_thread(thread_id)
+            .await?;
+        self.thread_goals
             .delete_thread_goal_plans_for_thread(thread_id)
             .await?;
         self.thread_schedules

@@ -1,5 +1,5 @@
 use super::thread_goal_processor::api_thread_goal_from_state;
-use super::thread_goal_processor::api_thread_goal_plan_from_state;
+use super::thread_goal_processor::api_thread_goal_plan_from_state_for_thread;
 use super::thread_pending_interaction_processor::api_pending_interaction;
 use super::thread_pending_interaction_processor::read_pending_interaction;
 use super::thread_pending_interaction_processor::validate_response_matches_interaction;
@@ -163,7 +163,7 @@ impl ThreadRequestProcessor {
                     })?
                     .data
                     .into_iter()
-                    .map(api_thread_goal_plan_from_state)
+                    .map(|snapshot| api_thread_goal_plan_from_state_for_thread(snapshot, thread_id))
                     .collect()
             } else {
                 Vec::new()

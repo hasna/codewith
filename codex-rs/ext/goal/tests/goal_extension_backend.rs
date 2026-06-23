@@ -232,6 +232,121 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
 }
 
 #[tokio::test]
+async fn create_goal_plan_rejects_model_supplied_assigned_thread_id() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-delegated-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "delegate",
+                        "objective": "Try to delegate through the model-facing tool",
+                        "assigned_thread_id": "22222222-2222-4222-8222-222222222222"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("model-supplied assigned_thread_id should fail"),
+        Err(err) => err,
+    };
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-visible validation error");
+    };
+    assert!(message.contains("assigned_thread_id"));
+    assert!(message.contains("unknown field"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn delegated_goal_plan_response_hides_unassigned_nodes_and_includes_ready_node()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let owner_thread_id = test_thread_id()?;
+    let delegate_thread_id = ThreadId::from_string("22222222-2222-4222-8222-222222222222")
+        .map_err(anyhow::Error::msg)?;
+    seed_thread_metadata(runtime.as_ref(), owner_thread_id).await?;
+    seed_thread_metadata(runtime.as_ref(), delegate_thread_id).await?;
+    let mut nodes = (0..20)
+        .map(|idx| codex_state::ThreadGoalPlanNodeCreateParams {
+            key: format!("owner-{idx}"),
+            objective: format!("Owner-only secret objective {idx}."),
+            assigned_thread_id: None,
+            priority: 0,
+            token_budget: None,
+            depends_on: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    nodes.push(codex_state::ThreadGoalPlanNodeCreateParams {
+        key: "delegate".to_string(),
+        objective: "Visible delegated objective.".to_string(),
+        assigned_thread_id: Some(delegate_thread_id),
+        priority: 0,
+        token_budget: None,
+        depends_on: Vec::new(),
+    });
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id: owner_thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_tokens: None,
+            nodes,
+        })
+        .await?;
+    let delegated_node_id = created
+        .snapshot
+        .nodes
+        .iter()
+        .find(|node| node.assigned_thread_id == delegate_thread_id)
+        .map(|node| node.node_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("delegated node should exist"))?;
+
+    let delegate_tools = installed_tools(runtime.clone(), delegate_thread_id).await;
+    let get_plan_tool = tool_by_name(&delegate_tools, "get_goal_plan");
+    let get_plan = tool_call("get_goal_plan", "call-get-delegate-plan", json!({}));
+    let output = get_plan_tool.handle(get_plan.clone()).await?;
+    let result = output.code_mode_result(&get_plan.payload);
+    let plan = &result["goalPlans"][0];
+    let visible_nodes = plan["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+    assert_eq!(1, plan["readyNodeCount"]);
+    assert_eq!(1, visible_nodes.len());
+    assert_eq!(delegated_node_id, visible_nodes[0]["nodeId"]);
+    assert_eq!(
+        "Visible delegated objective.",
+        visible_nodes[0]["objective"]
+    );
+    assert_eq!(
+        delegate_thread_id.to_string(),
+        visible_nodes[0]["assignedThreadId"]
+    );
+    assert!(!result.to_string().contains("Owner-only secret objective"));
+
+    let activate_tool = tool_by_name(&delegate_tools, "activate_goal_plan_node");
+    let activate = tool_call(
+        "activate_goal_plan_node",
+        "call-activate-delegated-plan",
+        json!({ "node_id": delegated_node_id }),
+    );
+    let output = activate_tool.handle(activate.clone()).await?;
+    let result = output.code_mode_result(&activate.payload);
+    assert_eq!(result["goal"]["threadId"], delegate_thread_id.to_string());
+    assert_eq!(result["goal"]["objective"], "Visible delegated objective.");
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_with_auto_off_clears_replaced_goal_without_activation()
 -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
@@ -1961,6 +2076,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                 codex_state::ThreadGoalPlanNodeCreateParams {
                     key: "first".to_string(),
                     objective: "Finish first external goal".to_string(),
+                    assigned_thread_id: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -1968,6 +2084,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                 codex_state::ThreadGoalPlanNodeCreateParams {
                     key: "second".to_string(),
                     objective: "Continue with second external goal".to_string(),
+                    assigned_thread_id: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: vec!["first".to_string()],
@@ -2048,6 +2165,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
             nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
                 key: "blocked".to_string(),
                 objective: "Wait for coordinator input".to_string(),
+                assigned_thread_id: None,
                 priority: 0,
                 token_budget: None,
                 depends_on: Vec::new(),
@@ -2252,7 +2370,11 @@ async fn goal_service_clear_thread_goal_clears_pending_interactions_without_live
         .len()
     );
 
-    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     assert_eq!(
         Vec::<codex_state::PendingInteraction>::new(),
         pending_interactions_for_kind(
@@ -2357,6 +2479,7 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
             .goal_service
             .clear_thread_goal(runtime.as_ref(), thread_id)
             .await?
+            .cleared
     );
     assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
     Ok(())
@@ -2442,12 +2565,20 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     assert_eq!(Some(123), get.token_budget);
     assert_eq!(Some("ship goal API ownership"), metadata.preview.as_deref());
 
-    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     assert_eq!(
         None,
         api.get_thread_goal(runtime.as_ref(), thread_id).await?
     );
-    assert!(!api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        !api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     Ok(())
 }
 
