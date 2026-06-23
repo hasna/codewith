@@ -167,6 +167,262 @@ async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn create_goal_tools_persist_context_lifecycle_actions() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "compact after standalone goal",
+                "post_goal_context": "compact",
+            }),
+        ))
+        .await?;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("created goal should exist"))?;
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_context_action(thread_id, goal.goal_id.as_str())
+            .await?
+    );
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "clear_existing_goal": true,
+            "post_goal_context": "compact",
+            "post_goal_plan_context": "compact",
+            "goals": [
+                {
+                    "key": "planned",
+                    "objective": "compact after planned goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("created plan id should be returned"))?;
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_plan_context_action(thread_id, plan_id)
+            .await?
+    );
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_plan_completion_context_action(thread_id, plan_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_goal_does_not_schedule_context_lifecycle_for_blocked_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "do not compact blocked goal",
+                "post_goal_context": "compact",
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-block-goal",
+        json!({ "status": "blocked" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(serde_json::Value::Null, result["contextLifecycleReport"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_plan_context_lifecycle_skips_auto_advance_and_schedules_completion()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan",
+            json!({
+                "post_goal_context": "compact",
+                "post_goal_plan_context": "compact",
+                "goals": [
+                    {
+                        "key": "first",
+                        "objective": "complete first without compacting"
+                    },
+                    {
+                        "key": "second",
+                        "objective": "compact after final completion",
+                        "depends_on": ["first"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-first-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "compact after final completion"
+    );
+    assert_eq!(serde_json::Value::Null, result["contextLifecycleReport"]);
+
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-second-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goalPlans"][0]["status"], "complete");
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_plan_context_lifecycle_schedules_when_no_next_goal_activates() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "post_goal_context": "compact",
+            "post_goal_plan_context": "keep",
+            "goals": [
+                {
+                    "key": "manual",
+                    "objective": "compact after manual node completion"
+                },
+                {
+                    "key": "later",
+                    "objective": "remain ready after manual node completion",
+                    "depends_on": ["manual"]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let first_node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("first node id should be returned"))?;
+
+    let activate_tool = tool_by_name(&tools, "activate_goal_plan_node");
+    activate_tool
+        .handle(tool_call(
+            "activate_goal_plan_node",
+            "call-activate-first-node",
+            json!({ "node_id": first_node_id }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-manual-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(serde_json::Value::Null, result["activatedGoal"]);
+    assert_eq!(result["goalPlans"][0]["status"], "active");
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -175,10 +431,9 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
         runtime,
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
             max_auto_goals_per_plan: 24,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -356,10 +611,8 @@ async fn create_goal_plan_with_auto_off_clears_replaced_goal_without_activation(
         runtime.clone(),
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -410,10 +663,8 @@ async fn activate_goal_plan_node_allows_explicit_activation_when_auto_off() -> a
         runtime,
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -463,10 +714,8 @@ async fn update_goal_uses_current_auto_execute_config_after_mid_turn_change() ->
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let initial_config = GoalExtensionConfig {
-        enabled: true,
         auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-        max_auto_goals_per_plan: 12,
-        max_tokens_per_goal_plan: None,
+        ..test_goal_extension_config()
     };
     let harness =
         GoalExtensionHarness::new_with_config(runtime.clone(), thread_id, initial_config.clone())
@@ -550,10 +799,8 @@ async fn update_goal_can_complete_auto_activated_next_goal_in_same_turn() -> any
         runtime.clone(),
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -2643,6 +2890,8 @@ fn test_goal_extension_config() -> GoalExtensionConfig {
         auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
         max_auto_goals_per_plan: 12,
         max_tokens_per_goal_plan: None,
+        post_goal_context: codex_state::PostGoalContextAction::Keep,
+        post_goal_plan_context: codex_state::PostGoalContextAction::Keep,
     }
 }
 

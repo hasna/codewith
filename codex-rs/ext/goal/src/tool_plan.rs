@@ -12,6 +12,7 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::runtime::GoalPlanRuntimeConfig;
 use crate::tool::CompletionBudgetReport;
 use crate::tool::GoalToolExecutor;
+use crate::tool::PostGoalContextActionArg;
 use crate::tool::fill_empty_thread_preview_if_possible;
 use crate::tool::goal_response_with_plan;
 use crate::tool::parse_arguments;
@@ -31,6 +32,8 @@ struct CreateGoalPlanRequest {
     #[serde(default)]
     clear_existing_goal: bool,
     max_tokens_per_goal_plan: Option<i64>,
+    post_goal_context: Option<PostGoalContextActionArg>,
+    post_goal_plan_context: Option<PostGoalContextActionArg>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +250,30 @@ impl GoalToolExecutor {
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("failed to create goal plan: {err}"))
             })?;
+        if request.post_goal_context.is_some() || request.post_goal_plan_context.is_some() {
+            let post_goal_action = request
+                .post_goal_context
+                .map(codex_state::PostGoalContextAction::from)
+                .unwrap_or(plan_config.post_goal_context);
+            let post_goal_plan_action = request
+                .post_goal_plan_context
+                .map(codex_state::PostGoalContextAction::from)
+                .unwrap_or(plan_config.post_goal_plan_context);
+            self.state_db
+                .thread_goals()
+                .set_thread_goal_plan_context_actions(
+                    self.thread_id,
+                    outcome.snapshot.plan.plan_id.as_str(),
+                    post_goal_action,
+                    post_goal_plan_action,
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to set goal plan context lifecycle policy: {err}"
+                    ))
+                })?;
+        }
         let activated_goal = self
             .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
             .await?;

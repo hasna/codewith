@@ -12,6 +12,7 @@ use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::GoalAutoExecuteMode;
+use codex_core::config::PostGoalContextAction;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
 use codex_extension_api::ExtensionEventSink;
@@ -75,6 +76,10 @@ where
                 },
                 max_auto_goals_per_plan: config.goals.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.goals.max_tokens_per_goal_plan,
+                post_goal_context: post_goal_context_action(config.goals.post_goal_context),
+                post_goal_plan_context: post_goal_context_action(
+                    config.goals.post_goal_plan_context,
+                ),
             },
         );
     }
@@ -86,6 +91,13 @@ where
         config.features.enabled(codex_features::Feature::Workflows)
     });
     Arc::new(builder.build())
+}
+
+fn post_goal_context_action(action: PostGoalContextAction) -> codex_state::PostGoalContextAction {
+    match action {
+        PostGoalContextAction::Keep => codex_state::PostGoalContextAction::Keep,
+        PostGoalContextAction::Compact => codex_state::PostGoalContextAction::Compact,
+    }
 }
 
 pub(crate) fn app_server_extension_event_sink(

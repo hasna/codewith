@@ -95,6 +95,7 @@ pub use model::PendingInteractionKind;
 pub use model::PendingInteractionRespondParams;
 pub use model::PendingInteractionSourceKind;
 pub use model::PendingInteractionStatus;
+pub use model::PostGoalContextAction;
 pub use model::SortDirection;
 pub use model::SortKey;
 pub use model::Stage1JobClaim;
