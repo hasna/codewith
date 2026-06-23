@@ -19,6 +19,9 @@ pub use model::LogRow;
 pub use model::Phase2JobClaimOutcome;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use runtime::StateRuntimeStartupLock;
+pub use runtime::acquire_state_runtime_startup_lock;
+pub use runtime::state_runtime_startup_lock_path;
 
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;

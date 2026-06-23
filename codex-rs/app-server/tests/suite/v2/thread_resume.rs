@@ -1910,6 +1910,7 @@ async fn thread_goal_plan_activate_node_rpc_updates_goal_plan_and_notifications(
         })
         .await?;
     let node_id = create_outcome.snapshot.nodes[0].node_id.clone();
+    drop(state_db);
 
     let missing_id = mcp
         .send_raw_request(

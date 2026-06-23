@@ -1,3 +1,4 @@
+use super::sqlite_retry::retry_transient_sqlite_busy;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use chrono::DateTime;
@@ -51,16 +52,19 @@ impl MachineRegistryRequestProcessor {
                 codex_state::MAX_MACHINE_REGISTRY_LIST_LIMIT
             )));
         }
-        let page = state_db
-            .machine_registry()
-            .list_machines(codex_state::MachineRegistryListParams {
-                include_disabled: params.include_disabled,
-                include_forgotten: params.include_forgotten,
-                cursor: params.cursor,
-                limit,
-            })
-            .await
-            .map_err(machine_registry_store_error)?;
+        let list_params = codex_state::MachineRegistryListParams {
+            include_disabled: params.include_disabled,
+            include_forgotten: params.include_forgotten,
+            cursor: params.cursor,
+            limit,
+        };
+        let page = retry_transient_sqlite_busy("list machine registry", || {
+            state_db
+                .machine_registry()
+                .list_machines(list_params.clone())
+        })
+        .await
+        .map_err(machine_registry_store_error)?;
         Ok(Some(
             MachineRegistryListResponse {
                 data: page.data.into_iter().map(api_machine_from_state).collect(),
@@ -76,12 +80,12 @@ impl MachineRegistryRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.state_db()?;
         let machine_id = normalize_required_text("machineId", params.machine_id)?;
-        let machine = state_db
-            .machine_registry()
-            .get_machine(machine_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to read machine registry: {err}")))?
-            .map(api_machine_from_state);
+        let machine = retry_transient_sqlite_busy("read machine registry", || {
+            state_db.machine_registry().get_machine(machine_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to read machine registry: {err}")))?
+        .map(api_machine_from_state);
         Ok(Some(MachineRegistryReadResponse { machine }.into()))
     }
 
@@ -95,24 +99,25 @@ impl MachineRegistryRequestProcessor {
             .into_iter()
             .map(state_endpoint_upsert_from_api)
             .collect::<Result<Vec<_>, _>>()?;
+        let upsert_params = codex_state::MachineRegistryUpsertParams {
+            machine_id: params.machine_id,
+            installation_id: params.installation_id,
+            display_name: params.display_name,
+            trust_state: codex_state::MachineTrustState::Untrusted,
+            enrollment_state: codex_state::MachineEnrollmentState::Manual,
+            health_state: codex_state::MachineHealthState::Unknown,
+            source_kind: codex_state::MachineSourceKind::Manual,
+            adapter_name: None,
+            capabilities_json: params.capabilities,
+            endpoints,
+            last_seen_at: params
+                .last_seen_at
+                .map(|timestamp| timestamp_to_datetime(timestamp, "lastSeenAt"))
+                .transpose()?,
+        };
         let machine = state_db
             .machine_registry()
-            .upsert_machine(codex_state::MachineRegistryUpsertParams {
-                machine_id: params.machine_id,
-                installation_id: params.installation_id,
-                display_name: params.display_name,
-                trust_state: codex_state::MachineTrustState::Untrusted,
-                enrollment_state: codex_state::MachineEnrollmentState::Manual,
-                health_state: codex_state::MachineHealthState::Unknown,
-                source_kind: codex_state::MachineSourceKind::Manual,
-                adapter_name: None,
-                capabilities_json: params.capabilities,
-                endpoints,
-                last_seen_at: params
-                    .last_seen_at
-                    .map(|timestamp| timestamp_to_datetime(timestamp, "lastSeenAt"))
-                    .transpose()?,
-            })
+            .upsert_machine(upsert_params)
             .await
             .map_err(machine_registry_store_error)?;
         Ok(Some(
@@ -135,16 +140,16 @@ impl MachineRegistryRequestProcessor {
             .await
             .map_err(machine_registry_store_error)?;
         let machine = if found {
-            state_db
-                .machine_registry()
-                .get_machine(machine_id.as_str())
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to read disabled machine registry row: {err}"
-                    ))
-                })?
-                .map(api_machine_from_state)
+            retry_transient_sqlite_busy("read disabled machine registry row", || {
+                state_db.machine_registry().get_machine(machine_id.as_str())
+            })
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to read disabled machine registry row: {err}"
+                ))
+            })?
+            .map(api_machine_from_state)
         } else {
             None
         };
@@ -162,12 +167,10 @@ impl MachineRegistryRequestProcessor {
         }
         let state_db = self.state_db()?;
         let machine_id = normalize_required_text("machineId", params.machine_id)?;
+        let trust_state = state_trust_from_api(params.trust_state);
         let machine = state_db
             .machine_registry()
-            .update_machine_trust(
-                machine_id.as_str(),
-                state_trust_from_api(params.trust_state),
-            )
+            .update_machine_trust(machine_id.as_str(), trust_state)
             .await
             .map_err(machine_registry_store_error)?
             .map(api_machine_from_state);

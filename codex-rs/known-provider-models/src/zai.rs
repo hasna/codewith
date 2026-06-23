@@ -10,38 +10,38 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "glm-5.2",
         "GLM-5.2",
         "Z.ai's latest flagship coding model with native web search support. Requires ZAI_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "glm-5.1",
         "GLM-5.1",
         "Z.ai's latest GLM model with native web search support. Requires ZAI_API_KEY for turns.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "glm-5",
         "GLM-5",
         "Z.ai GLM-5 model with native web search support.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "glm-4.7",
         "GLM-4.7",
         "Z.ai GLM-4.7 model with native web search support.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
-        "glm-5.2" => Some(model("GLM-5.2", 1_000_000)),
-        "glm-5.2[1m]" => Some(model("GLM-5.2 1M", 1_000_000)),
-        "glm-5.1" => Some(model("GLM-5.1", 1_000_000)),
-        "glm-5" => Some(model("GLM-5", 1_000_000)),
-        "glm-5-turbo" => Some(model("GLM-5 Turbo", 128_000)),
-        "glm-4.7" => Some(model("GLM-4.7", 202_752)),
-        "glm-4.7-flashx" => Some(model("GLM-4.7 FlashX", 202_752)),
-        "glm-4.7-flash" => Some(model("GLM-4.7 Flash", 202_752)),
+        "glm-5.2" => Some(model("GLM-5.2", /*context_window*/ 1_000_000)),
+        "glm-5.2[1m]" => Some(model("GLM-5.2 1M", /*context_window*/ 1_000_000)),
+        "glm-5.1" => Some(model("GLM-5.1", /*context_window*/ 1_000_000)),
+        "glm-5" => Some(model("GLM-5", /*context_window*/ 1_000_000)),
+        "glm-5-turbo" => Some(model("GLM-5 Turbo", /*context_window*/ 128_000)),
+        "glm-4.7" => Some(model("GLM-4.7", /*context_window*/ 202_752)),
+        "glm-4.7-flashx" => Some(model("GLM-4.7 FlashX", /*context_window*/ 202_752)),
+        "glm-4.7-flash" => Some(model("GLM-4.7 Flash", /*context_window*/ 202_752)),
         _ => None,
     }
 }
