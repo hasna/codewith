@@ -285,7 +285,7 @@ impl BackgroundAgentRequestProcessor {
             })?
         } else {
             let mut events = state_db
-                .list_events_after(run.id.as_str(), None, Some(1))
+                .list_events_after(run.id.as_str(), /*after_seq*/ None, Some(1))
                 .await
                 .map_err(|err| {
                     internal_error(format!("failed to list background agent events: {err}"))
@@ -399,7 +399,7 @@ impl BackgroundAgentRequestProcessor {
             })?
             .map(api_agent_execution_snapshot_from_state);
         let pending_interactions = state_db
-            .list_pending_interactions(run.id.as_str(), None)
+            .list_pending_interactions(run.id.as_str(), /*status*/ None)
             .await
             .map_err(|err| {
                 internal_error(format!(
@@ -487,7 +487,7 @@ impl BackgroundAgentRequestProcessor {
             .then(|| events.last().map(|event| encode_event_cursor(event.seq)))
             .flatten();
         let pending_interactions = state_db
-            .list_pending_interactions(run.id.as_str(), None)
+            .list_pending_interactions(run.id.as_str(), /*status*/ None)
             .await
             .map_err(|err| {
                 internal_error(format!(
@@ -1397,7 +1397,7 @@ async fn cancel_active_pending_interactions_for_run(
     reason: &str,
 ) -> Result<(), JSONRPCErrorError> {
     let interactions = state_db
-        .list_pending_interactions(run_id, None)
+        .list_pending_interactions(run_id, /*status*/ None)
         .await
         .map_err(|err| {
             internal_error(format!(
@@ -1443,7 +1443,7 @@ async fn upsert_lifecycle_status_snapshot(
         return Ok(());
     };
     let pending_interaction_count = state_db
-        .list_pending_interactions(run_id, None)
+        .list_pending_interactions(run_id, /*status*/ None)
         .await
         .map_err(|err| {
             internal_error(format!(
