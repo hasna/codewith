@@ -29,6 +29,7 @@ use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::GoalsAutoExecuteToml;
 use codex_config::config_toml::GoalsConfigToml;
+use codex_config::config_toml::PostGoalContextActionToml;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -318,11 +319,28 @@ impl From<GoalsAutoExecuteToml> for GoalAutoExecuteMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostGoalContextAction {
+    Keep,
+    Compact,
+}
+
+impl From<PostGoalContextActionToml> for PostGoalContextAction {
+    fn from(value: PostGoalContextActionToml) -> Self {
+        match value {
+            PostGoalContextActionToml::Keep => Self::Keep,
+            PostGoalContextActionToml::Compact => Self::Compact,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GoalsConfig {
     pub auto_execute: GoalAutoExecuteMode,
     pub max_auto_goals_per_plan: usize,
     pub max_tokens_per_goal_plan: Option<i64>,
+    pub post_goal_context: PostGoalContextAction,
+    pub post_goal_plan_context: PostGoalContextAction,
 }
 
 pub const MAX_AUTO_GOALS_PER_PLAN: usize = 64;
@@ -333,6 +351,8 @@ impl Default for GoalsConfig {
             auto_execute: GoalAutoExecuteMode::Off,
             max_auto_goals_per_plan: 12,
             max_tokens_per_goal_plan: None,
+            post_goal_context: PostGoalContextAction::Keep,
+            post_goal_plan_context: PostGoalContextAction::Keep,
         }
     }
 }
@@ -640,6 +660,14 @@ fn resolve_goals_config(config: Option<GoalsConfigToml>) -> GoalsConfig {
         max_tokens_per_goal_plan: config
             .max_tokens_per_goal_plan
             .filter(|max_tokens_per_goal_plan| *max_tokens_per_goal_plan > 0),
+        post_goal_context: config
+            .post_goal_context
+            .map(PostGoalContextAction::from)
+            .unwrap_or(defaults.post_goal_context),
+        post_goal_plan_context: config
+            .post_goal_plan_context
+            .map(PostGoalContextAction::from)
+            .unwrap_or(defaults.post_goal_plan_context),
     }
 }
 

@@ -186,36 +186,12 @@ impl ThreadScheduleRuntime {
             .await?;
         self.ensure_schedule_listener(thread_id, thread.clone())
             .await?;
-        let thread_settings = codex_protocol::protocol::ThreadSettingsOverrides {
+        let thread_settings = codex_core::CodexThreadSettingsOverrides {
             auth_profile: claim_auth_profile,
-            ..codex_protocol::protocol::ThreadSettingsOverrides::default()
+            ..codex_core::CodexThreadSettingsOverrides::default()
         };
         let thread_state = self.thread_state_manager.thread_state(thread_id).await;
-        thread_state.lock().await.begin_scheduled_run_submission();
-        let submit_result = thread
-            .submit(Op::UserInput {
-                items: vec![CoreInputItem::Text {
-                    text: scheduled_thread_prompt(
-                        &prompt,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                    ),
-                    text_elements: Vec::new(),
-                }],
-                environments: None,
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings,
-            })
-            .await;
-        let turn_id = match submit_result {
-            Ok(turn_id) => turn_id,
-            Err(err) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
-                return Err(anyhow::anyhow!("failed to submit scheduled prompt: {err}"));
-            }
-        };
+        let turn_id = Uuid::now_v7().to_string();
 
         let run = match state_db
             .thread_schedules()
@@ -229,22 +205,17 @@ impl ThreadScheduleRuntime {
         {
             Ok(Some(run)) => run,
             Ok(None) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
                 return Err(anyhow::anyhow!(
                     "claimed schedule run {} disappeared before it could start",
                     claim.run.run_id
                 ));
             }
-            Err(err) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
         {
             let mut thread_state = thread_state.lock().await;
-            thread_state.finish_scheduled_run_submission();
             thread_state.track_scheduled_run(
-                turn_id,
+                turn_id.clone(),
                 crate::thread_state::ScheduledThreadScheduleRun {
                     schedule_id: claim.schedule.schedule_id.clone(),
                     run_id: claim.run.run_id.clone(),
@@ -252,6 +223,28 @@ impl ThreadScheduleRuntime {
                     state_db: state_db.clone(),
                 },
             );
+        }
+        let start_result = thread
+            .try_start_user_input_turn_if_idle(
+                turn_id.clone(),
+                vec![CoreInputItem::Text {
+                    text: scheduled_thread_prompt(
+                        &prompt,
+                        claim.run.run_id.as_str(),
+                        claim.run.scheduled_for,
+                    ),
+                    text_elements: Vec::new(),
+                }],
+                Default::default(),
+                thread_settings,
+            )
+            .await;
+        if let Err(err) = start_result {
+            thread_state
+                .lock()
+                .await
+                .take_scheduled_run(turn_id.as_str());
+            return Err(anyhow::anyhow!("failed to start scheduled prompt: {err}"));
         }
         self.spawn_lease_heartbeat(
             state_db,
@@ -547,6 +540,10 @@ fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
         EventMsg::TurnAborted(aborted) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
             format!("scheduled turn aborted: {:?}", aborted.reason),
         ))),
+        EventMsg::Error(error) => Some(ScheduledTurnFinish::Failed(schedule_run_error(format!(
+            "scheduled turn failed: {}",
+            error.message
+        )))),
         _ => None,
     }
 }
@@ -792,7 +789,7 @@ async fn apply_persisted_schedule_resume_metadata(
     }
 }
 
-fn schedule_resume_auth_profile(
+pub(super) fn schedule_resume_auth_profile(
     schedule_auth_profile: Option<Option<String>>,
     initial_history: &InitialHistory,
 ) -> Option<Option<String>> {
@@ -1004,6 +1001,7 @@ fn looks_like_jwt(value: &str) -> bool {
 mod tests {
     use super::*;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
@@ -1282,6 +1280,22 @@ mod tests {
     }
 
     #[test]
+    fn recorded_schedule_creation_auth_uses_latest_turn_auth_profile() {
+        let thread_id = ThreadId::new();
+        let history = resumed_history_with_session_and_turn_auth_profile(
+            thread_id,
+            Some(Some("account002")),
+            Some(None),
+        );
+
+        assert_eq!(Some(None), history.get_auth_profile());
+        assert_eq!(
+            Some(Some("account002".to_string())),
+            schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &history)
+        );
+    }
+
+    #[test]
     fn computes_interval_next_run() {
         assert_eq!(
             Some(at(/*seconds*/ 1_700_000_300)),
@@ -1377,6 +1391,21 @@ mod tests {
         }));
 
         assert_eq!(Some(ScheduledTurnFinish::Complete), finish);
+    }
+
+    #[test]
+    fn scheduled_turn_error_fails() {
+        let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
+            message: "auth profile missing".to_string(),
+            codex_error_info: None,
+        }));
+
+        assert_eq!(
+            Some(ScheduledTurnFinish::Failed(
+                "scheduled turn failed: auth profile missing".to_string()
+            )),
+            finish
+        );
     }
 
     #[test]

@@ -3862,6 +3862,9 @@ pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assigned_thread_id: Option<ThreadId>,
     pub key: String,
     pub sequence: i64,
     pub priority: i64,

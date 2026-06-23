@@ -118,6 +118,7 @@ fn protocol_goal_plan_node_from_state(
         node_id: node.node_id,
         plan_id: node.plan_id,
         thread_id: node.thread_id,
+        assigned_thread_id: Some(node.assigned_thread_id),
         key: node.key,
         sequence: node.sequence,
         priority: node.priority,
