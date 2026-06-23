@@ -106,15 +106,26 @@ async fn try_init_with_roots_inner(
     default_model_provider_id: String,
     backfill_lease_seconds: Option<i64>,
 ) -> anyhow::Result<StateDbHandle> {
-    let runtime =
-        codex_state::StateRuntime::init(sqlite_home.clone(), default_model_provider_id.clone())
-            .await
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to initialize state runtime at {}: {err}",
-                    sqlite_home.display()
-                )
-            })?;
+    let startup_lock = codex_state::acquire_state_runtime_startup_lock(sqlite_home.as_path())
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "failed to acquire state runtime startup lock at {}: {err}",
+                sqlite_home.display()
+            )
+        })?;
+    let runtime = codex_state::StateRuntime::init_with_acquired_startup_lock(
+        sqlite_home.clone(),
+        default_model_provider_id.clone(),
+        &startup_lock,
+    )
+    .await
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "failed to initialize state runtime at {}: {err}",
+            sqlite_home.display()
+        )
+    })?;
     let backfill_gate_started = Instant::now();
     let backfill_gate_result = wait_for_backfill_gate(
         runtime.as_ref(),
@@ -206,37 +217,17 @@ fn emit_startup_warning(message: &str) {
     }
 }
 
-/// Open the DB if it exists and its startup backfill has already completed.
+/// Do not open the writable DB from non-owning contexts.
 ///
-/// Unlike [`init`], this helper does not run rollout backfill. It is for
-/// optional local reads from non-owning contexts such as remote app-server mode.
-pub async fn get_state_db(config: &impl RolloutConfigView) -> Option<StateDbHandle> {
-    let state_path = codex_state::state_db_path(config.sqlite_home());
-    if !tokio::fs::try_exists(&state_path).await.unwrap_or(false) {
-        codex_state::record_fallback(
-            "get_state_db",
-            "db_unavailable",
-            /*telemetry_override*/ None,
-        );
-        return None;
-    }
-    let runtime = match codex_state::StateRuntime::init(
-        config.sqlite_home().to_path_buf(),
-        config.model_provider_id().to_string(),
-    )
-    .await
-    {
-        Ok(runtime) => runtime,
-        Err(_) => {
-            codex_state::record_fallback(
-                "get_state_db",
-                "db_error",
-                /*telemetry_override*/ None,
-            );
-            return None;
-        }
-    };
-    require_backfill_complete(runtime, config.sqlite_home()).await
+/// Local-daemon and remote app-server clients must use app-server APIs for
+/// state instead of opening the shared SQLite runtime in-process.
+pub async fn get_state_db(_config: &impl RolloutConfigView) -> Option<StateDbHandle> {
+    codex_state::record_fallback(
+        "get_state_db",
+        "non_owner_disabled",
+        /*telemetry_override*/ None,
+    );
+    None
 }
 
 /// Build a SQLite telemetry recorder backed by an OTEL metrics client.
@@ -245,40 +236,6 @@ pub fn sqlite_telemetry_recorder(
     originator: &str,
 ) -> codex_state::DbTelemetryHandle {
     sqlite_metrics::recorder(metrics, originator)
-}
-
-async fn require_backfill_complete(
-    runtime: StateDbHandle,
-    codex_home: &Path,
-) -> Option<StateDbHandle> {
-    match runtime.get_backfill_state().await {
-        Ok(state) if state.status == codex_state::BackfillStatus::Complete => Some(runtime),
-        Ok(state) => {
-            warn!(
-                "state db backfill not complete at {} (status: {})",
-                codex_home.display(),
-                state.status.as_str()
-            );
-            codex_state::record_fallback(
-                "get_state_db",
-                "backfill_incomplete",
-                /*telemetry_override*/ None,
-            );
-            None
-        }
-        Err(err) => {
-            warn!(
-                "failed to read backfill state at {}: {err}",
-                codex_home.display()
-            );
-            codex_state::record_fallback(
-                "get_state_db",
-                "db_error",
-                /*telemetry_override*/ None,
-            );
-            None
-        }
-    }
 }
 
 fn cursor_to_anchor(cursor: Option<&Cursor>) -> Option<codex_state::Anchor> {

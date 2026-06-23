@@ -724,6 +724,13 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Fork => {
+                if self.thread_id.is_some() && self.current_rollout_path.is_none() {
+                    self.add_error_message(
+                        "This session is still starting and cannot be forked yet. Send a message first, then try /fork again."
+                            .to_string(),
+                    );
+                    return;
+                }
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::App => {
@@ -983,7 +990,40 @@ impl ChatWidget {
                 self.request_quit_without_confirmation();
             }
             SlashCommand::Logout => {
-                self.app_event_tx.send(AppEvent::Logout);
+                let mut header = ColumnRenderable::new();
+                header.push(Line::from("Log out of Codewith?".bold()));
+                header.push(Line::from(
+                    "This clears the active login and exits the TUI after logout succeeds.".dim(),
+                ));
+
+                self.bottom_pane.show_selection_view(SelectionViewParams {
+                    view_id: Some("logout-confirmation"),
+                    footer_hint: Some(standard_popup_hint_line()),
+                    header: Box::new(header),
+                    items: vec![
+                        SelectionItem {
+                            name: "No, keep working".to_string(),
+                            description: Some(
+                                "Return to this session without logging out".to_string(),
+                            ),
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                        SelectionItem {
+                            name: "Yes, log out and exit".to_string(),
+                            description: Some(
+                                "Clear the active login and shut down Codewith".to_string(),
+                            ),
+                            actions: vec![Box::new(|tx| {
+                                tx.send(AppEvent::Logout);
+                            })],
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                });
+                self.request_redraw();
             }
             SlashCommand::Copy => {
                 self.copy_last_agent_markdown();
