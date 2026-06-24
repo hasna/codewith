@@ -43,6 +43,15 @@ bash macos/scripts/run-on-apple03.sh --launch # opens the windowed app on apple0
 so the Swift app talks to the existing `codewith app-server` harness instead of
 depending on whichever external install happens to be first on `PATH`.
 
+### Runtime compatibility
+
+The Machines screen uses the app-server machine registry. Older bundled or
+external `codewith app-server` builds that predate `machineRegistry/list` cannot
+return fleet data, so the macOS app degrades without treating that as a startup
+failure. Rebuild the app with a current CLI, or set `CODEWITH_CLI_PATH` to a
+newer CLI before running `macos/scripts/run-on-apple03.sh`, to restore the full
+Machines view.
+
 Reference captures live in `design-refs/screenshots/`; our renders land in
 `design-refs/renders/` for side-by-side parity comparison. See the project memory
 note `macos-app-build-pipeline` for the full mechanics (Tailscale IPs, `DEVELOPER_DIR`,
