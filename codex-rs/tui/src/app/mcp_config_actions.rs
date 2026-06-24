@@ -18,16 +18,23 @@ impl App {
             }
         };
 
-        let edit = crate::config_update::replace_config_value(
-            mcp_server_key_path(&parsed.name),
-            parsed.config,
-        );
+        self.add_mcp_server_from_config(app_server, parsed.name, parsed.config)
+            .await
+    }
+
+    pub(super) async fn add_mcp_server_from_config(
+        &mut self,
+        app_server: &mut AppServerSession,
+        name: String,
+        config: JsonValue,
+    ) -> Result<(), String> {
+        let edit = crate::config_update::replace_config_value(mcp_server_key_path(&name), config);
         match write_mcp_config_edits(app_server, vec![edit]).await {
             Ok(()) => {
                 self.refresh_in_memory_config_from_disk_best_effort("add MCP server")
                     .await;
                 self.chat_widget.add_info_message(
-                    format!("MCP server `{}` added.", parsed.name),
+                    format!("MCP server `{name}` added."),
                     Some(
                         "Loaded threads pick up the new tools automatically before the next turn."
                             .to_string(),
@@ -38,7 +45,7 @@ impl App {
                 Ok(())
             }
             Err(err) => {
-                let message = format!("Failed to add MCP server `{}`: {err}", parsed.name);
+                let message = format!("Failed to add MCP server `{name}`: {err}");
                 self.chat_widget.add_error_message(message.clone());
                 self.chat_widget.open_mcp_add_server();
                 Err(message)
@@ -336,7 +343,7 @@ fn parse_http_mcp_add_spec(
     Ok(ParsedMcpAddSpec { name, config })
 }
 
-fn validate_mcp_server_name(name: &str) -> Result<(), String> {
+pub(super) fn validate_mcp_server_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("MCP server name must not be empty.".to_string());
     }

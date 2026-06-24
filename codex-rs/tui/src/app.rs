@@ -237,6 +237,8 @@ mod thread_workflow_actions;
 mod tmux_handoff;
 mod ui_dynamic_tools;
 mod ui_management_tools;
+mod ui_mcp_tool;
+mod ui_mcp_tool_helpers;
 mod worktree_actions;
 
 use self::agent_navigation::AgentNavigationDirection;
@@ -584,6 +586,8 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    pending_mcp_dynamic_tool_mutations:
+        HashMap<codex_app_server_protocol::RequestId, ui_mcp_tool::PendingMcpDynamicToolMutation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1070,6 +1074,7 @@ See the Codewith keymap documentation for supported actions and examples."
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_dynamic_tool_mutations: HashMap::new(),
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
