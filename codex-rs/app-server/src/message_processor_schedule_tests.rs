@@ -1503,6 +1503,7 @@ fn thread_schedule_create_for_unloaded_thread_prefers_session_auth_profile_over_
                 personality: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
+                worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
                 machine_id: None,
                 machine_name: None,
                 auth_profile: Some(None),

@@ -216,6 +216,7 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
         model_provider_id: None,
         personality: None,
         collaboration_mode: None,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: None,

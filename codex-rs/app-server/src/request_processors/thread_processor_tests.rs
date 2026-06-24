@@ -87,6 +87,7 @@ mod thread_processor_behavior_tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SessionWorktreeMode;
     use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
@@ -835,6 +836,7 @@ mod thread_processor_behavior_tests {
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            worktree_mode: SessionWorktreeMode::Manual,
         };
 
         assert_eq!(
@@ -895,6 +897,7 @@ mod thread_processor_behavior_tests {
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            worktree_mode: SessionWorktreeMode::Manual,
         };
 
         assert_eq!(
@@ -981,6 +984,7 @@ mod thread_processor_behavior_tests {
             model_provider_id: None,
             personality: None,
             collaboration_mode: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
             multi_agent_version: None,
             auth_profile: auth_profile.map(|value| value.map(str::to_string)),
             realtime_active: None,

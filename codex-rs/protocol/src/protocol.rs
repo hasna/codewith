@@ -458,8 +458,27 @@ pub struct ThreadSettingsOverrides {
     /// Takes precedence over model, effort, and developer instructions if set.
     pub collaboration_mode: Option<CollaborationMode>,
 
+    /// Updated session-level managed worktree behavior.
+    pub worktree_mode: Option<SessionWorktreeMode>,
+
     /// Updated personality preference.
     pub personality: Option<Personality>,
+}
+
+/// Session-level managed worktree behavior.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum SessionWorktreeMode {
+    /// Use the current shared checkout and disallow session-managed worktree
+    /// create/attach operations for this thread.
+    Shared,
+    /// Allow this session to manually create or attach managed worktrees.
+    #[default]
+    Manual,
+    /// Pull-request mode. The session must work inside an attached isolated
+    /// managed worktree before model turns can continue.
+    PullRequest,
 }
 
 /// Source classification for client-supplied context.
@@ -1945,6 +1964,8 @@ pub struct ThreadSettingsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    #[serde(default)]
+    pub worktree_mode: SessionWorktreeMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub selected_auth_profile: Option<String>,
@@ -2997,6 +3018,8 @@ pub struct TurnContextItem {
     pub personality: Option<Personality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collaboration_mode: Option<CollaborationMode>,
+    #[serde(default)]
+    pub worktree_mode: SessionWorktreeMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Auth profile selected for model requests in this turn.
@@ -5552,6 +5575,7 @@ mod tests {
             model_provider_id: None,
             personality: None,
             collaboration_mode: None,
+            worktree_mode: SessionWorktreeMode::Manual,
             multi_agent_version: None,
             auth_profile: None,
             realtime_active: None,
