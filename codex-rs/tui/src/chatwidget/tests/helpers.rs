@@ -145,42 +145,6 @@ fn restore_spacing_after_shortened_path(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::restore_spacing_after_shortened_path;
-
-    #[test]
-    fn shortened_path_spacing_is_restored_before_trailing_padding() {
-        let normalized = restore_spacing_after_shortened_path(
-            r"C:\tmp\project   Side from main thread · main needs input · Ctrl+C to return  ",
-            "/tmp/project   Side from main thread · main needs input · Ctrl+C to return  "
-                .to_string(),
-            r"C:\tmp\project",
-            "/tmp/project",
-        );
-
-        assert_eq!(
-            normalized,
-            "/tmp/project     Side from main thread · main needs input · Ctrl+C to return"
-        );
-    }
-
-    #[test]
-    fn spacing_restore_targets_replaced_platform_path() {
-        let normalized = restore_spacing_after_shortened_path(
-            r"literal /tmp/project then C:\tmp\project   Side  ",
-            "literal /tmp/project then /tmp/project   Side  ".to_string(),
-            r"C:\tmp\project",
-            "/tmp/project",
-        );
-
-        assert_eq!(
-            normalized,
-            "literal /tmp/project then /tmp/project     Side"
-        );
-    }
-}
-
 pub(super) fn invalid_value(
     candidate: impl Into<String>,
     allowed: impl Into<String>,
@@ -1670,5 +1634,41 @@ fn hook_event_label(event_name: codex_app_server_protocol::HookEventName) -> &'s
         codex_app_server_protocol::HookEventName::SubagentStart => "SubagentStart",
         codex_app_server_protocol::HookEventName::SubagentStop => "SubagentStop",
         codex_app_server_protocol::HookEventName::Stop => "Stop",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restore_spacing_after_shortened_path;
+
+    #[test]
+    fn shortened_path_spacing_is_restored_before_trailing_padding() {
+        let normalized = restore_spacing_after_shortened_path(
+            r"C:\tmp\project   Side from main thread · main needs input · Ctrl+C to return  ",
+            "/tmp/project   Side from main thread · main needs input · Ctrl+C to return  "
+                .to_string(),
+            r"C:\tmp\project",
+            "/tmp/project",
+        );
+
+        assert_eq!(
+            normalized,
+            "/tmp/project     Side from main thread · main needs input · Ctrl+C to return"
+        );
+    }
+
+    #[test]
+    fn spacing_restore_targets_replaced_platform_path() {
+        let normalized = restore_spacing_after_shortened_path(
+            r"literal /tmp/project then C:\tmp\project   Side  ",
+            "literal /tmp/project then /tmp/project   Side  ".to_string(),
+            r"C:\tmp\project",
+            "/tmp/project",
+        );
+
+        assert_eq!(
+            normalized,
+            "literal /tmp/project then /tmp/project     Side"
+        );
     }
 }
