@@ -1255,6 +1255,14 @@ impl App {
                 self.create_worktree(app_server, name, branch, start_point)
                     .await;
             }
+            AppEvent::StartPullRequestMode {
+                name,
+                branch,
+                start_point,
+            } => {
+                self.start_pull_request_mode(app_server, name, branch, start_point)
+                    .await;
+            }
             AppEvent::OpenWorktreeActions {
                 worktree_id,
                 base_repo_path,

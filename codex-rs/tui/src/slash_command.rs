@@ -215,6 +215,7 @@ impl SlashCommand {
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
+                | SlashCommand::Pr
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
