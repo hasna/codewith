@@ -184,10 +184,27 @@ final class AppModelTests: XCTestCase {
         let m = AppModel()
         m.activeThreadId = "thread-b"
         m.activeTurnThreadId = "thread-a"
+        m.turnInProgress = true
 
         m.handleNotification(method: "item/commandExecution/outputDelta",
                              params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
 
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testCompletionForPreviousVisibleTurnStillClearsTracking() {
+        let m = AppModel()
+        m.activeThreadId = "thread-b"
+        m.activeTurnThreadId = "thread-a"
+        m.activeTurnId = "turn-a"
+        m.turnInProgress = true
+
+        m.handleNotification(method: "turn/completed",
+                             params: obj(["threadId": .string("thread-a"), "turn": obj(["status": .string("completed")])]))
+
+        XCTAssertFalse(m.turnInProgress)
+        XCTAssertNil(m.activeTurnId)
+        XCTAssertNil(m.activeTurnThreadId)
         XCTAssertTrue(m.activeMessages.isEmpty)
     }
 
@@ -307,6 +324,26 @@ final class AppModelTests: XCTestCase {
         m.selectedMachineId = "a"
         m.activeThreadId = "thread-a"
         m.activeMessages = [ChatMessage(role: .assistant, text: "old")]
+        m.route = .chat("thread-a")
+        m.remoteSearchThreads = [ThreadInfo(from: obj(["id": .string("thread-a"), "machineId": .string("a")]))]
+
+        m.selectMachine(m.machines[1])
+
+        XCTAssertEqual(m.selectedMachineId, "b")
+        XCTAssertNil(m.activeThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertTrue(m.remoteSearchThreads.isEmpty)
+        XCTAssertEqual(m.route, .home)
+    }
+
+    func testSelectingDifferentMachineBlockedWithPendingPrompt() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "a", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "b", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.selectedMachineId = "a"
+        m.activeThreadId = "thread-a"
         m.pendingServerRequests = [
             PendingServerRequest(
                 requestId: .number(1),
@@ -316,15 +353,13 @@ final class AppModelTests: XCTestCase {
                 title: "Approve?",
                 detail: "Approve?")
         ]
-        m.remoteSearchThreads = [ThreadInfo(from: obj(["id": .string("thread-a"), "machineId": .string("a")]))]
 
         m.selectMachine(m.machines[1])
 
-        XCTAssertEqual(m.selectedMachineId, "b")
-        XCTAssertNil(m.activeThreadId)
-        XCTAssertTrue(m.activeMessages.isEmpty)
-        XCTAssertTrue(m.pendingServerRequests.isEmpty)
-        XCTAssertTrue(m.remoteSearchThreads.isEmpty)
+        XCTAssertEqual(m.selectedMachineId, "a")
+        XCTAssertEqual(m.activeThreadId, "thread-a")
+        XCTAssertEqual(m.pendingServerRequests.count, 1)
+        XCTAssertEqual(m.pendingMachineSwitchWarning, "Resolve the pending request before switching machines.")
     }
 
     func testSelectingMachineClearsProjectContext() {
@@ -352,12 +387,40 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(m.loops.isEmpty)
     }
 
+    func testMcpElicitationValueParsesTypedFields() {
+        let integerField = PendingMcpElicitationField(
+            id: "count",
+            label: "Count",
+            prompt: "Count",
+            required: true,
+            kind: .integer)
+        let numberField = PendingMcpElicitationField(
+            id: "ratio",
+            label: "Ratio",
+            prompt: "Ratio",
+            required: true,
+            kind: .number)
+        let textField = PendingMcpElicitationField(
+            id: "name",
+            label: "Name",
+            prompt: "Name",
+            required: true,
+            kind: .text)
+
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: integerField, rawValue: "3"), .number(3))
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: numberField, rawValue: "3.5"), .number(3.5))
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: textField, rawValue: "3"), .string("3"))
+        XCTAssertNil(AppModel.mcpElicitationValue(field: integerField, rawValue: "3.5"))
+    }
+
     func testSampleModelHasData() {
         let m = AppModel.sample()
         XCTAssertEqual(m.connection, .connected)
         XCTAssertFalse(m.threads.isEmpty)
         XCTAssertFalse(m.projects.isEmpty)
         XCTAssertFalse(m.loops.isEmpty)
+        XCTAssertFalse(m.goalStates.isEmpty)
+        XCTAssertFalse(m.workflows.isEmpty)
         XCTAssertEqual(m.account.name, "Andrei Hasna")
     }
 }

@@ -60,12 +60,17 @@ struct Composer: View {
                 Spacer()
 
                 if let model {
-                    ProjectMenu(model: model, compact: true)
-                    modelMenu(model)
-                    providerMenu(model)
-                    effortMenu(model)
-                    if !model.authProfiles.isEmpty {
-                        authProfileMenu(model)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            ProjectMenu(model: model, compact: true)
+                            modelMenu(model)
+                            providerMenu(model)
+                            effortMenu(model)
+                            if !model.authProfiles.isEmpty {
+                                authProfileMenu(model)
+                            }
+                        }
+                        compactSessionButton(model)
                     }
                 } else {
                     Button { onConfigTap?() } label: {
@@ -197,6 +202,14 @@ struct Composer: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private func compactSessionButton(_ model: AppModel) -> some View {
+        Button { onConfigTap?() } label: {
+            pill("\(AppModel.displayModel(model.model ?? modelLabel)) · \(model.effort)", icon: "slider.horizontal.3")
+        }
+        .buttonStyle(.plain)
+        .disabled(onConfigTap == nil)
     }
 
     private func activeProfileLabel(_ model: AppModel) -> String {

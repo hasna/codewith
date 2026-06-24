@@ -30,12 +30,12 @@ struct ChatView: View {
             // Conversation
             ScrollColumn(alignment: .leading, spacing: 0) {
                 if model.activeMessages.isEmpty {
-                    Text(model.turnInProgress ? "Working…" : "")
+                    Text(model.visibleTurnInProgress ? "Working…" : "")
                         .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
                         .padding(.top, 8)
                 } else {
                     ForEach(model.activeMessages) { messageView($0) }
-                    if model.turnInProgress {
+                    if model.visibleTurnInProgress {
                         Text("Working…").font(.system(size: 12)).foregroundStyle(Theme.textTertiary).padding(.top, 4)
                     }
                 }
@@ -50,6 +50,7 @@ struct ChatView: View {
                     onApprove: { model.respondToServerRequest(pending, approve: true) },
                     onDecline: { model.respondToServerRequest(pending, approve: false) }
                 )
+                .id(pending.id)
                 .padding(.horizontal, 24)
                 .padding(.top, 6)
             }
@@ -59,6 +60,7 @@ struct ChatView: View {
                     onSubmit: { answers in model.respondToUserInputRequest(prompt, answers: answers) },
                     onCancel: { model.cancelUserInputRequest(prompt) }
                 )
+                .id(prompt.id)
                 .padding(.horizontal, 24)
                 .padding(.top, 6)
             }
@@ -74,13 +76,14 @@ struct ChatView: View {
                     },
                     onDecline: { model.respondToMcpElicitationRequest(prompt, action: "decline") }
                 )
+                .id(prompt.id)
                 .padding(.horizontal, 24)
                 .padding(.top, 6)
             }
 
             // Composer
             Composer(placeholder: "Ask for follow-up changes",
-                     stopMode: model.turnInProgress,
+                     stopMode: model.visibleTurnInProgress,
                      text: $model.composerText, model: model, onSubmit: onSubmit,
                      onStop: { Task { await model.interrupt() } },
                      onPlus: { model.toggleAddMenu() },
@@ -200,6 +203,7 @@ struct PendingMcpElicitationPanel: View {
     var onDecline: () -> Void
     @State private var values: [String: String] = [:]
     @State private var selectedValues: [String: JSONValue] = [:]
+    @State private var selectedMultiValues: [String: [JSONValue]] = [:]
 
     var body: some View {
         PendingPromptShell(icon: "puzzlepiece.extension", title: prompt.title) {
@@ -230,6 +234,15 @@ struct PendingMcpElicitationPanel: View {
             if case .url = prompt.mode {
                 Button("Open", action: onOpenURL)
                     .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(Capsule().fill(Theme.fieldFill).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
+                Button("Done") {
+                    onSubmit([:])
+                }
+                    .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white)
                     .buttonStyle(.plain)
                     .padding(.horizontal, 10)
@@ -238,8 +251,14 @@ struct PendingMcpElicitationPanel: View {
             } else {
                 Button("Submit") {
                     var content = selectedValues
-                    for (key, value) in values where !value.isEmpty {
-                        content[key] = .string(value)
+                    for (key, values) in selectedMultiValues where !values.isEmpty {
+                        content[key] = .array(values)
+                    }
+                    for field in prompt.fields {
+                        if let value = values[field.id],
+                           let parsed = AppModel.mcpElicitationValue(field: field, rawValue: value) {
+                            content[field.id] = parsed
+                        }
                     }
                     onSubmit(content)
                 }
@@ -260,7 +279,7 @@ struct PendingMcpElicitationPanel: View {
                 .font(.system(size: 11.5))
                 .foregroundStyle(Theme.textSecondary)
             switch field.kind {
-            case .singleSelect, .multiSelect:
+            case .singleSelect:
                 HStack(spacing: 6) {
                     ForEach(field.options) { option in
                         Button(option.label) { selectedValues[field.id] = option.value }
@@ -270,6 +289,19 @@ struct PendingMcpElicitationPanel: View {
                             .padding(.horizontal, 10)
                             .frame(height: 24)
                             .background(Capsule().fill(selectedValues[field.id] == option.value ? Theme.accent : Theme.fieldFill)
+                                .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
+                    }
+                }
+            case .multiSelect:
+                HStack(spacing: 6) {
+                    ForEach(field.options) { option in
+                        Button(option.label) { toggleMultiSelect(field.id, value: option.value) }
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(isMultiSelectSelected(field.id, value: option.value) ? .white : Theme.textSecondary)
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .frame(height: 24)
+                            .background(Capsule().fill(isMultiSelectSelected(field.id, value: option.value) ? Theme.accent : Theme.fieldFill)
                                 .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
                     }
                 }
@@ -290,6 +322,20 @@ struct PendingMcpElicitationPanel: View {
             get: { values[id] ?? "" },
             set: { values[id] = $0 }
         )
+    }
+
+    private func toggleMultiSelect(_ id: String, value: JSONValue) {
+        var values = selectedMultiValues[id] ?? []
+        if let index = values.firstIndex(of: value) {
+            values.remove(at: index)
+        } else {
+            values.append(value)
+        }
+        selectedMultiValues[id] = values
+    }
+
+    private func isMultiSelectSelected(_ id: String, value: JSONValue) -> Bool {
+        selectedMultiValues[id]?.contains(value) == true
     }
 }
 

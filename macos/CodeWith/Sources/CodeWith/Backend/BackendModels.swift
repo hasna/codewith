@@ -74,33 +74,40 @@ struct ThreadSessionSettings: Hashable {
     var effort: String?
     var permissionProfileId: String?
     var authProfile: String?
+    var clearsAuthProfile: Bool
 
     init(
         model: String? = nil,
         provider: String? = nil,
         effort: String? = nil,
         permissionProfileId: String? = nil,
-        authProfile: String? = nil
+        authProfile: String? = nil,
+        clearsAuthProfile: Bool = false
     ) {
         self.model = model
         self.provider = provider
         self.effort = effort
         self.permissionProfileId = permissionProfileId
         self.authProfile = authProfile
+        self.clearsAuthProfile = clearsAuthProfile
     }
 
     init?(from v: JSONValue) {
         let settings = v["threadSettings"] ?? v["settings"] ?? v["thread"]?["threadSettings"] ?? v["thread"]?["settings"] ?? v
+        let authProfileValue = settings["authProfile"] ?? settings["auth_profile"]
         self.init(
             model: settings["model"]?.string,
             provider: settings["modelProvider"]?.string ?? settings["model_provider"]?.string,
-            effort: settings["effort"]?.string,
+            effort: settings["effort"]?.string
+                ?? settings["reasoningEffort"]?.string
+                ?? settings["reasoning_effort"]?.string,
             permissionProfileId: settings["activePermissionProfile"]?["id"]?.string
                 ?? settings["active_permission_profile"]?["id"]?.string
                 ?? settings["permissions"]?.string,
-            authProfile: settings["authProfile"]?.string ?? settings["auth_profile"]?.string
+            authProfile: authProfileValue?.string,
+            clearsAuthProfile: authProfileValue?.isNull == true
         )
-        if model == nil, provider == nil, effort == nil, permissionProfileId == nil, authProfile == nil {
+        if model == nil, provider == nil, effort == nil, permissionProfileId == nil, authProfile == nil, !clearsAuthProfile {
             return nil
         }
     }

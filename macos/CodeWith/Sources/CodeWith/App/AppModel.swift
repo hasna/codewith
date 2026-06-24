@@ -190,8 +190,12 @@ final class AppModel {
     var pendingServerRequests: [PendingServerRequest] = []
     var pendingUserInputRequests: [PendingUserInputRequest] = []
     var pendingMcpElicitationRequests: [PendingMcpElicitationRequest] = []
+    var pendingMachineSwitchWarning: String? = nil
     var pendingActivePeer: ActiveSessionPeerInfo? = nil
     var turnInProgress = false
+    var visibleTurnInProgress: Bool {
+        turnInProgress && (activeTurnThreadId == nil || activeTurnThreadId == activeThreadId)
+    }
     var currentProjectPath: String? = nil
     private var streamingAssistantIndex: Int? = nil
     @ObservationIgnored private var toolOutputMessageIndexes: [String: Int] = [:]
@@ -233,30 +237,42 @@ final class AppModel {
         respondingServerRequestKeys.removeAll()
     }
 
+    private var hasPendingServerInteractions: Bool {
+        !pendingServerRequests.isEmpty || !pendingUserInputRequests.isEmpty || !pendingMcpElicitationRequests.isEmpty
+    }
+
     private func clearActiveSessionState(clearComposer: Bool, clearProject: Bool) {
         if clearComposer { composerText = "" }
         activeThreadId = nil
-        activeTurnId = nil
-        activeTurnThreadId = nil
         activeGoal = nil
         activeGoalPlans = []
         activeMessages = []
         pendingActivePeer = nil
         activeAgentAttachment = nil
-        turnInProgress = false
         streamingAssistantIndex = nil
         sessionAuthProfileName = nil
         toolOutputMessageIndexes.removeAll()
-        cancelTurnWatchdog()
-        if clearProject { currentProjectPath = nil }
+        clearTrackedTurnIfIdle()
+        if clearProject { setCurrentProjectPath(nil) }
+    }
+
+    private func setCurrentProjectPath(_ path: String?) {
+        let nextPath = path?.isEmpty == false ? path : nil
+        guard currentProjectPath != nextPath else { return }
+        currentProjectPath = nextPath
+        Task { await loadProfiles() }
     }
 
     private func detachVisibleTurnState() {
-        activeTurnId = nil
-        activeTurnThreadId = nil
-        turnInProgress = false
         streamingAssistantIndex = nil
         toolOutputMessageIndexes.removeAll()
+        clearTrackedTurnIfIdle()
+    }
+
+    private func clearTrackedTurnIfIdle() {
+        guard !turnInProgress else { return }
+        activeTurnId = nil
+        activeTurnThreadId = nil
         cancelTurnWatchdog()
     }
 
@@ -376,20 +392,16 @@ final class AppModel {
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        await loadGoals()
-        await loadWorkflows()
         _ = await (acct, apps, machines, peers, agents, profiles, requirements, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             var guardCount = 0
-            while await self.nextCursor != nil, guardCount < 60 {
+            while self.nextCursor != nil, guardCount < 60 {
                 await self.loadThreads(reset: false)
                 guardCount += 1
             }
             await self.loadLoops()
-            await self.loadGoals()
-            await self.loadWorkflows()
         }
     }
 
@@ -700,12 +712,17 @@ final class AppModel {
 
     func selectMachine(_ machine: MachineInfo?) {
         let previousMachineId = selectedMachineId
+        guard previousMachineId == machine?.machineId || !hasPendingServerInteractions else {
+            pendingMachineSwitchWarning = "Resolve the pending request before switching machines."
+            return
+        }
+        pendingMachineSwitchWarning = nil
         selectedMachineId = machine?.machineId
-        currentProjectPath = nil
+        setCurrentProjectPath(nil)
         remoteSearchThreads = []
         if previousMachineId != selectedMachineId {
             clearActiveSessionState(clearComposer: true, clearProject: false)
-            clearPendingServerInteractions()
+            open(.home, label: "Home")
         } else {
             clearActiveThreadIfOutsideMachineScope()
         }
@@ -844,8 +861,8 @@ final class AppModel {
                 if let configModel = cfg.model { model = configModel }
                 if let configProvider = cfg.provider { provider = configProvider }
                 if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
-                fullAccess = cfg.sandbox == "danger-full-access"
-                permissionProfileId = Self.permissionProfileId(forSandbox: cfg.sandbox)
+                permissionProfileId = cfg.defaultPermissions ?? Self.permissionProfileId(forSandbox: cfg.sandbox)
+                fullAccess = permissionProfileId == ":danger-full-access"
             }
             configApproval = cfg.approval
             configSandbox = cfg.sandbox
@@ -1073,7 +1090,7 @@ final class AppModel {
         activeAgentAttachment = nil
         activeGoal = nil
         activeGoalPlans = []
-        currentProjectPath = t.cwd
+        setCurrentProjectPath(t.cwd)
         route = .chat(t.id); sidebarSelection = t.name; showSettings = false
         // Prefer resume (so future turns can continue the thread); fall back to a
         // plain read if resume isn't available. `await` can't live in a `??`
@@ -1131,14 +1148,14 @@ final class AppModel {
 
     /// Show a project's sessions (and let the user start a new one there).
     func openProject(_ p: ProjectInfo) {
-        currentProjectPath = p.path
+        setCurrentProjectPath(p.path)
         open(.project(p.groupKey), label: p.name)
     }
 
     /// New session scoped to a project's directory.
     func newSessionInProject(_ path: String) {
         clearActiveSessionState(clearComposer: true, clearProject: false)
-        currentProjectPath = path
+        setCurrentProjectPath(path)
         open(.home, label: (path as NSString).lastPathComponent)
     }
 
@@ -1166,7 +1183,7 @@ final class AppModel {
             }
             return
         }
-        currentProjectPath = p?.path
+        setCurrentProjectPath(p?.path)
     }
 
     func newChat() {
@@ -1354,11 +1371,11 @@ final class AppModel {
             noteTurnActivity()
             handleCompletedItem(params["item"] ?? .null)
         case "item/commandExecution/outputDelta", "command/exec/outputDelta", "process/outputDelta":
-            guard notificationBelongsToActiveTurn(params) else { return }
+            guard notificationBelongsToActiveThread(params) else { return }
             noteTurnActivity()
             appendToolOutputDelta(method: method, params: params)
         case "item/commandExecution/terminalInteraction":
-            guard notificationBelongsToActiveTurn(params) else { return }
+            guard notificationBelongsToActiveThread(params) else { return }
             noteTurnActivity()
             appendTerminalInteraction(params)
         case "turn/started", "thread/turn/started":
@@ -1390,16 +1407,16 @@ final class AppModel {
             Task {
                 await loadThreads(reset: true)
                 await loadLoops()
-                await loadGoals()
-                await loadWorkflows()
+                await loadGoalsIfVisible()
+                await loadWorkflowsIfVisible()
                 await loadActivePeers()
                 await loadAgentRuns()
             }
         case "thread/name/updated", "thread/status/changed", "thread/metadata/updated":
             Task {
                 await loadThreads(reset: true)
-                await loadGoals()
-                await loadWorkflows()
+                await loadGoalsIfVisible()
+                await loadWorkflowsIfVisible()
                 await loadActivePeers()
                 await loadAgentRuns()
             }
@@ -1410,29 +1427,32 @@ final class AppModel {
              "thread/monitor/updated", "thread/monitor/deleted":
             Task { await loadLoops() }
         case "thread/goal/updated":
-            guard notificationBelongsToActiveThread(params) else { return }
-            if let goal = params["goal"], !goal.isNull {
-                activeGoal = GoalInfo(from: goal)
-            } else {
-                Task { await loadActiveGoal() }
+            if notificationBelongsToActiveThread(params) {
+                if let goal = params["goal"], !goal.isNull {
+                    activeGoal = GoalInfo(from: goal)
+                } else {
+                    Task { await loadActiveGoal() }
+                }
             }
-            Task { await loadGoals() }
+            Task { await loadGoalsIfVisible() }
         case "thread/goalPlan/updated":
-            guard notificationBelongsToActiveThread(params) else { return }
-            if let plan = params["plan"], !plan.isNull {
-                upsertActiveGoalPlan(GoalPlanInfo(from: plan))
-            } else {
-                Task { await loadActiveGoal() }
+            if notificationBelongsToActiveThread(params) {
+                if let plan = params["plan"], !plan.isNull {
+                    upsertActiveGoalPlan(GoalPlanInfo(from: plan))
+                } else {
+                    Task { await loadActiveGoal() }
+                }
             }
-            Task { await loadGoals() }
+            Task { await loadGoalsIfVisible() }
         case "thread/goal/cleared":
-            guard notificationBelongsToActiveThread(params) else { return }
-            activeGoal = nil
-            activeGoalPlans = []
-            Task { await loadGoals() }
+            if notificationBelongsToActiveThread(params) {
+                activeGoal = nil
+                activeGoalPlans = []
+            }
+            Task { await loadGoalsIfVisible() }
         case "thread/workflow/updated", "thread/workflow/deleted",
              "thread/workflow/run/updated", "thread/workflow/run/deleted":
-            Task { await loadWorkflows() }
+            Task { await loadWorkflowsIfVisible() }
         case "app/list/updated":
             let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
             if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
@@ -1470,6 +1490,16 @@ final class AppModel {
         notificationIsForActiveThread(params)
     }
 
+    private func loadGoalsIfVisible() async {
+        guard route == .goals else { return }
+        await loadGoals()
+    }
+
+    private func loadWorkflowsIfVisible() async {
+        guard route == .workflows else { return }
+        await loadWorkflows()
+    }
+
     private func applyThreadSettingsNotification(_ params: JSONValue) {
         guard notificationBelongsToActiveThread(params) else { return }
         applyThreadSettings(ThreadSessionSettings(from: params))
@@ -1492,6 +1522,8 @@ final class AppModel {
         }
         if let authProfile = settings.authProfile {
             sessionAuthProfileName = authProfile
+        } else if settings.clearsAuthProfile {
+            sessionAuthProfileName = nil
         }
     }
 
@@ -1506,7 +1538,10 @@ final class AppModel {
 
     private func notificationBelongsToActiveTurn(_ params: JSONValue) -> Bool {
         guard let threadId = Self.notificationThreadId(params) else { return true }
-        return threadId == activeThreadId && (activeTurnThreadId == nil || activeTurnThreadId == threadId)
+        if let activeTurnThreadId {
+            return threadId == activeTurnThreadId
+        }
+        return threadId == activeThreadId
     }
 
     private func notificationIsForActiveThread(_ params: JSONValue) -> Bool {
@@ -1715,6 +1750,21 @@ final class AppModel {
             }
         }
         return .object(content)
+    }
+
+    static func mcpElicitationValue(field: PendingMcpElicitationField, rawValue: String) -> JSONValue? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch field.kind {
+        case .integer:
+            guard let value = Int(trimmed) else { return nil }
+            return .number(Double(value))
+        case .number:
+            guard let value = Double(trimmed) else { return nil }
+            return .number(value)
+        case .text, .secret, .singleSelect, .multiSelect:
+            return .string(rawValue)
+        }
     }
 
     func respondToServerRequest(_ prompt: PendingServerRequest, action: PendingServerRequestAction) {
@@ -2277,7 +2327,12 @@ final class AppModel {
         permissionProfileId = Self.permissionProfileId(forSandbox: s)
         fullAccess = s == "danger-full-access"
         if s != "danger-full-access" { previousNonFullSandbox = s }
-        Task { await writeConfigValue(keyPath: "sandbox_mode", value: .string(s), reloadUserConfig: true) }
+        Task {
+            await writeConfigValues([
+                (keyPath: "sandbox_mode", value: .string(s)),
+                (keyPath: "default_permissions", value: .null),
+            ], reloadUserConfig: true)
+        }
     }
     func setFullAccess(_ on: Bool) {
         if activeThreadId != nil {
@@ -2312,7 +2367,7 @@ final class AppModel {
 
         switch profileId {
         case ":danger-full-access":
-            setFullAccess(true)
+            setSandbox("danger-full-access")
         case ":workspace":
             setSandbox("workspace-write")
         case ":read-only":
@@ -2786,6 +2841,54 @@ final class AppModel {
             LoopInfo(id: "l1", title: "Daily standup digest", subtitle: "every day · 9:00", kind: .schedule, active: true),
             LoopInfo(id: "l2", title: "PR babysitter", subtitle: "every 5m", kind: .monitor, active: true),
             LoopInfo(id: "l3", title: "Security sweep", subtitle: "weekly", kind: .schedule, active: false),
+        ]
+        m.goalStates = [
+            ThreadGoalState(
+                threadId: "t1",
+                goal: GoalInfo(from: .object([
+                    "goalId": .string("g1"),
+                    "threadId": .string("t1"),
+                    "objective": .string("Ship the auth profile settings flow"),
+                    "status": .string("active"),
+                ])),
+                goalPlans: [
+                    GoalPlanInfo(from: .object([
+                        "planId": .string("gp1"),
+                        "threadId": .string("t1"),
+                        "status": .string("active"),
+                        "nodeCount": .number(4),
+                        "completedNodeCount": .number(2),
+                    ])),
+                ]),
+            ThreadGoalState(
+                threadId: "t3",
+                goal: GoalInfo(from: .object([
+                    "goalId": .string("g2"),
+                    "threadId": .string("t3"),
+                    "objective": .string("Audit release blockers"),
+                    "status": .string("blocked"),
+                ])),
+                goalPlans: []),
+        ]
+        m.workflows = [
+            WorkflowInfo(workflow: .object([
+                "workflowRecordId": .string("wf1"),
+                "threadId": .string("t2"),
+                "displayName": .string("Nightly dependency audit"),
+                "status": .string("active"),
+                "stepCount": .number(3),
+                "agentCount": .number(2),
+                "updatedAt": .number(30),
+            ]), fallbackThreadId: "t2"),
+            WorkflowInfo(run: .object([
+                "runId": .string("run-auth"),
+                "threadId": .string("t4"),
+                "status": .string("running"),
+                "succeededStepCount": .number(2),
+                "failedStepCount": .number(0),
+                "activeStepCount": .number(1),
+                "updatedAt": .number(40),
+            ]), fallbackThreadId: "t4"),
         ]
         m.apps = [
             AppItemInfo(name: "Mail", detail: "Read and send email from your agent.", enabled: true),

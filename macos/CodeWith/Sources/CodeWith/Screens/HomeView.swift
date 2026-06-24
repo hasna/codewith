@@ -30,10 +30,11 @@ struct HomeView: View {
                      model: model,
                      onSubmit: onSubmit,
                      onPlus: { model.toggleAddMenu() },
-                     onConfigTap: onToggleConfig,
-                     modelLabel: model.model ?? "gpt-5.5",
-                     effortLabel: model.effort)
-                .frame(width: 480)
+	                     onConfigTap: onToggleConfig,
+	                     modelLabel: model.model ?? "gpt-5.5",
+	                     effortLabel: model.effort)
+                .frame(maxWidth: 620)
+                .padding(.horizontal, 36)
 
             Spacer()
         }

@@ -458,7 +458,7 @@ final class AppServerRequestShapeTests: XCTestCase {
                 "threadSettings": obj([
                     "model": .string("gpt-5.5-codex"),
                     "model_provider": .string("openai"),
-                    "effort": .string("high"),
+                    "reasoningEffort": .string("high"),
                     "active_permission_profile": obj(["id": .string(":workspace")]),
                     "auth_profile": .string("work"),
                 ]),
@@ -469,6 +469,16 @@ final class AppServerRequestShapeTests: XCTestCase {
                 effort: "high",
                 permissionProfileId: ":workspace",
                 authProfile: "work"))
+    }
+
+    func testThreadSessionSettingsCanClearAuthProfile() {
+        XCTAssertEqual(
+            ThreadSessionSettings(from: obj([
+                "threadSettings": obj([
+                    "authProfile": .null,
+                ]),
+            ])),
+            ThreadSessionSettings(clearsAuthProfile: true))
     }
 
     func testConfigRequirementsKeepGranularApprovalPolicy() {

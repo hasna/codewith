@@ -6,7 +6,7 @@ app, adapted for the fork:
 
 - **Apps** (the Codex "Plugins" entry, renamed)
 - **Machines** — a new sidebar entry for multi-machine fleet sessions
-- **Loops / Goals**, **Profiles** switching — fork capabilities
+- **Loops / Goals / Workflows**, **Profiles** switching — fork capabilities
 - CodeWith branding throughout
 
 ## Layout
@@ -60,3 +60,10 @@ the `ScrollColumn`/`snapshotMode` fallback for `ImageRenderer`).
 | 05–09 | Settings: General, Profile, Appearance, Configuration, Personalization | 05–09 |
 | 10 | Task result + Cloud-changes diff (3-pane) | 10 |
 | 11 | Login — "Get started with CodeWith" | 11 |
+| 12 | Machines | fork |
+| 13 | Profiles | fork |
+| 14 | Apps | fork |
+| 15 | Loops | fork |
+| 16 | Goals | fork |
+| 17 | Search | fork |
+| 18 | Workflows | fork |

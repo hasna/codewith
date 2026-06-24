@@ -837,12 +837,35 @@ extension AppServerClient {
     }
 
     func listAuthProfiles() async throws -> [AuthProfileInfo] {
-        await ProfileRunner.loadProfiles()
+        do {
+            let r = try await request("authProfile/list", .object([:]), timeout: 20)
+            return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
+        } catch {
+            guard Self.isUnsupportedAuthProfileRpc(error) else { throw error }
+            return try await ProfileRunner.loadProfiles()
+        }
     }
 
     func switchAuthProfile(_ name: String) async throws -> AuthProfileInfo {
-        await ProfileRunner.switchProfile(name)
-        return AuthProfileInfo(name: name, email: "", provider: "", plan: "", active: true)
+        do {
+            let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
+            return AuthProfileInfo(from: r["profile"] ?? r)
+        } catch {
+            guard Self.isUnsupportedAuthProfileRpc(error) else { throw error }
+            try await ProfileRunner.switchProfile(name)
+            let profiles = try await ProfileRunner.loadProfiles()
+            if let switched = profiles.first(where: { $0.name == name && $0.active }) {
+                return switched
+            }
+            throw AppServerError.decode("profile switch did not activate \(name)")
+        }
+    }
+
+    private static func isUnsupportedAuthProfileRpc(_ error: Swift.Error) -> Bool {
+        guard case AppServerError.rpc(let code, let message) = error else { return false }
+        return code == -32601 || message.localizedCaseInsensitiveContains("unsupported")
+            || message.localizedCaseInsensitiveContains("unknown method")
+            || message.localizedCaseInsensitiveContains("not found")
     }
 
     func listPermissionProfiles(cwd: String? = nil) async throws -> [String] {
@@ -866,6 +889,7 @@ extension AppServerClient {
         effort: String?,
         approval: String?,
         sandbox: String?,
+        defaultPermissions: String?,
         developerInstructions: String?,
         desktop: DesktopSettingsInfo
     ) {
@@ -880,6 +904,7 @@ extension AppServerClient {
                 cfg["model_reasoning_effort"]?.string ?? cfg["modelReasoningEffort"]?.string,
                 approval,
                 cfg["sandbox_mode"]?.string,
+                cfg["default_permissions"]?.string ?? cfg["defaultPermissions"]?.string,
                 cfg["developer_instructions"]?.string ?? cfg["developerInstructions"]?.string,
                 DesktopSettingsInfo(desktop: cfg["desktop"] ?? .null, config: cfg))
     }

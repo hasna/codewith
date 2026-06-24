@@ -51,6 +51,9 @@ struct Sidebar: View {
                 if !model.machines.isEmpty {
                     sectionHeader("Machine")
                     machineSelector()
+                    if let warning = model.pendingMachineSwitchWarning {
+                        emptyHint(warning)
+                    }
                 }
 
                 if !model.projects.isEmpty {

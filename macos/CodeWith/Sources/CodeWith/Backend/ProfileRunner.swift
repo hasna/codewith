@@ -1,41 +1,100 @@
 import Foundation
 
+private final class ProfileCommandContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+    private let continuation: CheckedContinuation<String, Swift.Error>
+
+    init(_ continuation: CheckedContinuation<String, Swift.Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(with result: Result<String, Swift.Error>) {
+        lock.lock()
+        guard !didResume else {
+            lock.unlock()
+            return
+        }
+        didResume = true
+        lock.unlock()
+        continuation.resume(with: result)
+    }
+}
+
 /// Reads auth profiles via `codewith profile list` (fixed-width text table).
 enum ProfileRunner {
-    static func loadProfiles() async -> [AuthProfileInfo] {
-        guard let bin = AppServerClient.binaryPath else { return [] }
-        let output: String = await withCheckedContinuation { cont in
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: bin)
-            proc.arguments = ["profile", "list"]
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.bun/bin"
-            proc.environment = env
-            let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = FileHandle.nullDevice
-            proc.terminationHandler = { _ in
-                let d = pipe.fileHandleForReading.readDataToEndOfFile()
-                cont.resume(returning: String(data: d, encoding: .utf8) ?? "")
+    enum Error: LocalizedError {
+        case binaryNotFound
+        case launchFailed(String)
+        case commandFailed(arguments: [String], status: Int32, stderr: String)
+        case timedOut(arguments: [String])
+
+        var errorDescription: String? {
+            switch self {
+            case .binaryNotFound:
+                return "The codewith CLI was not found."
+            case .launchFailed(let message):
+                return "Could not run codewith profile command: \(message)"
+            case .commandFailed(let arguments, let status, let stderr):
+                let command = (["codewith"] + arguments).joined(separator: " ")
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail.isEmpty
+                    ? "\(command) exited with status \(status)."
+                    : "\(command) exited with status \(status): \(detail)"
+            case .timedOut(let arguments):
+                return "\((["codewith"] + arguments).joined(separator: " ")) timed out."
             }
-            do { try proc.run() } catch { cont.resume(returning: "") }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15) { if proc.isRunning { proc.terminate() } }
         }
-        return parse(output)
+    }
+
+    static func loadProfiles() async throws -> [AuthProfileInfo] {
+        parse(try await run(arguments: ["profile", "list"], captureOutput: true))
     }
 
     /// Switch the active profile via `codewith profile switch <name>`.
-    static func switchProfile(_ name: String) async {
-        guard let bin = AppServerClient.binaryPath else { return }
-        _ = await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+    static func switchProfile(_ name: String) async throws {
+        _ = try await run(arguments: ["profile", "switch", name], captureOutput: false)
+    }
+
+    private static func run(arguments: [String], captureOutput: Bool) async throws -> String {
+        guard let bin = AppServerClient.binaryPath else { throw Error.binaryNotFound }
+        return try await withCheckedThrowingContinuation { cont in
+            let completion = ProfileCommandContinuation(cont)
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: bin)
-            proc.arguments = ["profile", "switch", name]
+            proc.arguments = arguments
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.bun/bin"
             proc.environment = env
-            proc.standardOutput = FileHandle.nullDevice; proc.standardError = FileHandle.nullDevice
-            proc.terminationHandler = { _ in cont.resume() }
-            do { try proc.run() } catch { cont.resume() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15) { if proc.isRunning { proc.terminate() } }
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            proc.standardOutput = captureOutput ? outputPipe : FileHandle.nullDevice
+            proc.standardError = errorPipe
+
+            proc.terminationHandler = { process in
+                let output = captureOutput ? outputPipe.fileHandleForReading.readDataToEndOfFile() : Data()
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderr = String(data: errorData, encoding: .utf8) ?? ""
+                if process.terminationStatus == 0 {
+                    completion.resume(with: .success(String(data: output, encoding: .utf8) ?? ""))
+                } else {
+                    completion.resume(with: .failure(Error.commandFailed(
+                        arguments: arguments,
+                        status: process.terminationStatus,
+                        stderr: stderr)))
+                }
+            }
+            do {
+                try proc.run()
+            } catch {
+                completion.resume(with: .failure(Error.launchFailed(error.localizedDescription)))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
+                if proc.isRunning {
+                    proc.terminate()
+                    completion.resume(with: .failure(Error.timedOut(arguments: arguments)))
+                }
+            }
         }
     }
 

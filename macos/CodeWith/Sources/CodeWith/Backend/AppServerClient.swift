@@ -143,7 +143,7 @@ final class AppServerClient: @unchecked Sendable {
             guard let self else { return }
             let data = h.availableData
             if data.isEmpty { self.parseQueue.async { self.handleEOF(generation: generation) } }
-            else { self.parseQueue.async { self.ingest(data) } }
+            else { self.parseQueue.async { self.ingest(data, generation: generation) } }
         }
         proc.terminationHandler = { [weak self] p in
             guard let self else { return }
@@ -208,7 +208,8 @@ final class AppServerClient: @unchecked Sendable {
 
     // MARK: Ingest (parseQueue only)
 
-    private func ingest(_ data: Data) {
+    private func ingest(_ data: Data, generation: Int? = nil) {
+        if let generation, !isCurrentGeneration(generation) { return }
         buffer.append(data)
         if buffer.count > maxBuffer {
             buffer.removeAll(keepingCapacity: false)
@@ -216,10 +217,21 @@ final class AppServerClient: @unchecked Sendable {
             return
         }
         while let nl = buffer.firstIndex(of: 0x0A) {
+            if let generation, !isCurrentGeneration(generation) {
+                buffer.removeAll(keepingCapacity: false)
+                return
+            }
             let line = buffer.subdata(in: buffer.startIndex..<nl)
             buffer.removeSubrange(buffer.startIndex...nl)
             if !line.isEmpty { route(line) }
         }
+    }
+
+    private func isCurrentGeneration(_ generation: Int) -> Bool {
+        lock.lock()
+        let current = running && generation == processGeneration
+        lock.unlock()
+        return current
     }
 
     /// Pure classification of one JSON-RPC frame (no lock, no dispatch) — testable.
@@ -288,7 +300,10 @@ final class AppServerClient: @unchecked Sendable {
     }
 
     func request(_ method: String, _ params: JSONValue = .null, timeout: TimeInterval = 30) async throws -> JSONValue {
-        lock.lock(); nextId += 1; let id = nextId; lock.unlock()
+        let id = lock.withLock {
+            nextId += 1
+            return nextId
+        }
         let env = JSONValue.object(["id": .number(Double(id)), "method": .string(method), "params": params])
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
