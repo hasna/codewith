@@ -145,10 +145,10 @@ Example with notification opt-out:
 - `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `modelProvider` switches the provider for subsequent turns; `authProfile` switches auth for subsequent turns; `serviceTier: null` clears the tier; `sandboxPolicy` and `permissions` cannot be combined. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
-- `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
+- `thread/goal/set` — create or update the single persisted goal for a materialized thread, including an optional compact `title` for status surfaces; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
-- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
-- `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal and refreshed plan snapshot.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
+- `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal, using the node title when present, and refreshed plan snapshot.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goalPlan/updated` — notification emitted whenever a durable goal plan changes; includes the full plan snapshot with aggregate usage.
@@ -797,18 +797,20 @@ Experimental: use `memory/reset` to clear local memory artifacts and sqlite-back
 
 ### Example: Set and update a thread goal
 
-Use `thread/goal/set` to create or update the current goal for a materialized thread. Clients can set `budgetLimited` when they stop because a token budget is exhausted or nearly exhausted, `blocked` when progress is waiting on outside intervention, and `usageLimited` when usage availability stops further work. The system also sets `budgetLimited` when accounting crosses a configured token budget and `usageLimited` when a turn ends on a hard usage-limit error.
+Use `thread/goal/set` to create or update the current goal for a materialized thread. Clients can set `budgetLimited` when they stop because a token budget is exhausted or nearly exhausted, `blocked` when progress is waiting on outside intervention, and `usageLimited` when usage availability stops further work. The system also sets `budgetLimited` when accounting crosses a configured token budget and `usageLimited` when a turn ends on a hard usage-limit error. `title` is optional, nullable, and intended for compact status displays: omit it to preserve the current title, pass a string to set it, or pass `null` to clear it. Non-null titles are trimmed and must be non-empty, at most 80 characters, and at most 5 words.
 
 ```json
 { "method": "thread/goal/set", "id": 27, "params": {
     "threadId": "thr_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "tokenBudget": 200000
 } }
 { "id": 27, "result": { "goal": {
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "active",
     "tokenBudget": 200000,
     "tokensUsed": 0,
@@ -820,6 +822,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "active",
     "tokenBudget": 200000,
     "tokensUsed": 0,
@@ -838,6 +841,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "blocked",
     "tokenBudget": 200000,
     "tokensUsed": 10000,
@@ -854,7 +858,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -890,6 +894,7 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
             "sequence": 0,
             "priority": 10,
             "objective": "Implement the planned goal chain",
+            "title": "Implement goal chain",
             "status": "pending",
             "ready": true,
             "tokenBudget": null,
@@ -917,6 +922,7 @@ Use `thread/goalPlan/activateNode` to start one ready pending node manually when
         "threadId": "thr_123",
         "goalId": "goal_456",
         "objective": "Implement the planned goal chain",
+        "title": "Implement goal chain",
         "status": "active",
         "tokenBudget": null,
         "tokensUsed": 0,
