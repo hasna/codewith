@@ -170,6 +170,7 @@ impl<'a> AgentsMdManager<'a> {
             }
 
             match fs.get_metadata(&p, /*sandbox*/ None).await {
+                Ok(metadata) if metadata.is_symlink && is_project_rules_path(&p) => continue,
                 Ok(metadata) if !metadata.is_file => continue,
                 Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -356,11 +357,19 @@ impl<'a> AgentsMdManager<'a> {
 
             for entry in entries {
                 let path = current_dir.join(entry.file_name);
-                if entry.is_directory {
+                let metadata = match fs.get_metadata(&path, /*sandbox*/ None).await {
+                    Ok(metadata) => metadata,
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err),
+                };
+                if metadata.is_symlink {
+                    continue;
+                }
+                if metadata.is_directory {
                     dirs.push((path, depth + 1));
                     continue;
                 }
-                if entry.is_file
+                if metadata.is_file
                     && path
                         .as_path()
                         .extension()
@@ -522,6 +531,22 @@ fn warn_invalid_utf8(
             path.display()
         ));
     }
+}
+
+fn is_project_rules_path(path: &AbsolutePathBuf) -> bool {
+    let codewith = std::ffi::OsStr::new(".codewith");
+    let rules = std::ffi::OsStr::new("rules");
+    let mut previous_was_codewith = false;
+
+    for component in path.as_path().components() {
+        let component = component.as_os_str();
+        if previous_was_codewith && component == rules {
+            return true;
+        }
+        previous_was_codewith = component == codewith;
+    }
+
+    false
 }
 
 #[cfg(test)]

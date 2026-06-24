@@ -12,6 +12,24 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+fn create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, link)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_file_symlink(_source: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "file symlinks are unsupported on this platform",
+    ))
+}
+
 fn write_doc(root: &Path, relative_path: &str, contents: &str) {
     let path = root.join(relative_path);
     if let Some(parent) = path.parent() {
@@ -695,6 +713,31 @@ async fn project_rules_skip_directory_symlink_cycles() {
         &repo.path().join(".codewith/rules"),
         &repo.path().join(".codewith/rules/loop"),
     );
+
+    let cfg = make_config(&repo, /*limit*/ 4096, /*instructions*/ None).await;
+    let loaded = AgentsMdManager::new(&cfg)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut Vec::new())
+        .await
+        .expect("docs expected");
+    let root_doc = repo.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH).abs();
+    let real_rule = repo.path().join(".codewith/rules/real.md").abs();
+
+    assert_eq!(loaded.text(), "root doc\n\nreal rule");
+    assert_eq!(
+        loaded.sources().collect::<Vec<_>>(),
+        vec![&root_doc, &real_rule]
+    );
+}
+
+#[tokio::test]
+async fn project_rules_skip_symlinked_markdown_files() {
+    let repo = tempfile::tempdir().expect("tempdir");
+    write_doc(repo.path(), DEFAULT_PROJECT_AGENTS_MD_PATH, "root doc");
+    write_doc(repo.path(), ".codewith/rules/real.md", "real rule");
+    let outside = repo.path().join("outside.md");
+    fs::write(&outside, "outside secret").unwrap();
+    let link = repo.path().join(".codewith/rules/linked.md");
+    create_file_symlink(&outside, &link).expect("create file symlink");
 
     let cfg = make_config(&repo, /*limit*/ 4096, /*instructions*/ None).await;
     let loaded = AgentsMdManager::new(&cfg)
