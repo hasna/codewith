@@ -281,8 +281,7 @@ jobs:
         if: ${{ env.USE_SCCACHE == 'true' }}
         uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
-          tool: sccache
-          version: 0.7.5
+          tool: sccache@0.7.5
 
       - name: Configure sccache backend
         if: ${{ env.USE_SCCACHE == 'true' }}
@@ -357,8 +356,7 @@ jobs:
         if: ${{ matrix.profile == 'release' }}
         uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
-          tool: cargo-chef
-          version: 0.1.71
+          tool: cargo-chef@0.1.71
 
       - name: Pre-warm dependency cache (cargo-chef)
         if: ${{ matrix.profile == 'release' }}
