@@ -80,6 +80,16 @@ macro_rules! experimental_method_entry {
     };
 }
 
+#[cfg(test)]
+macro_rules! client_method_entry {
+    ($variant:ident => $wire:literal) => {
+        $wire
+    };
+    ($variant:ident) => {
+        ""
+    };
+}
+
 macro_rules! experimental_type_entry {
     (#[experimental($reason:expr)] $ty:ty) => {
         stringify!($ty)
@@ -461,6 +471,12 @@ macro_rules! client_request_definitions {
         pub(crate) const EXPERIMENTAL_CLIENT_METHODS: &[&str] = &[
             $(
                 experimental_method_entry!($(#[experimental($reason)])? $(=> $wire)?),
+            )*
+        ];
+        #[cfg(test)]
+        pub(crate) const CLIENT_METHODS: &[&str] = &[
+            $(
+                client_method_entry!($variant $(=> $wire)?),
             )*
         ];
         pub(crate) const EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES: &[&str] = &[
