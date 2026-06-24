@@ -697,6 +697,8 @@ fn test_schedule(
     ThreadSchedule {
         thread_id: thread_id.to_string(),
         schedule_id: format!("schedule-{thread_id}"),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: prompt.to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule,

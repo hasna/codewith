@@ -74,6 +74,7 @@ async fn mission_control_overview_lists_sessions_goal_plans_and_pending_interact
         .thread_schedules()
         .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
             thread_id: parsed_thread_id,
+            parent_schedule_id: None,
             prompt: "Check release blockers".to_string(),
             prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
             schedule: codex_state::ThreadScheduleSpec::Once,

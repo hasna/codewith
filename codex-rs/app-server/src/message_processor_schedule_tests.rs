@@ -28,6 +28,7 @@ use codex_app_server_protocol::ThreadGoalGetParams;
 use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleCreateParams;
 use codex_app_server_protocol::ThreadScheduleCreateResponse;
 use codex_app_server_protocol::ThreadScheduleDeleteParams;
@@ -345,6 +346,39 @@ impl ScheduleHarness {
         }
     }
 
+    async fn create_interval_thread_schedule(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        amount_minutes: i64,
+        parent_schedule_id: Option<String>,
+    ) -> ThreadSchedule {
+        let request_id = self.request_id();
+        let response: ThreadScheduleCreateResponse = self
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.to_string(),
+                    parent_schedule_id,
+                    prompt: prompt.to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: amount_minutes,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            response.schedule,
+            self.read_schedule_updated(thread_id).await.schedule
+        );
+        response.schedule
+    }
+
     async fn read_schedule_deleted(&mut self, thread_id: &str, schedule_id: &str) {
         loop {
             let notification = self.read_server_notification().await;
@@ -620,6 +654,7 @@ fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Resu
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "materialize schedule metadata".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -665,6 +700,7 @@ fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Resu
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "refresh live permission metadata".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -715,6 +751,7 @@ fn thread_schedule_requests_reject_when_feature_disabled() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id,
+                    parent_schedule_id: None,
                     prompt: "should not be scheduled".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -747,6 +784,7 @@ fn thread_schedule_requests_reject_ephemeral_threads() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "should only run on materialized threads".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -781,6 +819,7 @@ fn thread_schedule_create_rejects_once_without_next_run_at() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread.thread.id.clone(),
+                    parent_schedule_id: None,
                     prompt: "ask me something".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Once,
@@ -813,6 +852,7 @@ fn thread_schedule_update_rejects_active_once_without_next_run_at() -> Result<()
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "ask me something".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Once,
@@ -863,6 +903,7 @@ fn thread_schedule_update_recomputes_active_recurring_without_next_run_at() -> R
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check recurring work".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -921,6 +962,7 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check recurring work".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1010,6 +1052,7 @@ fn thread_schedule_update_to_active_resets_failure_count() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check recurring work".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1104,6 +1147,7 @@ fn thread_schedule_resume_rejects_past_expiry_with_stale_next_run_at() -> Result
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check stale expiry".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1185,6 +1229,7 @@ fn thread_schedule_run_now_rejects_ambiguous_schedule_id_prefix() -> Result<()> 
                     request_id,
                     params: ThreadScheduleCreateParams {
                         thread_id: thread_id.clone(),
+                        parent_schedule_id: None,
                         prompt: format!("scheduled task {index}"),
                         prompt_source: Some(ThreadSchedulePromptSource::Inline),
                         schedule: ThreadScheduleSpec::Interval {
@@ -1251,6 +1296,7 @@ fn thread_schedule_crud_requests_round_trip_through_app_server() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1404,6 +1450,173 @@ fn thread_schedule_crud_requests_round_trip_through_app_server() -> Result<()> {
 }
 
 #[test]
+fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let level_2 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 2 loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let branch = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "branch level 2 loop",
+                3,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let level_3 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 3 loop",
+                3,
+                Some(level_2.schedule_id.clone()),
+            )
+            .await;
+        let level_4 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 4 loop",
+                4,
+                Some(level_3.schedule_id.clone()),
+            )
+            .await;
+        let level_5 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 5 loop",
+                5,
+                Some(level_4.schedule_id.clone()),
+            )
+            .await;
+
+        assert_eq!(None, root.parent_schedule_id);
+        assert_eq!(1, root.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), level_2.parent_schedule_id);
+        assert_eq!(2, level_2.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), branch.parent_schedule_id);
+        assert_eq!(2, branch.nesting_depth);
+        assert_eq!(
+            Some(level_2.schedule_id.clone()),
+            level_3.parent_schedule_id
+        );
+        assert_eq!(3, level_3.nesting_depth);
+        assert_eq!(
+            Some(level_3.schedule_id.clone()),
+            level_4.parent_schedule_id
+        );
+        assert_eq!(4, level_4.nesting_depth);
+        assert_eq!(
+            Some(level_4.schedule_id.clone()),
+            level_5.parent_schedule_id
+        );
+        assert_eq!(5, level_5.nesting_depth);
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id,
+                    parent_schedule_id: Some(level_5.schedule_id),
+                    prompt: "level 6 loop".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 6,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert!(
+            error.message.contains("maximum nesting depth is 5"),
+            "unexpected error: {error:?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let child = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "child loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let grandchild = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "grandchild loop",
+                3,
+                Some(child.schedule_id.clone()),
+            )
+            .await;
+
+        let request_id = harness.request_id();
+        let delete_response: ThreadScheduleDeleteResponse = harness
+            .request(ClientRequest::ThreadScheduleDelete {
+                request_id,
+                params: ThreadScheduleDeleteParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: root.schedule_id.clone(),
+                },
+            })
+            .await;
+        assert!(delete_response.deleted);
+        harness
+            .read_schedule_deleted(&thread_id, grandchild.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, root.schedule_id.as_str())
+            .await;
+
+        let request_id = harness.request_id();
+        let list_response: ThreadScheduleListResponse = harness
+            .request(ClientRequest::ThreadScheduleList {
+                request_id,
+                params: ThreadScheduleListParams {
+                    thread_id,
+                    cursor: None,
+                    limit: Some(10),
+                },
+            })
+            .await;
+        assert_eq!(Vec::<ThreadSchedule>::new(), list_response.data);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -1423,6 +1636,7 @@ fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Res
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1519,6 +1733,7 @@ fn thread_schedule_create_for_unloaded_thread_prefers_session_auth_profile_over_
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1562,6 +1777,7 @@ fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Re
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: String::new(),
                     prompt_source: Some(ThreadSchedulePromptSource::Default),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1639,6 +1855,7 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "summarize the latest test status".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1725,6 +1942,7 @@ fn thread_schedule_run_now_executes_goal_command_as_scheduled_goal_turn() -> Res
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: format!("/goal {objective}"),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1825,6 +2043,7 @@ fn thread_schedule_run_now_records_model_errors_as_failed_runs() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check whether the dev server is healthy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1907,6 +2126,7 @@ fn thread_schedule_once_clears_next_run_after_completion() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "ask one funny question".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Once,
@@ -1982,6 +2202,7 @@ fn thread_schedule_run_now_accepts_unique_schedule_id_prefix() -> Result<()> {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "ask one funny question".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {

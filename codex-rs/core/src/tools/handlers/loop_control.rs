@@ -36,6 +36,7 @@ pub struct ManageLoopHandler;
 struct ManageLoopArgs {
     action: LoopAction,
     schedule_id: Option<String>,
+    parent_schedule_id: Option<String>,
     prompt: Option<String>,
     schedule: Option<LoopScheduleSpecArg>,
     timezone: Option<String>,
@@ -94,6 +95,8 @@ struct ManageLoopResponse {
 struct LoopScheduleSnapshot {
     thread_id: String,
     schedule_id: String,
+    parent_schedule_id: Option<String>,
+    nesting_depth: i64,
     prompt: String,
     prompt_source: String,
     schedule: LoopScheduleSpecSnapshot,
@@ -340,6 +343,10 @@ async fn create_loop(
             .as_deref()
             .ok_or_else(|| model_error("prompt is required when action is create"))?,
     )?;
+    let parent_schedule_id = args
+        .parent_schedule_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let schedule = args
         .schedule
         .ok_or_else(|| model_error("schedule is required when action is create"))
@@ -370,6 +377,7 @@ async fn create_loop(
         .create_thread_schedule_for_auth_profile(
             codex_state::ThreadScheduleCreateParams {
                 thread_id,
+                parent_schedule_id,
                 prompt,
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule,
@@ -647,6 +655,8 @@ async fn loop_schedule_snapshot(
     Ok(LoopScheduleSnapshot {
         thread_id: schedule.thread_id.to_string(),
         schedule_id: schedule.schedule_id,
+        parent_schedule_id: schedule.parent_schedule_id,
+        nesting_depth: schedule.nesting_depth,
         prompt: schedule.prompt,
         prompt_source: schedule.prompt_source.as_str().to_string(),
         schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
@@ -754,6 +764,7 @@ mod tests {
         ManageLoopArgs {
             action,
             schedule_id: None,
+            parent_schedule_id: None,
             prompt: None,
             schedule: None,
             timezone: None,
@@ -786,6 +797,7 @@ mod tests {
             .thread_schedules()
             .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
                 thread_id,
+                parent_schedule_id: None,
                 prompt: prompt.to_string(),
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule: codex_state::ThreadScheduleSpec::Interval(
@@ -905,6 +917,125 @@ mod tests {
                 unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn create_loop_accepts_nested_parent_schedule_id() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 18);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let mut parent_schedule_id = None;
+        for level in 1..=5 {
+            let response = manage_loop(
+                runtime.clone(),
+                thread_id,
+                /*auth_profile*/ None,
+                ManageLoopArgs {
+                    parent_schedule_id: parent_schedule_id.clone(),
+                    prompt: Some(format!("level {level} loop")),
+                    schedule: Some(LoopScheduleSpecArg::Interval {
+                        amount: level,
+                        unit: LoopScheduleIntervalUnitArg::Minutes,
+                    }),
+                    timezone: Some("UTC".to_string()),
+                    ..loop_args(LoopAction::Create)
+                },
+            )
+            .await
+            .expect("nested loop should be created");
+            let affected_schedule = response
+                .affected_schedule
+                .clone()
+                .expect("affected schedule should be returned");
+            assert_eq!(parent_schedule_id, affected_schedule.parent_schedule_id);
+            assert_eq!(level, affected_schedule.nesting_depth);
+            parent_schedule_id = response.schedule_id;
+        }
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id,
+                prompt: Some("level 6 loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 6,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("sixth nesting level should be rejected");
+
+        match err {
+            FunctionCallError::RespondToModel(message) => {
+                assert!(message.contains("maximum nesting depth is 5"))
+            }
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn clear_parent_loop_removes_nested_child_loops() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 19);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let root = manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                prompt: Some("root loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("root loop should be created");
+        let root_schedule_id = root
+            .schedule_id
+            .expect("root schedule id should be returned");
+        manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(root_schedule_id.clone()),
+                prompt: Some("child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+
+        let response = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                schedule_id: Some(root_schedule_id),
+                ..loop_args(LoopAction::Clear)
+            },
+        )
+        .await
+        .expect("root loop should clear");
+
+        assert_eq!(Some(true), response.deleted);
+        assert_eq!(Vec::<LoopScheduleSnapshot>::new(), response.schedules);
     }
 
     #[tokio::test]

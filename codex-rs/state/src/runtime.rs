@@ -179,6 +179,7 @@ pub use pending_interactions::PendingInteractionListParams;
 pub use pending_interactions::PendingInteractionPage;
 pub use pending_interactions::PendingInteractionRespondForSourceParams;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use schedules::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;

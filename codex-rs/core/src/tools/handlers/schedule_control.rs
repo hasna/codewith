@@ -237,6 +237,7 @@ async fn create_schedule(
         .create_thread_schedule_for_auth_profile(
             codex_state::ThreadScheduleCreateParams {
                 thread_id,
+                parent_schedule_id: None,
                 prompt,
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule,
@@ -796,6 +797,7 @@ mod tests {
             .thread_schedules()
             .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
                 thread_id,
+                parent_schedule_id: None,
                 prompt: prompt.to_string(),
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule: codex_state::ThreadScheduleSpec::Once,

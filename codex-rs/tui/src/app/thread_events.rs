@@ -478,6 +478,8 @@ mod tests {
             schedule: ThreadSchedule {
                 thread_id: thread_id.to_string(),
                 schedule_id: "schedule-1".to_string(),
+                parent_schedule_id: None,
+                nesting_depth: 1,
                 prompt: "check CI".to_string(),
                 prompt_source: ThreadSchedulePromptSource::Inline,
                 schedule: ThreadScheduleSpec::Interval {

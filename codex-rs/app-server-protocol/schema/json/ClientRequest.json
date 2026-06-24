@@ -5197,6 +5197,12 @@
             "null"
           ]
         },
+        "parentScheduleId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "prompt": {
           "type": "string"
         },
