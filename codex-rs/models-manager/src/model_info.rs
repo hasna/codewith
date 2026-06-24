@@ -74,8 +74,12 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 }
 
 fn apply_endpoint_context_caps(model: &mut ModelInfo, config: &ModelsManagerConfig) {
+    let is_gpt_5_5_endpoint_slug = model
+        .slug
+        .strip_prefix(GPT_5_5_MODEL_ID)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('-'));
     if config.model_provider_id.as_deref() != Some(OPENAI_MODEL_PROVIDER_ID)
-        || model.slug != GPT_5_5_MODEL_ID
+        || !is_gpt_5_5_endpoint_slug
     {
         return;
     }

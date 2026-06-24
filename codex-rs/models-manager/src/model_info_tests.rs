@@ -488,6 +488,27 @@ fn openai_gpt_5_5_context_window_is_capped_after_overrides() {
 }
 
 #[test]
+fn openai_gpt_5_5_alias_context_window_is_capped_after_overrides() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = "gpt-5.5-2026-06-01".to_string();
+    model.context_window = Some(272_000);
+    model.max_context_window = Some(272_000);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some(OPENAI_MODEL_PROVIDER_ID.to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
+    assert_eq!(
+        updated.max_context_window,
+        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+    );
+}
+
+#[test]
 fn gpt_5_5_context_cap_does_not_apply_to_other_providers() {
     let mut model = model_info_from_slug("unknown-model");
     model.slug = GPT_5_5_MODEL_ID.to_string();
