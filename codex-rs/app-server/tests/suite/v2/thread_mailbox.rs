@@ -29,6 +29,7 @@ use codex_app_server_protocol::ThreadMailboxMessageStatus;
 use codex_app_server_protocol::ThreadMailboxMessageSummary;
 use codex_app_server_protocol::ThreadMailboxReadParams;
 use codex_app_server_protocol::ThreadMailboxReadResponse;
+use codex_app_server_protocol::ThreadMailboxReceiptKind;
 use codex_app_server_protocol::ThreadMailboxReceiptsListParams;
 use codex_app_server_protocol::ThreadMailboxReceiptsListResponse;
 use codex_app_server_protocol::ThreadMailboxRedaction;
@@ -43,6 +44,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
+use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
@@ -209,10 +211,75 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let thread_id = start_thread(&mut mcp).await?;
-    let enqueued = enqueue_message(&mut mcp, &thread_id, "dispatcher-live").await?;
+    let enqueued = enqueue_message_with_sender(
+        &mut mcp,
+        &thread_id,
+        "dispatcher-live",
+        Some(thread_id.clone()),
+    )
+    .await?;
 
     let acknowledged = wait_for_message_matching(
         &mut mcp,
+        &thread_id,
+        &enqueued.message.message_id,
+        |message| message.status == ThreadMailboxMessageStatus::Acknowledged,
+    )
+    .await?;
+    assert_eq!(acknowledged.attempt_count, 1);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 2).await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let messages = inter_agent_messages_in_request(&requests[1].body_json());
+    assert_eq!(
+        messages,
+        vec![InterAgentCommunication {
+            author: codex_protocol::AgentPath::root(),
+            recipient: codex_protocol::AgentPath::root(),
+            other_recipients: Vec::new(),
+            content: format!(
+                "Durable mailbox message {} from unverified sender thread {} with label \"coordinator\":\n\ndecompose this",
+                enqueued.message.message_id, thread_id
+            ),
+            encrypted_content: None,
+            trigger_turn: true,
+        }]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_dispatcher_delivers_to_live_thread_in_separate_app_server_process()
+-> Result<()> {
+    let server = responses::start_mock_server().await;
+    let first_body = responses::sse(vec![
+        responses::ev_response_created("resp-cross-process-seed"),
+        responses::ev_assistant_message("msg-cross-process-seed", "Seed done"),
+        responses::ev_completed("resp-cross-process-seed"),
+    ]);
+    let second_body = responses::sse(vec![
+        responses::ev_response_created("resp-cross-process-mailbox"),
+        responses::ev_assistant_message("msg-cross-process-mailbox", "Mailbox done"),
+        responses::ev_completed("resp-cross-process-mailbox"),
+    ]);
+    let response_mock = responses::mount_sse_sequence(&server, vec![first_body, second_body]).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_mailbox_dispatcher(
+        codex_home.path(),
+        &server.uri(),
+        /*mailbox_dispatcher_enabled*/ true,
+    )?;
+
+    let mut target_mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut target_mcp).await?;
+    wait_for_fresh_local_active_session(codex_home.path(), &thread_id).await?;
+
+    let mut sender_mcp = init_mcp(codex_home.path()).await?;
+    let enqueued = enqueue_message(&mut sender_mcp, &thread_id, "dispatcher-cross-process").await?;
+    let acknowledged = wait_for_message_matching(
+        &mut sender_mcp,
         &thread_id,
         &enqueued.message.message_id,
         |message| message.status == ThreadMailboxMessageStatus::Acknowledged,
@@ -238,6 +305,73 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
             trigger_turn: true,
         }]
     );
+
+    let receipts = list_receipts(&mut sender_mcp, &thread_id, &enqueued.message.message_id).await?;
+    let acknowledged_receipt = receipts
+        .data
+        .iter()
+        .find(|receipt| receipt.kind == ThreadMailboxReceiptKind::Acknowledged)
+        .expect("acknowledged receipt");
+    assert_eq!(
+        acknowledged_receipt
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("delivery")),
+        Some(&json!("live"))
+    );
+    assert_eq!(
+        acknowledged_receipt
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("triggerTurn")),
+        Some(&json!(true))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_dispatcher_does_not_steal_live_target_from_dispatch_disabled_process()
+-> Result<()> {
+    let server = responses::start_mock_server().await;
+    let seed_body = responses::sse(vec![
+        responses::ev_response_created("resp-disabled-target-seed"),
+        responses::ev_assistant_message("msg-disabled-target-seed", "Seed done"),
+        responses::ev_completed("resp-disabled-target-seed"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, seed_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_mailbox_dispatcher(
+        codex_home.path(),
+        &server.uri(),
+        /*mailbox_dispatcher_enabled*/ false,
+    )?;
+
+    let mut target_mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut target_mcp).await?;
+
+    create_config_toml_with_mailbox_dispatcher(
+        codex_home.path(),
+        &server.uri(),
+        /*mailbox_dispatcher_enabled*/ true,
+    )?;
+    let mut sender_mcp = init_mcp(codex_home.path()).await?;
+    let enqueued = enqueue_message_with_max_attempts(
+        &mut sender_mcp,
+        &thread_id,
+        "dispatcher-disabled-foreign-owner",
+        /*max_attempts*/ 1,
+    )
+    .await?;
+    sleep(std::time::Duration::from_secs(2)).await;
+
+    let read = read_message(&mut sender_mcp, &thread_id, &enqueued.message.message_id).await?;
+    assert_eq!(
+        read.message.summary.status,
+        ThreadMailboxMessageStatus::Queued
+    );
+    assert_eq!(read.message.summary.attempt_count, 0);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
 
     Ok(())
 }
@@ -298,6 +432,27 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
             encrypted_content: None,
             trigger_turn: true,
         }]
+    );
+
+    let receipts = list_receipts(&mut mcp, &thread_id, &enqueued.message.message_id).await?;
+    let acknowledged_receipt = receipts
+        .data
+        .iter()
+        .find(|receipt| receipt.kind == ThreadMailboxReceiptKind::Acknowledged)
+        .expect("acknowledged receipt");
+    assert_eq!(
+        acknowledged_receipt
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("delivery")),
+        Some(&json!("resumed"))
+    );
+    assert_eq!(
+        acknowledged_receipt
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("triggerTurn")),
+        Some(&json!(true))
     );
 
     Ok(())
@@ -494,12 +649,30 @@ async fn enqueue_message_with_max_attempts(
     idempotency_key: &str,
     max_attempts: u32,
 ) -> Result<ThreadMailboxEnqueueResponse> {
-    enqueue_message_with_payload_and_max_attempts(
+    enqueue_message_with_sender_and_payload_and_max_attempts(
         mcp,
         thread_id,
         idempotency_key,
+        /*sender_thread_id*/ None,
         json!({ "text": "decompose this" }),
         max_attempts,
+    )
+    .await
+}
+
+async fn enqueue_message_with_sender(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    sender_thread_id: Option<String>,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_message_with_sender_and_payload_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        sender_thread_id,
+        json!({ "text": "decompose this" }),
+        /*max_attempts*/ 3,
     )
     .await
 }
@@ -511,10 +684,29 @@ async fn enqueue_message_with_payload_and_max_attempts(
     payload: Value,
     max_attempts: u32,
 ) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_message_with_sender_and_payload_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        /*sender_thread_id*/ None,
+        payload,
+        max_attempts,
+    )
+    .await
+}
+
+async fn enqueue_message_with_sender_and_payload_and_max_attempts(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    sender_thread_id: Option<String>,
+    payload: Value,
+    max_attempts: u32,
+) -> Result<ThreadMailboxEnqueueResponse> {
     let request_id = mcp
         .send_thread_mailbox_enqueue_request(ThreadMailboxEnqueueParams {
             target_thread_id: thread_id.to_string(),
-            sender_thread_id: None,
+            sender_thread_id,
             sender_label: Some("coordinator".to_string()),
             idempotency_key: Some(idempotency_key.to_string()),
             kind: ThreadMailboxMessageKind::UserInstruction,
@@ -743,6 +935,28 @@ async fn start_thread_without_turn(mcp: &mut TestAppServer) -> Result<String> {
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(resp)?;
     Ok(thread.id)
+}
+
+async fn wait_for_fresh_local_active_session(codex_home: &Path, thread_id: &str) -> Result<()> {
+    let state_db = StateRuntime::init(codex_home.to_path_buf(), "mock_provider".into()).await?;
+    let thread_id = ThreadId::from_string(thread_id)?;
+    let thread_id_display = thread_id.to_string();
+    let started_at = Instant::now();
+    loop {
+        let fresh_after = Utc::now() - chrono::Duration::seconds(5);
+        if state_db
+            .local_active_sessions()
+            .get_fresh_session(thread_id, fresh_after)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if started_at.elapsed() > DEFAULT_READ_TIMEOUT {
+            anyhow::bail!("timed out waiting for fresh local active session {thread_id_display}");
+        }
+        sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 fn create_request_user_input_body(call_id: &str) -> Result<String> {

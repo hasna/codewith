@@ -78,7 +78,6 @@ use codex_chatgpt::workspace_settings;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
-use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_login::AuthManager;
@@ -362,6 +361,7 @@ impl MessageProcessor {
             .plugins_manager()
             .set_analytics_events_client(analytics_events_client.clone());
         let skills_watcher = SkillsWatcher::new(thread_manager.skills_manager(), outgoing.clone());
+        let local_active_owner_id = local_active_owner_id();
 
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
         let thread_watch_manager =
@@ -468,6 +468,7 @@ impl MessageProcessor {
             Arc::clone(&thread_list_state_permit),
             Arc::clone(&skills_watcher),
             state_db.clone(),
+            local_active_owner_id.clone(),
             Arc::clone(&goal_service),
         );
         thread_schedule_runtime.start();
@@ -479,26 +480,24 @@ impl MessageProcessor {
             state_db.clone(),
             thread_schedule_runtime.clone(),
         );
-        let thread_mailbox_dispatcher_runtime = config
-            .features
-            .enabled(Feature::MailboxDispatcher)
-            .then(|| {
-                let runtime = ThreadMailboxDispatcherRuntime::new(
-                    auth_manager.clone(),
-                    Arc::clone(&thread_manager),
-                    outgoing.clone(),
-                    Arc::clone(&config),
-                    config_manager.clone(),
-                    thread_state_manager.clone(),
-                    Arc::clone(&pending_thread_unloads),
-                    thread_watch_manager.clone(),
-                    Arc::clone(&thread_list_state_permit),
-                    Arc::clone(&skills_watcher),
-                    state_db.clone(),
-                );
-                runtime.start();
-                runtime
-            });
+        let thread_mailbox_dispatcher_runtime = {
+            let runtime = ThreadMailboxDispatcherRuntime::new(
+                auth_manager.clone(),
+                Arc::clone(&thread_manager),
+                outgoing.clone(),
+                Arc::clone(&config),
+                config_manager.clone(),
+                thread_state_manager.clone(),
+                Arc::clone(&pending_thread_unloads),
+                thread_watch_manager.clone(),
+                Arc::clone(&thread_list_state_permit),
+                Arc::clone(&skills_watcher),
+                state_db.clone(),
+                local_active_owner_id.clone(),
+            );
+            runtime.start();
+            Some(runtime)
+        };
         let thread_monitor_runtime = ThreadMonitorRuntime::new(
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -531,7 +530,8 @@ impl MessageProcessor {
             thread_watch_manager.clone(),
             Arc::clone(&thread_list_state_permit),
             thread_goal_processor.clone(),
-            state_db,
+            state_db.clone(),
+            local_active_owner_id.clone(),
             Arc::clone(&skills_watcher),
             background_agent_worker_run_id.is_some(),
         );
@@ -555,6 +555,8 @@ impl MessageProcessor {
             thread_watch_manager,
             thread_list_state_permit,
             Arc::clone(&skills_watcher),
+            state_db,
+            local_active_owner_id,
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.
@@ -1854,6 +1856,10 @@ impl MessageProcessor {
         }
         Ok(())
     }
+}
+
+fn local_active_owner_id() -> String {
+    format!("app-server:{}:{}", std::process::id(), uuid::Uuid::now_v7())
 }
 
 #[cfg(test)]

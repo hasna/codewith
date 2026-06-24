@@ -179,6 +179,65 @@ impl ActiveChannelRouter {
             }
         }
     }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "mailbox enqueue must be serialized against pending unloads through get_thread and direct queueing"
+    )]
+    pub(crate) async fn enqueue_for_pending_work(
+        &self,
+        envelope: &ActiveChannelEnvelope,
+        recipient: &ActivePeer,
+        communication: InterAgentCommunication,
+    ) -> Result<ActiveChannelDeliveryOutcome, ActiveChannelAdapterError> {
+        match &recipient.owner {
+            ActivePeerOwner::LocalThread { thread_id } => {
+                let pending_thread_unloads = self.pending_thread_unloads.lock().await;
+                if pending_thread_unloads.contains(thread_id) {
+                    return Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                        recipient_id: recipient.peer_id.clone(),
+                    });
+                }
+                let target_thread = match self.thread_manager.get_thread(*thread_id).await {
+                    Ok(thread) => thread,
+                    Err(CodexErr::ThreadNotFound(_)) => {
+                        return Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                            recipient_id: recipient.peer_id.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        return Err(ActiveChannelAdapterError::Failed {
+                            message: format!("failed to resolve local active peer: {err}"),
+                        });
+                    }
+                };
+                match target_thread
+                    .enqueue_inter_agent_communication_with_id(
+                        envelope.message_id.clone(),
+                        communication,
+                    )
+                    .await
+                {
+                    Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
+                        message_id: envelope.message_id.clone(),
+                    }),
+                    Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
+                        Ok(ActiveChannelDeliveryOutcome::NotLoaded {
+                            recipient_id: recipient.peer_id.clone(),
+                        })
+                    }
+                    Err(err) => Err(ActiveChannelAdapterError::Failed {
+                        message: format!("failed to enqueue active session message: {err}"),
+                    }),
+                }
+            }
+            ActivePeerOwner::BridgeAdapter { .. } => {
+                Ok(ActiveChannelDeliveryOutcome::Unsupported {
+                    recipient_id: recipient.peer_id.clone(),
+                })
+            }
+        }
+    }
 }
 
 pub(crate) fn active_channel_communication(

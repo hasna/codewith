@@ -103,6 +103,7 @@ mod backfill;
 mod background_agents;
 mod goal_plans;
 mod goals;
+mod local_active_sessions;
 mod logs;
 mod machine_registry;
 mod mailbox;
@@ -136,6 +137,10 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalDeleteOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
+pub use local_active_sessions::LocalActiveSessionHeartbeatParams;
+pub use local_active_sessions::LocalActiveSessionPruneOwnerParams;
+pub use local_active_sessions::LocalActiveSessionRecord;
+pub use local_active_sessions::LocalActiveSessionStore;
 pub use machine_registry::DEFAULT_MACHINE_REGISTRY_LIST_LIMIT;
 pub use machine_registry::MAX_MACHINE_REGISTRY_LIST_LIMIT;
 pub use machine_registry::MachineEndpointUpsertParams;
@@ -296,6 +301,7 @@ pub struct StateRuntime {
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
+    local_active_sessions: LocalActiveSessionStore,
     machine_registry: MachineRegistryStore,
     mailbox_messages: MailboxMessageStore,
     managed_worktrees: ManagedWorktreeStore,
@@ -483,6 +489,7 @@ impl StateRuntime {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
+            local_active_sessions: LocalActiveSessionStore::new(Arc::clone(&pool)),
             machine_registry: MachineRegistryStore::new(Arc::clone(&pool)),
             mailbox_messages: MailboxMessageStore::new(Arc::clone(&pool)),
             managed_worktrees: ManagedWorktreeStore::new(Arc::clone(&pool)),
@@ -519,6 +526,10 @@ impl StateRuntime {
 
     pub fn thread_monitors(&self) -> &MonitorStore {
         &self.thread_monitors
+    }
+
+    pub fn local_active_sessions(&self) -> &LocalActiveSessionStore {
+        &self.local_active_sessions
     }
 
     pub fn machine_registry(&self) -> &MachineRegistryStore {

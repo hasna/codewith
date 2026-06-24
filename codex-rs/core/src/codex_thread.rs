@@ -246,6 +246,28 @@ impl CodexThread {
         Ok(())
     }
 
+    /// Queues local inter-agent communication with a caller-supplied queued-message id.
+    ///
+    /// The item is recorded for mailbox delivery, but pending work is not synchronously
+    /// started. Callers that need durable ack-before-wake behavior can use this and
+    /// trigger pending work after their own durable state transition succeeds.
+    pub async fn enqueue_inter_agent_communication_with_id(
+        &self,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
+        if !self.is_running() {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        crate::session::enqueue_inter_agent_communication(
+            &self.codex.session,
+            message_id,
+            communication,
+        )
+        .await;
+        Ok(())
+    }
+
     pub async fn queued_mailbox_messages(&self) -> Vec<QueuedMailboxMessage> {
         self.codex.session.input_queue.list_mailbox_messages().await
     }
