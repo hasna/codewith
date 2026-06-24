@@ -29,6 +29,7 @@ pub use session::QueuedMailboxMoveDirection;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod attestation;
+pub mod auth_profile_usage;
 mod codex_delegate;
 mod command_canonicalization;
 pub mod config;

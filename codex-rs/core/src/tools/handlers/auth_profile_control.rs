@@ -173,6 +173,7 @@ fn summarize_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn normalize_requested_profile_treats_missing_or_blank_as_default() {

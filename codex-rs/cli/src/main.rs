@@ -58,6 +58,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod usage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
@@ -66,6 +67,7 @@ use self::mcp_cmd::McpCli;
 use self::plugin_cmd::PluginCli;
 use self::plugin_cmd::PluginSubcommand;
 use self::remote_control_cmd::RemoteControlCommand;
+use self::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -143,6 +145,9 @@ enum Subcommand {
 
     /// Manage named authentication profiles.
     Profile(ProfileCommand),
+
+    /// Inspect current session/account usage and saved auth-profile usage.
+    Usage(UsageCommand),
 
     /// Manage external MCP servers for Codewith.
     Mcp(McpCli),
@@ -1661,6 +1666,18 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Subcommand::Usage(mut usage_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "usage",
+            )?;
+            prepend_config_flags(
+                &mut usage_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            usage_cmd::run_usage(usage_cli).await?;
+        }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2440,6 +2457,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Profile(_)) => Some("profile"),
+        Some(Subcommand::Usage(_)) => Some("usage"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
