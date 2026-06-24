@@ -79,6 +79,13 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
             )),
         ),
         (
+            "cursor".to_string(),
+            JsonSchema::string(Some(
+                "Cursor from a prior read. Omit to return the most recent events, or pass \"0\" to page from the oldest events."
+                    .to_string(),
+            )),
+        ),
+        (
             "limit".to_string(),
             JsonSchema::integer(Some(
                 "Maximum number of events to return when action is read. Defaults to 20."

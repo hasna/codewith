@@ -35,7 +35,11 @@ pub(super) fn compact_agent_value(agent: &AgentRun) -> JsonValue {
     })
 }
 
-pub(super) fn compact_agent_read_response(response: &AgentReadResponse) -> JsonValue {
+pub(super) fn compact_agent_read_response(
+    response: &AgentReadResponse,
+    limit: Option<usize>,
+) -> JsonValue {
+    let limit = limit.unwrap_or(COMPACT_LIST_LIMIT);
     json!({
         "agent": response.agent.as_ref().map(compact_agent_value),
         "statusSnapshot": response
@@ -50,7 +54,7 @@ pub(super) fn compact_agent_read_response(response: &AgentReadResponse) -> JsonV
         "pendingInteractions": response
             .pending_interactions
             .iter()
-            .take(COMPACT_LIST_LIMIT)
+            .take(limit)
             .map(compact_agent_pending_interaction)
             .collect::<Vec<_>>(),
         "hint": "Default agent read output is compact. Pass verbose=true for full snapshots and interaction payloads, or action=logs for recent event payload previews.",
@@ -226,6 +230,9 @@ mod tests {
     use codex_app_server_protocol::AgentDesiredState;
     use codex_app_server_protocol::AgentEvent;
     use codex_app_server_protocol::AgentEventsListResponse;
+    use codex_app_server_protocol::AgentPendingInteraction;
+    use codex_app_server_protocol::AgentPendingInteractionKind;
+    use codex_app_server_protocol::AgentPendingInteractionStatus;
     use codex_app_server_protocol::AgentRetentionState;
     use codex_app_server_protocol::AgentRunStatus;
     use codex_app_server_protocol::ThreadMonitorEventStream;
@@ -266,6 +273,62 @@ mod tests {
                 .as_str()
                 .expect("payload preview")
                 .ends_with("...")
+        );
+    }
+
+    #[test]
+    fn compact_agent_read_honors_pending_interaction_limit() {
+        let response = AgentReadResponse {
+            agent: None,
+            status_snapshot: None,
+            execution_snapshot: None,
+            pending_interactions: vec![
+                AgentPendingInteraction {
+                    interaction_id: "interaction-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    worker_request_id: None,
+                    kind: AgentPendingInteractionKind::UserInput,
+                    status: AgentPendingInteractionStatus::Pending,
+                    request_payload: json!({ "question": "one" }),
+                    response_payload: None,
+                    no_client_policy: "persist".to_string(),
+                    timeout_at: None,
+                    created_at: 1,
+                    delivered_at: None,
+                    responded_at: None,
+                    updated_at: 1,
+                },
+                AgentPendingInteraction {
+                    interaction_id: "interaction-2".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    worker_request_id: None,
+                    kind: AgentPendingInteractionKind::Approval,
+                    status: AgentPendingInteractionStatus::Delivered,
+                    request_payload: json!({ "command": "two" }),
+                    response_payload: None,
+                    no_client_policy: "persist".to_string(),
+                    timeout_at: None,
+                    created_at: 2,
+                    delivered_at: Some(2),
+                    responded_at: None,
+                    updated_at: 2,
+                },
+            ],
+        };
+
+        let compact = compact_agent_read_response(&response, Some(1));
+
+        assert_eq!(compact["pendingInteractionCount"], 2);
+        assert_eq!(
+            compact["pendingInteractions"]
+                .as_array()
+                .expect("pending interactions")
+                .len(),
+            1
+        );
+        assert_eq!(
+            compact["pendingInteractions"][0]["interactionId"],
+            "interaction-1"
         );
     }
 

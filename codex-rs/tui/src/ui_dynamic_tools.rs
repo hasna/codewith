@@ -153,6 +153,10 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                         "type": "boolean",
                         "description": "Return raw agent records, snapshots, or event payloads instead of compact summaries."
                     },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=logs call."
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of compact rows/events to return. Defaults to 20."
@@ -248,6 +252,10 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "verbose": {
                         "type": "boolean",
                         "description": "Return raw monitor records and full event text instead of compact summaries."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=read call."
                     },
                     "limit": {
                         "type": "integer",

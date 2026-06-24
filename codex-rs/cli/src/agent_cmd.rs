@@ -591,7 +591,7 @@ fn print_agent_start(output: &Value) {
         );
     }
     println!(
-        "Use `codewith agent read {id}` for status, `codewith agent logs {id}` for events, or add `--json` for the full record."
+        "Use `codewith agent read {id}` for status, `codewith agent logs {id}` for events, or `codewith agent read {id} --json` for the full record."
     );
 }
 
@@ -852,7 +852,7 @@ fn payload_event_summary(payload: Option<&Value>) -> String {
             return compact_text_preview(value, COMPACT_FIELD_PREVIEW_CHARS);
         }
     }
-    compact_json_preview(payload, COMPACT_FIELD_PREVIEW_CHARS)
+    "(payload hidden; use --verbose)".to_string()
 }
 
 fn compact_json_preview(value: &Value, max_chars: usize) -> String {
@@ -1286,6 +1286,19 @@ mod tests {
         });
 
         assert_eq!(payload_event_summary(Some(&payload)), "Finished indexing");
+    }
+
+    #[test]
+    fn payload_summary_hides_unallowlisted_payload_fields() {
+        let payload = json!({
+            "prompt": "implement a private feature",
+            "cwd": "/private/workspace",
+        });
+
+        assert_eq!(
+            payload_event_summary(Some(&payload)),
+            "(payload hidden; use --verbose)"
+        );
     }
 
     #[test]

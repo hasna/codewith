@@ -38,6 +38,7 @@ pub(super) struct McpArgs {
 pub(super) struct BackgroundAgentsArgs {
     pub(super) action: String,
     pub(super) agent_id: Option<String>,
+    pub(super) cursor: Option<String>,
     pub(super) verbose: Option<bool>,
     pub(super) limit: Option<usize>,
 }
@@ -64,8 +65,16 @@ pub(super) struct SchedulesArgs {
 pub(super) struct MonitorsArgs {
     pub(super) action: String,
     pub(super) monitor_id: Option<String>,
+    pub(super) cursor: Option<String>,
     pub(super) verbose: Option<bool>,
     pub(super) limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduleKind {
+    All,
+    Once,
+    Loop,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,11 +217,11 @@ impl App {
                     if args.verbose.unwrap_or(false) {
                         Ok(json!(response))
                     } else {
-                        Ok(compact_agent_read_response(&response))
+                        Ok(compact_agent_read_response(&response, args.limit))
                     }
                 } else {
                     app_server
-                        .agent_events_list(agent_id)
+                        .agent_events_list(agent_id, args.cursor, args.limit)
                         .await
                         .map(|response| {
                             if args.verbose.unwrap_or(false) {
@@ -323,7 +332,12 @@ impl App {
                 )),
             },
             "list" => {
-                let kind = args.kind.unwrap_or_else(|| "all".to_string());
+                let kind = args
+                    .kind
+                    .as_deref()
+                    .map(ScheduleKind::try_from)
+                    .transpose()?
+                    .unwrap_or(ScheduleKind::All);
                 let response = app_server
                     .thread_schedule_list(thread_id)
                     .await
@@ -331,15 +345,15 @@ impl App {
                 let data = response
                     .data
                     .into_iter()
-                    .filter(|schedule| schedule_matches_kind(schedule, &kind))
+                    .filter(|schedule| kind.matches(schedule))
                     .collect::<Vec<_>>();
                 if args.verbose.unwrap_or(false) {
-                    return Ok(json!({ "kind": kind, "schedules": data }));
+                    return Ok(json!({ "kind": kind.as_str(), "schedules": data }));
                 }
                 let total = data.len();
                 let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
                 Ok(json!({
-                    "kind": kind,
+                    "kind": kind.as_str(),
                     "count": total,
                     "schedules": data
                         .iter()
@@ -396,7 +410,7 @@ impl App {
                 let monitor_id =
                     required_string(args.monitor_id, "action=read requires monitor_id")?;
                 app_server
-                    .thread_monitor_read(thread_id, monitor_id)
+                    .thread_monitor_read(thread_id, monitor_id, args.cursor, args.limit)
                     .await
                     .map(|response| {
                         if args.verbose.unwrap_or(false) {
@@ -722,12 +736,36 @@ fn background_terminal_processes_json(
         .collect()
 }
 
-fn schedule_matches_kind(schedule: &codex_app_server_protocol::ThreadSchedule, kind: &str) -> bool {
-    match kind {
-        "all" => true,
-        "once" | "schedule" => matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        "loop" | "loops" => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        _ => false,
+impl ScheduleKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Once => "once",
+            Self::Loop => "loop",
+        }
+    }
+
+    fn matches(self, schedule: &codex_app_server_protocol::ThreadSchedule) -> bool {
+        match self {
+            Self::All => true,
+            Self::Once => matches!(schedule.schedule, ThreadScheduleSpec::Once),
+            Self::Loop => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
+        }
+    }
+}
+
+impl TryFrom<&str> for ScheduleKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "all" => Ok(Self::All),
+            "once" | "schedule" => Ok(Self::Once),
+            "loop" | "loops" => Ok(Self::Loop),
+            kind => Err(format!(
+                "unknown schedule kind `{kind}`; expected once, loop, or all"
+            )),
+        }
     }
 }
 
@@ -808,6 +846,16 @@ mod tests {
         assert_eq!(output[0]["recent_output_available"], true);
         assert_eq!(output[0]["recent_output_chunk_count"], 1);
         assert!(!output[0].to_string().contains("TOKEN=secret"));
+    }
+
+    #[test]
+    fn schedule_kind_rejects_unknown_values() {
+        let err = ScheduleKind::try_from("daily").expect_err("kind should be rejected");
+
+        assert_eq!(
+            err,
+            "unknown schedule kind `daily`; expected once, loop, or all"
+        );
     }
 
     #[test]

@@ -1300,7 +1300,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
-                cmd.json,
+                /*json*/ true,
                 cmd.verbose,
                 root_auth_profile.as_deref(),
             )
@@ -1316,7 +1316,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
-                cmd.json,
+                /*json*/ true,
                 cmd.verbose,
                 root_auth_profile.as_deref(),
             )
@@ -1330,7 +1330,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             )?;
             agent_cmd::run_background_agent_stop(
                 cmd.agent_id,
-                cmd.json,
+                /*json*/ true,
                 cmd.verbose,
                 root_auth_profile.as_deref(),
             )
@@ -1344,7 +1344,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             )?;
             agent_cmd::run_background_agent_delete(
                 cmd.agent_id,
-                cmd.json,
+                /*json*/ true,
                 cmd.verbose,
                 root_auth_profile.as_deref(),
             )

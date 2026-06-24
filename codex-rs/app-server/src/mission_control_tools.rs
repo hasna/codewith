@@ -349,7 +349,7 @@ impl MissionControlToolKind {
                 (
                     "include_payloads".to_string(),
                     nullable_boolean(
-                        "Whether to include full pending-interaction payloads instead of compact previews.",
+                        "Whether to include full pending-interaction payloads and schedule prompts instead of compact previews.",
                     ),
                 ),
             ])),
@@ -512,7 +512,12 @@ impl MissionControlRuntime {
             } else {
                 Vec::new()
             };
-            local_session_values.push(local_session_json(metadata, &live_thread_ids, schedules));
+            local_session_values.push(local_session_json(
+                metadata,
+                &live_thread_ids,
+                schedules,
+                include_payloads,
+            ));
         }
 
         Ok(json_output(json!({
@@ -941,6 +946,7 @@ fn local_session_json(
     metadata: codex_state::ThreadMetadata,
     live_thread_ids: &[String],
     schedules: Vec<codex_state::ThreadSchedule>,
+    include_payloads: bool,
 ) -> Value {
     let thread_id = metadata.id.to_string();
     let live = live_thread_ids.contains(&thread_id);
@@ -966,17 +972,23 @@ fn local_session_json(
         "scheduleCount": schedule_count,
         "schedules": schedules
             .into_iter()
-            .map(schedule_summary_json)
+            .map(|schedule| schedule_summary_json(schedule, include_payloads))
             .collect::<Vec<_>>(),
     })
 }
 
-fn schedule_summary_json(schedule: codex_state::ThreadSchedule) -> Value {
+fn schedule_summary_json(schedule: codex_state::ThreadSchedule, include_payloads: bool) -> Value {
+    let prompt = if include_payloads {
+        json!(&schedule.prompt)
+    } else {
+        Value::Null
+    };
     json!({
         "threadId": schedule.thread_id.to_string(),
         "scheduleId": schedule.schedule_id,
         "promptPreview": truncate_preview(&schedule.prompt),
         "promptChars": schedule.prompt.chars().count(),
+        "prompt": prompt,
         "promptSource": schedule.prompt_source.as_str(),
         "schedule": schedule_spec_json(schedule.schedule),
         "timezone": schedule.timezone,
@@ -1377,6 +1389,10 @@ mod tests {
         assert_eq!(
             payload_overview["pendingInteractions"][0]["requestPayload"],
             json!({ "reason": "needs user decision" })
+        );
+        assert_eq!(
+            payload_overview["localSessions"][0]["schedules"][0]["prompt"],
+            "Check schedule visibility"
         );
         assert_eq!(
             overview["localSessions"][0]["schedules"]
