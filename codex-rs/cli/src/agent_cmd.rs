@@ -608,11 +608,11 @@ fn print_agent_list(output: &Value) {
     }
 
     println!(
-        "{:<32}  {:<14}  {:<8}  {:<10}  {:<12}  SUMMARY",
+        "{:<48}  {:<14}  {:<8}  {:<10}  {:<12}  SUMMARY",
         "AGENT_ID", "STATUS", "DESIRED", "SOURCE", "UPDATED_AT"
     );
     for agent in rows {
-        let id = compact_id(value_str(agent, "agentId").unwrap_or("<unknown>"));
+        let id = value_str(agent, "agentId").unwrap_or("<unknown>");
         let status = value_str(agent, "status").unwrap_or("unknown");
         let desired = value_str(agent, "desiredState").unwrap_or("unknown");
         let source = value_str(agent, "source").unwrap_or("unknown");
@@ -622,7 +622,7 @@ fn print_agent_list(output: &Value) {
         let summary = value_str(agent, "statusReason")
             .map(|reason| compact_text_preview(reason, COMPACT_FIELD_PREVIEW_CHARS))
             .unwrap_or_default();
-        println!("{id:<32}  {status:<14}  {desired:<8}  {source:<10}  {updated_at:<12}  {summary}");
+        println!("{id:<48}  {status:<14}  {desired:<8}  {source:<10}  {updated_at:<12}  {summary}");
     }
     println!(
         "Shown {} agent(s). Use `codewith agent read <id>` for details, `codewith agent logs <id>` for events, `--limit N` to page, or `--json` for full records.",
@@ -873,10 +873,6 @@ fn truncate_end(value: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
-}
-
-fn compact_id(value: &str) -> String {
-    truncate_end(value, 32)
 }
 
 fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
