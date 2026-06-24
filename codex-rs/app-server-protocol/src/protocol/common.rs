@@ -606,6 +606,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalPlanActivateNodeResponse,
     },
+    ThreadGoalPlanAddGoal => "thread/goalPlan/addGoal" {
+        params: v2::ThreadGoalPlanAddGoalParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanAddGoalResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -4189,8 +4194,15 @@ mod tests {
                 node_id: "node_123".to_string(),
             },
         };
-        let clear_request = ClientRequest::ThreadGoalClear {
+        let add_goal_request = ClientRequest::ThreadGoalPlanAddGoal {
             request_id: RequestId::Integer(5),
+            params: v2::ThreadGoalPlanAddGoalParams {
+                thread_id: "thr_123".to_string(),
+                objective: "queue goal mode".to_string(),
+            },
+        };
+        let clear_request = ClientRequest::ThreadGoalClear {
+            request_id: RequestId::Integer(6),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
             },
@@ -4210,6 +4222,10 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&activate_node_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&add_goal_request),
             None
         );
         assert_eq!(

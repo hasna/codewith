@@ -1212,6 +1212,11 @@ impl MessageProcessor {
                     .thread_goal_plan_activate_node(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadGoalPlanAddGoal { params, .. } => {
+                self.thread_goal_processor
+                    .thread_goal_plan_add_goal(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadGoalClear { params, .. } => {
                 self.thread_goal_processor
                     .thread_goal_clear(request_id.clone(), params)

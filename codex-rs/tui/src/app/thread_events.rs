@@ -163,6 +163,12 @@ impl ThreadEventStore {
             .collect()
     }
 
+    pub(super) fn pending_server_request_for_op(&self, op: &AppCommand) -> Option<ServerRequest> {
+        self.pending_replay_requests()
+            .into_iter()
+            .find(|request| server_request_matches_op(request, op))
+    }
+
     pub(super) fn file_change_changes(
         &self,
         turn_id: &str,
@@ -285,6 +291,36 @@ fn file_change_item_changes(
     }
 }
 
+fn server_request_matches_op(request: &ServerRequest, op: &AppCommand) -> bool {
+    match (request, op) {
+        (
+            ServerRequest::CommandExecutionRequestApproval { params, .. },
+            AppCommand::ExecApproval { id, .. },
+        ) => params.approval_id.as_ref().unwrap_or(&params.item_id) == id,
+        (
+            ServerRequest::FileChangeRequestApproval { params, .. },
+            AppCommand::PatchApproval { id, .. },
+        ) => &params.item_id == id,
+        (
+            ServerRequest::PermissionsRequestApproval { params, .. },
+            AppCommand::RequestPermissionsResponse { id, .. },
+        ) => &params.item_id == id,
+        (
+            ServerRequest::ToolRequestUserInput { params, .. },
+            AppCommand::UserInputAnswer { id, .. },
+        ) => &params.turn_id == id,
+        (
+            ServerRequest::McpServerElicitationRequest { request_id, params },
+            AppCommand::ResolveElicitation {
+                server_name,
+                request_id: op_request_id,
+                ..
+            },
+        ) => &params.server_name == server_name && request_id == op_request_id,
+        _ => false,
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
@@ -336,6 +372,7 @@ mod tests {
     use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
     use codex_app_server_protocol::HookScope as AppServerHookScope;
     use codex_app_server_protocol::HookStartedNotification;
+    use codex_app_server_protocol::PermissionsRequestApprovalParams;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
     use codex_app_server_protocol::ThreadSchedule;
     use codex_app_server_protocol::ThreadScheduleIntervalUnit;
@@ -350,6 +387,9 @@ mod tests {
     use codex_app_server_protocol::TurnStartedNotification;
     use codex_config::types::ApprovalsReviewer;
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::request_permissions::PermissionGrantScope;
+    use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
+    use codex_protocol::request_permissions::RequestPermissionsResponse;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -542,6 +582,29 @@ mod tests {
         }
     }
 
+    fn permissions_approval_request(
+        thread_id: ThreadId,
+        turn_id: &str,
+        item_id: &str,
+    ) -> ServerRequest {
+        ServerRequest::PermissionsRequestApproval {
+            request_id: AppServerRequestId::Integer(3),
+            params: PermissionsRequestApprovalParams {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+                item_id: item_id.to_string(),
+                environment_id: None,
+                started_at_ms: 0,
+                cwd: test_path_buf("/tmp/project").abs(),
+                reason: Some("needs permissions".to_string()),
+                permissions: codex_app_server_protocol::RequestPermissionProfile {
+                    network: None,
+                    file_system: None,
+                },
+            },
+        }
+    }
+
     #[test]
     fn thread_event_store_tracks_active_turn_lifecycle() {
         let mut store = ThreadEventStore::new(/*capacity*/ 8);
@@ -593,6 +656,47 @@ mod tests {
         store.clear_active_turn_id();
 
         assert_eq!(store.active_turn_id(), None);
+    }
+
+    #[test]
+    fn thread_event_store_finds_pending_permissions_request_for_outbound_response() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let op = AppCommand::RequestPermissionsResponse {
+            id: "permissions-1".to_string(),
+            response: RequestPermissionsResponse {
+                permissions: CoreRequestPermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: false,
+            },
+        };
+
+        store.push_request(permissions_approval_request(
+            thread_id,
+            "turn-1",
+            "permissions-1",
+        ));
+
+        let request = store
+            .pending_server_request_for_op(&op)
+            .expect("permissions request should be recoverable while pending");
+        assert!(
+            matches!(
+                request,
+                ServerRequest::PermissionsRequestApproval {
+                    request_id: AppServerRequestId::Integer(3),
+                    ..
+                }
+            ),
+            "unexpected recovered request: {request:?}"
+        );
+
+        store.note_outbound_op(&op);
+
+        assert!(
+            store.pending_server_request_for_op(&op).is_none(),
+            "answered permissions request should not be recovered"
+        );
     }
 
     #[test]

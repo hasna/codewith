@@ -127,6 +127,8 @@ const STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL: Duration = Duration::from_millis
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
+pub use goal_plans::ThreadGoalPlanAddOutcome;
+pub use goal_plans::ThreadGoalPlanAddParams;
 pub use goal_plans::ThreadGoalPlanAdvanceOutcome;
 pub use goal_plans::ThreadGoalPlanCreateParams;
 pub use goal_plans::ThreadGoalPlanListPage;
