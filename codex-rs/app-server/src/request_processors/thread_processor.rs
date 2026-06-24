@@ -348,6 +348,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) thread_list_state_permit: Arc<Semaphore>,
     pub(super) thread_goal_processor: ThreadGoalRequestProcessor,
     pub(super) state_db: Option<StateDbHandle>,
+    pub(super) local_active_owner_id: String,
     pub(super) background_tasks: TaskTracker,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) background_agent_supervisor_id: String,
@@ -375,6 +376,7 @@ impl ThreadRequestProcessor {
         thread_list_state_permit: Arc<Semaphore>,
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
+        local_active_owner_id: String,
         skills_watcher: Arc<SkillsWatcher>,
         background_agent_worker_process: bool,
     ) -> Self {
@@ -392,6 +394,7 @@ impl ThreadRequestProcessor {
             thread_list_state_permit,
             thread_goal_processor,
             state_db,
+            local_active_owner_id,
             background_tasks: TaskTracker::new(),
             skills_watcher,
             background_agent_supervisor_id:
@@ -815,6 +818,8 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            state_db: self.state_db.clone(),
+            local_active_owner_id: self.local_active_owner_id.clone(),
         }
     }
 
@@ -913,6 +918,8 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            state_db: self.state_db.clone(),
+            local_active_owner_id: self.local_active_owner_id.clone(),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();

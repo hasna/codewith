@@ -15,6 +15,8 @@ pub(super) struct ListenerTaskContext {
     pub(super) fallback_model_provider: String,
     pub(super) codex_home: PathBuf,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) state_db: Option<StateDbHandle>,
+    pub(super) local_active_owner_id: String,
 }
 
 struct UnloadingState {
@@ -229,6 +231,12 @@ pub(super) async fn ensure_listener_task_running(
             "thread {conversation_id} is closing; retry after the thread is closed"
         )));
     };
+    heartbeat_local_active_session(
+        &listener_task_context,
+        conversation_id,
+        conversation.as_ref(),
+    )
+    .await;
     let config = conversation.config().await;
     let environments = conversation.environment_selections().await;
     let watch_registration = listener_task_context
@@ -417,6 +425,33 @@ pub(super) async fn ensure_listener_task_running(
         }
     });
     Ok(())
+}
+
+async fn heartbeat_local_active_session(
+    listener_task_context: &ListenerTaskContext,
+    conversation_id: ThreadId,
+    conversation: &CodexThread,
+) {
+    let Some(state_db) = listener_task_context.state_db.as_ref() else {
+        return;
+    };
+    let session_id = conversation.session_configured().session_id.to_string();
+    if let Err(err) = state_db
+        .local_active_sessions()
+        .heartbeat_session(codex_state::LocalActiveSessionHeartbeatParams {
+            thread_id: conversation_id,
+            owner_id: listener_task_context.local_active_owner_id.clone(),
+            session_id,
+            pid: Some(std::process::id()),
+            now: Utc::now(),
+        })
+        .await
+    {
+        tracing::warn!(
+            thread_id = %conversation_id,
+            "failed to heartbeat local active session while starting listener: {err}"
+        );
+    }
 }
 
 pub(super) async fn wait_for_thread_shutdown(thread: &Arc<CodexThread>) -> ThreadShutdownResult {
