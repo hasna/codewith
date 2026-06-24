@@ -9598,6 +9598,37 @@ async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled
 }
 
 #[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_plan_mode_update_without_mutating() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    assert_eq!(ModeKind::Default, collaboration_mode.mode);
+    collaboration_mode.mode = ModeKind::Plan;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-plan-turn".to_string(),
+            vec![UserInput::Text {
+                text: "run scheduled prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("plan-mode scheduled turn update should be rejected");
+
+    assert_eq!(
+        Some(TryStartTurnIfIdleRejectionReason::PlanMode),
+        err.reason()
+    );
+    assert!(sess.active_turn.lock().await.is_none());
+    assert_eq!(ModeKind::Default, sess.collaboration_mode().await.mode);
+}
+
+#[tokio::test]
 async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.spawn_task(

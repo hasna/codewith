@@ -88,9 +88,12 @@ impl Session {
             ));
         }
 
-        let turn_context = self
+        let mut turn_context = self
             .new_default_turn_with_sub_id(uuid::Uuid::new_v4().to_string())
             .await;
+        if let Some(turn_context) = Arc::get_mut(&mut turn_context) {
+            turn_context.enforce_context_window_before_sampling = true;
+        }
         if turn_context.collaboration_mode.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
@@ -159,6 +162,13 @@ impl Session {
                 TryStartTurnIfIdleRejectionReason::PlanMode,
             ));
         }
+        if let Ok(snapshot) = self.preview_settings(&updates).await
+            && snapshot.collaboration_mode.mode == ModeKind::Plan
+        {
+            return Err(TryStartUserInputTurnIfIdleError::Rejected(
+                TryStartTurnIfIdleRejectionReason::PlanMode,
+            ));
+        }
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
@@ -178,31 +188,6 @@ impl Session {
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
             ));
         }
-
-        let turn_context = match self.new_turn_with_sub_id(sub_id.clone(), updates).await {
-            Ok(turn_context) => turn_context,
-            Err(err) => {
-                self.clear_reserved_idle_turn(&turn_state).await;
-                self.maybe_start_turn_for_pending_work().await;
-                return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(err));
-            }
-        };
-        if turn_context.collaboration_mode.mode == ModeKind::Plan {
-            self.clear_reserved_idle_turn(&turn_state).await;
-            self.maybe_start_turn_for_pending_work().await;
-            return Err(TryStartUserInputTurnIfIdleError::Rejected(
-                TryStartTurnIfIdleRejectionReason::PlanMode,
-            ));
-        }
-        self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
-            .await;
-        if self.input_queue.has_trigger_turn_mailbox_items().await {
-            self.clear_reserved_idle_turn(&turn_state).await;
-            self.maybe_start_turn_for_pending_work().await;
-            return Err(TryStartUserInputTurnIfIdleError::Rejected(
-                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
-            ));
-        }
         let still_reserved = {
             let active_turn = self.active_turn.lock().await;
             active_turn.as_ref().is_some_and(|active_turn| {
@@ -215,6 +200,34 @@ impl Session {
                 TryStartTurnIfIdleRejectionReason::Busy,
             ));
         }
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartUserInputTurnIfIdleError::Rejected(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+            ));
+        }
+
+        let mut turn_context = match self.new_turn_with_sub_id(sub_id.clone(), updates).await {
+            Ok(turn_context) => turn_context,
+            Err(err) => {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                self.maybe_start_turn_for_pending_work().await;
+                return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(err));
+            }
+        };
+        if let Some(turn_context) = Arc::get_mut(&mut turn_context) {
+            turn_context.enforce_context_window_before_sampling = true;
+        }
+        if turn_context.collaboration_mode.mode == ModeKind::Plan {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartUserInputTurnIfIdleError::Rejected(
+                TryStartTurnIfIdleRejectionReason::PlanMode,
+            ));
+        }
+        self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+            .await;
 
         self.bound_history_for_headless_turn().await;
         let additional_context_input = {

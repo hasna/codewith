@@ -35,6 +35,17 @@ fn assistant_output_text(text: &str) -> ResponseItem {
     }
 }
 
+fn user_input_text(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: Some("msg-user".to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+    }
+}
+
 #[tokio::test]
 async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
@@ -62,4 +73,26 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         last_agent_message.as_deref(),
         Some("plan contributed assistant text")
     );
+}
+
+#[tokio::test]
+async fn oversized_sampling_prompt_is_rejected_before_streaming() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    turn_context.model_info.context_window = Some(128);
+    turn_context.model_info.effective_context_window_percent = 100;
+    turn_context.enforce_context_window_before_sampling = true;
+
+    let prompt = Prompt {
+        input: vec![user_input_text(&"large headless context\n".repeat(300))],
+        base_instructions: BaseInstructions {
+            text: "base".to_string(),
+        },
+        ..Prompt::default()
+    };
+
+    assert!(estimate_sampling_prompt_input_tokens(&prompt) > 128);
+    assert!(matches!(
+        reject_oversized_sampling_prompt(&prompt, &turn_context),
+        Err(CodexErr::ContextWindowExceeded)
+    ));
 }

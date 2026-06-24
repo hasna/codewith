@@ -17,6 +17,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context_manager::estimate_response_item_model_visible_bytes;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -103,6 +104,8 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_stream_parser::AssistantTextChunk;
 use codex_utils_stream_parser::AssistantTextStreamParser;
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -1152,9 +1155,7 @@ pub(crate) fn build_prompt(
         base_instructions,
         personality: turn_context.personality,
         output_schema: turn_context.final_output_json_schema.clone(),
-        output_schema_strict: !crate::guardian::is_guardian_reviewer_source(
-            &turn_context.session_source,
-        ),
+        output_schema_strict: true,
     }
 }
 
@@ -1971,6 +1972,7 @@ async fn try_run_sampling_request(
         turn_context.provider.info().name.as_str(),
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
+    reject_oversized_sampling_prompt(prompt, turn_context.as_ref())?;
     let mut stream = client_session
         .stream(
             prompt,
@@ -2431,6 +2433,61 @@ async fn try_run_sampling_request(
     }
 
     outcome
+}
+
+fn reject_oversized_sampling_prompt(
+    prompt: &Prompt,
+    turn_context: &TurnContext,
+) -> CodexResult<()> {
+    if !turn_context.enforce_context_window_before_sampling {
+        return Ok(());
+    }
+
+    let Some(context_window) = turn_context.model_context_window() else {
+        return Ok(());
+    };
+    if context_window <= 0 {
+        return Ok(());
+    }
+
+    let estimated_input_tokens = estimate_sampling_prompt_input_tokens(prompt);
+    if estimated_input_tokens <= context_window {
+        return Ok(());
+    }
+
+    warn!(
+        turn_id = %turn_context.sub_id,
+        model = %turn_context.model_info.slug,
+        estimated_input_tokens,
+        context_window,
+        "sampling prompt exceeds local model context cap; skipping provider request"
+    );
+    Err(CodexErr::ContextWindowExceeded)
+}
+
+fn estimate_sampling_prompt_input_tokens(prompt: &Prompt) -> i64 {
+    let instruction_tokens =
+        i64::try_from(approx_token_count(&prompt.base_instructions.text)).unwrap_or(i64::MAX);
+    let input_tokens = prompt
+        .input
+        .iter()
+        .map(estimate_response_item_model_visible_bytes)
+        .map(approx_tokens_from_byte_count_i64)
+        .fold(0i64, i64::saturating_add);
+    let tool_tokens = prompt
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_string(tool)
+                .map(|serialized| approx_token_count(&serialized))
+                .unwrap_or_default()
+        })
+        .map(|tokens| i64::try_from(tokens).unwrap_or(i64::MAX))
+        .fold(0i64, i64::saturating_add);
+
+    instruction_tokens
+        .saturating_add(input_tokens)
+        .saturating_add(tool_tokens)
 }
 
 pub(crate) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {
