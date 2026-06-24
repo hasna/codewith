@@ -1068,6 +1068,7 @@ mod tests {
                     model_provider_id: None,
                     personality: None,
                     collaboration_mode: None,
+                    worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
                     multi_agent_version: None,
                     auth_profile: turn_auth_profile.map(|profile| profile.map(str::to_string)),
                     realtime_active: None,

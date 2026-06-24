@@ -208,6 +208,7 @@ pub(crate) fn thread_settings_from_config_snapshot(
         summary: config_snapshot.reasoning_summary,
         collaboration_mode: config_snapshot.collaboration_mode.clone(),
         personality: config_snapshot.personality,
+        worktree_mode: config_snapshot.worktree_mode,
     }
 }
 
@@ -233,6 +234,7 @@ pub(crate) fn thread_settings_from_core_snapshot(
         summary: snapshot.reasoning_summary,
         collaboration_mode: snapshot.collaboration_mode,
         personality: snapshot.personality,
+        worktree_mode: snapshot.worktree_mode,
     }
 }
 

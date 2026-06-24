@@ -315,6 +315,45 @@ LIMIT ?
             .collect()
     }
 
+    pub async fn active_thread_managed_worktree(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<crate::ManagedWorktree>> {
+        let sql = format!(
+            r#"
+SELECT
+{}
+FROM managed_worktrees
+WHERE lifecycle_status = 'active'
+  AND deleted_at_ms IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM managed_worktree_assignments AS assignment
+    WHERE assignment.worktree_id = managed_worktrees.worktree_id
+      AND assignment.thread_id = ?
+      AND assignment.detached_at_ms IS NULL
+  )
+ORDER BY (
+    SELECT MAX(assignment.attached_at_ms)
+    FROM managed_worktree_assignments AS assignment
+    WHERE assignment.worktree_id = managed_worktrees.worktree_id
+      AND assignment.thread_id = ?
+      AND assignment.detached_at_ms IS NULL
+) DESC, worktree_id DESC
+LIMIT 1
+            "#,
+            managed_worktree_select_columns()
+        );
+        let thread_id = thread_id.to_string();
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(thread_id.as_str())
+            .bind(thread_id.as_str())
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+
+        row.map(|row| managed_worktree_from_row(&row)).transpose()
+    }
+
     pub async fn attach_managed_worktree(
         &self,
         params: ManagedWorktreeAttachParams,
@@ -1672,6 +1711,58 @@ mod tests {
                 .await?,
             Vec::<crate::ManagedWorktree>::new()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reads_active_thread_managed_worktree() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-a", "/repo-a"))
+            .await?;
+        let expected = store
+            .create_managed_worktree(create_params("wt-b", "/repo-a"))
+            .await?;
+        let thread_id = ThreadId::new();
+        let codex_home = unique_temp_dir();
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                PathBuf::from("/repo-a"),
+            ))
+            .await?;
+
+        store
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: "wt-a".to_string(),
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await?;
+        store
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: expected.worktree_id.clone(),
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await?;
+
+        assert_eq!(
+            Some(expected.worktree_id.clone()),
+            store
+                .active_thread_managed_worktree(thread_id)
+                .await?
+                .map(|worktree| worktree.worktree_id)
+        );
+
+        store
+            .detach_managed_worktree(ManagedWorktreeDetachParams {
+                worktree_id: expected.worktree_id,
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await?;
+        assert_eq!(None, store.active_thread_managed_worktree(thread_id).await?);
 
         Ok(())
     }

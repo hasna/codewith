@@ -74,6 +74,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -117,6 +118,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         model_provider_id: Some(previous_model_provider_id.to_string()),
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -176,6 +178,64 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
             model_provider_id: Some(previous_model_provider_id.to_string()),
             realtime_active: Some(turn_context.realtime_active),
         })
+    );
+}
+
+#[tokio::test]
+async fn record_initial_history_resumed_hydrates_worktree_mode_from_turn_context() {
+    let (session, turn_context) = make_session_and_context().await;
+    let mut previous_context_item = turn_context.to_turn_context_item();
+    previous_context_item.worktree_mode =
+        codex_protocol::protocol::SessionWorktreeMode::PullRequest;
+    let turn_id = previous_context_item
+        .turn_id
+        .clone()
+        .expect("turn context should have turn_id");
+
+    let rollout_items = vec![
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "seed".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::TurnContext(previous_context_item),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id,
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: rollout_items,
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await;
+
+    let state = session.state.lock().await;
+    assert_eq!(
+        codex_protocol::protocol::SessionWorktreeMode::PullRequest,
+        state.session_configuration.worktree_mode
     );
 }
 
@@ -976,6 +1036,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -1059,6 +1120,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             model_provider_id: None,
             personality: turn_context.personality,
             collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
             multi_agent_version: None,
             auth_profile: None,
             realtime_active: Some(turn_context.realtime_active),
@@ -1091,6 +1153,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -1214,6 +1277,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -1336,6 +1400,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -1500,6 +1565,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),

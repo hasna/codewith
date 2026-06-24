@@ -157,6 +157,7 @@ async fn thread_settings_update(
         summary,
         service_tier,
         collaboration_mode,
+        worktree_mode,
         personality,
     } = thread_settings;
     let collaboration_mode = match collaboration_mode {
@@ -190,6 +191,7 @@ async fn thread_settings_update(
         reasoning_summary: summary,
         service_tier,
         personality,
+        worktree_mode,
         ..Default::default()
     }
 }
@@ -214,6 +216,7 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             reasoning_summary: snapshot.reasoning_summary,
             personality: snapshot.personality,
             collaboration_mode: snapshot.collaboration_mode,
+            worktree_mode: snapshot.worktree_mode,
             selected_auth_profile: snapshot.selected_auth_profile,
         },
     })

@@ -301,6 +301,7 @@ mod tests {
                 },
             },
             personality: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         }
     }
 }

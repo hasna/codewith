@@ -168,6 +168,7 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SessionWorktreeMode;
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
@@ -363,6 +364,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 effort: None,
@@ -404,6 +406,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 effort: None,
@@ -442,6 +445,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),
@@ -476,6 +480,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),

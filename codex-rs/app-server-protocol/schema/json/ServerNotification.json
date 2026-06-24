@@ -3120,6 +3120,32 @@
         }
       ]
     },
+    "SessionWorktreeMode": {
+      "description": "Session-level managed worktree behavior.",
+      "oneOf": [
+        {
+          "description": "Use the current shared checkout and disallow session-managed worktree create/attach operations for this thread.",
+          "enum": [
+            "shared"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Allow this session to manually create or attach managed worktrees.",
+          "enum": [
+            "manual"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Pull-request mode. The session must work inside an attached isolated managed worktree before model turns can continue.",
+          "enum": [
+            "pullRequest"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Settings": {
       "description": "Settings for a collaboration mode.",
       "properties": {
@@ -5579,6 +5605,9 @@
               "type": "null"
             }
           ]
+        },
+        "worktreeMode": {
+          "$ref": "#/definitions/SessionWorktreeMode"
         }
       },
       "required": [
@@ -5588,7 +5617,8 @@
         "cwd",
         "model",
         "modelProvider",
-        "sandboxPolicy"
+        "sandboxPolicy",
+        "worktreeMode"
       ],
       "type": "object"
     },
