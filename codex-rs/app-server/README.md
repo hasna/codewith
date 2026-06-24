@@ -2355,7 +2355,7 @@ Field notes:
 List saved profiles:
 
 ```json
-{ "method": "authProfile/list", "id": 6, "params": {} }
+{ "method": "authProfile/list", "id": 6, "params": { "cursor": null, "limit": null } }
 ```
 
 ```json
@@ -2372,7 +2372,8 @@ List saved profiles:
         "plan": "pro",
         "active": true
       }
-    ]
+    ],
+    "nextCursor": null
   }
 }
 ```

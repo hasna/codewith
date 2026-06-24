@@ -3532,7 +3532,10 @@ mod tests {
     fn serialize_auth_profile_list() -> Result<()> {
         let request = ClientRequest::AuthProfileList {
             request_id: RequestId::Integer(6),
-            params: v2::AuthProfileListParams {},
+            params: v2::AuthProfileListParams {
+                cursor: None,
+                limit: None,
+            },
         };
         assert_eq!(request.id(), &RequestId::Integer(6));
         assert_eq!(request.method(), "authProfile/list");
@@ -3540,7 +3543,10 @@ mod tests {
             json!({
                 "method": "authProfile/list",
                 "id": 6,
-                "params": {},
+                "params": {
+                    "cursor": null,
+                    "limit": null,
+                },
             }),
             serde_json::to_value(&request)?,
         );

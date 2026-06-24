@@ -58,6 +58,7 @@ use codex_app_server_protocol::AuthProfileListParams;
 use codex_app_server_protocol::AuthProfileListResponse;
 use codex_app_server_protocol::AuthProfileSaveCurrentParams;
 use codex_app_server_protocol::AuthProfileSaveCurrentResponse;
+use codex_app_server_protocol::AuthProfileSubscriptionProvider;
 use codex_app_server_protocol::AuthProfileSummary;
 use codex_app_server_protocol::AuthProfileSwitchParams;
 use codex_app_server_protocol::AuthProfileSwitchResponse;

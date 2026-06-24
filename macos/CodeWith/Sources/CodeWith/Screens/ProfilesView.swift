@@ -67,6 +67,9 @@ struct ProfilesView: View {
                 .frame(width: 420)
                 .padding(22)
         }
+        .onChange(of: profiles) { _, profiles in
+            closeNewProfileSheetIfCreated(in: profiles)
+        }
     }
 
     private var topBar: some View {
@@ -129,6 +132,11 @@ struct ProfilesView: View {
                 }
             }
 
+            if let message = profileNameValidationMessage,
+               !newProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                statusRow(message, icon: "exclamationmark.triangle.fill", color: Theme.warning)
+            }
+
             if let message = profileError ?? loginError {
                 statusRow(message, icon: "exclamationmark.triangle.fill", color: Theme.warning)
             }
@@ -143,9 +151,6 @@ struct ProfilesView: View {
                         onCreateChatGPT(name)
                     case .apiKey:
                         onCreateApiKey(name, apiKey)
-                    }
-                    if canSubmitNewProfile {
-                        showingNewProfile = false
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -163,7 +168,7 @@ struct ProfilesView: View {
     }
 
     private var canSubmitNewProfile: Bool {
-        let nameReady = !newProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let nameReady = profileNameValidationMessage == nil
         switch setupMode {
         case .chatgpt:
             return nameReady
@@ -172,8 +177,38 @@ struct ProfilesView: View {
         }
     }
 
+    private var profileNameValidationMessage: String? {
+        let name = newProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            return "Enter a profile name."
+        }
+        if name.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil {
+            return "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number."
+        }
+        return nil
+    }
+
+    private var fallbackActiveProfileName: String? {
+        guard !profiles.contains(where: \.active) else { return nil }
+        let email = activeEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty else { return nil }
+        let matches = profiles.filter { $0.email == email }
+        return matches.count == 1 ? matches[0].name : nil
+    }
+
+    private func closeNewProfileSheetIfCreated(in profiles: [AuthProfileInfo]) {
+        let name = newProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard showingNewProfile, !name.isEmpty, profiles.contains(where: { $0.name == name }) else {
+            return
+        }
+        showingNewProfile = false
+        newProfileName = ""
+        apiKey = ""
+        setupMode = .chatgpt
+    }
+
     private func profileRow(_ profile: AuthProfileInfo, color: Color) -> some View {
-        let active = profile.active || (!activeEmail.isEmpty && profile.email == activeEmail)
+        let active = profile.active || fallbackActiveProfileName == profile.name
         let initials = profileInitials(profile)
         return Button { if !active { onSwitch(profile.name) } } label: {
             HStack(spacing: 12) {

@@ -293,9 +293,19 @@ struct AuthProfileInfo: Identifiable, Hashable {
     init(from v: JSONValue) {
         name = v["name"]?.string ?? "profile"
         email = v["email"]?.string ?? v["accountId"]?.string ?? ""
-        provider = v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? ""
+        provider = Self.providerDisplayName(v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? "")
         plan = v["plan"]?.string ?? v["authMode"]?.string ?? ""
         active = v["active"]?.bool ?? false
+    }
+
+    private static func providerDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "chatgpt": return "ChatGPT"
+        case "claudeAi": return "Claude.ai"
+        case "cursor": return "Cursor"
+        case "grok": return "Grok"
+        default: return provider
+        }
     }
 }
 

@@ -166,7 +166,7 @@ final class AppModel {
     var remoteSearchThreads: [ThreadInfo] = []
     private var pendingOpenURL: URL? = nil
     private var previousNonFullSandbox = "read-only"
-    private var pendingAuthProfileSaveName: String? = nil
+    var pendingAuthProfileSave: PendingAuthProfileSave? = nil
     @ObservationIgnored private var publishedMenuBarPreference: Bool?
 
     // In-session config
@@ -794,7 +794,12 @@ final class AppModel {
 
     var loginInProgress = false
     var loginError: String? = nil
-    private var pendingLoginId: String? = nil
+    var pendingLoginId: String? = nil
+
+    struct PendingAuthProfileSave: Equatable {
+        var name: String
+        var loginId: String
+    }
 
     var isSignedIn: Bool {
         if !account.requiresOpenAIAuth { return true }
@@ -804,15 +809,28 @@ final class AppModel {
 
     /// Start ChatGPT OAuth: open the returned auth URL in the browser. The
     /// `account/login/completed` notification finalizes it.
-    func loginWithChatGPT() async {
+    func loginWithChatGPT(profileNameToSave: String? = nil) async {
         guard connection == .connected, !loginInProgress else { return }
         loginInProgress = true; loginError = nil
         do {
             let r = try await client.request("account/login/start", .object(["type": .string("chatgpt")]), timeout: 30)
             pendingLoginId = r["loginId"]?.string
+            if let profileNameToSave {
+                guard let loginId = pendingLoginId, !loginId.isEmpty else {
+                    loginError = "No login ID was returned."
+                    pendingLoginId = nil
+                    pendingAuthProfileSave = nil
+                    loginInProgress = false
+                    return
+                }
+                pendingAuthProfileSave = PendingAuthProfileSave(name: profileNameToSave, loginId: loginId)
+            } else {
+                pendingAuthProfileSave = nil
+            }
             guard let url = Self.loginURL(from: r) else {
                 loginError = "No login URL was returned."
                 pendingLoginId = nil
+                pendingAuthProfileSave = nil
                 loginInProgress = false
                 return
             }
@@ -820,15 +838,18 @@ final class AppModel {
             if !NSWorkspace.shared.open(url) {
                 loginError = "Could not open the login URL."
                 pendingLoginId = nil
+                pendingAuthProfileSave = nil
                 loginInProgress = false
             }
             #else
             loginError = "Cannot open the login URL on this platform."
             pendingLoginId = nil
+            pendingAuthProfileSave = nil
             loginInProgress = false
             #endif
         } catch {
             loginError = error.localizedDescription
+            pendingAuthProfileSave = nil
             loginInProgress = false
         }
     }
@@ -867,23 +888,35 @@ final class AppModel {
 
     func createAuthProfileWithChatGPT(name: String) async {
         let profileName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !profileName.isEmpty else {
-            profileError = "Enter a profile name."
+        if let error = Self.authProfileNameValidationMessage(profileName) {
+            profileError = error
             return
         }
-        pendingAuthProfileSaveName = profileName
-        await loginWithChatGPT()
+        profileError = nil
+        await loginWithChatGPT(profileNameToSave: profileName)
     }
 
     func createAuthProfileWithApiKey(name: String, apiKey: String) async {
         let profileName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !profileName.isEmpty else {
-            profileError = "Enter a profile name."
+        if let error = Self.authProfileNameValidationMessage(profileName) {
+            profileError = error
             return
         }
+        profileError = nil
         await loginWithApiKey(apiKey, providerName: "OpenAI")
         guard loginError == nil, isSignedIn else { return }
         await saveCurrentAuthProfile(profileName)
+    }
+
+    static func authProfileNameValidationMessage(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Enter a profile name."
+        }
+        if trimmed.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil {
+            return "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number."
+        }
+        return nil
     }
 
     func saveCurrentAuthProfile(_ name: String) async {
@@ -893,12 +926,13 @@ final class AppModel {
             authProfiles.removeAll { $0.name == saved.name }
             authProfiles.insert(saved, at: 0)
             profileError = nil
-            pendingAuthProfileSaveName = nil
+            pendingAuthProfileSave = nil
             await loadProfiles()
             await loadAccount()
         } catch {
             profileError = error.localizedDescription
             loginError = error.localizedDescription
+            pendingAuthProfileSave = nil
         }
     }
 
@@ -924,7 +958,7 @@ final class AppModel {
             _ = try? await client.request("account/login/cancel", .object(["loginId": .string(pendingLoginId)]), timeout: 10)
         }
         pendingLoginId = nil
-        pendingAuthProfileSaveName = nil
+        pendingAuthProfileSave = nil
         loginInProgress = false
     }
 
@@ -933,14 +967,15 @@ final class AppModel {
         await loadAccount()
     }
 
-    /// Switch the active CLI profile, then reconnect the session.
+    /// Switch the active CLI profile and refresh account-scoped UI state.
     func switchAuthProfile(_ name: String) async {
         guard connection == .connected else { return }
         do {
             _ = try await client.switchAuthProfile(name)
             profileError = nil
-            await reconnectAppServer()
             await loadProfiles()
+            await loadAccount()
+            await loadModelCatalog()
         } catch {
             profileError = error.localizedDescription
             await loadProfiles()
@@ -1215,7 +1250,10 @@ final class AppModel {
             }
             return nil
         }
-        activeThreadId = try? await client.startThread(cwd: currentProjectPath ?? NSHomeDirectory())
+        activeThreadId = try? await client.startThread(
+            cwd: currentProjectPath ?? NSHomeDirectory(),
+            authProfile: currentAuthProfile?.name
+        )
         if let activeThreadId {
             resumedThreadIds.insert(activeThreadId)
             await loadThreads(reset: true)
@@ -1319,25 +1357,33 @@ final class AppModel {
                let msg = params["error"]?["message"]?.string ?? params["message"]?.string {
                 activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ \(msg)"))
             }
-        case "account/login/completed", "account/updated", "account/login/chatGptComplete":
+        case "account/login/completed", "account/login/chatGptComplete":
+            let loginSucceeded = params["success"]?.bool ?? true
+            let completedLoginId = params["loginId"]?.string
+            if let pendingSave = pendingAuthProfileSave,
+               completedLoginId != pendingSave.loginId {
+                Task { await loadAccount(); await refreshAll() }
+                return
+            }
             loginInProgress = false
             pendingLoginId = nil
-            let loginSucceeded = params["success"]?.bool ?? true
-            if method == "account/login/completed",
-               loginSucceeded,
-               let profileName = pendingAuthProfileSaveName {
+            if !loginSucceeded {
+                pendingAuthProfileSave = nil
+                loginError = params["error"]?.string ?? "Login was not completed."
+                Task { await loadAccount(); await refreshAll() }
+                return
+            }
+            if let pendingSave = pendingAuthProfileSave {
                 Task {
                     await loadAccount()
-                    await saveCurrentAuthProfile(profileName)
+                    await saveCurrentAuthProfile(pendingSave.name)
                     await refreshAll()
                 }
             } else {
-                if method == "account/login/completed", !loginSucceeded {
-                    loginError = params["error"]?.string ?? "Login was not completed."
-                    pendingAuthProfileSaveName = nil
-                }
                 Task { await loadAccount(); await refreshAll() }
             }
+        case "account/updated":
+            Task { await loadAccount(); await refreshAll() }
         case "thread/started", "thread/closed", "thread/archived", "thread/unarchived":
             // A session appeared/changed — refresh the list so Projects + Chats stay live.
             Task { await loadThreads(reset: true); await loadActivePeers(); await loadAgentRuns() }

@@ -155,6 +155,35 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(m.turnInProgress)
     }
 
+    func testStaleLoginCompletionDoesNotConsumePendingProfileSave() {
+        let m = AppModel()
+        m.loginInProgress = true
+        m.pendingLoginId = "new-login"
+        m.pendingAuthProfileSave = .init(name: "work", loginId: "new-login")
+
+        m.handleNotification(method: "account/login/completed", params: obj([
+            "loginId": .string("old-login"),
+            "success": .bool(true),
+        ]))
+
+        XCTAssertTrue(m.loginInProgress)
+        XCTAssertEqual(m.pendingLoginId, "new-login")
+        XCTAssertEqual(m.pendingAuthProfileSave, .init(name: "work", loginId: "new-login"))
+    }
+
+    func testAccountUpdatedDoesNotClearPendingProfileSave() {
+        let m = AppModel()
+        m.loginInProgress = true
+        m.pendingLoginId = "new-login"
+        m.pendingAuthProfileSave = .init(name: "work", loginId: "new-login")
+
+        m.handleNotification(method: "account/updated", params: .null)
+
+        XCTAssertTrue(m.loginInProgress)
+        XCTAssertEqual(m.pendingLoginId, "new-login")
+        XCTAssertEqual(m.pendingAuthProfileSave, .init(name: "work", loginId: "new-login"))
+    }
+
     func testNotificationForDifferentThreadIgnored() {
         let m = AppModel()
         m.activeThreadId = "thread-a"
@@ -209,6 +238,17 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.goalObjective(from: "  goal: ship it  "), "ship it")
         XCTAssertEqual(AppModel.goalObjective(from: "ship it"), "ship it")
         XCTAssertEqual(AppModel.goalObjective(from: "Goal:   "), "")
+    }
+    func testAuthProfileNameValidation() {
+        XCTAssertNil(AppModel.authProfileNameValidationMessage("work.dev_1"))
+        XCTAssertNil(AppModel.authProfileNameValidationMessage("  work  "))
+        XCTAssertEqual(AppModel.authProfileNameValidationMessage(""), "Enter a profile name.")
+        XCTAssertEqual(
+            AppModel.authProfileNameValidationMessage(".hidden"),
+            "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number.")
+        XCTAssertEqual(
+            AppModel.authProfileNameValidationMessage("nested/work"),
+            "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number.")
     }
     func testAddActionAgentMention() {
         let m = AppModel(); m.composerText = "review"

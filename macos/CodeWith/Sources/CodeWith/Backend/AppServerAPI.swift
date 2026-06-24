@@ -114,11 +114,16 @@ extension AppServerClient {
     // MARK: Turns (send a message)
 
     /// Start a new thread, returning its id.
-    func startThread(cwd: String?) async throws -> String {
+    func startThread(cwd: String?, authProfile: String? = nil) async throws -> String {
+        let r = try await request("thread/start", Self.threadStartParams(cwd: cwd, authProfile: authProfile), timeout: 30)
+        return r["thread"]?["id"]?.string ?? r["threadId"]?.string ?? r["id"]?.string ?? ""
+    }
+
+    static func threadStartParams(cwd: String?, authProfile: String?) -> JSONValue {
         var params: [String: JSONValue] = [:]
         if let cwd { params["cwd"] = .string(cwd) }
-        let r = try await request("thread/start", .object(params), timeout: 30)
-        return r["thread"]?["id"]?.string ?? r["threadId"]?.string ?? r["id"]?.string ?? ""
+        if let authProfile, !authProfile.isEmpty { params["authProfile"] = .string(authProfile) }
+        return .object(params)
     }
 
     /// Send a user message to a thread. The server streams the reply via

@@ -115,6 +115,8 @@ struct AppShell: View {
                     model.open(.profiles, label: "Profiles")
                     Task { await model.loadProfiles() }
                 })
+        case "Appearance":
+            SettingsAppearance()
         case "Configuration":
             SettingsConfiguration(
                 version: model.serverVersion,
@@ -127,6 +129,8 @@ struct AppShell: View {
                 onSetSandbox: { model.setSandbox($0) },
                 onOpenConfig: { model.openConfigToml() },
                 onDiagnose: { model.openDiagnosticsLog() })
+        case "Personalization":
+            SettingsPersonalization()
         case "Keyboard shortcuts":
             SettingsKeyboardShortcuts()
         case "Usage & billing":

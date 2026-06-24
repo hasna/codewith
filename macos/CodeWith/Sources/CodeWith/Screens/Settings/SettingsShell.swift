@@ -19,15 +19,24 @@ struct SettingsShell<Content: View>: View {
             ("Personal", [
                 .init(icon: "gearshape", title: "General"),
                 .init(icon: "person.crop.circle", title: "Profile"),
+                .init(icon: "sun.max", title: "Appearance"),
                 .init(icon: "slider.horizontal.3", title: "Configuration"),
+                .init(icon: "sparkles", title: "Personalization"),
+                .init(icon: "pawprint", title: "Pets"),
                 .init(icon: "command", title: "Keyboard shortcuts"),
                 .init(icon: "creditcard", title: "Usage & billing"),
             ]),
             ("Integrations", [
+                .init(icon: "square.grid.2x2", title: "Appshots"),
                 .init(icon: "antenna.radiowaves.left.and.right", title: "MCP servers"),
+                .init(icon: "globe", title: "Browser"),
+                .init(icon: "cursorarrow.rays", title: "Computer use"),
             ]),
             ("Coding", [
                 .init(icon: "link", title: "Hooks"),
+                .init(icon: "point.3.connected.trianglepath.dotted", title: "Connections"),
+                .init(icon: "arrow.triangle.branch", title: "Git"),
+                .init(icon: "cube", title: "Environments"),
                 .init(icon: "arrow.triangle.pull", title: "Worktrees"),
             ]),
             ("Archived", [
