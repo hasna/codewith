@@ -308,11 +308,13 @@ async fn manage_loop(
             let schedule =
                 ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
             let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
-            let deleted = state_db
+            let deleted_schedule_ids = state_db
                 .thread_schedules()
-                .delete_thread_schedule(schedule_id.as_str())
+                .delete_thread_schedule_tree(schedule_id.as_str())
                 .await
                 .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+            let deleted = !deleted_schedule_ids.is_empty();
+            let deleted_count = deleted_schedule_ids.len();
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             Ok(ManageLoopResponse {
                 action: LoopAction::Clear,
@@ -321,7 +323,17 @@ async fn manage_loop(
                 schedules,
                 deleted: Some(deleted),
                 message: if deleted {
-                    format!("Loop {schedule_id} cleared.")
+                    if deleted_count > 1 {
+                        let child_count = deleted_count - 1;
+                        let child_label = if child_count == 1 {
+                            "nested child loop"
+                        } else {
+                            "nested child loops"
+                        };
+                        format!("Loop {schedule_id} and {child_count} {child_label} cleared.")
+                    } else {
+                        format!("Loop {schedule_id} cleared.")
+                    }
                 } else {
                     format!("Loop {schedule_id} was already absent.")
                 },
@@ -1035,6 +1047,7 @@ mod tests {
         .expect("root loop should clear");
 
         assert_eq!(Some(true), response.deleted);
+        assert!(response.message.contains("and 1 nested child loop cleared"));
         assert_eq!(Vec::<LoopScheduleSnapshot>::new(), response.schedules);
     }
 

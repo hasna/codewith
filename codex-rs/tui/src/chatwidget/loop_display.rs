@@ -590,7 +590,10 @@ fn thread_schedule_actions_params(
     let delete_schedule_id = schedule_id;
     items.push(loop_action_item(
         "Delete",
-        format!("Remove this {} from the thread", kind.lower_label()),
+        format!(
+            "Remove this {} and any nested child loops from the thread",
+            kind.lower_label()
+        ),
         /*is_disabled*/ false,
         /*disabled_reason*/ None,
         move || kind.delete_event(thread_id, Some(delete_schedule_id.clone())),

@@ -167,7 +167,7 @@ Example with notification opt-out:
 - `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
 - `thread/schedule/update` — update prompt, schedule, timezone, status, or run timestamps for a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
-- `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
+- `thread/schedule/delete` — delete a scheduled turn loop and any nested child schedules; emits `thread/schedule/deleted` for each removed row.
 - `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
@@ -1010,6 +1010,8 @@ Use `thread/workflow/run/start` to start a saved workflow for the same thread. T
 
 Use `thread/schedule/create` to run future turns on a materialized thread. Scheduled turns inherit the thread's persisted cwd, model, sandbox and permission policy, and approval behavior; they do not run on ephemeral threads and do not bypass normal turn execution. Each thread can have at most 50 non-expired schedules, and schedules expire after seven days by default unless `expiresAt` is supplied.
 
+Nested schedules are represented by `parentScheduleId` and `nestingDepth`. A child schedule must belong to the same thread as its parent, is capped at depth 5, and must use a `dynamic` or `interval` cadence that is slower than the parent cadence. Deleting a parent schedule deletes its nested child schedule subtree and emits `thread/schedule/deleted` for each removed schedule id.
+
 Schedules support three shapes:
 
 - `{ "type": "dynamic" }` runs again after the server's default dynamic interval.
@@ -1029,6 +1031,8 @@ Set `promptSource` to `"inline"` to store and send `prompt` directly. Set it to 
 { "id": 31, "result": { "schedule": {
     "threadId": "thr_123",
     "scheduleId": "sched_123",
+    "parentScheduleId": null,
+    "nestingDepth": 1,
     "prompt": "Check CI and fix any failures.",
     "promptSource": "inline",
     "schedule": { "type": "interval", "amount": 30, "unit": "minutes" },

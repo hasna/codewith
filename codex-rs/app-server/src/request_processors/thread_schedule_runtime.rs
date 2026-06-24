@@ -649,7 +649,7 @@ Run id: {run_id}
 Scheduled for: {scheduled_for}
 {nesting_guidance}
 
-This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or create goals, schedules, monitors, timers, or follow-up runs unless this scheduled prompt explicitly asks for a native child loop; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 {prompt}"
@@ -1927,6 +1927,9 @@ mod tests {
         assert!(prompt.contains("This is a distinct run"));
         assert!(prompt.contains("Produce exactly one visible final response"));
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
+        assert!(
+            prompt.contains("unless this scheduled prompt explicitly asks for a native child loop")
+        );
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
     }
