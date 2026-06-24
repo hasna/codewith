@@ -56,6 +56,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                     "url": "git+https://github.com/hasna/codewith.git",
                     "directory": "codex-cli",
                 },
+                "bugs": {"url": "https://github.com/hasna/codewith/issues"},
+                "homepage": "https://github.com/hasna/codewith#readme",
                 "packageManager": PACKAGE_MANAGER,
                 "optionalDependencies": {
                     platform_config["npm_name"]: "1.2.3"
@@ -103,6 +105,8 @@ class BuildNpmPackageTest(unittest.TestCase):
                 },
                 "engines": {"node": ">=16"},
                 "packageManager": PACKAGE_MANAGER,
+                "bugs": {"url": "https://github.com/hasna/codewith/issues"},
+                "homepage": "https://github.com/hasna/codewith#readme",
             },
         )
         self.assertEqual(compliance_files, repo_compliance_files())
@@ -140,6 +144,11 @@ class BuildNpmPackageTest(unittest.TestCase):
 
         self.assertEqual(package_json["name"], "@hasna/codewith-responses-api-proxy")
         self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["bugs"],
+            {"url": "https://github.com/hasna/codewith/issues"},
+        )
+        self.assertEqual(package_json["homepage"], "https://github.com/hasna/codewith#readme")
         self.assertEqual(
             package_json["files"],
             [
@@ -182,6 +191,11 @@ class BuildNpmPackageTest(unittest.TestCase):
 
         self.assertEqual(package_json["name"], "@hasna/codewith-sdk")
         self.assertEqual(package_json["version"], "1.2.3")
+        self.assertEqual(
+            package_json["bugs"],
+            {"url": "https://github.com/hasna/codewith/issues"},
+        )
+        self.assertEqual(package_json["homepage"], "https://github.com/hasna/codewith#readme")
         self.assertEqual(
             package_json["files"],
             [

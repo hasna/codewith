@@ -289,6 +289,11 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_manager = codex_package_json.get("packageManager")
         if isinstance(package_manager, str):
             package_json["packageManager"] = package_manager
+
+        for key in ("bugs", "homepage"):
+            value = codex_package_json.get(key)
+            if value:
+                package_json[key] = value
     elif package == "codex-responses-api-proxy":
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,15 @@
   "name": "codewith-monorepo",
   "private": true,
   "description": "Tools for repo-wide maintenance.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/codewith.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hasna/codewith/issues"
+  },
+  "homepage": "https://github.com/hasna/codewith#readme",
   "scripts": {
     "format": "prettier --check *.json *.md docs/*.md .github/workflows/*.yml **/*.js",
     "format:fix": "prettier --write *.json *.md docs/*.md .github/workflows/*.yml **/*.js",
