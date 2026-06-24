@@ -29,6 +29,8 @@ use codex_prompts::HIERARCHICAL_AGENTS_MESSAGE;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashSet;
 use std::io;
+use std::path::Component;
+use std::path::Path;
 use toml::Value as TomlValue;
 use tracing::error;
 
@@ -122,7 +124,10 @@ impl<'a> AgentsMdManager<'a> {
         let mut loaded = self.config.user_instructions.clone().unwrap_or_default();
 
         match agents_md_docs {
-            Ok(Some(docs)) => loaded.entries.extend(docs.entries),
+            Ok(Some(mut docs)) => {
+                loaded.entries.append(&mut docs.entries);
+                loaded.source_paths.append(&mut docs.source_paths);
+            }
             Ok(None) => {}
             Err(e) => {
                 error!("error trying to find project instruction docs: {e:#}");
@@ -161,7 +166,7 @@ impl<'a> AgentsMdManager<'a> {
             return Ok(None);
         }
 
-        let mut remaining: u64 = max_total as u64;
+        let mut remaining = max_total;
         let mut loaded = LoadedAgentsMd::default();
 
         for p in paths {
@@ -176,19 +181,14 @@ impl<'a> AgentsMdManager<'a> {
                 Err(err) => return Err(err),
             }
 
-            let mut data = match fs.read_file(&p, /*sandbox*/ None).await {
+            let data = match fs.read_file(&p, /*sandbox*/ None).await {
                 Ok(data) => data,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => return Err(err),
             };
             warn_invalid_utf8(&p, &data, "Project", startup_warnings);
 
-            let size = data.len() as u64;
-            if size > remaining {
-                data.truncate(remaining as usize);
-            }
-
-            if size > remaining {
+            if data.len() > remaining {
                 tracing::warn!(
                     "Project doc `{}` exceeds remaining budget ({} bytes) - truncating.",
                     p.display(),
@@ -196,13 +196,16 @@ impl<'a> AgentsMdManager<'a> {
                 );
             }
 
-            let text = String::from_utf8_lossy(&data).to_string();
-            if !text.trim().is_empty() {
+            let text = String::from_utf8_lossy(&data);
+            let mut expanded = self
+                .expand_project_doc(fs, &p, &text, &mut remaining, startup_warnings)
+                .await?;
+            if !expanded.contents.trim().is_empty() {
                 loaded.entries.push(InstructionEntry {
-                    contents: text,
+                    contents: expanded.contents,
                     provenance: InstructionProvenance::Project(p),
                 });
-                remaining = remaining.saturating_sub(data.len() as u64);
+                loaded.source_paths.append(&mut expanded.source_paths);
             }
         }
 
@@ -211,6 +214,183 @@ impl<'a> AgentsMdManager<'a> {
         } else {
             Ok(Some(loaded))
         }
+    }
+
+    async fn expand_project_doc(
+        &self,
+        fs: &dyn ExecutorFileSystem,
+        instruction_path: &AbsolutePathBuf,
+        text: &str,
+        remaining: &mut usize,
+        startup_warnings: &mut Vec<String>,
+    ) -> io::Result<ExpandedProjectDoc> {
+        let include_root = include_root_for_instruction_file(instruction_path);
+        let mut expanded = ExpandedProjectDoc::default();
+
+        for line in text.split_inclusive('\n') {
+            if *remaining == 0 {
+                break;
+            }
+
+            let (line_without_ending, line_ending) = line
+                .strip_suffix('\n')
+                .map_or((line, ""), |line| (line, "\n"));
+            match parse_include_directive(line_without_ending) {
+                IncludeDirective::None => {
+                    if append_budgeted(&mut expanded.contents, line, remaining) {
+                        expanded.push_source(instruction_path.clone());
+                    }
+                }
+                IncludeDirective::Malformed => {
+                    warn_rejected_include(
+                        instruction_path,
+                        "malformed include directive",
+                        startup_warnings,
+                    );
+                }
+                IncludeDirective::Path(include_path) => {
+                    let Some(include_root) = include_root.as_ref() else {
+                        warn_rejected_include(
+                            instruction_path,
+                            "include root is unavailable",
+                            startup_warnings,
+                        );
+                        continue;
+                    };
+                    let Some(included) = self
+                        .read_include_file(
+                            fs,
+                            instruction_path,
+                            include_root,
+                            include_path,
+                            startup_warnings,
+                        )
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let appended_include =
+                        append_budgeted(&mut expanded.contents, &included.contents, remaining);
+                    if appended_include {
+                        expanded.push_source(included.path);
+                    }
+                    if appended_include
+                        && !included.contents.ends_with('\n')
+                        && !line_ending.is_empty()
+                        && *remaining > 0
+                    {
+                        append_budgeted(&mut expanded.contents, line_ending, remaining);
+                    }
+                }
+            }
+        }
+
+        Ok(expanded)
+    }
+
+    async fn read_include_file(
+        &self,
+        fs: &dyn ExecutorFileSystem,
+        instruction_path: &AbsolutePathBuf,
+        include_root: &AbsolutePathBuf,
+        include_path: &str,
+        startup_warnings: &mut Vec<String>,
+    ) -> io::Result<Option<IncludedProjectDoc>> {
+        let relative_path = match validate_include_path(include_path) {
+            Ok(path) => path,
+            Err(reason) => {
+                warn_rejected_include(instruction_path, reason, startup_warnings);
+                return Ok(None);
+            }
+        };
+
+        let root_metadata = match fs.get_metadata(include_root, /*sandbox*/ None).await {
+            Ok(metadata) => metadata,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                warn_missing_include(instruction_path, startup_warnings);
+                return Ok(None);
+            }
+            Err(err) => {
+                warn_rejected_include(instruction_path, &err.to_string(), startup_warnings);
+                return Ok(None);
+            }
+        };
+        if root_metadata.is_symlink || !root_metadata.is_directory {
+            warn_rejected_include(
+                instruction_path,
+                "include root is not a directory",
+                startup_warnings,
+            );
+            return Ok(None);
+        }
+
+        let target = include_root.join(relative_path);
+        let target_metadata = match fs.get_metadata(&target, /*sandbox*/ None).await {
+            Ok(metadata) => metadata,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                warn_missing_include(instruction_path, startup_warnings);
+                return Ok(None);
+            }
+            Err(err) => {
+                warn_rejected_include(instruction_path, &err.to_string(), startup_warnings);
+                return Ok(None);
+            }
+        };
+        if !target_metadata.is_file {
+            warn_rejected_include(
+                instruction_path,
+                "include target is not a regular file",
+                startup_warnings,
+            );
+            return Ok(None);
+        }
+
+        let canonical_root = match fs.canonicalize(include_root, /*sandbox*/ None).await {
+            Ok(path) => path,
+            Err(err) => {
+                warn_rejected_include(instruction_path, &err.to_string(), startup_warnings);
+                return Ok(None);
+            }
+        };
+        let canonical_target = match fs.canonicalize(&target, /*sandbox*/ None).await {
+            Ok(path) => path,
+            Err(err) => {
+                warn_rejected_include(instruction_path, &err.to_string(), startup_warnings);
+                return Ok(None);
+            }
+        };
+        if !canonical_target.starts_with(&canonical_root) {
+            warn_rejected_include(
+                instruction_path,
+                "include target escapes include root",
+                startup_warnings,
+            );
+            return Ok(None);
+        }
+
+        let data = match fs.read_file(&target, /*sandbox*/ None).await {
+            Ok(data) => data,
+            Err(err) => {
+                warn_rejected_include(instruction_path, &err.to_string(), startup_warnings);
+                return Ok(None);
+            }
+        };
+        warn_invalid_utf8(&target, &data, "Included", startup_warnings);
+
+        Ok(Some(IncludedProjectDoc {
+            path: target,
+            contents: String::from_utf8_lossy(&data).to_string(),
+        }))
     }
 
     /// Discover the list of project instruction files using the same search rules as
@@ -408,6 +588,9 @@ impl<'a> AgentsMdManager<'a> {
 pub struct LoadedAgentsMd {
     /// Ordered instructions and their provenance.
     entries: Vec<InstructionEntry>,
+
+    /// Ordered file paths that supplied instruction text.
+    source_paths: Vec<AbsolutePathBuf>,
 }
 
 impl LoadedAgentsMd {
@@ -419,8 +602,9 @@ impl LoadedAgentsMd {
         Self {
             entries: vec![InstructionEntry {
                 contents,
-                provenance: InstructionProvenance::User(path),
+                provenance: InstructionProvenance::User(path.clone()),
             }],
+            source_paths: vec![path],
         }
     }
 
@@ -438,6 +622,7 @@ impl LoadedAgentsMd {
                 contents,
                 provenance: InstructionProvenance::Internal,
             }],
+            source_paths: Vec::new(),
         }
     }
 
@@ -473,10 +658,27 @@ impl LoadedAgentsMd {
 
     /// Returns the AGENTS.md files that supplied instruction entries.
     pub fn sources(&self) -> impl Iterator<Item = &AbsolutePathBuf> {
-        self.entries
-            .iter()
-            .filter_map(|entry| entry.provenance.path())
+        self.source_paths.iter()
     }
+}
+
+#[derive(Default)]
+struct ExpandedProjectDoc {
+    contents: String,
+    source_paths: Vec<AbsolutePathBuf>,
+}
+
+impl ExpandedProjectDoc {
+    fn push_source(&mut self, path: AbsolutePathBuf) {
+        if !self.source_paths.contains(&path) {
+            self.source_paths.push(path);
+        }
+    }
+}
+
+struct IncludedProjectDoc {
+    path: AbsolutePathBuf,
+    contents: String,
 }
 
 /// One model-visible instruction and its provenance.
@@ -501,13 +703,141 @@ enum InstructionProvenance {
     Internal,
 }
 
-impl InstructionProvenance {
-    fn path(&self) -> Option<&AbsolutePathBuf> {
-        match self {
-            Self::User(path) | Self::Project(path) => Some(path),
-            Self::Internal => None,
-        }
+enum IncludeDirective<'a> {
+    None,
+    Malformed,
+    Path(&'a str),
+}
+
+fn parse_include_directive(line: &str) -> IncludeDirective<'_> {
+    let trimmed = line.trim();
+    let Some(inner) = trimmed
+        .strip_prefix("{{")
+        .and_then(|line| line.strip_suffix("}}"))
+        .map(str::trim)
+    else {
+        return IncludeDirective::None;
+    };
+
+    let Some(rest) = inner.strip_prefix("include") else {
+        return IncludeDirective::None;
+    };
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|first| !first.is_whitespace())
+    {
+        return IncludeDirective::None;
     }
+
+    let rest = rest.trim();
+    let Some(rest) = rest.strip_prefix('"') else {
+        return IncludeDirective::Malformed;
+    };
+    let Some(end_quote) = rest.find('"') else {
+        return IncludeDirective::Malformed;
+    };
+    let path = &rest[..end_quote];
+    let after_path = &rest[end_quote + 1..];
+    if after_path.trim().is_empty() {
+        IncludeDirective::Path(path)
+    } else {
+        IncludeDirective::Malformed
+    }
+}
+
+fn validate_include_path(path: &str) -> Result<&Path, &'static str> {
+    if path.is_empty() {
+        return Err("include path is empty");
+    }
+    if path.starts_with('~') {
+        return Err("include path cannot start with `~`");
+    }
+    if path.contains("://") {
+        return Err("include path cannot be URL-like");
+    }
+    if path.contains('\\') {
+        return Err("include path cannot contain Windows separators");
+    }
+    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
+        return Err("include path cannot use a Windows prefix");
+    }
+
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Err("include path cannot be absolute");
+    }
+    if path.extension().is_none_or(|extension| extension != "md") {
+        return Err("include path must point to a `.md` file");
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) | Component::CurDir
+        )
+    }) {
+        return Err("include path must stay within `.codewith/instructions`");
+    }
+
+    Ok(path)
+}
+
+fn include_root_for_instruction_file(path: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    let parent = path.parent()?;
+    let mut cursor = Some(parent.clone());
+    while let Some(dir) = cursor {
+        if dir
+            .file_name()
+            .is_some_and(|file_name| file_name == ".codewith")
+        {
+            return Some(dir.join("instructions"));
+        }
+        cursor = dir.parent();
+    }
+
+    Some(parent.join(".codewith/instructions"))
+}
+
+fn append_budgeted(output: &mut String, text: &str, remaining: &mut usize) -> bool {
+    if *remaining == 0 || text.is_empty() {
+        return false;
+    }
+    if text.len() <= *remaining {
+        output.push_str(text);
+        *remaining -= text.len();
+        return true;
+    }
+
+    let mut end = *remaining;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        *remaining = 0;
+        return false;
+    }
+    output.push_str(&text[..end]);
+    *remaining = 0;
+    true
+}
+
+fn warn_rejected_include(
+    instruction_path: &AbsolutePathBuf,
+    reason: &str,
+    startup_warnings: &mut Vec<String>,
+) {
+    startup_warnings.push(format!(
+        "Skipped CODEWITH.md include in `{}`: {reason}.",
+        instruction_path.display()
+    ));
+}
+
+fn warn_missing_include(instruction_path: &AbsolutePathBuf, startup_warnings: &mut Vec<String>) {
+    warn_rejected_include(
+        instruction_path,
+        "included file was not found",
+        startup_warnings,
+    );
 }
 
 fn warn_invalid_utf8(

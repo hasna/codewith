@@ -268,3 +268,64 @@ async fn selected_environment_sources_match_model_visible_instructions() -> Resu
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codewith_include_sources_match_model_visible_instructions() -> Result<()> {
+    let server = start_mock_server().await;
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_workspace_setup(|cwd, fs| async move {
+        let codewith_doc = cwd.join(".codewith/CODEWITH.md");
+        let instructions_dir = cwd.join(".codewith/instructions");
+        let include_doc = instructions_dir.join("rust.md");
+        fs.create_directory(
+            &instructions_dir,
+            CreateDirectoryOptions { recursive: true },
+            /*sandbox*/ None,
+        )
+        .await?;
+        fs.write_file(
+            &codewith_doc,
+            b"project doc\n{{ include \"rust.md\" }}".to_vec(),
+            /*sandbox*/ None,
+        )
+        .await?;
+        fs.write_file(
+            &include_doc,
+            b"included rust".to_vec(),
+            /*sandbox*/ None,
+        )
+        .await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let test = builder.build_with_remote_env(&server).await?;
+    let codewith_doc = test.config.cwd.join(".codewith/CODEWITH.md");
+    let include_doc = test.config.cwd.join(".codewith/instructions/rust.md");
+
+    assert_eq!(
+        test.codex.instruction_sources().await,
+        vec![codewith_doc, include_doc]
+    );
+
+    test.submit_turn("hello").await?;
+    let instructions = resp_mock
+        .single_request()
+        .message_input_texts("user")
+        .into_iter()
+        .find(|text| text.starts_with("# CODEWITH.md instructions for "))
+        .expect("instructions message");
+    assert!(
+        instructions.contains("project doc\nincluded rust"),
+        "expected expanded include in instructions: {instructions}"
+    );
+    assert!(
+        !instructions.contains("{{ include"),
+        "include directive should not remain in model-visible instructions: {instructions}"
+    );
+
+    Ok(())
+}
