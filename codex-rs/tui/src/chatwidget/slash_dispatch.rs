@@ -137,6 +137,14 @@ enum WorktreeSlashCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct VariantSlashCommand {
+    count: u8,
+    name: Option<String>,
+    start_point: Option<String>,
+    prompt: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum ActiveSessionSlashCommand {
     List,
     Send {
@@ -197,6 +205,9 @@ const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <peer-id> <
 const WORKTREE_USAGE: &str =
     "Usage: /worktree [list|create|reconcile|read|actions|use|release|cleanup|merge] [args]";
 const WORKTREE_USAGE_HINT: &str = "Examples: /worktree create feature, /worktree read <id>, /worktree use <id>, /worktree cleanup <id>, /worktree merge <id> [target]";
+const VARIANT_USAGE: &str =
+    "Usage: /variant --count <2-5> [--name <slug>] [--start-point <ref>] <prompt>";
+const VARIANT_USAGE_HINT: &str = "Examples: /variant --count 3 --name parser improve parser errors, /variant -n 2 -- --audit logging";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const QUEUED_USAGE: &str = "Usage: /queued [list|stats|edit <position|retry:n|agent:messageId> <text>|up <position|retry:n|agent:messageId>|down <position|retry:n|agent:messageId>]";
 const QUEUED_USAGE_HINT: &str = "Examples: /queued, /queued edit 1 follow up, /queued up retry:2, /queued edit agent:<messageId> revised";
@@ -508,6 +519,7 @@ impl ChatWidget {
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
+                | SlashCommand::Variant
                 | SlashCommand::ExternalAgent
         ) {
             self.bottom_pane.drain_pending_submission_state();
@@ -1108,6 +1120,12 @@ impl ChatWidget {
             SlashCommand::Worktree => {
                 self.app_event_tx.send(AppEvent::OpenWorktreeManager);
                 self.append_message_history_entry("/worktree".to_string());
+            }
+            SlashCommand::Variant => {
+                self.add_info_message(
+                    VARIANT_USAGE.to_string(),
+                    Some(VARIANT_USAGE_HINT.to_string()),
+                );
             }
             SlashCommand::Loop => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
@@ -1865,6 +1883,31 @@ impl ChatWidget {
                     self.bottom_pane.drain_pending_submission_state();
                 }
             }
+            SlashCommand::Variant if !trimmed.is_empty() => {
+                let command = match parse_variant_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(VARIANT_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.app_event_tx.send(AppEvent::StartVariants {
+                    count: command.count,
+                    name: command.name,
+                    start_point: command.start_point,
+                    prompt: command.prompt,
+                });
+                self.append_message_history_entry(format!("/variant {trimmed}"));
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
+            }
             SlashCommand::Loop if !trimmed.is_empty() => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
                     return;
@@ -2585,6 +2628,7 @@ impl ChatWidget {
             | SlashCommand::Monitor
             | SlashCommand::Session
             | SlashCommand::Worktree
+            | SlashCommand::Variant
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -2867,6 +2911,109 @@ fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, Monito
         "cleanup" | "clean" | "delete" | "remove" | "rm" => parse_worktree_cleanup_args(rest),
         "merge" | "candidate" => parse_worktree_merge_args(rest),
         _ => Err(worktree_usage_error(WORKTREE_USAGE)),
+    }
+}
+
+fn parse_variant_slash_args(input: &str) -> Result<VariantSlashCommand, MonitorSlashParseError> {
+    let mut remaining = input.trim();
+    let mut count = None;
+    let mut name = None;
+    let mut start_point = None;
+
+    while let Some((token, rest)) = split_external_agent_token(remaining) {
+        if token == "--" {
+            remaining = rest;
+            break;
+        }
+        if let Some(value) = token.strip_prefix("--count=") {
+            count = Some(parse_variant_count(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("-n=") {
+            count = Some(parse_variant_count(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--name=") {
+            name = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start-point=") {
+            start_point = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start=") {
+            start_point = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+
+        match token {
+            "--count" | "-n" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                count = Some(parse_variant_count(value)?);
+                remaining = next_rest;
+            }
+            "--name" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                name = Some(parse_required_variant_option_value(value)?);
+                remaining = next_rest;
+            }
+            "--start-point" | "--start" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                start_point = Some(parse_required_variant_option_value(value)?);
+                remaining = next_rest;
+            }
+            option if option.starts_with('-') => return Err(variant_usage_error(VARIANT_USAGE)),
+            _ => break,
+        }
+    }
+
+    let Some(count) = count else {
+        return Err(variant_usage_error(
+            "Variant count is required. Use --count <2-5> or -n <2-5>.",
+        ));
+    };
+    let prompt = remaining.trim();
+    if prompt.is_empty() {
+        return Err(variant_usage_error("Variant prompt is required."));
+    }
+
+    Ok(VariantSlashCommand {
+        count,
+        name,
+        start_point,
+        prompt: prompt.to_string(),
+    })
+}
+
+fn parse_variant_count(value: &str) -> Result<u8, MonitorSlashParseError> {
+    let count = value
+        .parse::<u8>()
+        .map_err(|_| variant_usage_error("Variant count must be a number from 2 to 5."))?;
+    if !(2..=5).contains(&count) {
+        return Err(variant_usage_error(
+            "Variant count must be between 2 and 5.",
+        ));
+    }
+    Ok(count)
+}
+
+fn parse_required_variant_option_value(value: &str) -> Result<String, MonitorSlashParseError> {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('-') {
+        Err(variant_usage_error(VARIANT_USAGE))
+    } else {
+        Ok(value.to_string())
     }
 }
 
@@ -3173,6 +3320,13 @@ fn worktree_usage_error(usage: &'static str) -> MonitorSlashParseError {
         hint: Some(WORKTREE_USAGE_HINT.to_string()),
     }
 }
+
+fn variant_usage_error(message: impl Into<String>) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: message.into(),
+        hint: Some(VARIANT_USAGE_HINT.to_string()),
+    }
+}
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
 ) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {
@@ -3267,11 +3421,13 @@ mod external_agent_arg_tests {
     use super::QueuedMessageTarget;
     use super::QueuedSlashCommand;
     use super::TmuxSlashCommand;
+    use super::VariantSlashCommand;
     use super::WorktreeSlashCommand;
     use super::parse_background_agent_slash_args;
     use super::parse_external_agent_args;
     use super::parse_queued_slash_args;
     use super::parse_tmux_slash_args;
+    use super::parse_variant_slash_args;
     use super::parse_worktree_slash_args;
     use crate::tmux_handoff::TmuxHandoffDestination;
     use codex_app_server_protocol::ThreadExternalAgentMode;
@@ -3467,6 +3623,52 @@ mod external_agent_arg_tests {
         assert!(parse_worktree_slash_args("create --branch=--start").is_err());
         assert!(parse_worktree_slash_args("create --start-point --branch feature").is_err());
         assert!(parse_worktree_slash_args("unknown").is_err());
+    }
+
+    #[test]
+    fn parses_variant_slash_args() {
+        assert_eq!(
+            parse_variant_slash_args("--count 3 --name parser --start-point main improve parsing")
+                .expect("variant args"),
+            VariantSlashCommand {
+                count: 3,
+                name: Some("parser".to_string()),
+                start_point: Some("main".to_string()),
+                prompt: "improve parsing".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_variant_slash_args("-n 2 -- --audit logging").expect("variant flag prompt"),
+            VariantSlashCommand {
+                count: 2,
+                name: None,
+                start_point: None,
+                prompt: "--audit logging".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_variant_slash_args("--count=5 --name=ui --start=HEAD~1 build alternatives")
+                .expect("variant equals flags"),
+            VariantSlashCommand {
+                count: 5,
+                name: Some("ui".to_string()),
+                start_point: Some("HEAD~1".to_string()),
+                prompt: "build alternatives".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_variant_slash_args() {
+        assert!(parse_variant_slash_args("").is_err());
+        assert!(parse_variant_slash_args("improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count nope improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 0 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 1 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 6 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 2").is_err());
+        assert!(parse_variant_slash_args("--count 2 --name").is_err());
+        assert!(parse_variant_slash_args("--count 2 --unknown improve parsing").is_err());
     }
 
     #[test]

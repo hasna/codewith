@@ -76,6 +76,7 @@ pub enum SlashCommand {
     )]
     BackgroundAgent,
     Worktree,
+    Variant,
     ExternalAgent,
     Side,
     Btw,
@@ -170,6 +171,7 @@ impl SlashCommand {
             SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::BackgroundAgent => "manage durable background agents",
             SlashCommand::Worktree => "manage Codewith-managed worktrees",
+            SlashCommand::Variant => "spawn variants in managed worktrees",
             SlashCommand::ExternalAgent => "stage an external coding-agent task",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -215,6 +217,7 @@ impl SlashCommand {
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
+                | SlashCommand::Variant
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -269,6 +272,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Variant
             | SlashCommand::Clear
             | SlashCommand::Logout => false,
             SlashCommand::Diff
@@ -468,6 +472,7 @@ mod tests {
         assert!(SlashCommand::Workflow.available_during_task());
         assert!(SlashCommand::Queued.available_during_task());
         assert!(SlashCommand::Queued.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
@@ -515,6 +520,7 @@ mod tests {
             SlashCommand::Config,
             SlashCommand::Resume,
             SlashCommand::Tmux,
+            SlashCommand::Variant,
         ];
         for command in unavailable {
             assert!(
@@ -573,6 +579,18 @@ mod tests {
         );
         assert!(SlashCommand::ExternalAgent.supports_inline_args());
         assert!(!SlashCommand::ExternalAgent.available_during_task());
+    }
+
+    #[test]
+    fn variant_command_supports_inline_args_and_waits_for_idle_session() {
+        assert_eq!(SlashCommand::Variant.command(), "variant");
+        assert_eq!(SlashCommand::from_str("variant"), Ok(SlashCommand::Variant));
+        assert_eq!(
+            SlashCommand::Variant.description(),
+            "spawn variants in managed worktrees"
+        );
+        assert!(SlashCommand::Variant.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
     }
 
     #[test]
