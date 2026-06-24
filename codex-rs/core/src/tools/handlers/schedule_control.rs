@@ -20,6 +20,8 @@ use codex_tools::ToolSpec;
 use croner::Cron;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::fmt::Write as _;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,6 +30,7 @@ const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_SCHEDULE_EXPIRATION_DAYS: i64 = 7;
 const MAX_THREAD_SCHEDULE_PROMPT_CHARS: usize = 4_000;
 const MAX_THREAD_SCHEDULES: usize = 50;
+const COMPACT_PROMPT_PREVIEW_CHARS: usize = 160;
 
 pub struct ManageScheduleHandler;
 
@@ -41,6 +44,7 @@ struct ManageScheduleArgs {
     timezone: Option<String>,
     next_run_at: Option<i64>,
     expires_at: Option<i64>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -146,12 +150,13 @@ impl ToolExecutor<ToolInvocation> for ManageScheduleHandler {
         };
 
         let args: ManageScheduleArgs = parse_arguments(&arguments)?;
+        let verbose = args.verbose.unwrap_or(false);
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
         let auth_profile = session.selected_auth_profile().await;
         let response = manage_schedule(state_db, session.thread_id(), auth_profile, args).await?;
-        schedule_response(response).map(boxed_tool_output)
+        schedule_response(response, verbose).map(boxed_tool_output)
     }
 }
 
@@ -738,10 +743,65 @@ fn format_schedule_error(err: anyhow::Error) -> String {
 
 fn schedule_response(
     response: ManageScheduleResponse,
+    verbose: bool,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let response = serde_json::to_string_pretty(&response)
-        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    let response = if verbose {
+        serde_json::to_string_pretty(&response)
+    } else {
+        serde_json::to_string_pretty(&compact_schedule_response(&response))
+    }
+    .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(FunctionToolOutput::from_text(response, Some(true)))
+}
+
+fn compact_schedule_response(response: &ManageScheduleResponse) -> JsonValue {
+    json!({
+        "action": response.action,
+        "scheduleId": response.schedule_id,
+        "message": response.message,
+        "deleted": response.deleted,
+        "count": response.schedules.len(),
+        "affectedSchedule": response
+            .affected_schedule
+            .as_ref()
+            .map(compact_schedule),
+        "schedules": response
+            .schedules
+            .iter()
+            .map(compact_schedule)
+            .collect::<Vec<_>>(),
+        "hint": "Default schedule output is compact. Pass verbose=true for full prompts and lease timestamps.",
+    })
+}
+
+fn compact_schedule(schedule: &ScheduleSnapshot) -> JsonValue {
+    json!({
+        "scheduleId": schedule.schedule_id,
+        "status": schedule.status,
+        "schedule": schedule.schedule,
+        "timezone": schedule.timezone,
+        "nextRunAt": schedule.next_run_at,
+        "lastRunAt": schedule.last_run_at,
+        "expiresAt": schedule.expires_at,
+        "failureCount": schedule.failure_count,
+        "promptPreview": compact_text_preview(&schedule.prompt, COMPACT_PROMPT_PREVIEW_CHARS),
+        "promptChars": schedule.prompt.chars().count(),
+    })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 #[cfg(test)]
@@ -787,6 +847,51 @@ mod tests {
             .expect("test thread should be upserted");
     }
 
+    fn schedule_snapshot(prompt: &str) -> ScheduleSnapshot {
+        ScheduleSnapshot {
+            thread_id: test_thread_id(/*id*/ 88).to_string(),
+            schedule_id: "schedule-1".to_string(),
+            prompt: prompt.to_string(),
+            prompt_source: "inline".to_string(),
+            schedule: ScheduleSpecSnapshot::Once,
+            timezone: "UTC".to_string(),
+            status: "active".to_string(),
+            next_run_at: Some(1_700_000_300),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_expires_at: Some(1_700_000_250),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        }
+    }
+
+    #[test]
+    fn compact_schedule_response_uses_prompt_preview_without_full_prompt() {
+        let response = ManageScheduleResponse {
+            action: ScheduleAction::List,
+            schedule_id: None,
+            affected_schedule: None,
+            schedules: vec![schedule_snapshot(&"schedule prompt ".repeat(30))],
+            deleted: None,
+            message: "Listed schedules for this thread.".to_string(),
+        };
+
+        let compact = compact_schedule_response(&response);
+
+        assert_eq!(compact["count"], 1);
+        assert_eq!(compact["schedules"][0]["scheduleId"], "schedule-1");
+        assert_eq!(compact["schedules"][0]["promptChars"], 480);
+        assert!(
+            compact["schedules"][0]["promptPreview"]
+                .as_str()
+                .expect("prompt preview")
+                .ends_with("...")
+        );
+        assert!(compact["schedules"][0]["prompt"].is_null());
+        assert!(compact["schedules"][0]["leaseExpiresAt"].is_null());
+    }
+
     async fn create_once_schedule(
         runtime: &codex_state::StateRuntime,
         thread_id: ThreadId,
@@ -826,6 +931,7 @@ mod tests {
                 timezone: Some("UTC".to_string()),
                 next_run_at: Some(1_700_000_300),
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -863,6 +969,7 @@ mod tests {
                 timezone: Some("UTC".to_string()),
                 next_run_at: None,
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -895,6 +1002,7 @@ mod tests {
                 timezone: Some("UTC".to_string()),
                 next_run_at: Some(1_700_000_300),
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -927,6 +1035,7 @@ mod tests {
                 timezone: Some("UTC".to_string()),
                 next_run_at: Some(1_700_001_000),
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -980,6 +1089,7 @@ mod tests {
                 timezone: None,
                 next_run_at: None,
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -1049,6 +1159,7 @@ mod tests {
                 timezone: None,
                 next_run_at: None,
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -1097,6 +1208,7 @@ mod tests {
                 timezone: None,
                 next_run_at: None,
                 expires_at: None,
+                verbose: None,
             },
         )
         .await
@@ -1128,6 +1240,7 @@ mod tests {
                 timezone: None,
                 next_run_at: None,
                 expires_at: None,
+                verbose: None,
             },
         )
         .await

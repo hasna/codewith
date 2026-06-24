@@ -246,14 +246,30 @@ struct BackgroundAgentEventsCommand {
     after_seq: Option<i64>,
 
     /// Maximum number of events to return.
-    #[arg(long = "limit", default_value_t = 100)]
-    limit: usize,
+    #[arg(long = "limit")]
+    limit: Option<usize>,
+
+    /// Output full event payloads as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
 struct BackgroundAgentIdCommand {
     /// Background-agent run id.
     agent_id: String,
+
+    /// Output the full background-agent record as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1284,6 +1300,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
+                cmd.json,
+                cmd.verbose,
                 root_auth_profile.as_deref(),
             )
             .await?;
@@ -1298,6 +1316,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
+                cmd.json,
+                cmd.verbose,
                 root_auth_profile.as_deref(),
             )
             .await?;
@@ -1308,8 +1328,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "stop",
             )?;
-            agent_cmd::run_background_agent_stop(cmd.agent_id, root_auth_profile.as_deref())
-                .await?;
+            agent_cmd::run_background_agent_stop(
+                cmd.agent_id,
+                cmd.json,
+                cmd.verbose,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
         }
         Some(Subcommand::Rm(cmd)) => {
             reject_remote_mode_for_subcommand(
@@ -1317,8 +1342,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "rm",
             )?;
-            agent_cmd::run_background_agent_delete(cmd.agent_id, root_auth_profile.as_deref())
-                .await?;
+            agent_cmd::run_background_agent_delete(
+                cmd.agent_id,
+                cmd.json,
+                cmd.verbose,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
         }
         Some(Subcommand::Daemon(cmd)) => match cmd.subcommand {
             None | Some(BackgroundAgentDaemonSubcommand::Status) => {
@@ -3157,7 +3187,7 @@ mod tests {
         assert_matches!(
             cli.subcommand,
             Some(Subcommand::Agent(AgentCli {
-                subcommand: agent_cmd::AgentSubcommand::Diagnostics
+                subcommand: agent_cmd::AgentSubcommand::Diagnostics(_)
             }))
         );
 
@@ -3182,6 +3212,8 @@ mod tests {
             "7",
             "--limit",
             "20",
+            "--json",
+            "--verbose",
         ])
         .expect("parse top-level logs");
         assert_matches!(cli.subcommand, Some(Subcommand::Logs(_)));

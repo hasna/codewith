@@ -15,6 +15,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::sync::Arc;
 
 const MAX_THREAD_MONITOR_NAME_CHARS: usize = 120;
@@ -22,8 +24,11 @@ const MAX_THREAD_MONITOR_PROMPT_CHARS: usize = 4_000;
 const MAX_THREAD_MONITOR_COMMAND_CHARS: usize = 8_000;
 const MAX_THREAD_MONITOR_PATH_CHARS: usize = 1_000;
 const MAX_THREAD_MONITORS: usize = 50;
-const DEFAULT_MONITOR_EVENT_LIMIT: usize = 50;
+const DEFAULT_MONITOR_EVENT_LIMIT: usize = 20;
+const DEFAULT_VERBOSE_MONITOR_EVENT_LIMIT: usize = 50;
 const MAX_MONITOR_EVENT_LIMIT: usize = 200;
+const COMPACT_TEXT_PREVIEW_CHARS: usize = 160;
+const COMPACT_EVENT_PREVIEW_CHARS: usize = 240;
 
 pub struct ManageMonitorHandler;
 
@@ -39,6 +44,7 @@ struct ManageMonitorArgs {
     routing: Option<MonitorRoutingArg>,
     output_file: Option<String>,
     limit: Option<usize>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -132,11 +138,12 @@ impl ToolExecutor<ToolInvocation> for ManageMonitorHandler {
         };
 
         let args: ManageMonitorArgs = parse_arguments(&arguments)?;
+        let verbose = args.verbose.unwrap_or(false);
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
         let response = manage_monitor(state_db, session.thread_id(), args).await?;
-        monitor_response(response).map(boxed_tool_output)
+        monitor_response(response, verbose).map(boxed_tool_output)
     }
 }
 
@@ -238,9 +245,14 @@ async fn read_monitor(
 ) -> Result<ManageMonitorResponse, FunctionCallError> {
     let monitor_id = resolve_monitor_id(&state_db, thread_id, args.monitor_id.as_deref()).await?;
     let monitor = load_monitor_for_thread(&state_db, thread_id, monitor_id.as_str()).await?;
+    let default_limit = if args.verbose.unwrap_or(false) {
+        DEFAULT_VERBOSE_MONITOR_EVENT_LIMIT
+    } else {
+        DEFAULT_MONITOR_EVENT_LIMIT
+    };
     let limit = args
         .limit
-        .unwrap_or(DEFAULT_MONITOR_EVENT_LIMIT)
+        .unwrap_or(default_limit)
         .min(MAX_MONITOR_EVENT_LIMIT);
     let events = state_db
         .thread_monitors()
@@ -486,10 +498,88 @@ fn monitor_routing_arg_to_state(routing: MonitorRoutingArg) -> codex_state::Thre
 
 fn monitor_response(
     response: ManageMonitorResponse,
+    verbose: bool,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let content = serde_json::to_string_pretty(&response)
-        .map_err(|err| FunctionCallError::Fatal(format!("failed to serialize response: {err}")))?;
+    let content = if verbose {
+        serde_json::to_string_pretty(&response)
+    } else {
+        serde_json::to_string_pretty(&compact_monitor_response(&response))
+    }
+    .map_err(|err| FunctionCallError::Fatal(format!("failed to serialize response: {err}")))?;
     Ok(FunctionToolOutput::from_text(content, Some(true)))
+}
+
+fn compact_monitor_response(response: &ManageMonitorResponse) -> JsonValue {
+    json!({
+        "action": response.action,
+        "monitorId": response.monitor_id,
+        "message": response.message,
+        "deleted": response.deleted,
+        "count": response.monitors.len(),
+        "eventCount": response.events.len(),
+        "affectedMonitor": response
+            .affected_monitor
+            .as_ref()
+            .map(compact_monitor),
+        "monitors": response
+            .monitors
+            .iter()
+            .map(compact_monitor)
+            .collect::<Vec<_>>(),
+        "events": response
+            .events
+            .iter()
+            .map(compact_monitor_event)
+            .collect::<Vec<_>>(),
+        "hint": "Default monitor output is compact. Pass verbose=true for full prompts, commands, paths, errors, and event text; use limit to page recent events.",
+    })
+}
+
+fn compact_monitor(monitor: &MonitorSnapshot) -> JsonValue {
+    json!({
+        "monitorId": monitor.monitor_id,
+        "name": monitor.name,
+        "status": monitor.status,
+        "routing": monitor.routing,
+        "generation": monitor.generation,
+        "processId": monitor.process_id,
+        "lastEventAt": monitor.last_event_at,
+        "promptPreview": compact_text_preview(&monitor.prompt, COMPACT_TEXT_PREVIEW_CHARS),
+        "promptChars": monitor.prompt.chars().count(),
+        "commandPreview": compact_text_preview(&monitor.command, COMPACT_TEXT_PREVIEW_CHARS),
+        "commandChars": monitor.command.chars().count(),
+        "cwdConfigured": monitor.cwd.is_some(),
+        "outputFileConfigured": monitor.output_file.is_some(),
+        "lastErrorPreview": monitor.last_error.as_deref().map(|error| {
+            compact_text_preview(error, COMPACT_TEXT_PREVIEW_CHARS)
+        }),
+    })
+}
+
+fn compact_monitor_event(event: &MonitorEventSnapshot) -> JsonValue {
+    json!({
+        "monitorId": event.monitor_id,
+        "eventId": event.event_id,
+        "stream": event.stream,
+        "createdAt": event.created_at,
+        "textPreview": compact_text_preview(&event.text, COMPACT_EVENT_PREVIEW_CHARS),
+        "textChars": event.text.chars().count(),
+    })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn model_error(message: impl Into<String>) -> FunctionCallError {
@@ -528,5 +618,62 @@ impl From<codex_state::ThreadMonitorEvent> for MonitorEventSnapshot {
             text: event.text,
             created_at: event.created_at.timestamp(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn compact_monitor_response_uses_previews_without_full_text() {
+        let response = ManageMonitorResponse {
+            action: MonitorAction::Read,
+            monitor_id: Some("monitor-1".to_string()),
+            affected_monitor: Some(MonitorSnapshot {
+                thread_id: "thread-1".to_string(),
+                monitor_id: "monitor-1".to_string(),
+                name: "server".to_string(),
+                prompt: "watch logs ".repeat(30),
+                command: "tail -f /tmp/server.log && ".repeat(20),
+                cwd: Some("/very/long/path".to_string()),
+                routing: "stream".to_string(),
+                output_file: None,
+                status: "running".to_string(),
+                generation: 1,
+                process_id: Some(123),
+                last_event_at: Some(1_700_000_000),
+                last_error: Some("last error ".repeat(40)),
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_100,
+            }),
+            monitors: Vec::new(),
+            events: vec![MonitorEventSnapshot {
+                thread_id: "thread-1".to_string(),
+                monitor_id: "monitor-1".to_string(),
+                event_id: "event-1".to_string(),
+                stream: "stdout".to_string(),
+                text: "line ".repeat(100),
+                created_at: 1_700_000_200,
+            }],
+            deleted: None,
+            message: "Read monitor.".to_string(),
+        };
+
+        let compact = compact_monitor_response(&response);
+
+        assert_eq!(compact["eventCount"], 1);
+        assert_eq!(compact["affectedMonitor"]["monitorId"], "monitor-1");
+        assert!(compact["affectedMonitor"]["prompt"].is_null());
+        assert!(compact["affectedMonitor"]["command"].is_null());
+        assert!(compact["affectedMonitor"]["cwd"].is_null());
+        assert!(
+            compact["events"][0]["textPreview"]
+                .as_str()
+                .expect("event preview")
+                .ends_with("...")
+        );
+        assert!(compact["events"][0]["text"].is_null());
     }
 }

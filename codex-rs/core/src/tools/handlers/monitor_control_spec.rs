@@ -81,7 +81,14 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         (
             "limit".to_string(),
             JsonSchema::integer(Some(
-                "Maximum number of events to return when action is read. Defaults to 50."
+                "Maximum number of events to return when action is read. Defaults to 20."
+                    .to_string(),
+            )),
+        ),
+        (
+            "verbose".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. When true, return full prompts, commands, paths, errors, and event text instead of compact previews."
                     .to_string(),
             )),
         ),
@@ -92,6 +99,7 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         description: r#"Manage generic monitors for the current thread.
 Use `create` after dynamically designing a monitor from the user's natural-language request. Do not use predefined monitor categories or hardcoded source types.
 The monitor command is a model-designed shell command or script. It should emit concise single-line stdout updates when something relevant happens.
+List and read responses are compact by default: they include ids, status, command/event previews, and counts. Set `verbose=true` only when full command text or full event output is needed.
 `stream` routing attempts to steer stdout updates into the active turn and always records events. `file` routing appends output to `output_file`. `both` does both.
 Use `list` before mutating when the user did not name a specific monitor.
 `stop` halts the monitor process. `restart` reruns the monitor command. `delete` removes the selected monitor.

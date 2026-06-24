@@ -935,6 +935,7 @@ fn local_session_json(
 ) -> Value {
     let thread_id = metadata.id.to_string();
     let live = live_thread_ids.contains(&thread_id);
+    let schedule_count = schedules.len();
     json!({
         "threadId": thread_id,
         "live": live,
@@ -953,15 +954,20 @@ fn local_session_json(
         "createdAt": metadata.created_at.timestamp(),
         "updatedAt": metadata.updated_at.timestamp(),
         "path": metadata.rollout_path.display().to_string(),
-        "schedules": schedules.into_iter().map(schedule_json).collect::<Vec<_>>(),
+        "scheduleCount": schedule_count,
+        "schedules": schedules
+            .into_iter()
+            .map(schedule_summary_json)
+            .collect::<Vec<_>>(),
     })
 }
 
-fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
+fn schedule_summary_json(schedule: codex_state::ThreadSchedule) -> Value {
     json!({
         "threadId": schedule.thread_id.to_string(),
         "scheduleId": schedule.schedule_id,
-        "prompt": schedule.prompt,
+        "promptPreview": truncate_preview(&schedule.prompt),
+        "promptChars": schedule.prompt.chars().count(),
         "promptSource": schedule.prompt_source.as_str(),
         "schedule": schedule_spec_json(schedule.schedule),
         "timezone": schedule.timezone,
@@ -1002,11 +1008,9 @@ fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Val
         "workerRequestId": interaction.worker_request_id,
         "kind": interaction.kind.as_str(),
         "status": interaction.status.as_str(),
-        "requestPayload": interaction.request_payload_json,
         "requestPayloadSha256": interaction.request_payload_sha256,
         "requestPayloadPreview": interaction.request_payload_preview,
         "requestRedactions": interaction.request_redactions_json,
-        "responsePayload": interaction.response_payload_json,
         "responsePayloadSha256": interaction.response_payload_sha256,
         "responsePayloadPreview": interaction.response_payload_preview,
         "responseRedactions": interaction.response_redactions_json,
@@ -1318,11 +1322,36 @@ mod tests {
             interaction_id
         );
         assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadPreview"],
+            "needs user decision"
+        );
+        assert!(
+            overview["pendingInteractions"][0]["requestPayload"].is_null(),
+            "mission-control overview should not include full request payloads by default"
+        );
+        assert!(
+            overview["pendingInteractions"][0]["responsePayload"].is_null(),
+            "mission-control overview should not include full response payloads by default"
+        );
+        assert_eq!(
             overview["localSessions"][0]["schedules"]
                 .as_array()
                 .expect("schedules")
                 .len(),
             1
+        );
+        assert_eq!(overview["localSessions"][0]["scheduleCount"], 1);
+        assert_eq!(
+            overview["localSessions"][0]["schedules"][0]["promptPreview"],
+            "Check schedule visibility"
+        );
+        assert_eq!(
+            overview["localSessions"][0]["schedules"][0]["promptChars"],
+            25
+        );
+        assert!(
+            overview["localSessions"][0]["schedules"][0]["prompt"].is_null(),
+            "mission-control overview should not include full schedule prompts by default"
         );
         assert_eq!(overview["capabilities"]["scheduledTasks"], true);
         assert_eq!(overview["capabilities"]["workflowMutation"], false);

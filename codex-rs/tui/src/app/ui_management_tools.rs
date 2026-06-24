@@ -16,6 +16,14 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 
+use super::ui_management_tool_summaries::COMPACT_LIST_LIMIT;
+use super::ui_management_tool_summaries::compact_agent_logs_response;
+use super::ui_management_tool_summaries::compact_agent_read_response;
+use super::ui_management_tool_summaries::compact_agent_value;
+use super::ui_management_tool_summaries::compact_monitor_read_response;
+use super::ui_management_tool_summaries::compact_monitor_value;
+use super::ui_management_tool_summaries::compact_schedule_value;
+
 #[derive(Debug, Deserialize)]
 pub(super) struct BackgroundTerminalsArgs {
     pub(super) action: String,
@@ -30,6 +38,8 @@ pub(super) struct McpArgs {
 pub(super) struct BackgroundAgentsArgs {
     pub(super) action: String,
     pub(super) agent_id: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,12 +56,16 @@ pub(super) struct ActiveSessionsArgs {
 pub(super) struct SchedulesArgs {
     pub(super) action: String,
     pub(super) kind: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct MonitorsArgs {
     pub(super) action: String,
     pub(super) monitor_id: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,12 +164,26 @@ impl App {
                     .agent_list()
                     .await
                     .map(|response| {
+                        let agents = response
+                            .data
+                            .into_iter()
+                            .filter(|agent| {
+                                agent.parent_thread_id.as_deref() == Some(thread_id.as_str())
+                            })
+                            .collect::<Vec<_>>();
+                        if args.verbose.unwrap_or(false) {
+                            return json!({ "agents": agents });
+                        }
+                        let total = agents.len();
+                        let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
                         json!({
-                            "agents": response
-                                .data
-                                .into_iter()
-                                .filter(|agent| agent.parent_thread_id.as_deref() == Some(thread_id.as_str()))
-                                .collect::<Vec<_>>()
+                            "count": total,
+                            "agents": agents
+                                .iter()
+                                .take(limit)
+                                .map(compact_agent_value)
+                                .collect::<Vec<_>>(),
+                            "hint": "Default agent output is compact. Pass verbose=true for raw agent records, or use action=read/logs with agent_id for details.",
                         })
                     })
                     .map_err(|err| format!("failed to list background agents: {err}"))
@@ -177,12 +205,22 @@ impl App {
                     ));
                 }
                 if args.action == "read" {
-                    Ok(json!(response))
+                    if args.verbose.unwrap_or(false) {
+                        Ok(json!(response))
+                    } else {
+                        Ok(compact_agent_read_response(&response))
+                    }
                 } else {
                     app_server
                         .agent_events_list(agent_id)
                         .await
-                        .map(|response| json!(response))
+                        .map(|response| {
+                            if args.verbose.unwrap_or(false) {
+                                json!(response)
+                            } else {
+                                compact_agent_logs_response(&response, args.limit)
+                            }
+                        })
                         .map_err(|err| format!("failed to list background agent logs: {err}"))
                 }
             }
@@ -295,7 +333,21 @@ impl App {
                     .into_iter()
                     .filter(|schedule| schedule_matches_kind(schedule, &kind))
                     .collect::<Vec<_>>();
-                Ok(json!({ "kind": kind, "schedules": data }))
+                if args.verbose.unwrap_or(false) {
+                    return Ok(json!({ "kind": kind, "schedules": data }));
+                }
+                let total = data.len();
+                let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                Ok(json!({
+                    "kind": kind,
+                    "count": total,
+                    "schedules": data
+                        .iter()
+                        .take(limit)
+                        .map(compact_schedule_value)
+                        .collect::<Vec<_>>(),
+                    "hint": "Default schedule output is compact. Pass verbose=true for raw schedule records, or open the /schedule or /loop UI for mutations.",
+                }))
             }
             "create" | "pause" | "resume" | "delete" | "run_now" => {
                 Err(interactive_user_confirmation_required(args.action.as_str()))
@@ -322,7 +374,23 @@ impl App {
             "list" => app_server
                 .thread_monitor_list(thread_id)
                 .await
-                .map(|response| json!({ "monitors": response.data }))
+                .map(|response| {
+                    if args.verbose.unwrap_or(false) {
+                        return json!({ "monitors": response.data });
+                    }
+                    let total = response.data.len();
+                    let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                    json!({
+                        "count": total,
+                        "monitors": response
+                            .data
+                            .iter()
+                            .take(limit)
+                            .map(compact_monitor_value)
+                            .collect::<Vec<_>>(),
+                        "hint": "Default monitor output is compact. Pass verbose=true for raw monitor records, or action=read with monitor_id for recent events.",
+                    })
+                })
                 .map_err(|err| format!("failed to list monitors: {err}")),
             "read" => {
                 let monitor_id =
@@ -330,7 +398,13 @@ impl App {
                 app_server
                     .thread_monitor_read(thread_id, monitor_id)
                     .await
-                    .map(|response| json!(response))
+                    .map(|response| {
+                        if args.verbose.unwrap_or(false) {
+                            json!(response)
+                        } else {
+                            compact_monitor_read_response(&response, args.limit)
+                        }
+                    })
                     .map_err(|err| format!("failed to read monitor: {err}"))
             }
             "stop" | "restart" | "delete" => {
