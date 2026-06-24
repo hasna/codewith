@@ -393,6 +393,7 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
+                SlashCommand::Usage,
                 SlashCommand::Changelog,
             ]
         );

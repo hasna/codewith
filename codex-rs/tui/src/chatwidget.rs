@@ -451,8 +451,11 @@ use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
+mod usage_panel;
 mod usage_profile_broker;
 mod usage_self_heal;
+use self::usage_panel::UsagePanelMiniMaxUsageState;
+use self::usage_panel::UsagePanelRateLimitState;
 use self::usage_self_heal::UsageSelfHealErrorKind;
 use self::usage_self_heal::UsageSelfHealState;
 mod user_messages;
@@ -603,6 +606,8 @@ pub(crate) struct ChatWidget {
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
+    usage_panel_rate_limit_state: UsagePanelRateLimitState,
+    usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

@@ -8557,6 +8557,38 @@ mod tests {
     }
 
     #[test]
+    fn slash_usage_dispatches_while_task_running_and_clears_composer() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+        composer.draft.textarea.set_text_clearing_elements("/usage");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Command(cmd) => assert_eq!(cmd, SlashCommand::Usage),
+            other => panic!("expected /usage command dispatch, got {other:?}"),
+        }
+        assert!(composer.draft.textarea.is_empty());
+        assert!(
+            rx.try_recv().is_err(),
+            "/usage should not emit a task-running disabled message"
+        );
+    }
+
+    #[test]
     fn enter_queues_when_queue_submissions_is_enabled() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
