@@ -173,14 +173,9 @@ impl ThreadState {
             .insert(turn_id, scheduled_run);
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_scheduled_run_submission(&mut self) {
         self.pending_scheduled_run_submissions += 1;
-    }
-
-    pub(crate) fn finish_scheduled_run_submission(&mut self) {
-        debug_assert!(self.pending_scheduled_run_submissions > 0);
-        self.pending_scheduled_run_submissions =
-            self.pending_scheduled_run_submissions.saturating_sub(1);
     }
 
     pub(crate) fn take_scheduled_run(

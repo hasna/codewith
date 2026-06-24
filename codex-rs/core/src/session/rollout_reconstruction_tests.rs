@@ -4,11 +4,13 @@ use super::tests::make_session_and_context;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ResumedHistory;
+use codex_utils_output_truncation::TruncationPolicy;
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
 
@@ -50,6 +52,63 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         }],
         phase: None,
     }
+}
+
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_call_output(call_id: &str, output: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text(output.to_string()),
+    }
+}
+
+fn function_call_output_text<'a>(items: &'a [ResponseItem], call_id: &str) -> &'a str {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: item_call_id,
+                output,
+            } if item_call_id == call_id => output.text_content(),
+            _ => None,
+        })
+        .expect("function output should exist")
+}
+
+#[tokio::test]
+async fn reconstruct_history_truncates_replacement_history_tool_outputs() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    turn_context.truncation_policy = TruncationPolicy::Tokens(500);
+    let call_id = "replacement-history-output";
+    let long_output = "large replacement history stdout\n".repeat(2_500);
+    let replacement_history = vec![
+        function_call(call_id),
+        function_call_output(call_id, &long_output),
+    ];
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: String::new(),
+        replacement_history: Some(replacement_history),
+    })];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    let output = function_call_output_text(&reconstructed.history, call_id);
+    assert_ne!(long_output, output);
+    assert!(
+        output.contains("tokens truncated"),
+        "expected replacement history output to be truncated: {output}"
+    );
 }
 
 #[tokio::test]

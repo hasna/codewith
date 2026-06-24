@@ -1,8 +1,11 @@
 use super::*;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_from_state;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_run_from_state;
+use anyhow::Context as _;
 use chrono_tz::Tz;
+use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use croner::Cron;
+use std::fmt::Write as _;
 use std::str::FromStr;
 
 const SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -160,12 +163,8 @@ impl ThreadScheduleRuntime {
                 thread_id = %thread_id,
                 "failed to submit scheduled thread run: {err}"
             );
-            self.fail_claimed_run_after_submit_error(
-                state_db,
-                claim,
-                schedule_run_error(err.to_string()),
-            )
-            .await;
+            self.fail_claimed_run_after_submit_error(state_db, claim, schedule_submit_error(&err))
+                .await;
         }
     }
 
@@ -181,41 +180,32 @@ impl ThreadScheduleRuntime {
         let claim_auth_profile = self
             .claim_auth_profile(&state_db, thread_id, &claim.schedule)
             .await;
+        let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
+            &self.auth_manager,
+            &self.config,
+            claim_auth_profile.clone(),
+        )
+        .await;
+        let claim_auth_profile = match schedule_auth_profile_after_broker_decision(
+            claim_auth_profile,
+            broker_decision,
+            self.config.usage_self_heal.reset_retry_buffer_secs,
+            Utc::now(),
+        ) {
+            Ok(resolved) => resolved,
+            Err(wait) => anyhow::bail!("{wait}"),
+        };
         let thread = self
             .load_or_resume_thread(thread_id, claim_auth_profile.clone())
             .await?;
         self.ensure_schedule_listener(thread_id, thread.clone())
             .await?;
-        let thread_settings = codex_protocol::protocol::ThreadSettingsOverrides {
+        let thread_settings = codex_core::CodexThreadSettingsOverrides {
             auth_profile: claim_auth_profile,
-            ..codex_protocol::protocol::ThreadSettingsOverrides::default()
+            ..codex_core::CodexThreadSettingsOverrides::default()
         };
         let thread_state = self.thread_state_manager.thread_state(thread_id).await;
-        thread_state.lock().await.begin_scheduled_run_submission();
-        let submit_result = thread
-            .submit(Op::UserInput {
-                items: vec![CoreInputItem::Text {
-                    text: scheduled_thread_prompt(
-                        &prompt,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                    ),
-                    text_elements: Vec::new(),
-                }],
-                environments: None,
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings,
-            })
-            .await;
-        let turn_id = match submit_result {
-            Ok(turn_id) => turn_id,
-            Err(err) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
-                return Err(anyhow::anyhow!("failed to submit scheduled prompt: {err}"));
-            }
-        };
+        let turn_id = Uuid::now_v7().to_string();
 
         let run = match state_db
             .thread_schedules()
@@ -229,22 +219,17 @@ impl ThreadScheduleRuntime {
         {
             Ok(Some(run)) => run,
             Ok(None) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
                 return Err(anyhow::anyhow!(
                     "claimed schedule run {} disappeared before it could start",
                     claim.run.run_id
                 ));
             }
-            Err(err) => {
-                thread_state.lock().await.finish_scheduled_run_submission();
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
         {
             let mut thread_state = thread_state.lock().await;
-            thread_state.finish_scheduled_run_submission();
             thread_state.track_scheduled_run(
-                turn_id,
+                turn_id.clone(),
                 crate::thread_state::ScheduledThreadScheduleRun {
                     schedule_id: claim.schedule.schedule_id.clone(),
                     run_id: claim.run.run_id.clone(),
@@ -252,6 +237,28 @@ impl ThreadScheduleRuntime {
                     state_db: state_db.clone(),
                 },
             );
+        }
+        let start_result = thread
+            .try_start_user_input_turn_if_idle(
+                turn_id.clone(),
+                vec![CoreInputItem::Text {
+                    text: scheduled_thread_prompt(
+                        &prompt,
+                        claim.run.run_id.as_str(),
+                        claim.run.scheduled_for,
+                    ),
+                    text_elements: Vec::new(),
+                }],
+                Default::default(),
+                thread_settings,
+            )
+            .await;
+        if let Err(err) = start_result {
+            thread_state
+                .lock()
+                .await
+                .take_scheduled_run(turn_id.as_str());
+            return Err(anyhow::anyhow!("failed to start scheduled prompt: {err}"));
         }
         self.spawn_lease_heartbeat(
             state_db,
@@ -385,9 +392,9 @@ impl ThreadScheduleRuntime {
         .ok_or_else(|| anyhow::anyhow!("thread not found: {thread_id}"))?;
         let initial_history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path)
             .await
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to load rollout {} for scheduled task: {err}",
+            .with_context(|| {
+                format!(
+                    "failed to load rollout {} for scheduled task",
                     rollout_path.display()
                 )
             })?;
@@ -407,7 +414,7 @@ impl ThreadScheduleRuntime {
             .config_manager
             .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
             .await
-            .map_err(|err| anyhow::anyhow!("failed to load config for scheduled task: {err}"))?;
+            .context("failed to load config for scheduled task")?;
         self.thread_manager
             .resume_thread_with_history(
                 config,
@@ -417,7 +424,7 @@ impl ThreadScheduleRuntime {
             )
             .await
             .map(|new_thread| new_thread.thread)
-            .map_err(|err| anyhow::anyhow!("failed to resume scheduled task thread: {err}"))
+            .context("failed to resume scheduled task thread")
     }
 
     async fn ensure_schedule_listener(
@@ -518,7 +525,7 @@ You are running one new scheduled Codewith prompt.
 Run id: {run_id}
 Scheduled for: {scheduled_for}
 
-This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, or start a timer; Codewith manages scheduling. If the scheduled prompt asks for durable follow-up work, use native create_goal or create_goal_plan goal tools. Do not create follow-up schedules unless the scheduled prompt explicitly asks for scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 {prompt}"
@@ -542,10 +549,13 @@ fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
             Some(ScheduledTurnFinish::Complete)
         }
         EventMsg::TurnComplete(_) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
-            "scheduled turn completed without a final assistant message".to_string(),
+            "scheduled turn completed without a final assistant message",
         ))),
         EventMsg::TurnAborted(aborted) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
             format!("scheduled turn aborted: {:?}", aborted.reason),
+        ))),
+        EventMsg::Error(error) => Some(ScheduledTurnFinish::Failed(schedule_turn_event_error(
+            error,
         ))),
         _ => None,
     }
@@ -599,10 +609,7 @@ pub(super) async fn finish_scheduled_run_after_turn(
 ) {
     let completed_at = Utc::now();
     let error = match (scheduled_turn_finish(event), turn_error) {
-        (Some(_), Some(error)) => Some(schedule_run_error(format!(
-            "scheduled turn failed: {}",
-            error.message
-        ))),
+        (Some(_), Some(error)) => Some(schedule_turn_error(&error)),
         (Some(ScheduledTurnFinish::Complete), None) => None,
         (Some(ScheduledTurnFinish::Failed(error)), None) => Some(error),
         (None, _) => return,
@@ -660,6 +667,50 @@ fn schedule_failure_backoff_run_at(
     let backoff_seconds = 30i64.saturating_mul(1i64 << exponent).min(3600);
     let backoff_until = completed_at + chrono::Duration::seconds(backoff_seconds);
     natural_next.max(backoff_until)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduleUsageProfileWait {
+    retry_at: DateTime<Utc>,
+}
+
+impl std::fmt::Display for ScheduleUsageProfileWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "all eligible auth profiles are exhausted; retrying scheduled run after {}",
+            self.retry_at.to_rfc3339()
+        )
+    }
+}
+
+fn schedule_auth_profile_after_broker_decision(
+    current_auth_profile: Option<Option<String>>,
+    decision: super::usage_profile_broker::UsageProfileBrokerDecision,
+    reset_retry_buffer_secs: u64,
+    now: DateTime<Utc>,
+) -> Result<Option<Option<String>>, ScheduleUsageProfileWait> {
+    if let Some(profile) = decision.selected_profile {
+        return Ok(Some(Some(profile)));
+    }
+    if let Some(retry_at) = decision.retry_at
+        && let Some(retry_at) =
+            schedule_broker_retry_at_datetime(reset_retry_buffer_secs, retry_at, now)
+    {
+        return Err(ScheduleUsageProfileWait { retry_at });
+    }
+    Ok(current_auth_profile)
+}
+
+fn schedule_broker_retry_at_datetime(
+    reset_retry_buffer_secs: u64,
+    retry_at: i64,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let retry_at = DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0)?;
+    let buffer_secs = i64::try_from(reset_retry_buffer_secs).ok()?;
+    let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
+    (retry_at > now).then_some(retry_at)
 }
 
 async fn finish_scheduled_run_state(
@@ -792,7 +843,7 @@ async fn apply_persisted_schedule_resume_metadata(
     }
 }
 
-fn schedule_resume_auth_profile(
+pub(super) fn schedule_resume_auth_profile(
     schedule_auth_profile: Option<Option<String>>,
     initial_history: &InitialHistory,
 ) -> Option<Option<String>> {
@@ -843,8 +894,133 @@ fn parse_schedule_timezone(timezone: &str) -> anyhow::Result<Tz> {
         .map_err(|err| anyhow::anyhow!("invalid schedule timezone `{timezone}`: {err}"))
 }
 
-fn schedule_run_error(error: String) -> String {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[derive(Clone, Copy)]
+enum ScheduleRunErrorClass {
+    UsageLimit,
+    ContextWindow,
+}
+
+impl ScheduleRunErrorClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UsageLimit => "usage-limit",
+            Self::ContextWindow => "context-window",
+        }
+    }
+}
+
+fn schedule_submit_error(error: &anyhow::Error) -> String {
+    let message = format_schedule_error_chain(error);
+    let classification = classify_schedule_run_error_message(&message);
+    schedule_run_error_with_classification(&message, classification)
+}
+
+fn format_schedule_error_chain(error: &anyhow::Error) -> String {
+    let mut message = error.to_string();
+    for cause in error.chain().skip(1) {
+        let _ = write!(message, ": {cause}");
+    }
+    message
+}
+
+fn schedule_turn_event_error(error: &codex_protocol::protocol::ErrorEvent) -> String {
+    let classification = error
+        .codex_error_info
+        .as_ref()
+        .and_then(classify_core_codex_error_info);
+    schedule_run_error_with_classification(
+        &format!("scheduled turn failed: {}", error.message),
+        classification,
+    )
+}
+
+fn schedule_turn_error(error: &codex_app_server_protocol::TurnError) -> String {
+    let classification = error
+        .codex_error_info
+        .as_ref()
+        .and_then(classify_codex_error_info);
+    schedule_run_error_with_classification(
+        &format!("scheduled turn failed: {}", error.message),
+        classification,
+    )
+}
+
+fn schedule_run_error(error: impl AsRef<str>) -> String {
+    schedule_run_error_with_classification(error.as_ref(), None)
+}
+
+fn schedule_run_error_with_classification(
+    error: &str,
+    classification: Option<ScheduleRunErrorClass>,
+) -> String {
+    let classification = classification.or_else(|| classify_schedule_run_error_message(error));
+    let error = match classification {
+        Some(classification) => format!("[{}] {error}", classification.as_str()),
+        None => error.to_string(),
+    };
     truncate_schedule_run_error(redact_schedule_run_error(&error))
+}
+
+fn classify_core_codex_error_info(info: &CoreCodexErrorInfo) -> Option<ScheduleRunErrorClass> {
+    match info {
+        CoreCodexErrorInfo::UsageLimitExceeded => Some(ScheduleRunErrorClass::UsageLimit),
+        CoreCodexErrorInfo::ContextWindowExceeded => Some(ScheduleRunErrorClass::ContextWindow),
+        CoreCodexErrorInfo::ServerOverloaded
+        | CoreCodexErrorInfo::CyberPolicy
+        | CoreCodexErrorInfo::HttpConnectionFailed { .. }
+        | CoreCodexErrorInfo::ResponseStreamConnectionFailed { .. }
+        | CoreCodexErrorInfo::InternalServerError
+        | CoreCodexErrorInfo::Unauthorized
+        | CoreCodexErrorInfo::BadRequest
+        | CoreCodexErrorInfo::ThreadRollbackFailed
+        | CoreCodexErrorInfo::SandboxError
+        | CoreCodexErrorInfo::ResponseStreamDisconnected { .. }
+        | CoreCodexErrorInfo::ResponseTooManyFailedAttempts { .. }
+        | CoreCodexErrorInfo::ActiveTurnNotSteerable { .. }
+        | CoreCodexErrorInfo::Other => None,
+    }
+}
+
+fn classify_codex_error_info(info: &CodexErrorInfo) -> Option<ScheduleRunErrorClass> {
+    match info {
+        CodexErrorInfo::UsageLimitExceeded => Some(ScheduleRunErrorClass::UsageLimit),
+        CodexErrorInfo::ContextWindowExceeded => Some(ScheduleRunErrorClass::ContextWindow),
+        CodexErrorInfo::ServerOverloaded
+        | CodexErrorInfo::CyberPolicy
+        | CodexErrorInfo::HttpConnectionFailed { .. }
+        | CodexErrorInfo::ResponseStreamConnectionFailed { .. }
+        | CodexErrorInfo::InternalServerError
+        | CodexErrorInfo::Unauthorized
+        | CodexErrorInfo::BadRequest
+        | CodexErrorInfo::ThreadRollbackFailed
+        | CodexErrorInfo::SandboxError
+        | CodexErrorInfo::ResponseStreamDisconnected { .. }
+        | CodexErrorInfo::ResponseTooManyFailedAttempts { .. }
+        | CodexErrorInfo::ActiveTurnNotSteerable { .. }
+        | CodexErrorInfo::Other => None,
+    }
+}
+
+fn classify_schedule_run_error_message(message: &str) -> Option<ScheduleRunErrorClass> {
+    let message = message.to_ascii_lowercase();
+    if message.contains("usage limit")
+        || message.contains("usage_limit")
+        || message.contains("usage-limit")
+        || message.contains("quota exceeded")
+        || message.contains("usage not included")
+    {
+        return Some(ScheduleRunErrorClass::UsageLimit);
+    }
+    if message.contains("context_length_exceeded")
+        || message.contains("context-length")
+        || message.contains("context length")
+        || message.contains("context window")
+        || message.contains("ran out of room in the model")
+    {
+        return Some(ScheduleRunErrorClass::ContextWindow);
+    }
+    None
 }
 
 fn truncate_schedule_run_error(error: String) -> String {
@@ -1004,6 +1180,7 @@ fn looks_like_jwt(value: &str) -> bool {
 mod tests {
     use super::*;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
@@ -1280,6 +1457,71 @@ mod tests {
     }
 
     #[test]
+    fn recorded_schedule_creation_auth_uses_latest_turn_auth_profile() {
+        let thread_id = ThreadId::new();
+        let history = resumed_history_with_session_and_turn_auth_profile(
+            thread_id,
+            Some(Some("account002")),
+            Some(None),
+        );
+
+        assert_eq!(Some(None), history.get_auth_profile());
+        assert_eq!(
+            Some(Some("account002".to_string())),
+            schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &history)
+        );
+    }
+
+    #[test]
+    fn schedule_auth_profile_uses_broker_selected_profile_for_pinned_loop() {
+        let decision = super::usage_profile_broker::UsageProfileBrokerDecision {
+            selected_profile: Some("account003".to_string()),
+            retry_at: None,
+            reason: super::usage_profile_broker::UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
+        };
+
+        let resolved = schedule_auth_profile_after_broker_decision(
+            Some(Some("account001".to_string())),
+            decision,
+            /*reset_retry_buffer_secs*/ 30,
+            at(/*seconds*/ 1_700_000_000),
+        )
+        .expect("broker-selected profile should be usable");
+
+        assert_eq!(Some(Some("account003".to_string())), resolved);
+    }
+
+    #[test]
+    fn schedule_auth_profile_reports_usage_wait_when_profiles_exhausted() {
+        let now = at(/*seconds*/ 1_700_000_000);
+        let decision = super::usage_profile_broker::UsageProfileBrokerDecision {
+            selected_profile: None,
+            retry_at: Some(now.timestamp() + 120),
+            reason:
+                super::usage_profile_broker::UsageProfileBrokerDecisionReason::NoAvailableProfiles,
+        };
+
+        let wait = schedule_auth_profile_after_broker_decision(
+            Some(Some("account001".to_string())),
+            decision,
+            /*reset_retry_buffer_secs*/ 45,
+            now,
+        )
+        .expect_err("exhausted profiles should defer the scheduled run");
+
+        assert_eq!(
+            ScheduleUsageProfileWait {
+                retry_at: now + chrono::Duration::seconds(165),
+            },
+            wait
+        );
+        assert_eq!(
+            "all eligible auth profiles are exhausted; retrying scheduled run after 2023-11-14T22:16:05+00:00",
+            wait.to_string()
+        );
+    }
+
+    #[test]
     fn computes_interval_next_run() {
         assert_eq!(
             Some(at(/*seconds*/ 1_700_000_300)),
@@ -1341,7 +1583,8 @@ mod tests {
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
         assert!(prompt.contains("This is a distinct run"));
         assert!(prompt.contains("Produce exactly one visible final response"));
-        assert!(prompt.contains("Do not wait, sleep, start a timer"));
+        assert!(prompt.contains("Do not wait, sleep, or start a timer"));
+        assert!(prompt.contains("use native create_goal or create_goal_plan goal tools"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
     }
@@ -1378,10 +1621,83 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_turn_error_fails() {
+        let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
+            message: "auth profile missing".to_string(),
+            codex_error_info: None,
+        }));
+
+        assert_eq!(
+            Some(ScheduledTurnFinish::Failed(
+                "scheduled turn failed: auth profile missing".to_string()
+            )),
+            finish
+        );
+    }
+
+    #[test]
+    fn scheduled_turn_usage_limit_error_is_classified_and_redacted() {
+        let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
+            message: "You've hit your usage limit. OPENAI_API_KEY=sk-test-secret".to_string(),
+            codex_error_info: Some(CoreCodexErrorInfo::UsageLimitExceeded),
+        }));
+
+        let expected = "[usage-limit] scheduled turn failed: You've hit your usage limit. OPENAI_API_KEY=[redacted]".to_string();
+        assert_eq!(Some(ScheduledTurnFinish::Failed(expected)), finish);
+    }
+
+    #[test]
+    fn scheduled_turn_context_window_error_preserves_node_init_detail() {
+        let error = codex_app_server_protocol::TurnError {
+            message: "node init failed: process exited with code 1: child stderr: Codewith ran out of room in the model's context window. token=sk-test-secret".to_string(),
+            codex_error_info: Some(CodexErrorInfo::ContextWindowExceeded),
+            additional_details: None,
+        };
+
+        let sanitized = schedule_turn_error(&error);
+
+        assert!(sanitized.starts_with("[context-window] scheduled turn failed:"));
+        assert!(sanitized.contains("node init failed"));
+        assert!(sanitized.contains("context window"));
+        assert!(!sanitized.contains("sk-test-secret"));
+        assert_ne!(
+            "node init failed: process exited with code 1",
+            sanitized.as_str()
+        );
+    }
+
+    #[test]
+    fn submit_error_preserves_usage_limit_cause_below_node_init() {
+        let error =
+            anyhow::anyhow!("child stderr: You've hit your usage limit. Bearer sk-test-secret")
+                .context("node init failed: process exited with code 1");
+
+        let sanitized = schedule_submit_error(&error);
+
+        assert!(sanitized.starts_with("[usage-limit]"));
+        assert!(sanitized.contains("node init failed"));
+        assert!(sanitized.contains("usage limit"));
+        assert!(!sanitized.contains("sk-test-secret"));
+        assert_ne!(
+            "node init failed: process exited with code 1",
+            sanitized.as_str()
+        );
+    }
+
+    #[test]
+    fn schedule_run_error_heuristically_classifies_context_length() {
+        let sanitized = schedule_run_error(
+            "node init failed: process exited with code 1: context_length_exceeded: input too large",
+        );
+
+        assert!(sanitized.starts_with("[context-window]"));
+        assert!(sanitized.contains("context_length_exceeded"));
+    }
+
+    #[test]
     fn redacts_sensitive_schedule_run_error_values() {
         let sanitized = schedule_run_error(
-            "failed with OPENAI_API_KEY=sk-test-secret token: plain-secret Bearer sk-bearer-secret"
-                .to_string(),
+            "failed with OPENAI_API_KEY=sk-test-secret token: plain-secret Bearer sk-bearer-secret",
         );
 
         assert_eq!(
@@ -1396,7 +1712,7 @@ mod tests {
     #[test]
     fn redacts_short_prefixed_api_keys_from_schedule_run_errors() {
         let sanitized = schedule_run_error(
-            "unexpected status 401 Unauthorized: Incorrect API key provided: sk-work.".to_string(),
+            "unexpected status 401 Unauthorized: Incorrect API key provided: sk-work.",
         );
 
         assert!(sanitized.contains("[redacted]"));

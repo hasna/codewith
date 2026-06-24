@@ -532,6 +532,120 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_profile_leases_exhaust_candidates_until_lease_expiry() {
+        PROFILE_BROKER_PROFILE_LEASES
+            .lock()
+            .expect("profile leases lock")
+            .clear();
+
+        let mut config = config();
+        config.strategy = AuthProfileAutoSwitchStrategy::Ordered;
+        let profiles = vec![
+            chatgpt_profile("work"),
+            chatgpt_profile("second"),
+            chatgpt_profile("third"),
+        ];
+        let health_by_profile = BTreeMap::from([
+            (
+                "second".to_string(),
+                UsageProfileHealth::Healthy {
+                    remaining_percent: 20.0,
+                },
+            ),
+            (
+                "third".to_string(),
+                UsageProfileHealth::Healthy {
+                    remaining_percent: 80.0,
+                },
+            ),
+        ]);
+        let now = Instant::now();
+
+        let first_candidates = auth_profile_auto_switch_candidates(
+            Some("work"),
+            &config,
+            &profiles,
+            &active_profile_leases(now),
+        );
+        assert_eq!(
+            vec!["second".to_string(), "third".to_string()],
+            first_candidates
+        );
+        let first = choose_dispatch_auth_profile(&config, &first_candidates, &health_by_profile);
+        assert_eq!(
+            UsageProfileBrokerDecision::selected(
+                "second".to_string(),
+                UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
+            ),
+            first
+        );
+        lease_profile(
+            first
+                .selected_profile
+                .as_deref()
+                .expect("first candidate should be selected"),
+            now,
+        );
+
+        let second_candidates = auth_profile_auto_switch_candidates(
+            Some("work"),
+            &config,
+            &profiles,
+            &active_profile_leases(now),
+        );
+        assert_eq!(vec!["third".to_string()], second_candidates);
+        let second = choose_dispatch_auth_profile(&config, &second_candidates, &health_by_profile);
+        assert_eq!(
+            UsageProfileBrokerDecision::selected(
+                "third".to_string(),
+                UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
+            ),
+            second
+        );
+        lease_profile(
+            second
+                .selected_profile
+                .as_deref()
+                .expect("second candidate should be selected"),
+            now,
+        );
+
+        let exhausted_candidates = auth_profile_auto_switch_candidates(
+            Some("work"),
+            &config,
+            &profiles,
+            &active_profile_leases(now),
+        );
+        assert_eq!(Vec::<String>::new(), exhausted_candidates);
+        assert_eq!(
+            UsageProfileBrokerDecision::no_switch(
+                UsageProfileBrokerDecisionReason::NoCandidateProfiles
+            ),
+            choose_dispatch_auth_profile(&config, &exhausted_candidates, &health_by_profile)
+        );
+
+        let after_expiry = now + PROFILE_BROKER_PROFILE_LEASE_DURATION + Duration::from_millis(1);
+        assert_eq!(
+            HashSet::<String>::new(),
+            active_profile_leases(after_expiry)
+        );
+        assert_eq!(
+            vec!["second".to_string(), "third".to_string()],
+            auth_profile_auto_switch_candidates(
+                Some("work"),
+                &config,
+                &profiles,
+                &active_profile_leases(after_expiry),
+            )
+        );
+
+        PROFILE_BROKER_PROFILE_LEASES
+            .lock()
+            .expect("profile leases lock")
+            .clear();
+    }
+
+    #[test]
     fn highest_available_dispatch_selects_healthiest_non_exhausted_profile() {
         let health_by_profile = BTreeMap::from([
             (

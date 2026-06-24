@@ -58,6 +58,10 @@ pub(crate) struct TotalTokenUsageBreakdown {
     pub estimated_bytes_of_items_added_since_last_successful_api_response: i64,
 }
 
+const HEADLESS_TOOL_OUTPUT_TOTAL_TOKENS: usize = 24_000;
+const HEADLESS_TOOL_OUTPUT_ITEM_TOKENS: usize = 4_000;
+const HEADLESS_TOOL_OUTPUT_OMITTED: &str = "[historical tool output omitted]";
+
 impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
@@ -110,6 +114,16 @@ impl ContextManager {
             let processed = self.process_item(item_ref, policy);
             self.items.push(processed);
         }
+    }
+
+    pub(crate) fn replace_recorded_items<I>(&mut self, items: I, policy: TruncationPolicy)
+    where
+        I: IntoIterator,
+        I::Item: std::ops::Deref<Target = ResponseItem>,
+    {
+        let mut replacement = ContextManager::new();
+        replacement.record_items(items, policy);
+        self.replace(replacement.into_raw_items());
     }
 
     /// Returns the history prepared for sending to the model. This applies a proper
@@ -177,6 +191,29 @@ impl ContextManager {
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
         self.history_version = self.history_version.saturating_add(1);
+    }
+
+    pub(crate) fn bound_headless_turn_tool_outputs(&mut self) -> bool {
+        let mut remaining_tokens = HEADLESS_TOOL_OUTPUT_TOTAL_TOKENS;
+        let mut changed = false;
+
+        for item in self.items.iter_mut().rev() {
+            let Some(item_tokens) = headless_tool_output_token_count(item) else {
+                continue;
+            };
+            let item_budget = remaining_tokens.min(HEADLESS_TOOL_OUTPUT_ITEM_TOKENS);
+            if item_tokens > item_budget {
+                changed |= bound_headless_tool_output(item, item_budget);
+                remaining_tokens = remaining_tokens.saturating_sub(item_budget);
+            } else {
+                remaining_tokens = remaining_tokens.saturating_sub(item_tokens);
+            }
+        }
+
+        if changed {
+            self.history_version = self.history_version.saturating_add(1);
+        }
+        changed
     }
 
     /// Replace image content in the last turn if it originated from a tool output.
@@ -467,6 +504,72 @@ pub(crate) fn truncate_function_output_payload(
         body,
         success: output.success,
     }
+}
+
+fn headless_tool_output_token_count(item: &ResponseItem) -> Option<usize> {
+    match item {
+        ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. } => {
+            Some(usize::try_from(estimate_item_token_count(item)).unwrap_or(usize::MAX))
+        }
+        ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::ToolSearchOutput { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => None,
+    }
+}
+
+fn bound_headless_tool_output(item: &mut ResponseItem, token_budget: usize) -> bool {
+    match item {
+        ResponseItem::FunctionCallOutput { output, .. } => {
+            bound_headless_tool_output_payload(output, token_budget)
+        }
+        ResponseItem::CustomToolCallOutput { output, .. } => {
+            bound_headless_tool_output_payload(output, token_budget)
+        }
+        ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::ToolSearchOutput { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => false,
+    }
+}
+
+fn bound_headless_tool_output_payload(
+    output: &mut FunctionCallOutputPayload,
+    token_budget: usize,
+) -> bool {
+    let bounded = if token_budget == 0 {
+        FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(HEADLESS_TOOL_OUTPUT_OMITTED.to_string()),
+            success: output.success,
+        }
+    } else {
+        truncate_function_output_payload(output, TruncationPolicy::Tokens(token_budget))
+    };
+    if *output == bounded {
+        return false;
+    }
+    *output = bounded;
+    true
 }
 
 /// API messages include every non-system item (user/assistant messages, reasoning,
