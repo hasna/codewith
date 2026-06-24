@@ -102,15 +102,6 @@ struct PendingMcpElicitationOption: Identifiable {
     var id: String { label }
 }
 
-struct ProfileRef: Identifiable, Hashable {
-    let id = UUID()
-    var name: String
-    var handle: String
-    var plan: String
-    var initials: String
-    var colorHex: UInt32
-}
-
 // MARK: - App state, backed by the live app-server
 
 @MainActor
@@ -149,6 +140,17 @@ final class AppModel {
     var machinesError: String? = nil
     var machinePairing: MachinePairingInfo? = nil
     var authProfiles: [AuthProfileInfo] = []
+    var profileError: String? = nil
+    var accountUsage: AccountUsageInfo? = nil
+    var accountUsageError: String? = nil
+    var mcpServers: [McpServerStatusInfo] = []
+    var mcpServersError: String? = nil
+    var hookEntries: [HookEntryInfo] = []
+    var hooksError: String? = nil
+    var worktrees: [WorktreeInfo] = []
+    var worktreesError: String? = nil
+    var archivedThreads: [ThreadInfo] = []
+    var archivedThreadsError: String? = nil
     var activePeers: [ActiveSessionPeerInfo] = []
     var agentRuns: [AgentRunInfo] = []
     var activeAgentAttachment: AgentAttachmentInfo? = nil
@@ -164,6 +166,7 @@ final class AppModel {
     var remoteSearchThreads: [ThreadInfo] = []
     private var pendingOpenURL: URL? = nil
     private var previousNonFullSandbox = "read-only"
+    var pendingAuthProfileSave: PendingAuthProfileSave? = nil
     @ObservationIgnored private var publishedMenuBarPreference: Bool?
 
     // In-session config
@@ -196,14 +199,7 @@ final class AppModel {
     @ObservationIgnored private var lastTurnActivity = Date()
     private static let turnSilenceTimeout: TimeInterval = 300
 
-    // Profiles (local switch; profile picker UI)
-    var profiles: [ProfileRef]
-    var currentProfileID: UUID
-
     init() {
-        let me = ProfileRef(name: "You", handle: "@me", plan: "", initials: "ME", colorHex: 0x4AB58E)
-        profiles = [me]
-        currentProfileID = me.id
         installExitHandler()
     }
 
@@ -287,7 +283,9 @@ final class AppModel {
         await bootstrap()
     }
 
-    var currentProfile: ProfileRef { profiles.first { $0.id == currentProfileID } ?? profiles[0] }
+    var currentAuthProfile: AuthProfileInfo? {
+        authProfiles.first { $0.active }
+    }
 
     // MARK: Bootstrap
 
@@ -331,6 +329,7 @@ final class AppModel {
 
     func refreshAll() async {
         async let acct: () = loadAccount()
+        async let profiles: () = loadProfiles()
         async let apps: () = loadApps()
         async let peers: () = loadActivePeers()
         async let agents: () = loadAgentRuns()
@@ -339,7 +338,7 @@ final class AppModel {
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, apps, peers, agents, requirements, catalog)
+        _ = await (acct, profiles, apps, peers, agents, requirements, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { [weak self] in
             guard let self else { return }
@@ -711,8 +710,83 @@ final class AppModel {
 
     func loadProfiles() async {
         guard connection == .connected else { return }
-        if let profiles = try? await client.listAuthProfiles() {
+        do {
+            let profiles = try await client.listAuthProfiles()
             authProfiles = profiles
+            profileError = nil
+        } catch {
+            authProfiles = []
+            profileError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't expose auth profiles."
+                : error.localizedDescription
+        }
+    }
+
+    func loadAccountUsage() async {
+        guard connection == .connected else { return }
+        do {
+            accountUsage = try await client.readAccountUsage()
+            accountUsageError = nil
+        } catch {
+            accountUsage = nil
+            accountUsageError = error.localizedDescription
+        }
+    }
+
+    func loadMcpServers() async {
+        guard connection == .connected else { return }
+        do {
+            mcpServers = try await client.listMcpServers(threadId: activeThreadId)
+            mcpServersError = nil
+        } catch {
+            mcpServers = []
+            mcpServersError = error.localizedDescription
+        }
+    }
+
+    func loadHooks() async {
+        guard connection == .connected else { return }
+        do {
+            let cwd = currentProjectPath.map { [$0] } ?? []
+            hookEntries = try await client.listHooks(cwds: cwd)
+            hooksError = nil
+        } catch {
+            hookEntries = []
+            hooksError = error.localizedDescription
+        }
+    }
+
+    func loadWorktrees() async {
+        guard connection == .connected else { return }
+        do {
+            worktrees = try await client.listWorktrees()
+            worktreesError = nil
+        } catch {
+            worktrees = []
+            worktreesError = error.localizedDescription
+        }
+    }
+
+    func loadArchivedThreads() async {
+        guard connection == .connected else { return }
+        do {
+            let result = try await client.listThreads(limit: 100, archived: true)
+            archivedThreads = result.threads
+            archivedThreadsError = nil
+        } catch {
+            archivedThreads = []
+            archivedThreadsError = error.localizedDescription
+        }
+    }
+
+    func unarchiveThread(_ thread: ThreadInfo) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.unarchiveThread(id: thread.id)
+            archivedThreads.removeAll { $0.id == thread.id }
+            await loadThreads(reset: true)
+        } catch {
+            archivedThreadsError = error.localizedDescription
         }
     }
 
@@ -720,7 +794,12 @@ final class AppModel {
 
     var loginInProgress = false
     var loginError: String? = nil
-    private var pendingLoginId: String? = nil
+    var pendingLoginId: String? = nil
+
+    struct PendingAuthProfileSave: Equatable {
+        var name: String
+        var loginId: String
+    }
 
     var isSignedIn: Bool {
         if !account.requiresOpenAIAuth { return true }
@@ -730,15 +809,28 @@ final class AppModel {
 
     /// Start ChatGPT OAuth: open the returned auth URL in the browser. The
     /// `account/login/completed` notification finalizes it.
-    func loginWithChatGPT() async {
+    func loginWithChatGPT(profileNameToSave: String? = nil) async {
         guard connection == .connected, !loginInProgress else { return }
         loginInProgress = true; loginError = nil
         do {
             let r = try await client.request("account/login/start", .object(["type": .string("chatgpt")]), timeout: 30)
             pendingLoginId = r["loginId"]?.string
+            if let profileNameToSave {
+                guard let loginId = pendingLoginId, !loginId.isEmpty else {
+                    loginError = "No login ID was returned."
+                    pendingLoginId = nil
+                    pendingAuthProfileSave = nil
+                    loginInProgress = false
+                    return
+                }
+                pendingAuthProfileSave = PendingAuthProfileSave(name: profileNameToSave, loginId: loginId)
+            } else {
+                pendingAuthProfileSave = nil
+            }
             guard let url = Self.loginURL(from: r) else {
                 loginError = "No login URL was returned."
                 pendingLoginId = nil
+                pendingAuthProfileSave = nil
                 loginInProgress = false
                 return
             }
@@ -746,15 +838,18 @@ final class AppModel {
             if !NSWorkspace.shared.open(url) {
                 loginError = "Could not open the login URL."
                 pendingLoginId = nil
+                pendingAuthProfileSave = nil
                 loginInProgress = false
             }
             #else
             loginError = "Cannot open the login URL on this platform."
             pendingLoginId = nil
+            pendingAuthProfileSave = nil
             loginInProgress = false
             #endif
         } catch {
             loginError = error.localizedDescription
+            pendingAuthProfileSave = nil
             loginInProgress = false
         }
     }
@@ -791,6 +886,56 @@ final class AppModel {
         loginInProgress = false
     }
 
+    func createAuthProfileWithChatGPT(name: String) async {
+        let profileName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let error = Self.authProfileNameValidationMessage(profileName) {
+            profileError = error
+            return
+        }
+        profileError = nil
+        await loginWithChatGPT(profileNameToSave: profileName)
+    }
+
+    func createAuthProfileWithApiKey(name: String, apiKey: String) async {
+        let profileName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let error = Self.authProfileNameValidationMessage(profileName) {
+            profileError = error
+            return
+        }
+        profileError = nil
+        await loginWithApiKey(apiKey, providerName: "OpenAI")
+        guard loginError == nil, isSignedIn else { return }
+        await saveCurrentAuthProfile(profileName)
+    }
+
+    static func authProfileNameValidationMessage(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Enter a profile name."
+        }
+        if trimmed.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil {
+            return "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number."
+        }
+        return nil
+    }
+
+    func saveCurrentAuthProfile(_ name: String) async {
+        guard connection == .connected else { return }
+        do {
+            let saved = try await client.saveCurrentAuthProfile(name)
+            authProfiles.removeAll { $0.name == saved.name }
+            authProfiles.insert(saved, at: 0)
+            profileError = nil
+            pendingAuthProfileSave = nil
+            await loadProfiles()
+            await loadAccount()
+        } catch {
+            profileError = error.localizedDescription
+            loginError = error.localizedDescription
+            pendingAuthProfileSave = nil
+        }
+    }
+
     func loginWithoutApiKey(providerName: String) async {
         guard connection == .connected, !loginInProgress else { return }
         loginInProgress = true; loginError = nil
@@ -813,6 +958,7 @@ final class AppModel {
             _ = try? await client.request("account/login/cancel", .object(["loginId": .string(pendingLoginId)]), timeout: 10)
         }
         pendingLoginId = nil
+        pendingAuthProfileSave = nil
         loginInProgress = false
     }
 
@@ -821,14 +967,17 @@ final class AppModel {
         await loadAccount()
     }
 
-    /// Switch the active CLI profile, then reconnect the session.
+    /// Switch the active CLI profile and refresh account-scoped UI state.
     func switchAuthProfile(_ name: String) async {
         guard connection == .connected else { return }
         do {
             _ = try await client.switchAuthProfile(name)
-            await reconnectAppServer()
+            profileError = nil
             await loadProfiles()
+            await loadAccount()
+            await loadModelCatalog()
         } catch {
+            profileError = error.localizedDescription
             await loadProfiles()
         }
     }
@@ -863,6 +1012,32 @@ final class AppModel {
         route = r; sidebarSelection = label; showSettings = false; showAddMenu = false
     }
 
+    func selectSettingsPage(_ page: String) {
+        settingsPage = page
+        Task { await loadSettingsPage(page) }
+    }
+
+    func loadSettingsPage(_ page: String) async {
+        switch page {
+        case "Profile":
+            await loadAccount()
+            await loadProfiles()
+        case "Usage & billing":
+            await loadAccount()
+            await loadAccountUsage()
+        case "MCP servers":
+            await loadMcpServers()
+        case "Hooks":
+            await loadHooks()
+        case "Worktrees":
+            await loadWorktrees()
+        case "Archived chats":
+            await loadArchivedThreads()
+        default:
+            break
+        }
+    }
+
     func openThread(_ t: ThreadInfo) async {
         let requestedThreadId = t.id
         activeThreadId = t.id
@@ -895,7 +1070,10 @@ final class AppModel {
         await loadAgentRuns()
     }
 
-    func openSettings(_ page: String = "General") { showSettings = true; settingsPage = page }
+    func openSettings(_ page: String = "General") {
+        showSettings = true
+        selectSettingsPage(page)
+    }
 
     func handleDesktopURL(_ url: URL) {
         guard connection == .connected else {
@@ -1072,7 +1250,10 @@ final class AppModel {
             }
             return nil
         }
-        activeThreadId = try? await client.startThread(cwd: currentProjectPath ?? NSHomeDirectory())
+        activeThreadId = try? await client.startThread(
+            cwd: currentProjectPath ?? NSHomeDirectory(),
+            authProfile: currentAuthProfile?.name
+        )
         if let activeThreadId {
             resumedThreadIds.insert(activeThreadId)
             await loadThreads(reset: true)
@@ -1176,9 +1357,32 @@ final class AppModel {
                let msg = params["error"]?["message"]?.string ?? params["message"]?.string {
                 activeMessages.append(ChatMessage(role: .assistant, text: "⚠︎ \(msg)"))
             }
-        case "account/login/completed", "account/updated", "account/login/chatGptComplete":
+        case "account/login/completed", "account/login/chatGptComplete":
+            let loginSucceeded = params["success"]?.bool ?? true
+            let completedLoginId = params["loginId"]?.string
+            if let pendingSave = pendingAuthProfileSave,
+               completedLoginId != pendingSave.loginId {
+                Task { await loadAccount(); await refreshAll() }
+                return
+            }
             loginInProgress = false
             pendingLoginId = nil
+            if !loginSucceeded {
+                pendingAuthProfileSave = nil
+                loginError = params["error"]?.string ?? "Login was not completed."
+                Task { await loadAccount(); await refreshAll() }
+                return
+            }
+            if let pendingSave = pendingAuthProfileSave {
+                Task {
+                    await loadAccount()
+                    await saveCurrentAuthProfile(pendingSave.name)
+                    await refreshAll()
+                }
+            } else {
+                Task { await loadAccount(); await refreshAll() }
+            }
+        case "account/updated":
             Task { await loadAccount(); await refreshAll() }
         case "thread/started", "thread/closed", "thread/archived", "thread/unarchived":
             // A session appeared/changed — refresh the list so Projects + Chats stay live.
@@ -2439,8 +2643,6 @@ final class AppModel {
         #endif
     }
 
-    func switchProfile(_ id: UUID) { currentProfileID = id }
-
     /// A disconnected model pre-populated with representative data, for
     /// snapshot rendering / previews (does not start the app-server).
     static func sample() -> AppModel {
@@ -2481,7 +2683,7 @@ final class AppModel {
         ]
         m.authProfiles = [
             AuthProfileInfo(name: "account001", email: "theflashbadger@gmail.com", provider: "ChatGPT", plan: "Pro"),
-            AuthProfileInfo(name: "account002", email: "andrei@hasna.com", provider: "ChatGPT", plan: "Pro"),
+            AuthProfileInfo(name: "account002", email: "andrei@hasna.com", provider: "ChatGPT", plan: "Pro", active: true),
         ]
         m.account = AccountInfo(from: .object(["account": .object([
             "displayName": .string("Andrei Hasna"), "email": .string("andrei@hasna.com"), "planType": .string("Pro"),

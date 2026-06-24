@@ -1481,6 +1481,24 @@ client_request_definitions! {
         response: v2::CancelLoginAccountResponse,
     },
 
+    AuthProfileList => "authProfile/list" {
+        params: v2::AuthProfileListParams,
+        serialization: global_shared_read("account-auth"),
+        response: v2::AuthProfileListResponse,
+    },
+
+    AuthProfileSaveCurrent => "authProfile/saveCurrent" {
+        params: v2::AuthProfileSaveCurrentParams,
+        serialization: global("account-auth"),
+        response: v2::AuthProfileSaveCurrentResponse,
+    },
+
+    AuthProfileSwitch => "authProfile/switch" {
+        params: v2::AuthProfileSwitchParams,
+        serialization: global("account-auth"),
+        response: v2::AuthProfileSwitchResponse,
+    },
+
     LogoutAccount => "account/logout" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: global("account-auth"),
@@ -3520,6 +3538,77 @@ mod tests {
                     "chatgptAccountId": "org-123",
                     "chatgptPlanType": "business"
                 }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_list() -> Result<()> {
+        let request = ClientRequest::AuthProfileList {
+            request_id: RequestId::Integer(6),
+            params: v2::AuthProfileListParams {
+                cursor: None,
+                limit: None,
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(6));
+        assert_eq!(request.method(), "authProfile/list");
+        assert_eq!(
+            json!({
+                "method": "authProfile/list",
+                "id": 6,
+                "params": {
+                    "cursor": null,
+                    "limit": null,
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_save_current() -> Result<()> {
+        let request = ClientRequest::AuthProfileSaveCurrent {
+            request_id: RequestId::Integer(7),
+            params: v2::AuthProfileSaveCurrentParams {
+                name: "work".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(7));
+        assert_eq!(request.method(), "authProfile/saveCurrent");
+        assert_eq!(
+            json!({
+                "method": "authProfile/saveCurrent",
+                "id": 7,
+                "params": {
+                    "name": "work",
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_switch() -> Result<()> {
+        let request = ClientRequest::AuthProfileSwitch {
+            request_id: RequestId::Integer(8),
+            params: v2::AuthProfileSwitchParams {
+                name: "work".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(8));
+        assert_eq!(request.method(), "authProfile/switch");
+        assert_eq!(
+            json!({
+                "method": "authProfile/switch",
+                "id": 8,
+                "params": {
+                    "name": "work",
+                },
             }),
             serde_json::to_value(&request)?,
         );

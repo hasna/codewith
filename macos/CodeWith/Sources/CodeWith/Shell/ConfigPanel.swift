@@ -44,11 +44,13 @@ struct ConfigPanel: View {
                 Task { await model.loadProfiles() }
             } label: {
                 HStack(spacing: 8) {
-                    Circle().fill(Color(hex: model.currentProfile.colorHex)).frame(width: 22, height: 22)
-                        .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white))
+                    Circle().fill(Color(hex: 0x4AB58E)).frame(width: 22, height: 22)
+                        .overlay(Text(profileInitials).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(model.account.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                        if !model.account.plan.isEmpty {
+                        if let profile = model.currentAuthProfile {
+                            Text(profile.name).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                        } else if !model.account.plan.isEmpty {
                             Text(model.account.plan).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
                         }
                     }
@@ -62,6 +64,13 @@ struct ConfigPanel: View {
         }
         .frame(width: 232)
         .background(Theme.canvas)
+    }
+
+    private var profileInitials: String {
+        if let profile = model.currentAuthProfile {
+            return String(profile.name.prefix(2)).uppercased()
+        }
+        return model.account.initials
     }
 
     private func pickerRow(_ label: String, value: String, options: [String], onSelect: @escaping (String) -> Void) -> some View {

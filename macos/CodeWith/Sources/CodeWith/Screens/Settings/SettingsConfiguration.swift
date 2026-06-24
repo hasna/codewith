@@ -4,6 +4,9 @@ struct SettingsConfiguration: View {
     var version: String? = nil
     var approval: String? = nil
     var sandbox: String? = nil
+    var error: String? = nil
+    var approvalOptions: [String] = ["untrusted", "on-failure", "on-request", "never"]
+    var sandboxOptions: [String] = ["read-only", "workspace-write", "danger-full-access"]
     var onSetApproval: (String) -> Void = { _ in }
     var onSetSandbox: (String) -> Void = { _ in }
     var onOpenConfig: () -> Void = {}
@@ -37,6 +40,10 @@ struct SettingsConfiguration: View {
                 .padding(.top, -10).padding(.bottom, 22)
 
                 SettingsGroupLabel(text: "Custom config.toml settings")
+                if let error {
+                    warningRow(error)
+                        .padding(.bottom, 8)
+                }
                 HStack {
                     // Borderless dropdown — the reference renders this selector with
                     // no card outline (text + chevron only).
@@ -56,7 +63,7 @@ struct SettingsConfiguration: View {
                         if snapshot { DropdownPill(text: approvalLabel, minWidth: 150) }
                         else {
                             Menu {
-                                ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
+                                ForEach(approvalOptions, id: \.self) { v in
                                     Button(v) { onSetApproval(v) }
                                 }
                             } label: { DropdownPill(text: approvalLabel, minWidth: 150) }
@@ -67,7 +74,7 @@ struct SettingsConfiguration: View {
                         if snapshot { DropdownPill(text: sandboxLabel, minWidth: 150) }
                         else {
                             Menu {
-                                ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
+                                ForEach(sandboxOptions, id: \.self) { v in
                                     Button(v) { onSetSandbox(v) }
                                 }
                             } label: { DropdownPill(text: sandboxLabel, minWidth: 150) }
@@ -121,5 +128,21 @@ struct SettingsConfiguration: View {
             pill(t, icon: icon, color: color)
         }
         .buttonStyle(.plain)
+    }
+
+    private func warningRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.warning)
+                .padding(.top, 2)
+            Text(text)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.warning.opacity(0.08)))
     }
 }

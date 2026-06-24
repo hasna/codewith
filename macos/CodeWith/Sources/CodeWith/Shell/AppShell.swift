@@ -12,7 +12,7 @@ struct AppShell: View {
             } else if model.showSettings {
                 SettingsShell(
                     selected: model.settingsPage,
-                    onSelect: { model.settingsPage = $0 },
+                    onSelect: { model.selectSettingsPage($0) },
                     onBack: { model.showSettings = false }
                 ) { settingsPage(model.settingsPage) }
             } else {
@@ -71,7 +71,12 @@ struct AppShell: View {
                 case .machines: MachinesView(machines: model.machines)
                 case .profiles: ProfilesView(profiles: model.authProfiles,
                                              activeEmail: model.account.email,
-                                             onSwitch: { name in Task { await model.switchAuthProfile(name) } })
+                                             profileError: model.profileError,
+                                             loginInProgress: model.loginInProgress,
+                                             loginError: model.loginError,
+                                             onSwitch: { name in Task { await model.switchAuthProfile(name) } },
+                                             onCreateChatGPT: { name in Task { await model.createAuthProfileWithChatGPT(name: name) } },
+                                             onCreateApiKey: { name, key in Task { await model.createAuthProfileWithApiKey(name: name, apiKey: key) } })
                 }
             }
             .frame(maxWidth: .infinity)
@@ -99,13 +104,75 @@ struct AppShell: View {
 
     @ViewBuilder private func settingsPage(_ name: String) -> some View {
         switch name {
-        case "Profile":         SettingsProfile(account: model.account)
-        case "Appearance":      SettingsAppearance()
-        case "Configuration":   SettingsConfiguration(version: model.serverVersion, approval: model.configApproval, sandbox: model.configSandbox,
-                                                       onSetApproval: { model.setApproval($0) }, onSetSandbox: { model.setSandbox($0) })
-        case "Personalization": SettingsPersonalization()
-        default:                SettingsGeneral(fullAccess: model.fullAccess, sandbox: model.configSandbox,
-                                                onToggleFullAccess: { model.setFullAccess(!model.fullAccess) })
+        case "Profile":
+            SettingsProfile(
+                account: model.account,
+                activeProfile: model.currentAuthProfile,
+                profiles: model.authProfiles,
+                profileError: model.profileError,
+                onManageProfiles: {
+                    model.showSettings = false
+                    model.open(.profiles, label: "Profiles")
+                    Task { await model.loadProfiles() }
+                })
+        case "Appearance":
+            SettingsAppearance()
+        case "Configuration":
+            SettingsConfiguration(
+                version: model.serverVersion,
+                approval: model.configApproval,
+                sandbox: model.configSandbox,
+                error: model.configError,
+                approvalOptions: model.approvalOptions,
+                sandboxOptions: model.sandboxOptions,
+                onSetApproval: { model.setApproval($0) },
+                onSetSandbox: { model.setSandbox($0) },
+                onOpenConfig: { model.openConfigToml() },
+                onDiagnose: { model.openDiagnosticsLog() })
+        case "Personalization":
+            SettingsPersonalization()
+        case "Keyboard shortcuts":
+            SettingsKeyboardShortcuts()
+        case "Usage & billing":
+            SettingsUsageBilling(
+                account: model.account,
+                activeProfile: model.currentAuthProfile,
+                usage: model.accountUsage,
+                error: model.accountUsageError,
+                onRefresh: { Task { await model.loadAccountUsage() } })
+        case "MCP servers":
+            SettingsMcpServers(
+                servers: model.mcpServers,
+                error: model.mcpServersError,
+                onRefresh: { Task { await model.loadMcpServers() } })
+        case "Hooks":
+            SettingsHooks(
+                entries: model.hookEntries,
+                error: model.hooksError,
+                onRefresh: { Task { await model.loadHooks() } })
+        case "Worktrees":
+            SettingsWorktrees(
+                worktrees: model.worktrees,
+                error: model.worktreesError,
+                onRefresh: { Task { await model.loadWorktrees() } })
+        case "Archived chats":
+            SettingsArchivedChats(
+                threads: model.archivedThreads,
+                error: model.archivedThreadsError,
+                onRefresh: { Task { await model.loadArchivedThreads() } },
+                onUnarchive: { thread in Task { await model.unarchiveThread(thread) } })
+        default:
+            SettingsGeneral(
+                fullAccess: model.fullAccess,
+                sandbox: model.configSandbox,
+                desktopSettings: model.desktopSettings,
+                allowFullAccess: model.canUseFullAccess,
+                onToggleFullAccess: { model.setFullAccess(!model.fullAccess) },
+                onSetWorkMode: { model.setWorkMode($0) },
+                onSetFileOpenDestination: { model.setFileOpenDestination($0) },
+                onSetLanguage: { model.setLanguage($0) },
+                onSetShowMenuBar: { model.setShowMenuBar($0) },
+                onSetBottomPanel: { model.setBottomPanel($0) })
         }
     }
 }
