@@ -174,6 +174,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
             lease_owner: "global-dispatcher-a".to_string(),
             lease_duration: std::time::Duration::from_secs(30),
             now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
         })
         .await?
         .expect("high priority global claim");
@@ -203,6 +205,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
             lease_owner: "global-dispatcher-b".to_string(),
             lease_duration: std::time::Duration::from_secs(30),
             now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
         })
         .await?
         .expect("remaining low priority global claim");
@@ -213,6 +217,538 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
     assert_eq!(
         second_claim.message.target_thread_id,
         low_priority_thread_id
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_skips_due_message_fresh_owned_by_another_local_session()
+-> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let local_thread_id = test_thread_id();
+    let foreign_thread_id = ThreadId::new();
+    runtime
+        .upsert_thread(&test_thread_metadata(
+            runtime.codex_home(),
+            foreign_thread_id,
+            runtime.codex_home().join("workspace-foreign"),
+        ))
+        .await?;
+
+    let now = Utc::now();
+    let local_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        local_thread_id,
+        "local-owner-message",
+        /*max_attempts*/ 3,
+        /*priority*/ 0,
+        Some(now),
+    )
+    .await?;
+    let foreign_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        foreign_thread_id,
+        "foreign-owner-message",
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
+        Some(now),
+    )
+    .await?;
+    runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id: foreign_thread_id,
+            owner_id: "foreign-owner".to_string(),
+            session_id: "foreign-session".to_string(),
+            pid: Some(123),
+            now,
+        })
+        .await?;
+
+    let local_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-local-owner".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("local owner should claim non-foreign message");
+    assert_eq!(
+        local_claim.message.message_id,
+        local_message.message.message_id
+    );
+    assert_eq!(local_claim.message.target_thread_id, local_thread_id);
+
+    let foreign_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-foreign-owner".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "foreign-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("foreign owner should claim its own fresh target");
+    assert_eq!(
+        foreign_claim.message.message_id,
+        foreign_message.message.message_id
+    );
+    assert_eq!(foreign_claim.message.target_thread_id, foreign_thread_id);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_ignores_stale_foreign_local_session_owner() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let stale_seen_at = now - chrono::Duration::seconds(30);
+    let message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "stale-foreign-owner-message",
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
+        Some(now),
+    )
+    .await?;
+    runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "foreign-owner".to_string(),
+            session_id: "foreign-session".to_string(),
+            pid: Some(123),
+            now: stale_seen_at,
+        })
+        .await?;
+
+    let claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-local-owner".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("stale foreign owner should not block due claim");
+    assert_eq!(claim.message.message_id, message.message.message_id);
+    assert_eq!(claim.message.target_thread_id, thread_id);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_active_session_heartbeat_keeps_newer_owner() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let newer_seen_at = Utc::now();
+    let older_seen_at = newer_seen_at - chrono::Duration::seconds(30);
+
+    let newer = runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "newer-owner".to_string(),
+            session_id: "newer-session".to_string(),
+            pid: Some(200),
+            now: newer_seen_at,
+        })
+        .await?;
+    let attempted_regression = runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "older-owner".to_string(),
+            session_id: "older-session".to_string(),
+            pid: Some(100),
+            now: older_seen_at,
+        })
+        .await?;
+    let current = runtime
+        .local_active_sessions()
+        .get_session(thread_id)
+        .await?;
+
+    assert_eq!(attempted_regression, newer);
+    assert_eq!(current, Some(newer));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_active_session_heartbeat_keeps_newer_same_owner_seen_at() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let newer_seen_at = Utc::now();
+    let older_seen_at = newer_seen_at - chrono::Duration::seconds(30);
+
+    let newer = runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "same-owner".to_string(),
+            session_id: "newer-session".to_string(),
+            pid: Some(200),
+            now: newer_seen_at,
+        })
+        .await?;
+    let attempted_regression = runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "same-owner".to_string(),
+            session_id: "older-session".to_string(),
+            pid: Some(100),
+            now: older_seen_at,
+        })
+        .await?;
+    let current = runtime
+        .local_active_sessions()
+        .get_session(thread_id)
+        .await?;
+
+    assert_eq!(attempted_regression, newer);
+    assert_eq!(current, Some(newer));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn prune_owner_sessions_keeps_rows_newer_than_refresh_observation() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let stale_thread_id = test_thread_id();
+    let fresh_thread_id = ThreadId::new();
+    runtime
+        .upsert_thread(&test_thread_metadata(
+            runtime.codex_home(),
+            fresh_thread_id,
+            runtime.codex_home().join("workspace-fresh"),
+        ))
+        .await?;
+    let observed_at = Utc::now();
+
+    runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id: stale_thread_id,
+            owner_id: "local-owner".to_string(),
+            session_id: "stale-session".to_string(),
+            pid: Some(100),
+            now: observed_at - chrono::Duration::seconds(1),
+        })
+        .await?;
+    let concurrent = runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id: fresh_thread_id,
+            owner_id: "local-owner".to_string(),
+            session_id: "fresh-session".to_string(),
+            pid: Some(100),
+            now: observed_at + chrono::Duration::seconds(1),
+        })
+        .await?;
+
+    let pruned = runtime
+        .local_active_sessions()
+        .prune_owner_sessions(LocalActiveSessionPruneOwnerParams {
+            owner_id: "local-owner".to_string(),
+            active_thread_ids: Vec::new(),
+            observed_at,
+        })
+        .await?;
+    let stale = runtime
+        .local_active_sessions()
+        .get_session(stale_thread_id)
+        .await?;
+    let fresh = runtime
+        .local_active_sessions()
+        .get_session(fresh_thread_id)
+        .await?;
+
+    assert_eq!(pruned, 1);
+    assert_eq!(stale, None);
+    assert_eq!(fresh, Some(concurrent));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_serializes_competing_dispatchers_per_target() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let first_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "target-lease-first",
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
+        Some(now),
+    )
+    .await?;
+    let second_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "target-lease-second",
+        /*max_attempts*/ 3,
+        /*priority*/ 5,
+        Some(now),
+    )
+    .await?;
+
+    let first_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-first".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-first".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("first dispatcher should claim first target message");
+    assert_eq!(
+        first_claim.message.message_id,
+        first_message.message.message_id
+    );
+
+    let blocked_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-second".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-second".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?;
+    assert!(blocked_claim.is_none());
+
+    let released = runtime
+        .mailbox_messages()
+        .release_dispatch_target_lease(
+            thread_id,
+            "owner-first",
+            first_claim.attempt.lease_id.as_str(),
+        )
+        .await?;
+    assert!(released);
+
+    let second_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-second".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-second".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("second dispatcher can claim after target lease release");
+    assert_eq!(
+        second_claim.message.message_id,
+        second_message.message.message_id
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_release_stays_blocked_by_fresh_local_owner() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let first_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "local-active-target-lease-first",
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
+        Some(now),
+    )
+    .await?;
+    let second_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "local-active-target-lease-second",
+        /*max_attempts*/ 3,
+        /*priority*/ 5,
+        Some(now),
+    )
+    .await?;
+
+    let first_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-first".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-first".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("first dispatcher should claim first target message");
+    assert_eq!(
+        first_claim.message.message_id,
+        first_message.message.message_id
+    );
+
+    runtime
+        .local_active_sessions()
+        .heartbeat_session(LocalActiveSessionHeartbeatParams {
+            thread_id,
+            owner_id: "owner-first".to_string(),
+            session_id: "owner-first-session".to_string(),
+            pid: Some(123),
+            now,
+        })
+        .await?;
+    let released = runtime
+        .mailbox_messages()
+        .release_dispatch_target_lease(
+            thread_id,
+            "owner-first",
+            first_claim.attempt.lease_id.as_str(),
+        )
+        .await?;
+    assert!(released);
+
+    let blocked_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-second".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-second".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?;
+    assert!(blocked_claim.is_none());
+
+    let owner_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-first".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "owner-first".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("fresh local owner should claim next target message");
+    assert_eq!(
+        owner_claim.message.message_id,
+        second_message.message.message_id
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_recovers_expired_target_dispatch_lease() -> anyhow::Result<()> {
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let first_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "expired-target-lease-first",
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
+        Some(now),
+    )
+    .await?;
+    let second_message = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "expired-target-lease-second",
+        /*max_attempts*/ 3,
+        /*priority*/ 5,
+        Some(now),
+    )
+    .await?;
+
+    let first_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-first".to_string(),
+            lease_duration: std::time::Duration::from_millis(1),
+            now,
+            local_active_owner_id: "owner-first".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("first dispatcher should claim first target message");
+    assert_eq!(
+        first_claim.message.message_id,
+        first_message.message.message_id
+    );
+
+    let second_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-second".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now: now + chrono::Duration::seconds(1),
+            local_active_owner_id: "owner-second".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("second dispatcher should recover expired target dispatch lease");
+    assert_eq!(
+        second_claim.message.message_id,
+        first_message.message.message_id
+    );
+    assert_ne!(
+        second_claim.attempt.attempt_id,
+        first_claim.attempt.attempt_id
+    );
+
+    let third_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-third".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now: now + chrono::Duration::seconds(1),
+            local_active_owner_id: "owner-third".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?;
+    assert!(third_claim.is_none());
+
+    let released = runtime
+        .mailbox_messages()
+        .release_dispatch_target_lease(
+            thread_id,
+            "owner-second",
+            second_claim.attempt.lease_id.as_str(),
+        )
+        .await?;
+    assert!(released);
+
+    let next_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "dispatcher-third".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now: now + chrono::Duration::seconds(1),
+            local_active_owner_id: "owner-third".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("released recovered lease should allow next target message");
+    assert_eq!(
+        next_claim.message.message_id,
+        second_message.message.message_id
     );
 
     Ok(())

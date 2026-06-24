@@ -201,6 +201,7 @@ use codex_protocol::exec_output::StreamOutput;
 mod auth_profile_auto_switch;
 mod config_lock;
 mod handlers;
+pub(crate) use handlers::enqueue_inter_agent_communication;
 pub(crate) use handlers::inter_agent_communication as handle_inter_agent_communication;
 mod inject;
 mod input_queue;

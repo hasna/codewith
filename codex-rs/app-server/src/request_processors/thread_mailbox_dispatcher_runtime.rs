@@ -15,6 +15,8 @@ use crate::request_processors::thread_lifecycle::ListenerTaskContext;
 const MAILBOX_DISPATCH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
+const MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(5);
+const MAILBOX_LOCAL_ACTIVE_SESSION_RETENTION: Duration = Duration::from_secs(300);
 const MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK: usize = 16;
 const MAILBOX_DISPATCH_LEASE_OWNER: &str = "app-server-local-mailbox-dispatcher";
 const MAX_MAILBOX_DISPATCH_ERROR_CHARS: usize = 1_000;
@@ -36,6 +38,7 @@ pub(crate) struct ThreadMailboxDispatcherRuntime {
     thread_list_state_permit: Arc<Semaphore>,
     skills_watcher: Arc<SkillsWatcher>,
     state_db: Option<StateDbHandle>,
+    local_active_owner_id: String,
     cancel_token: CancellationToken,
     tasks: TaskTracker,
 }
@@ -54,6 +57,7 @@ impl ThreadMailboxDispatcherRuntime {
         thread_list_state_permit: Arc<Semaphore>,
         skills_watcher: Arc<SkillsWatcher>,
         state_db: Option<StateDbHandle>,
+        local_active_owner_id: String,
     ) -> Self {
         Self {
             active_peer_directory: ActivePeerDirectory::new(
@@ -75,6 +79,7 @@ impl ThreadMailboxDispatcherRuntime {
             thread_list_state_permit,
             skills_watcher,
             state_db,
+            local_active_owner_id,
             cancel_token: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }
@@ -119,12 +124,17 @@ impl ThreadMailboxDispatcherRuntime {
     }
 
     async fn tick(&self) {
-        if !self.config.features.enabled(Feature::MailboxDispatcher) {
-            return;
-        }
         let Some(state_db) = self.state_db.as_ref() else {
             return;
         };
+        let now = Utc::now();
+        if let Err(err) = self.refresh_local_active_sessions(state_db, now).await {
+            warn!("failed to refresh local mailbox active sessions: {err}");
+        }
+        if !self.config.features.enabled(Feature::MailboxDispatcher) {
+            return;
+        }
+        let local_active_fresh_after = mailbox_local_active_fresh_after(now);
         for _ in 0..MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK {
             let claim = match state_db
                 .mailbox_messages()
@@ -132,6 +142,8 @@ impl ThreadMailboxDispatcherRuntime {
                     lease_owner: MAILBOX_DISPATCH_LEASE_OWNER.to_string(),
                     lease_duration: MAILBOX_DISPATCH_LEASE_DURATION,
                     now: Utc::now(),
+                    local_active_owner_id: self.local_active_owner_id.clone(),
+                    local_active_fresh_after,
                 })
                 .await
             {
@@ -146,7 +158,47 @@ impl ThreadMailboxDispatcherRuntime {
         }
     }
 
+    async fn refresh_local_active_sessions(
+        &self,
+        state_db: &StateDbHandle,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let now_seen = LastSeenAt::from_unix_seconds(now.timestamp());
+        let registry = self.active_peer_directory.snapshot(now_seen).await?;
+        let freshness = ActivePeerFreshness::new(now_seen, Duration::from_secs(0));
+        let mut active_thread_ids = Vec::new();
+        for peer in registry.list_active(freshness) {
+            active_thread_ids.push(peer.thread_id);
+            state_db
+                .local_active_sessions()
+                .heartbeat_session(codex_state::LocalActiveSessionHeartbeatParams {
+                    thread_id: peer.thread_id,
+                    owner_id: self.local_active_owner_id.clone(),
+                    session_id: peer.session_id,
+                    pid: Some(std::process::id()),
+                    now,
+                })
+                .await?;
+        }
+        state_db
+            .local_active_sessions()
+            .prune_owner_sessions(codex_state::LocalActiveSessionPruneOwnerParams {
+                owner_id: self.local_active_owner_id.clone(),
+                active_thread_ids,
+                observed_at: now,
+            })
+            .await?;
+        state_db
+            .local_active_sessions()
+            .prune_stale_sessions(mailbox_local_active_retention_cutoff(now))
+            .await?;
+        Ok(())
+    }
+
     async fn dispatch_claim(&self, state_db: &StateDbHandle, claim: codex_state::MailboxClaim) {
+        let target_thread_id = claim.message.target_thread_id;
+        let message_id = claim.message.message_id.clone();
+        let lease_id = claim.attempt.lease_id.clone();
         let result = self.deliver_claim(&claim).await;
         match result {
             MailboxDispatchResult::Delivered { receipt } => {
@@ -211,6 +263,33 @@ impl ThreadMailboxDispatcherRuntime {
                 }
             }
         }
+        match self
+            .refresh_local_active_sessions(state_db, Utc::now())
+            .await
+        {
+            Ok(()) => {
+                if let Err(err) = state_db
+                    .mailbox_messages()
+                    .release_dispatch_target_lease(
+                        target_thread_id,
+                        self.local_active_owner_id.as_str(),
+                        lease_id.as_str(),
+                    )
+                    .await
+                {
+                    warn!(
+                        message_id = %message_id,
+                        "failed to release mailbox target dispatch lease: {err}"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    message_id = %message_id,
+                    "failed to refresh local active sessions after mailbox dispatch; leaving target lease to expire: {err}"
+                );
+            }
+        }
     }
 
     async fn deliver_claim(&self, claim: &codex_state::MailboxClaim) -> MailboxDispatchResult {
@@ -225,6 +304,7 @@ impl ThreadMailboxDispatcherRuntime {
             }
         };
         let target_peer_id = claim.message.target_thread_id.to_string();
+        let mut resumed_target = false;
         let (registry, target_peer) = match registry.get_active(target_peer_id.as_str(), freshness)
         {
             Ok(peer) => (registry, peer),
@@ -237,6 +317,7 @@ impl ThreadMailboxDispatcherRuntime {
                     {
                         return err.into_dispatch_result();
                     }
+                    resumed_target = true;
                     let registry = match self.active_peer_directory.snapshot(freshness.now).await {
                         Ok(registry) => registry,
                         Err(err) => {
@@ -269,7 +350,7 @@ impl ThreadMailboxDispatcherRuntime {
         let communication = active_channel_communication(&envelope);
         let delivery_outcome = self
             .active_channel_router
-            .deliver(&envelope, &target_peer, communication)
+            .enqueue_for_pending_work(&envelope, &target_peer, communication)
             .await;
         match delivery_outcome {
             Ok(ActiveChannelDeliveryOutcome::Delivered { .. }) => {
@@ -278,10 +359,11 @@ impl ThreadMailboxDispatcherRuntime {
                 }
                 MailboxDispatchResult::Delivered {
                     receipt: serde_json::json!({
-                        "delivery": "live",
+                        "delivery": if resumed_target { "resumed" } else { "live" },
                         "recipientPeerId": target_peer.peer_id,
                         "recipientThreadId": target_peer.thread_id.to_string(),
                         "deliveryMode": mailbox_delivery_mode_name(delivery),
+                        "triggerTurn": delivery.trigger_turn(),
                     }),
                 }
             }
@@ -440,6 +522,8 @@ impl ThreadMailboxDispatcherRuntime {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            state_db: self.state_db.clone(),
+            local_active_owner_id: self.local_active_owner_id.clone(),
         };
         super::thread_lifecycle::ensure_listener_task_running(
             context,
@@ -517,6 +601,20 @@ enum MailboxLocalDeliveryPolicy {
 fn dispatcher_freshness_now() -> ActivePeerFreshness {
     let now = LastSeenAt::from_unix_seconds(time::OffsetDateTime::now_utc().unix_timestamp());
     ActivePeerFreshness::new(now, Duration::from_secs(0))
+}
+
+fn mailbox_local_active_fresh_after(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - ChronoDuration::seconds(duration_seconds_i64(
+        MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER,
+    ))
+}
+
+fn mailbox_local_active_retention_cutoff(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - ChronoDuration::seconds(duration_seconds_i64(MAILBOX_LOCAL_ACTIVE_SESSION_RETENTION))
+}
+
+fn duration_seconds_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 fn mailbox_target_not_loaded(error: ActivePeerLookupError) -> MailboxDispatchResult {
@@ -604,9 +702,9 @@ fn durable_mailbox_sender_endpoint() -> ActiveChannelEndpoint {
 fn mailbox_sender_descriptor(message: &codex_state::MailboxMessage) -> String {
     match (&message.sender_thread_id, &message.sender_label) {
         (Some(sender_thread_id), Some(sender_label)) => {
-            format!("{sender_thread_id} with label {sender_label:?}")
+            format!("unverified sender thread {sender_thread_id} with label {sender_label:?}")
         }
-        (Some(sender_thread_id), None) => sender_thread_id.to_string(),
+        (Some(sender_thread_id), None) => format!("unverified sender thread {sender_thread_id}"),
         (None, Some(sender_label)) => format!("external sender {sender_label:?}"),
         (None, None) => "external sender".to_string(),
     }
