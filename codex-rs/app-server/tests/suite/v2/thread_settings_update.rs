@@ -263,6 +263,60 @@ async fn thread_settings_update_unprefixed_xiaomi_fallback_model_infers_provider
 }
 
 #[tokio::test]
+async fn thread_settings_update_openrouter_overlap_model_preserves_gateway_provider() -> Result<()>
+{
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    write_mock_responses_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        &BTreeMap::default(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "openrouter",
+        "compact",
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(codex_home.path().join("config.toml"))?
+        .write_all(
+            format!(
+                r#"
+[model_providers.qwen]
+base_url = "{}/v1"
+experimental_bearer_token = "qwen-token"
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+                server.uri()
+            )
+            .as_bytes(),
+        )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+    let model = "qwen/qwen3.7-plus";
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model: Some(model.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(updated.thread_settings.model_provider, "openrouter");
+    assert_eq!(updated.thread_settings.model, model);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_settings_update_openai_prefixed_model_preserves_non_openai_provider() -> Result<()>
 {
     let server = create_mock_responses_server_sequence_unchecked(vec![

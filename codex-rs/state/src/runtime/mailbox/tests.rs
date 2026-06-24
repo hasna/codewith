@@ -15,8 +15,20 @@ async fn enqueue_is_idempotent_per_target_thread() -> anyhow::Result<()> {
         ))
         .await?;
 
-    let first = enqueue_test_message(runtime.as_ref(), thread_id, "same-key", 3).await?;
-    let second = enqueue_test_message(runtime.as_ref(), thread_id, "same-key", 3).await?;
+    let first = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "same-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
+    let second = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "same-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
 
     assert!(first.created);
     assert!(!second.created);
@@ -29,7 +41,13 @@ async fn enqueue_is_idempotent_per_target_thread() -> anyhow::Result<()> {
 async fn claim_ack_and_receipts_are_durable() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    let enqueued = enqueue_test_message(runtime.as_ref(), thread_id, "claim-key", 3).await?;
+    let enqueued = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "claim-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
     let claim = claim_next(runtime.as_ref(), thread_id)
         .await?
         .expect("claimed");
@@ -76,7 +94,13 @@ async fn claim_ack_and_receipts_are_durable() -> anyhow::Result<()> {
 async fn retry_after_attempt_budget_poisoned_message() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    enqueue_test_message(runtime.as_ref(), thread_id, "retry-key", 1).await?;
+    enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "retry-key",
+        /*max_attempts*/ 1,
+    )
+    .await?;
     let claim = claim_next(runtime.as_ref(), thread_id)
         .await?
         .expect("claimed");
@@ -105,7 +129,13 @@ async fn retry_after_attempt_budget_poisoned_message() -> anyhow::Result<()> {
 async fn expired_claim_can_be_reclaimed() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    enqueue_test_message(runtime.as_ref(), thread_id, "expire-key", 3).await?;
+    enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "expire-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
     let now = Utc::now();
     let first = runtime
         .mailbox_messages()
@@ -153,8 +183,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
         runtime.as_ref(),
         low_priority_thread_id,
         "global-low-priority",
-        3,
-        0,
+        /*max_attempts*/ 3,
+        /*priority*/ 0,
         Some(now),
     )
     .await?;
@@ -162,8 +192,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
         runtime.as_ref(),
         high_priority_thread_id,
         "global-high-priority",
-        3,
-        10,
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
         Some(now),
     )
     .await?;
@@ -235,7 +265,13 @@ async fn claimed_message_survives_restart_and_reclaims_expired_lease() -> anyhow
                 runtime.codex_home().join("workspace"),
             ))
             .await?;
-        let enqueued = enqueue_test_message(runtime.as_ref(), thread_id, "restart-key", 3).await?;
+        let enqueued = enqueue_test_message(
+            runtime.as_ref(),
+            thread_id,
+            "restart-key",
+            /*max_attempts*/ 3,
+        )
+        .await?;
         first_claimed_at = Utc::now();
         let first = runtime
             .mailbox_messages()
@@ -337,8 +373,8 @@ async fn enqueue_test_message(
         target_thread_id,
         idempotency_key,
         max_attempts,
-        0,
-        None,
+        /*priority*/ 0,
+        /*next_attempt_at*/ None,
     )
     .await
 }

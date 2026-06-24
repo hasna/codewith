@@ -3161,6 +3161,93 @@ fn agent_picker_item_name_snapshot() {
 }
 
 #[tokio::test]
+async fn agent_picker_selection_items_include_new_agent_snapshot() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread id");
+    let worker_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread id");
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        worker_thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    let (items, initial_selected_idx) =
+        app.agent_picker_selection_items(/*can_create_agent*/ true);
+    let mut lines = vec![format!("initial_selected_idx={initial_selected_idx:?}")];
+    for (idx, item) in items.iter().enumerate() {
+        let prefix = item
+            .name_prefix_spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        lines.push(format!(
+            "{idx}: {prefix}{} | {} | current={}",
+            item.name,
+            item.description.as_deref().unwrap_or(""),
+            item.is_current
+        ));
+    }
+
+    assert_app_snapshot!(
+        "agent_picker_selection_items_with_new_agent",
+        lines.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn open_agent_picker_new_agent_row_emits_create_event() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::CreateAgentThread));
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_enter_still_switches_active_existing_thread() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.active_thread_id = Some(thread_id);
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn side_fork_config_is_ephemeral_and_appends_developer_guardrails() {
     let app = make_test_app().await;
     let original_approval_policy = app.config.permissions.approval_policy.value();

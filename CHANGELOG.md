@@ -38,6 +38,34 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.45] - 2026-06-24
+
+Tag: `rust-v0.1.45`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.45>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.43...rust-v0.1.45>
+
+### Changed
+
+- Prepared the branch and worktree drain release after merging the completed
+  non-macOS backlog PRs into `main`.
+- Bumped the Codewith CLI, Rust workspace, and npm package metadata to
+  `0.1.45`.
+
+### Fixed
+
+- Included the merged drain hardening for queued rules, session machine context,
+  schedule auth recovery, pending interaction responses, provider usage
+  accounting, managed worktree cleanup, SQLite feedback log churn, TUI PR
+  surfaces, statusline summaries, and goal title display.
+- Moved the x86_64 macOS release build to the `macos-15-xlarge` runner so the
+  signed platform package matrix can complete.
+
+### Verification
+
+- Rebuilt and smoke-tested the Linux ARM64 release binary and npm package before
+  publish; the `rust-release` workflow builds and publishes the remaining
+  signed platform packages from this tag.
+
 ## [0.1.43] - 2026-06-21
 
 Tag: `rust-v0.1.43`
@@ -56,6 +84,9 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
 - Added `/changelog` in the TUI so release notes are available inside the
   product.
 - Added Mission Control schedule visibility and schedule-aware empty states.
+- Added Z.ai GLM-5.2 model metadata with the documented `glm-5.2` model ID,
+  1M context window, text-only input modality, native tool/web-search support,
+  and GLM-5.2 reasoning presets.
 
 ### Changed
 

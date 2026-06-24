@@ -940,6 +940,7 @@ fn normalize_string(value: &str) -> String {
     let mut text = value.to_string();
     normalize_tmp_prefix_before_marker(&mut text, "/skills/");
     normalize_tmp_prefix_before_marker(&mut text, "\\skills\\");
+    normalize_machine_id_elements(&mut text);
 
     let mut search_start = 0;
     let wall_time_prefix = "Wall time: ";
@@ -962,6 +963,25 @@ fn normalize_string(value: &str) -> String {
         }
     }
     text
+}
+
+fn normalize_machine_id_elements(text: &mut String) {
+    let mut search_start = 0;
+    let open = "<machine><id>";
+    let close = "</id>";
+    while let Some(relative_open_index) = text[search_start..].find(open) {
+        let value_start = search_start + relative_open_index + open.len();
+        let Some(relative_close_index) = text[value_start..].find(close) else {
+            break;
+        };
+        let value_end = value_start + relative_close_index;
+        if is_uuid_like(&text[value_start..value_end]) {
+            text.replace_range(value_start..value_end, "<UUID>");
+            search_start = value_start + "<UUID>".len() + close.len();
+        } else {
+            search_start = value_end + close.len();
+        }
+    }
 }
 
 fn is_uuid_like(value: &str) -> bool {
@@ -1043,6 +1063,18 @@ fn normalize_string_rewrites_shell_wall_times() {
         text,
         "Exit code: 0\nWall time: <WALL_TIME> seconds\nOutput:\nok\n\
          Exit code: 0\nWall time: <WALL_TIME> seconds\nOutput:\nok"
+    );
+}
+
+#[test]
+fn normalize_string_rewrites_environment_context_machine_ids() {
+    let text = normalize_string(
+        "<environment_context>\n  <machine><id>11111111-1111-4111-8111-111111111111</id><name>spark01</name></machine>\n</environment_context>",
+    );
+
+    assert_eq!(
+        text,
+        "<environment_context>\n  <machine><id><UUID></id><name>spark01</name></machine>\n</environment_context>"
     );
 }
 

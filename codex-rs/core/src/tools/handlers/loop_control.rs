@@ -228,37 +228,43 @@ async fn manage_loop(
                     unreachable!("action matched above")
                 }
             };
-            let schedule = if action == LoopAction::Resume && existing.next_run_at.is_none() {
-                let next_run_at =
-                    next_loop_run_at(&existing.schedule, &existing.timezone, Utc::now())?
-                        .ok_or_else(|| {
-                            FunctionCallError::RespondToModel(
-                                "cannot resume loop because no next run time could be computed"
-                                    .to_string(),
-                            )
-                        })?;
+            let schedule = if action == LoopAction::Resume {
+                let now = Utc::now();
                 if let Some(expires_at) = existing.expires_at
-                    && expires_at <= next_run_at
+                    && expires_at <= now
                 {
                     return Err(FunctionCallError::RespondToModel(
-                        "loop expires_at must be later than next_run_at".to_string(),
+                        "loop expires_at must be in the future to resume".to_string(),
                     ));
                 }
-                state_db
-                    .thread_schedules()
-                    .update_thread_schedule(
-                        schedule_id.as_str(),
-                        codex_state::ThreadScheduleUpdate {
-                            prompt: None,
-                            prompt_source: None,
-                            schedule: None,
-                            timezone: None,
-                            status: Some(status),
-                            next_run_at: Some(Some(next_run_at)),
-                            expires_at: None,
-                        },
-                    )
-                    .await
+                if existing.next_run_at.is_none() {
+                    let next_run_at =
+                        next_loop_run_at(&existing.schedule, &existing.timezone, now)?.ok_or_else(
+                            || {
+                                FunctionCallError::RespondToModel(
+                                    "cannot resume loop because no next run time could be computed"
+                                        .to_string(),
+                                )
+                            },
+                        )?;
+                    if let Some(expires_at) = existing.expires_at
+                        && expires_at <= next_run_at
+                    {
+                        return Err(FunctionCallError::RespondToModel(
+                            "loop expires_at must be later than next_run_at".to_string(),
+                        ));
+                    }
+                    state_db
+                        .thread_schedules()
+                        .resume_thread_schedule_at(schedule_id.as_str(), next_run_at)
+                        .await
+                } else {
+                    validate_loop_expiry(existing.next_run_at, existing.expires_at)?;
+                    state_db
+                        .thread_schedules()
+                        .resume_thread_schedule(schedule_id.as_str())
+                        .await
+                }
             } else {
                 state_db
                     .thread_schedules()
@@ -841,7 +847,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Interval {
@@ -976,9 +982,14 @@ mod tests {
             .await
             .expect("second run should fail");
 
-        let response = manage_loop(runtime, thread_id, None, loop_args(LoopAction::List))
-            .await
-            .expect("loop list should succeed");
+        let response = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            loop_args(LoopAction::List),
+        )
+        .await
+        .expect("loop list should succeed");
 
         assert_eq!(response.schedules.len(), 1);
         assert_eq!(
@@ -1007,7 +1018,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask for status".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Cron {
@@ -1064,7 +1075,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Start)
             },
@@ -1095,7 +1106,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Ask once".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Once),
@@ -1132,7 +1143,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Stop)
             },
@@ -1213,7 +1224,7 @@ mod tests {
         let response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(first.schedule_id.clone()),
                 ..loop_args(LoopAction::Clear)
@@ -1263,9 +1274,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_recomputes_missing_next_run_at() {
+    async fn resume_recomputes_missing_next_run_at_and_resets_failure_count() {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 6);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Active,
+        )
+        .await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(
+                at(/*seconds*/ 1_700_000_300),
+                "lease-fail",
+                Duration::from_secs(300),
+            )
+            .await
+            .expect("run should claim")
+            .expect("run should be due");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                at(/*seconds*/ 1_700_000_310),
+                /*next_run_at*/ None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
+        let before_resume = Utc::now();
+
+        let response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                schedule_id: Some(schedule.schedule_id.clone()),
+                ..loop_args(LoopAction::Resume)
+            },
+        )
+        .await
+        .expect("loop should resume");
+
+        let updated = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(codex_state::ThreadScheduleStatus::Active, updated.status);
+        assert_eq!(0, updated.failure_count);
+        let next_run_at = updated.next_run_at.expect("next_run_at should be set");
+        assert!(next_run_at >= before_resume);
+        let affected_schedule = response
+            .affected_schedule
+            .expect("affected schedule should be returned");
+        assert_eq!(Some(next_run_at.timestamp()), affected_schedule.next_run_at);
+        assert_eq!(0, affected_schedule.failure_count);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_loop_with_past_expiry() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
         upsert_test_thread(&runtime, thread_id).await;
         let schedule = create_interval_schedule(
             &runtime,
@@ -1284,40 +1360,32 @@ mod tests {
                     schedule: None,
                     timezone: None,
                     status: None,
-                    next_run_at: Some(None),
-                    expires_at: None,
+                    next_run_at: None,
+                    expires_at: Some(Some(at(/*seconds*/ 1_700_000_600))),
                 },
             )
             .await
             .expect("schedule should update")
             .expect("schedule should exist");
-        let before_resume = Utc::now();
 
-        let response = manage_loop(
-            runtime.clone(),
+        let error = manage_loop(
+            runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
-                schedule_id: Some(schedule.schedule_id.clone()),
+                schedule_id: Some(schedule.schedule_id),
                 ..loop_args(LoopAction::Resume)
             },
         )
         .await
-        .expect("loop should resume");
+        .expect_err("expired loop should not resume");
 
-        let updated = runtime
-            .thread_schedules()
-            .get_thread_schedule(&schedule.schedule_id)
-            .await
-            .expect("schedule should load")
-            .expect("schedule should exist");
-        assert_eq!(codex_state::ThreadScheduleStatus::Active, updated.status);
-        let next_run_at = updated.next_run_at.expect("next_run_at should be set");
-        assert!(next_run_at >= before_resume);
-        let affected_schedule = response
-            .affected_schedule
-            .expect("affected schedule should be returned");
-        assert_eq!(Some(next_run_at.timestamp()), affected_schedule.next_run_at);
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "loop expires_at must be in the future to resume".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -1338,7 +1406,7 @@ mod tests {
         let err = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 schedule_id: Some(other_schedule.schedule_id.clone()),
                 ..loop_args(LoopAction::Stop)
@@ -1382,7 +1450,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 ..loop_args(LoopAction::Clear)
             },

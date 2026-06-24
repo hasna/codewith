@@ -498,6 +498,15 @@ export type { ThreadPendingInteractionResponsePayload } from "./ThreadPendingInt
 export type { ThreadPendingInteractionSourceKind } from "./ThreadPendingInteractionSourceKind";
 export type { ThreadPendingInteractionStatus } from "./ThreadPendingInteractionStatus";
 export type { ThreadPendingInteractionTerminalStatus } from "./ThreadPendingInteractionTerminalStatus";
+export type { ThreadQueuedMessage } from "./ThreadQueuedMessage";
+export type { ThreadQueuedMessageListParams } from "./ThreadQueuedMessageListParams";
+export type { ThreadQueuedMessageListResponse } from "./ThreadQueuedMessageListResponse";
+export type { ThreadQueuedMessageMoveDirection } from "./ThreadQueuedMessageMoveDirection";
+export type { ThreadQueuedMessageMoveParams } from "./ThreadQueuedMessageMoveParams";
+export type { ThreadQueuedMessageMoveResponse } from "./ThreadQueuedMessageMoveResponse";
+export type { ThreadQueuedMessageStats } from "./ThreadQueuedMessageStats";
+export type { ThreadQueuedMessageUpdateParams } from "./ThreadQueuedMessageUpdateParams";
+export type { ThreadQueuedMessageUpdateResponse } from "./ThreadQueuedMessageUpdateResponse";
 export type { ThreadReadParams } from "./ThreadReadParams";
 export type { ThreadReadResponse } from "./ThreadReadResponse";
 export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";

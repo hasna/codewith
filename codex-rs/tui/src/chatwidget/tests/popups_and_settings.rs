@@ -531,7 +531,13 @@ async fn mcp_manager_empty_popup_snapshot() {
 #[tokio::test]
 async fn mcp_manager_configured_only_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_mcp_test_config(&mut chat, vec![("docs", mcp_test_config(false, None))]);
+    set_mcp_test_config(
+        &mut chat,
+        vec![(
+            "docs",
+            mcp_test_config(/*enabled*/ false, /*disabled_tools*/ None),
+        )],
+    );
 
     chat.on_mcp_manager_loaded(
         Ok(Vec::new()),
@@ -613,7 +619,10 @@ async fn mcp_manager_server_and_tool_config_actions() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_mcp_test_config(
         &mut chat,
-        vec![("linear", mcp_test_config(true, Some(vec!["create_issue"])))],
+        vec![(
+            "linear",
+            mcp_test_config(/*enabled*/ true, Some(vec!["create_issue"])),
+        )],
     );
     let linear = mcp_test_statuses()
         .into_iter()
@@ -3178,6 +3187,22 @@ async fn usage_heartbeat_includes_saved_chatgpt_profile_when_active_session_is_a
     save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
 
     assert!(!chat.should_prefetch_rate_limits());
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn usage_heartbeat_failure_backs_off_profile_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    chat.record_auth_profile_usage_heartbeat_failure(Some("work".to_string()));
+    assert!(chat.auth_profile_usage_refresh_targets().is_empty());
+
+    chat.record_auth_profile_usage_heartbeat_success(Some("work".to_string()));
     assert_eq!(
         chat.auth_profile_usage_refresh_targets(),
         vec![RateLimitRefreshTarget::Named("work".to_string())]

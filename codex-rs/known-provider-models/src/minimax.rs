@@ -10,62 +10,77 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "MiniMax-M3",
         "MiniMax M3",
         "MiniMax's latest M-series model for agentic reasoning, tool use, coding, and long-context tasks. Requires MINIMAX_API_KEY for turns.",
-        true,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.7",
         "MiniMax M2.7",
         "MiniMax M2.7 model for recursive self-improvement workflows.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.7-highspeed",
         "MiniMax M2.7 Highspeed",
         "MiniMax M2.7 highspeed variant with lower latency.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.5",
         "MiniMax M2.5",
         "MiniMax M2.5 model for complex tasks and agentic coding.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.5-highspeed",
         "MiniMax M2.5 Highspeed",
         "MiniMax M2.5 highspeed variant with lower latency.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.1",
         "MiniMax M2.1",
         "MiniMax M2.1 model with enhanced multi-language programming capabilities.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2.1-highspeed",
         "MiniMax M2.1 Highspeed",
         "MiniMax M2.1 highspeed variant with lower latency.",
-        false,
+        /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
         "MiniMax-M2",
         "MiniMax M2",
         "MiniMax M2 model with agentic capabilities and advanced reasoning.",
-        false,
+        /*is_default*/ false,
     ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
-        "MiniMax-M3" => Some(model("MiniMax M3", 1_000_000)),
-        "MiniMax-M2.7" => Some(model("MiniMax M2.7", 204_800)),
-        "MiniMax-M2.7-highspeed" => Some(model("MiniMax M2.7 Highspeed", 204_800)),
-        "MiniMax-M2.5" => Some(model("MiniMax M2.5", 204_800)),
-        "MiniMax-M2.5-highspeed" => Some(model("MiniMax M2.5 Highspeed", 204_800)),
-        "MiniMax-M2.1" => Some(model("MiniMax M2.1", 204_800)),
-        "MiniMax-M2.1-highspeed" => Some(model("MiniMax M2.1 Highspeed", 204_800)),
-        "MiniMax-M2" => Some(model("MiniMax M2", 204_800)),
+        "MiniMax-M3" => Some(model("MiniMax M3", /*context_window*/ 1_000_000)),
+        "MiniMax-M2.7" => Some(model("MiniMax M2.7", /*context_window*/ 204_800)),
+        "MiniMax-M2.7-highspeed" => {
+            Some(model(
+                "MiniMax M2.7 Highspeed",
+                /*context_window*/ 204_800,
+            ))
+        }
+        "MiniMax-M2.5" => Some(model("MiniMax M2.5", /*context_window*/ 204_800)),
+        "MiniMax-M2.5-highspeed" => {
+            Some(model(
+                "MiniMax M2.5 Highspeed",
+                /*context_window*/ 204_800,
+            ))
+        }
+        "MiniMax-M2.1" => Some(model("MiniMax M2.1", /*context_window*/ 204_800)),
+        "MiniMax-M2.1-highspeed" => {
+            Some(model(
+                "MiniMax M2.1 Highspeed",
+                /*context_window*/ 204_800,
+            ))
+        }
+        "MiniMax-M2" => Some(model("MiniMax M2", /*context_window*/ 204_800)),
         _ => None,
     }
 }

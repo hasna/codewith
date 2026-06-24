@@ -5,6 +5,13 @@ use crate::chatwidget::rate_limits::get_limits_duration;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_app_server_protocol::SpendControlLimitSnapshot;
+use codex_app_server_protocol::ThreadSchedule;
+use codex_app_server_protocol::ThreadScheduleIntervalUnit;
+use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleRun;
+use codex_app_server_protocol::ThreadScheduleRunStatus;
+use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::save_auth_profile;
@@ -54,6 +61,88 @@ fn rate_limit_snapshot_for_window(
         individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
+    }
+}
+
+fn status_line_test_schedule(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    schedule: ThreadScheduleSpec,
+    status: ThreadScheduleStatus,
+    next_run_at: Option<i64>,
+    expires_at: Option<i64>,
+) -> ThreadSchedule {
+    ThreadSchedule {
+        thread_id: thread_id.to_string(),
+        schedule_id: schedule_id.to_string(),
+        prompt: "check whether CI is green and write the next action".to_string(),
+        prompt_source: ThreadSchedulePromptSource::Inline,
+        schedule,
+        timezone: "UTC".to_string(),
+        status,
+        next_run_at,
+        last_run_at: None,
+        expires_at,
+        failure_count: 0,
+        lease_expires_at: None,
+        created_at: 1_700_000_000,
+        updated_at: 1_700_000_000,
+    }
+}
+
+fn status_line_test_loop(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    status: ThreadScheduleStatus,
+    next_run_at: Option<i64>,
+    expires_at: Option<i64>,
+) -> ThreadSchedule {
+    status_line_test_schedule(
+        thread_id,
+        schedule_id,
+        ThreadScheduleSpec::Interval {
+            amount: 5,
+            unit: ThreadScheduleIntervalUnit::Minutes,
+        },
+        status,
+        next_run_at,
+        expires_at,
+    )
+}
+
+fn status_line_test_once(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    status: ThreadScheduleStatus,
+    next_run_at: Option<i64>,
+    expires_at: Option<i64>,
+) -> ThreadSchedule {
+    status_line_test_schedule(
+        thread_id,
+        schedule_id,
+        ThreadScheduleSpec::Once,
+        status,
+        next_run_at,
+        expires_at,
+    )
+}
+
+fn status_line_test_schedule_run(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    status: ThreadScheduleRunStatus,
+) -> ThreadScheduleRun {
+    ThreadScheduleRun {
+        thread_id: thread_id.to_string(),
+        schedule_id: schedule_id.to_string(),
+        run_id: format!("{schedule_id}-run"),
+        status,
+        lease_id: format!("{schedule_id}-lease"),
+        turn_id: None,
+        error: None,
+        scheduled_for_at: Some(1_700_000_000),
+        started_at: 1_700_000_000,
+        completed_at: None,
     }
 }
 
@@ -1377,11 +1466,15 @@ async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 80, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_auth_profile_rate_limit_snapshots(
         Some("backup".to_string()),
-        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 25, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -1415,11 +1508,15 @@ async fn ordered_auto_switch_strategy_preserves_configured_order() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(80, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 80, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_auth_profile_rate_limit_snapshots(
         Some("backup".to_string()),
-        vec![rate_limit_snapshot_for_window(25, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 25, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -1451,7 +1548,9 @@ async fn auto_switch_skips_known_exhausted_profile_for_unknown_candidate() {
 
     chat.on_auth_profile_rate_limit_snapshots(
         Some("personal".to_string()),
-        vec![rate_limit_snapshot_for_window(100, 300, 123)],
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
     );
     chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
         /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
@@ -1586,6 +1685,7 @@ async fn stopped_usage_limited_turn_auto_switches_before_next_prompt_after_being
 async fn usage_limit_self_heal_retries_failed_turn_after_reset() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     configure_test_session(&mut chat);
+    chat.config.usage_self_heal.enabled = true;
     chat.config.usage_self_heal.max_retries = 2;
     chat.config.usage_self_heal.enabled = true;
     chat.config.usage_self_heal.reset_retry_buffer_secs = 0;
@@ -1645,6 +1745,7 @@ async fn usage_self_heal_does_not_retry_when_auth_profile_switch_is_pending() {
     chat.config.auth_profile_auto_switch.enabled = true;
     chat.config.auth_profile_auto_switch.profiles =
         vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_self_heal.enabled = true;
     configure_test_session(&mut chat);
     drain_insert_history(&mut rx);
 
@@ -2888,6 +2989,50 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 }
 
 #[tokio::test]
+async fn status_line_goal_title_updates_and_clears_with_goal_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    chat.config.tui_status_line = Some(vec!["goal-title".to_string()]);
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), None);
+
+    let mut goal = test_thread_goal(
+        codex_app_server_protocol::ThreadGoalStatus::Active,
+        /*token_budget*/ None,
+        /*tokens_used*/ 0,
+    );
+    goal.thread_id = thread_id.to_string();
+    goal.title = Some("Ship statusline titles".to_string());
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: goal.thread_id.clone(),
+                turn_id: None,
+                goal,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Ship statusline titles".to_string())
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalCleared(
+            codex_app_server_protocol::ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(status_line_text(&chat), None);
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -2900,6 +3045,210 @@ async fn status_line_branch_state_resets_when_git_branch_disabled() {
     assert_eq!(chat.status_line_branch, None);
     assert!(!chat.status_line_branch_pending);
     assert!(!chat.status_line_branch_lookup_complete);
+}
+
+#[tokio::test]
+async fn status_line_schedule_countdown_uses_soonest_active_native_schedule() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let now = 1_700_000_000;
+    chat.thread_id = Some(thread_id);
+    chat.config.tui_status_line = Some(vec!["schedule-countdown".to_string()]);
+
+    chat.set_status_line_schedules(
+        thread_id,
+        vec![
+            status_line_test_loop(
+                thread_id,
+                "later-loop",
+                ThreadScheduleStatus::Active,
+                Some(now + 90),
+                /*expires_at*/ None,
+            ),
+            status_line_test_once(
+                thread_id,
+                "inactive-schedule",
+                ThreadScheduleStatus::Paused,
+                Some(now + 10),
+                /*expires_at*/ None,
+            ),
+            status_line_test_once(
+                thread_id,
+                "expired-schedule",
+                ThreadScheduleStatus::Active,
+                Some(now + 15),
+                Some(now - 1),
+            ),
+            status_line_test_once(
+                thread_id,
+                "next-schedule",
+                ThreadScheduleStatus::Active,
+                Some(now + 30),
+                /*expires_at*/ None,
+            ),
+        ],
+    );
+
+    assert_eq!(
+        chat.status_line_schedule_countdown_text_at(now),
+        Some("Next schedule 30s".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_schedule_countdown_ignores_active_leases_from_native_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let now = 1_700_000_000;
+    chat.thread_id = Some(thread_id);
+    chat.config.tui_status_line = Some(vec!["schedule-countdown".to_string()]);
+
+    let mut leased_loop = status_line_test_loop(
+        thread_id,
+        "leased-loop",
+        ThreadScheduleStatus::Active,
+        Some(now + 10),
+        /*expires_at*/ None,
+    );
+    leased_loop.lease_expires_at = Some(now + 300);
+    chat.set_status_line_schedules(
+        thread_id,
+        vec![
+            leased_loop,
+            status_line_test_once(
+                thread_id,
+                "next-schedule",
+                ThreadScheduleStatus::Active,
+                Some(now + 45),
+                /*expires_at*/ None,
+            ),
+        ],
+    );
+
+    assert_eq!(
+        chat.status_line_schedule_countdown_text_at(now),
+        Some("Next schedule 45s".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_schedule_countdown_suppresses_running_schedule_and_refetches_after_run() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let now = 1_700_000_000;
+    chat.thread_id = Some(thread_id);
+    chat.config.tui_status_line = Some(vec!["schedule-countdown".to_string()]);
+
+    chat.refresh_status_line();
+    let refresh_event = rx
+        .try_recv()
+        .expect("countdown item should request initial native schedules");
+    assert_matches!(
+        refresh_event,
+        AppEvent::StatusLineSchedulesRefresh { thread_id: requested } if requested == thread_id
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.set_status_line_schedules(
+        thread_id,
+        vec![status_line_test_loop(
+            thread_id,
+            "active-loop",
+            ThreadScheduleStatus::Active,
+            Some(now + 90),
+            /*expires_at*/ None,
+        )],
+    );
+    assert_eq!(
+        chat.status_line_schedule_countdown_text_at(now),
+        Some("Next loop 1m 30s".to_string())
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.on_thread_schedule_run_updated(status_line_test_schedule_run(
+        thread_id,
+        "active-loop",
+        ThreadScheduleRunStatus::Running,
+    ));
+    assert_eq!(chat.status_line_schedule_countdown_text_at(now), None);
+    while rx.try_recv().is_ok() {}
+
+    chat.on_thread_schedule_run_updated(status_line_test_schedule_run(
+        thread_id,
+        "active-loop",
+        ThreadScheduleRunStatus::Completed,
+    ));
+
+    let mut requested_refresh = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(
+            event,
+            AppEvent::StatusLineSchedulesRefresh { thread_id: requested } if requested == thread_id
+        ) {
+            requested_refresh = true;
+        }
+    }
+    assert!(
+        requested_refresh,
+        "completed schedule run should request fresh native schedule state"
+    );
+}
+
+#[tokio::test]
+async fn status_line_schedule_refresh_failure_retries_from_next_tick() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.config.tui_status_line = Some(vec!["schedule-countdown".to_string()]);
+
+    chat.refresh_status_line();
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::StatusLineSchedulesRefresh { thread_id: requested }) if requested == thread_id
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.finish_status_line_schedule_refresh_failed(thread_id);
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.pre_draw_tick();
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::StatusLineSchedulesRefresh { thread_id: requested }) if requested == thread_id
+    );
+}
+
+#[tokio::test]
+async fn pre_draw_tick_refreshes_schedule_countdown_text() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_secs() as i64;
+    chat.thread_id = Some(thread_id);
+    chat.config.tui_status_line = Some(vec!["schedule-countdown".to_string()]);
+    chat.set_status_line_schedules(
+        thread_id,
+        vec![status_line_test_loop(
+            thread_id,
+            "active-loop",
+            ThreadScheduleStatus::Active,
+            Some(now + 7_200),
+            /*expires_at*/ None,
+        )],
+    );
+    let original = status_line_text(&chat).expect("countdown should render");
+
+    chat.status_line_schedules_by_id
+        .get_mut("active-loop")
+        .expect("cached schedule should exist")
+        .next_run_at = Some(now + 5);
+    chat.pre_draw_tick();
+
+    let updated = status_line_text(&chat).expect("countdown should refresh");
+    assert_ne!(updated, original);
+    assert!(updated.contains("Next loop"));
 }
 
 #[tokio::test]
@@ -3552,6 +3901,7 @@ fn test_thread_goal(
         thread_id: "thread-1".to_string(),
         goal_id: "goal-1".to_string(),
         objective: "Keep improving the benchmark".to_string(),
+        title: None,
         status,
         token_budget,
         tokens_used,
@@ -3605,6 +3955,69 @@ async fn runtime_metrics_websocket_timing_logs_and_final_separator_sums_totals()
     let final_separator = final_separator.expect("expected final separator with runtime metrics");
     assert!(final_separator.contains("TTFT: 80ms (iapi)"));
     assert!(final_separator.contains("TBT: 50ms (service)"));
+}
+
+#[tokio::test]
+async fn message_summary_config_filters_final_separator_items() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_message_summary = Some(vec!["ttft".to_string()]);
+    chat.apply_runtime_metrics_delta(RuntimeMetricsSummary {
+        responses_api_engine_iapi_ttft_ms: 120,
+        responses_api_engine_service_tbt_ms: 50,
+        ..RuntimeMetricsSummary::default()
+    });
+    drain_insert_history(&mut rx);
+
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+    );
+
+    let final_separator = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .find(|line| line.contains("TTFT:"))
+        .expect("expected final separator with configured TTFT");
+    assert!(final_separator.contains("TTFT: 120ms (iapi)"));
+    assert!(!final_separator.contains("TBT:"));
+}
+
+#[tokio::test]
+async fn empty_message_summary_config_hides_final_separator() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_message_summary = Some(Vec::new());
+    chat.apply_runtime_metrics_delta(RuntimeMetricsSummary {
+        responses_api_engine_iapi_ttft_ms: 120,
+        ..RuntimeMetricsSummary::default()
+    });
+    drain_insert_history(&mut rx);
+
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn invalid_message_summary_config_falls_back_to_default_separator() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_message_summary = Some(vec!["ttf".to_string()]);
+    chat.apply_runtime_metrics_delta(RuntimeMetricsSummary {
+        responses_api_engine_iapi_ttft_ms: 120,
+        ..RuntimeMetricsSummary::default()
+    });
+    drain_insert_history(&mut rx);
+
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+    );
+
+    let final_separator = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .find(|line| line.contains("TTFT:"))
+        .expect("expected default separator after invalid message summary config");
+    assert!(final_separator.contains("TTFT: 120ms (iapi)"));
 }
 
 #[tokio::test]

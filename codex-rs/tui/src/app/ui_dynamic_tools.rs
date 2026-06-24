@@ -564,23 +564,42 @@ mod tests {
     #[test]
     fn tmux_destination_from_args_preserves_legacy_name_and_explicit_target() {
         assert_eq!(
-            tmux_destination_from_args(Some("named session".to_string()), None, None,),
+            tmux_destination_from_args(
+                Some("named session".to_string()),
+                /*session*/ None,
+                /*window*/ None,
+            ),
             Ok(TmuxHandoffDestination::NewSession {
                 name: Some("named session".to_string()),
             })
         );
         assert_eq!(
-            tmux_destination_from_args(None, Some("dev".to_string()), Some("codewith".to_string()),),
+            tmux_destination_from_args(
+                /*name*/ None,
+                Some("dev".to_string()),
+                Some("codewith".to_string()),
+            ),
             Ok(TmuxHandoffDestination::ExistingSession {
                 session_name: "dev".to_string(),
                 window_name: Some("codewith".to_string()),
             })
         );
         assert!(
-            tmux_destination_from_args(Some("named".to_string()), Some("dev".to_string()), None,)
-                .is_err()
+            tmux_destination_from_args(
+                Some("named".to_string()),
+                Some("dev".to_string()),
+                /*window*/ None,
+            )
+            .is_err()
         );
-        assert!(tmux_destination_from_args(None, None, Some("codewith".to_string())).is_err());
+        assert!(
+            tmux_destination_from_args(
+                /*name*/ None,
+                /*session*/ None,
+                Some("codewith".to_string())
+            )
+            .is_err()
+        );
     }
 
     #[test]

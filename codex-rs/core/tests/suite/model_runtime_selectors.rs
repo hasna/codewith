@@ -168,17 +168,13 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
     code_mode_only_model.tool_mode = Some(ToolMode::CodeModeOnly);
     code_mode_only_model.input_modalities = vec![InputModality::Text, InputModality::Image];
     let code_mode_only_body = response_body_for_remote_model(code_mode_only_model, |_| {}).await?;
-    assert_eq!(
-        tool_names(&code_mode_only_body),
-        vec![
-            // Code-mode entrypoints.
-            codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
-            codex_code_mode::WAIT_TOOL_NAME.to_string(),
-            // Hosted Responses tools.
-            "web_search".to_string(),
-            "image_generation".to_string(),
-        ]
-    );
+    let expected_tools = vec![
+        // Code-mode entrypoints.
+        codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
+        codex_code_mode::WAIT_TOOL_NAME.to_string(),
+        "image_generation".to_string(),
+    ];
+    assert_eq!(tool_names(&code_mode_only_body), expected_tools);
 
     Ok(())
 }

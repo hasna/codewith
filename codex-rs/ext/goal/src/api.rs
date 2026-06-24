@@ -8,6 +8,7 @@ use std::sync::Weak;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 
 use crate::runtime::GoalRuntimeHandle;
@@ -40,6 +41,12 @@ pub enum GoalObjectiveUpdate<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalTitleUpdate<'a> {
+    Keep,
+    Set(Option<&'a str>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoalTokenBudgetUpdate {
     Keep,
     Set(Option<i64>),
@@ -49,6 +56,7 @@ pub enum GoalTokenBudgetUpdate {
 pub struct GoalSetRequest<'a> {
     pub thread_id: ThreadId,
     pub objective: GoalObjectiveUpdate<'a>,
+    pub title: GoalTitleUpdate<'a>,
     pub status: Option<ThreadGoalStatus>,
     pub token_budget: GoalTokenBudgetUpdate,
     pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
@@ -94,6 +102,12 @@ impl GoalPlanActivateOutcome {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct GoalClearOutcome {
+    pub cleared: bool,
+    pub plan_updates: Vec<codex_state::ThreadGoalPlanSnapshot>,
+}
+
 #[derive(Debug, Default)]
 pub struct GoalService {
     runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
@@ -125,6 +139,7 @@ impl GoalService {
         let GoalSetRequest {
             thread_id,
             objective,
+            title,
             status,
             token_budget,
             auto_execute,
@@ -137,6 +152,12 @@ impl GoalService {
         let token_budget = match token_budget {
             GoalTokenBudgetUpdate::Keep => None,
             GoalTokenBudgetUpdate::Set(token_budget) => Some(token_budget),
+        };
+        let title = match title {
+            GoalTitleUpdate::Keep => None,
+            GoalTitleUpdate::Set(title) => {
+                Some(normalize_thread_goal_title(title).map_err(GoalServiceError::InvalidRequest)?)
+            }
         };
 
         if let Some(objective) = objective {
@@ -181,6 +202,7 @@ impl GoalService {
                         thread_id,
                         codex_state::GoalUpdate {
                             objective: Some(objective.to_string()),
+                            title: title.clone(),
                             status,
                             token_budget,
                             expected_goal_id: Some(existing_goal.goal_id.clone()),
@@ -199,9 +221,10 @@ impl GoalService {
             } else {
                 state_db
                     .thread_goals()
-                    .replace_thread_goal(
+                    .replace_thread_goal_with_title(
                         thread_id,
                         objective,
+                        title.as_ref().and_then(|title| title.as_deref()),
                         status.unwrap_or(codex_state::ThreadGoalStatus::Active),
                         token_budget.flatten(),
                     )
@@ -232,6 +255,7 @@ impl GoalService {
                     thread_id,
                     codex_state::GoalUpdate {
                         objective: None,
+                        title,
                         status,
                         token_budget,
                         expected_goal_id: Some(expected_goal_id),
@@ -276,7 +300,7 @@ impl GoalService {
         &self,
         state_db: &codex_state::StateRuntime,
         thread_id: ThreadId,
-    ) -> Result<bool, GoalServiceError> {
+    ) -> Result<GoalClearOutcome, GoalServiceError> {
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -302,9 +326,9 @@ impl GoalService {
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
             })?;
-        let cleared = state_db
+        let delete_outcome = state_db
             .thread_goals()
-            .delete_thread_goal(thread_id)
+            .delete_thread_goal_with_plan_updates(thread_id)
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
@@ -312,7 +336,7 @@ impl GoalService {
         drop(goal_state_permit);
         drop(runtime);
 
-        if cleared
+        if delete_outcome.deleted
             && let Some(existing_goal) = existing_goal.as_ref()
             && let Err(err) = crate::pending_interaction::clear_goal_status_waits(
                 state_db,
@@ -325,14 +349,23 @@ impl GoalService {
             tracing::warn!("failed to clear pending goal interactions after clear: {err}");
         }
 
-        if cleared
+        if delete_outcome.deleted
             && let Some(runtime) = self.runtime_for_thread(thread_id)
             && let Err(err) = runtime.apply_external_goal_clear().await
         {
             tracing::warn!("failed to apply external goal clear runtime effects: {err}");
         }
 
-        Ok(cleared)
+        Ok(GoalClearOutcome {
+            cleared: delete_outcome.deleted,
+            plan_updates: delete_outcome.plan_updates,
+        })
+    }
+
+    pub fn suppress_next_idle_continuation(&self, thread_id: ThreadId, goal_id: &str) {
+        if let Some(runtime) = self.runtime_for_thread(thread_id) {
+            runtime.suppress_next_idle_continuation(goal_id);
+        }
     }
 
     pub async fn activate_thread_goal_plan_node(

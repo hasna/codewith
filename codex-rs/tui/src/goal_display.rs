@@ -91,6 +91,7 @@ mod tests {
             goal_id: "goal-1".to_string(),
             objective: "Complete the task described in ../gameboy-long-running-prompt5.txt"
                 .to_string(),
+            title: None,
             status: ThreadGoalStatus::BudgetLimited,
             token_budget,
             tokens_used,

@@ -781,6 +781,7 @@ fn config_toml_deserializes_model_availability_nux() {
             status_line: None,
             status_line_use_colors: true,
             terminal_title: None,
+            message_summary: None,
             theme: None,
             pet: None,
             pet_anchor: TuiPetAnchor::Composer,
@@ -825,6 +826,34 @@ status_line_use_colors = false
         !cfg.tui
             .expect("tui config should deserialize")
             .status_line_use_colors
+    );
+}
+
+#[tokio::test]
+async fn config_toml_message_summary_loads_ordered_items() {
+    let toml = r#"
+[tui]
+message_summary = ["worked-for", "ttft"]
+"#;
+    let cfg: ConfigToml =
+        toml::from_str(toml).expect("TOML deserialization should succeed for message summary");
+
+    assert_eq!(
+        cfg.tui.as_ref().and_then(|tui| tui.message_summary.clone()),
+        Some(vec!["worked-for".to_string(), "ttft".to_string()])
+    );
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load message summary config");
+
+    assert_eq!(
+        config.tui_message_summary,
+        Some(vec!["worked-for".to_string(), "ttft".to_string()])
     );
 }
 
@@ -3560,6 +3589,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             status_line: None,
             status_line_use_colors: true,
             terminal_title: None,
+            message_summary: None,
             theme: None,
             pet: None,
             pet_anchor: TuiPetAnchor::Composer,
@@ -9568,6 +9598,8 @@ model = "gpt-5.4"
 auto_execute = "ai-directed"
 max_auto_goals_per_plan = 9999
 max_tokens_per_goal_plan = 123456
+post_goal_context = "compact"
+post_goal_plan_context = "compact"
 "#,
     )
     .expect("TOML deserialization should succeed for goals config");
@@ -9585,6 +9617,14 @@ max_tokens_per_goal_plan = 123456
         config.goals.max_auto_goals_per_plan
     );
     assert_eq!(Some(123456), config.goals.max_tokens_per_goal_plan);
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_context
+    );
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_plan_context
+    );
     Ok(())
 }
 

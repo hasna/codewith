@@ -149,10 +149,17 @@ where
             return Ok(None);
         };
         let status_snapshot = self.store().get_status_snapshot(run_id).await?;
-        let pending_interactions = self.store().list_pending_interactions(run_id, None).await?;
+        let pending_interactions = self
+            .store()
+            .list_pending_interactions(run_id, /*status*/ None)
+            .await?;
         let events = self
             .store()
-            .list_events_after(run_id, None, Some(self.config.attach_event_limit))
+            .list_events_after(
+                run_id,
+                /*after_seq*/ None,
+                Some(self.config.attach_event_limit),
+            )
             .await?;
 
         Ok(Some(AgentAttachSnapshot {
@@ -377,7 +384,10 @@ async fn cancel_active_pending_interactions_for_run(
     run_id: &str,
     reason: &str,
 ) -> anyhow::Result<()> {
-    for interaction in store.list_pending_interactions(run_id, None).await? {
+    for interaction in store
+        .list_pending_interactions(run_id, /*status*/ None)
+        .await?
+    {
         if matches!(
             interaction.status,
             BackgroundAgentPendingInteractionStatus::Pending
@@ -533,7 +543,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)
@@ -645,7 +657,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)
@@ -739,7 +753,9 @@ mod tests {
         assert_eq!(
             state
                 .runtime
-                .list_background_agent_events_after("run-1", None, None)
+                .list_background_agent_events_after(
+                    "run-1", /*after_seq*/ None, /*limit*/ None
+                )
                 .await?
                 .into_iter()
                 .map(|event| event.event_type)
