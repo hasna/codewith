@@ -1168,6 +1168,38 @@ impl App {
                 self.read_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::OpenWebhookInbox { thread_id } => {
+                self.open_webhook_inbox(app_server, thread_id).await;
+            }
+            AppEvent::OpenWebhookEventActions {
+                event_id,
+                thread_id,
+            } => {
+                self.open_webhook_event_actions(app_server, event_id, thread_id)
+                    .await;
+            }
+            AppEvent::MarkWebhookEvent {
+                event_id,
+                status,
+                thread_id,
+            } => {
+                self.mark_webhook_event(app_server, event_id, status, thread_id)
+                    .await;
+            }
+            AppEvent::InjectWebhookEvent {
+                event_id,
+                thread_id,
+            } => {
+                self.inject_webhook_event(app_server, event_id, thread_id)
+                    .await;
+            }
+            AppEvent::QueueWebhookEvent {
+                event_id,
+                thread_id,
+            } => {
+                self.queue_webhook_event(app_server, event_id, thread_id)
+                    .await;
+            }
             AppEvent::StopThreadMonitor {
                 thread_id,
                 monitor_id,

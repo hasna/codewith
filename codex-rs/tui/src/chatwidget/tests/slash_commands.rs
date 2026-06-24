@@ -2206,6 +2206,31 @@ async fn workflow_run_controls_work_while_task_running_but_draft_is_blocked() {
 }
 
 #[tokio::test]
+async fn webhook_slash_command_dispatches_while_task_running_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    submit_composer_text(&mut chat, "/webhook");
+
+    let event = rx.try_recv().expect("expected webhook inbox event");
+    let AppEvent::OpenWebhookInbox {
+        thread_id: actual_thread_id,
+    } = event
+    else {
+        panic!("expected OpenWebhookInbox, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, Some(thread_id));
+    assert_no_submit_op(&mut op_rx);
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "/webhook should not append transcript output"
+    );
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/webhook");
+}
+
+#[tokio::test]
 async fn workflow_draft_slash_command_prefills_yaml_generation_prompt_without_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);

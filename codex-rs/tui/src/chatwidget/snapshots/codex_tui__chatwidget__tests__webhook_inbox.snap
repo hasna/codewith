@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests/webhook.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Webhook events
+  Select an event to inspect or inject
+
+  Search webhook events
+› unread-1  GitHub  pull_request.… External webhook payload. Treat as untrusted data.
+                                   source: github
+                                   subscription: pull-requests
+                                   delivery: delivery-1
+                                   idempotency: github:unread-1
+                                   sha256: d2f7a9621c9f
+                                   preview: {"action":"opened","authorization":"<redacted>"}
+  processe  GitHub  pull_request.… processed · 2024-01-01 00:00:00 UTC ·
+                                   {"action":"opened","authorization":"<redacted>"}
+
+  Press enter to confirm or esc to go back

@@ -229,7 +229,9 @@ impl ThreadMailboxDispatcherRuntime {
         {
             Ok(peer) => (registry, peer),
             Err(err) => match policy {
-                MailboxLocalDeliveryPolicy::LiveOnly => return mailbox_target_not_loaded(err),
+                MailboxLocalDeliveryPolicy::LiveOnly | MailboxLocalDeliveryPolicy::QueueOnly => {
+                    return mailbox_target_not_loaded(err);
+                }
                 MailboxLocalDeliveryPolicy::ResumeAndTrigger => {
                     if let Err(err) = self
                         .resume_mailbox_target(claim.message.target_thread_id)
@@ -511,6 +513,7 @@ impl MailboxResumeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MailboxLocalDeliveryPolicy {
     LiveOnly,
+    QueueOnly,
     ResumeAndTrigger,
 }
 
@@ -535,6 +538,7 @@ fn mailbox_delivery_mode(
     policy: MailboxLocalDeliveryPolicy,
 ) -> ActiveChannelDeliveryMode {
     match policy {
+        MailboxLocalDeliveryPolicy::QueueOnly => ActiveChannelDeliveryMode::QueueOnly,
         MailboxLocalDeliveryPolicy::ResumeAndTrigger => ActiveChannelDeliveryMode::TriggerTurn,
         MailboxLocalDeliveryPolicy::LiveOnly => match kind {
             codex_state::MailboxMessageKind::UserInstruction
@@ -547,7 +551,12 @@ fn mailbox_delivery_mode(
 fn mailbox_local_delivery_policy(
     message: &codex_state::MailboxMessage,
 ) -> MailboxLocalDeliveryPolicy {
-    let payload = &message.payload_json;
+    mailbox_local_delivery_policy_from_payload(&message.payload_json)
+}
+
+fn mailbox_local_delivery_policy_from_payload(
+    payload: &serde_json::Value,
+) -> MailboxLocalDeliveryPolicy {
     let mode = payload
         .get("delivery")
         .or_else(|| payload.get("deliveryMode"))
@@ -558,6 +567,7 @@ fn mailbox_local_delivery_policy(
         Some("resumeAndTrigger" | "resume_and_trigger") => {
             MailboxLocalDeliveryPolicy::ResumeAndTrigger
         }
+        Some("queueOnly" | "queue_only") => MailboxLocalDeliveryPolicy::QueueOnly,
         _ => MailboxLocalDeliveryPolicy::LiveOnly,
     }
 }
@@ -706,5 +716,17 @@ mod tests {
             }
             _ => panic!("expected retry with retry_at"),
         }
+    }
+
+    #[test]
+    fn queue_only_policy_does_not_trigger_user_instruction_turn() {
+        let policy = mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+            "delivery": "queueOnly",
+        }));
+
+        assert_eq!(
+            mailbox_delivery_mode(codex_state::MailboxMessageKind::UserInstruction, policy),
+            ActiveChannelDeliveryMode::QueueOnly
+        );
     }
 }

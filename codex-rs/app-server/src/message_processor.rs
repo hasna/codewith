@@ -45,6 +45,7 @@ use crate::request_processors::ThreadScheduleRequestProcessor;
 use crate::request_processors::ThreadScheduleRuntime;
 use crate::request_processors::ThreadWorkflowRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
+use crate::request_processors::WebhookRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
@@ -202,6 +203,7 @@ pub(crate) struct MessageProcessor {
     thread_schedule_runtime: ThreadScheduleRuntime,
     thread_workflow_processor: ThreadWorkflowRequestProcessor,
     turn_processor: TurnRequestProcessor,
+    webhook_processor: WebhookRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
@@ -518,6 +520,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             state_db.clone(),
         );
+        let webhook_processor = WebhookRequestProcessor::new(state_db.clone());
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -626,6 +629,7 @@ impl MessageProcessor {
             thread_schedule_runtime,
             thread_workflow_processor,
             turn_processor,
+            webhook_processor,
             windows_sandbox_processor,
             request_serialization_queues: RequestSerializationQueues::default(),
         }
@@ -1286,6 +1290,18 @@ impl MessageProcessor {
                 self.thread_monitor_processor
                     .thread_monitor_delete(request_id.clone(), params)
                     .await
+            }
+            ClientRequest::WebhookEventList { params, .. } => {
+                self.webhook_processor.list(params).await
+            }
+            ClientRequest::WebhookEventRead { params, .. } => {
+                self.webhook_processor.read(params).await
+            }
+            ClientRequest::WebhookEventMark { params, .. } => {
+                self.webhook_processor.mark(params).await
+            }
+            ClientRequest::WebhookEventIngest { params, .. } => {
+                self.webhook_processor.ingest(params).await
             }
             ClientRequest::ThreadWorkflowCreate { params, .. } => {
                 self.thread_workflow_processor

@@ -96,6 +96,8 @@ pub enum SlashCommand {
     #[strum(to_string = "mcp", serialize = "mcps")]
     Mcp,
     Apps,
+    #[strum(to_string = "webhook", serialize = "webhooks")]
+    Webhook,
     Plugins,
     Logout,
     Quit,
@@ -186,6 +188,7 @@ impl SlashCommand {
             SlashCommand::Memories => "configure memory use and generation",
             SlashCommand::Mcp => "open the MCP control center",
             SlashCommand::Apps => "manage apps",
+            SlashCommand::Webhook => "show app webhook and event inbox",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codewith",
             SlashCommand::Rollout => "print the rollout file path",
@@ -299,6 +302,7 @@ impl SlashCommand {
             | SlashCommand::Session
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::Webhook
             | SlashCommand::Plugins
             | SlashCommand::Title
             | SlashCommand::Statusline
@@ -405,6 +409,22 @@ mod tests {
     }
 
     #[test]
+    fn webhooks_alias_parses_to_webhook_command() {
+        assert_eq!(SlashCommand::Webhook.command(), "webhook");
+        assert_eq!(
+            SlashCommand::from_str("webhooks"),
+            Ok(SlashCommand::Webhook)
+        );
+        assert_eq!(
+            SlashCommand::Webhook.description(),
+            "show app webhook and event inbox"
+        );
+        assert!(SlashCommand::Webhook.available_during_task());
+        assert!(!SlashCommand::Webhook.available_in_side_conversation());
+        assert!(!SlashCommand::Webhook.supports_inline_args());
+    }
+
+    #[test]
     fn pr_command_has_pull_request_aliases() {
         assert_eq!(SlashCommand::Pr.command(), "pr");
         assert_eq!(SlashCommand::from_str("prs"), Ok(SlashCommand::Pr));
@@ -482,6 +502,7 @@ mod tests {
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+        assert!(SlashCommand::Webhook.available_during_task());
     }
 
     #[test]
@@ -494,6 +515,7 @@ mod tests {
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
             SlashCommand::Pr,
+            SlashCommand::Webhook,
             SlashCommand::Worktree,
             SlashCommand::Status,
             SlashCommand::Statusline,

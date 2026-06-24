@@ -104,6 +104,9 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMailboxEnqueueParams;
+use codex_app_server_protocol::ThreadMailboxEnqueueResponse;
+use codex_app_server_protocol::ThreadMailboxMessageKind;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMemoryModeSetResponse;
@@ -200,6 +203,13 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WebhookEventListParams;
+use codex_app_server_protocol::WebhookEventListResponse;
+use codex_app_server_protocol::WebhookEventMarkParams;
+use codex_app_server_protocol::WebhookEventMarkResponse;
+use codex_app_server_protocol::WebhookEventReadParams;
+use codex_app_server_protocol::WebhookEventReadResponse;
+use codex_app_server_protocol::WebhookEventStatus;
 use codex_app_server_protocol::WorktreeAttachParams;
 use codex_app_server_protocol::WorktreeAttachResponse;
 use codex_app_server_protocol::WorktreeCleanupParams;
@@ -820,6 +830,41 @@ impl AppServerSession {
             })
             .await
             .wrap_err("failed to list queued thread messages")
+    }
+
+    pub(crate) async fn thread_mailbox_enqueue_webhook_event(
+        &mut self,
+        thread_id: ThreadId,
+        event_id: String,
+        mut message: serde_json::Value,
+        preview: String,
+    ) -> Result<ThreadMailboxEnqueueResponse> {
+        let request_id = self.next_request_id();
+        if let Some(object) = message.as_object_mut() {
+            object.insert(
+                "delivery".to_string(),
+                serde_json::Value::String("queueOnly".to_string()),
+            );
+        }
+        self.client
+            .request_typed(ClientRequest::ThreadMailboxEnqueue {
+                request_id,
+                params: ThreadMailboxEnqueueParams {
+                    target_thread_id: thread_id.to_string(),
+                    sender_thread_id: None,
+                    sender_label: Some("Webhook inbox".to_string()),
+                    idempotency_key: Some(format!("webhook:{event_id}:queue")),
+                    kind: ThreadMailboxMessageKind::UserInstruction,
+                    message,
+                    preview: Some(preview),
+                    priority: None,
+                    max_attempts: None,
+                    next_attempt_at: None,
+                    expires_at: None,
+                },
+            })
+            .await
+            .wrap_err("thread/mailbox/enqueue failed for webhook event")
     }
 
     pub(crate) async fn thread_queued_message_update(
@@ -1461,6 +1506,55 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/monitor/list failed in TUI")
+    }
+
+    pub(crate) async fn webhook_event_list(
+        &mut self,
+        target_thread_id: Option<ThreadId>,
+    ) -> Result<WebhookEventListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WebhookEventList {
+                request_id,
+                params: WebhookEventListParams {
+                    source_app_id: None,
+                    target_thread_id: target_thread_id.map(|thread_id| thread_id.to_string()),
+                    statuses: None,
+                    cursor: None,
+                    limit: Some(100),
+                },
+            })
+            .await
+            .wrap_err("webhook/event/list failed in TUI")
+    }
+
+    pub(crate) async fn webhook_event_read(
+        &mut self,
+        event_id: String,
+    ) -> Result<WebhookEventReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WebhookEventRead {
+                request_id,
+                params: WebhookEventReadParams { event_id },
+            })
+            .await
+            .wrap_err("webhook/event/read failed in TUI")
+    }
+
+    pub(crate) async fn webhook_event_mark(
+        &mut self,
+        event_id: String,
+        status: WebhookEventStatus,
+    ) -> Result<WebhookEventMarkResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WebhookEventMark {
+                request_id,
+                params: WebhookEventMarkParams { event_id, status },
+            })
+            .await
+            .wrap_err("webhook/event/mark failed in TUI")
     }
 
     pub(crate) async fn agent_start(

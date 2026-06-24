@@ -681,6 +681,26 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMonitorDeleteResponse,
     },
+    WebhookEventList => "webhook/event/list" {
+        params: v2::WebhookEventListParams,
+        serialization: global_shared_read("webhook-event"),
+        response: v2::WebhookEventListResponse,
+    },
+    WebhookEventRead => "webhook/event/read" {
+        params: v2::WebhookEventReadParams,
+        serialization: global_shared_read("webhook-event"),
+        response: v2::WebhookEventReadResponse,
+    },
+    WebhookEventMark => "webhook/event/mark" {
+        params: v2::WebhookEventMarkParams,
+        serialization: global("webhook-event"),
+        response: v2::WebhookEventMarkResponse,
+    },
+    WebhookEventIngest => "webhook/event/ingest" {
+        params: v2::WebhookEventIngestParams,
+        serialization: global("webhook-event"),
+        response: v2::WebhookEventIngestResponse,
+    },
     #[experimental("thread/workflow/create")]
     ThreadWorkflowCreate => "thread/workflow/create" {
         params: v2::ThreadWorkflowCreateParams,
