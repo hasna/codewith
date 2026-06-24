@@ -518,8 +518,11 @@ mod tests {
 
     #[test]
     fn target_lookup_accepts_peer_id_without_thread_id() {
-        let lookup = active_session_target_lookup(Some("claude:session-1".to_string()), None)
-            .expect("targetPeerId should be enough");
+        let lookup = active_session_target_lookup(
+            Some("claude:session-1".to_string()),
+            /*target_thread_id*/ None,
+        )
+        .expect("targetPeerId should be enough");
 
         assert_eq!(lookup.peer_id, "claude:session-1",);
         assert_eq!(lookup.thread_id, None);
@@ -531,8 +534,10 @@ mod tests {
 
     #[test]
     fn target_lookup_requires_one_target_identifier() {
-        let err = active_session_target_lookup(None, None)
-            .expect_err("missing target should be rejected");
+        let err = active_session_target_lookup(
+            /*target_peer_id*/ None, /*target_thread_id*/ None,
+        )
+        .expect_err("missing target should be rejected");
 
         assert_eq!(
             err.message,
@@ -565,10 +570,10 @@ mod tests {
             agent_path: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
 
-        let descriptor = untrusted_sender_descriptor(None, Some(&peer));
+        let descriptor = untrusted_sender_descriptor(/*sender_label*/ None, Some(&peer));
 
         assert!(descriptor.ends_with("..."));
         assert!(
@@ -596,7 +601,7 @@ mod tests {
             agent_path: Some("/claimed".to_string()),
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
         let target_peer = ActivePeer {
             peer_id: target_thread_id.to_string(),
@@ -612,12 +617,12 @@ mod tests {
             agent_path: Some("/target".to_string()),
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
 
         let envelope = active_channel_envelope(
             "msg-1",
-            None,
+            /*sender_label*/ None,
             Some(&sender_peer),
             &target_peer,
             "hello",

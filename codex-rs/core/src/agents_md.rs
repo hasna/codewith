@@ -27,6 +27,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
 use codex_prompts::HIERARCHICAL_AGENTS_MESSAGE;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use std::collections::HashSet;
 use std::io;
 use toml::Value as TomlValue;
 use tracing::error;
@@ -39,10 +40,15 @@ pub const LOCAL_AGENTS_MD_FILENAME: &str = "CODEWITH.override.md";
 pub const DEFAULT_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.md";
 /// Preferred repository-relative local override path for Codewith project instructions.
 pub const LOCAL_PROJECT_AGENTS_MD_PATH: &str = ".codewith/CODEWITH.override.md";
+/// Repository-relative directory for additional Codewith project rules.
+pub const PROJECT_RULES_DIR_PATH: &str = ".codewith/rules";
 /// Legacy Codewith project instructions filename, read as a fallback.
 const LEGACY_DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 /// Legacy Codewith local override filename, read as a fallback.
 const LEGACY_LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
+const MAX_PROJECT_RULES_DIRS: usize = 256;
+const MAX_PROJECT_RULES_FILES: usize = 512;
+const MAX_PROJECT_RULES_DEPTH: usize = 16;
 
 /// When both user and project instruction docs are present, they will be
 /// concatenated with the following separator.
@@ -296,9 +302,82 @@ impl<'a> AgentsMdManager<'a> {
                     Err(err) => return Err(err),
                 }
             }
+            found.extend(self.rules_md_paths(fs, &d).await?);
         }
 
         Ok(found)
+    }
+
+    async fn rules_md_paths(
+        &self,
+        fs: &dyn ExecutorFileSystem,
+        dir: &AbsolutePathBuf,
+    ) -> io::Result<Vec<AbsolutePathBuf>> {
+        let rules_dir = dir.join(PROJECT_RULES_DIR_PATH);
+        let mut visited_dirs = HashSet::new();
+        let mut files = Vec::new();
+        let mut dirs = vec![(rules_dir, 0_usize)];
+        while let Some((current_dir, depth)) = dirs.pop() {
+            if depth > MAX_PROJECT_RULES_DEPTH || visited_dirs.len() >= MAX_PROJECT_RULES_DIRS {
+                continue;
+            }
+            let metadata = match fs.get_metadata(&current_dir, /*sandbox*/ None).await {
+                Ok(metadata) => metadata,
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            if metadata.is_symlink || !metadata.is_directory {
+                continue;
+            }
+            let canonical_dir = fs.canonicalize(&current_dir, /*sandbox*/ None).await?;
+            if !visited_dirs.insert(canonical_dir) {
+                continue;
+            }
+
+            let entries = match fs.read_directory(&current_dir, /*sandbox*/ None).await {
+                Ok(entries) => entries,
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+
+            for entry in entries {
+                let path = current_dir.join(entry.file_name);
+                if entry.is_directory {
+                    dirs.push((path, depth + 1));
+                    continue;
+                }
+                if entry.is_file
+                    && path
+                        .as_path()
+                        .extension()
+                        .is_some_and(|extension| extension == "md")
+                {
+                    files.push(path);
+                    if files.len() >= MAX_PROJECT_RULES_FILES {
+                        break;
+                    }
+                }
+            }
+            if files.len() >= MAX_PROJECT_RULES_FILES {
+                break;
+            }
+        }
+        files.sort();
+        Ok(files)
     }
 
     fn candidate_filenames(&self) -> Vec<&str> {

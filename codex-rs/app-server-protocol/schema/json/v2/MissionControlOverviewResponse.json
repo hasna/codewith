@@ -425,6 +425,12 @@
           "format": "int64",
           "type": "integer"
         },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tokenBudget": {
           "format": "int64",
           "type": [
@@ -577,6 +583,9 @@
     },
     "ThreadGoalPlanNode": {
       "properties": {
+        "assignedThreadId": {
+          "type": "string"
+        },
         "createdAt": {
           "format": "int64",
           "type": "integer"
@@ -626,6 +635,12 @@
           "format": "int64",
           "type": "integer"
         },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tokenBudget": {
           "format": "int64",
           "type": [
@@ -643,6 +658,7 @@
         }
       },
       "required": [
+        "assignedThreadId",
         "createdAt",
         "dependsOn",
         "key",

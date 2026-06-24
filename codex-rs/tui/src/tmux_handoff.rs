@@ -533,7 +533,9 @@ mod tests {
 
     #[tokio::test]
     async fn plan_resumes_current_thread_with_cwd_model_and_auth_profile() {
-        let config = test_config(test_path_buf("/home/user/open-codewith").abs()).await;
+        let cwd = test_path_buf("/home/user/open-codewith").abs();
+        let cwd_display = cwd.display().to_string();
+        let config = test_config(cwd.clone()).await;
         let thread_id =
             ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("thread id");
         let plan = build_tmux_handoff_plan(
@@ -560,7 +562,7 @@ mod tests {
                 "-c",
                 "model_provider=\"openai\"",
                 "--cd",
-                "/home/user/open-codewith",
+                cwd_display.as_str(),
                 "-m",
                 "gpt-test",
                 "--auth-profile",
@@ -572,7 +574,9 @@ mod tests {
 
     #[tokio::test]
     async fn plan_preserves_launch_options_that_affect_runtime_settings() {
-        let config = test_config(test_path_buf("/home/user/open-codewith").abs()).await;
+        let cwd = test_path_buf("/home/user/open-codewith").abs();
+        let cwd_display = cwd.display().to_string();
+        let config = test_config(cwd.clone()).await;
         let thread_id =
             ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("thread id");
         let launch_options = TmuxHandoffLaunchOptions {
@@ -612,7 +616,7 @@ mod tests {
                 "-c",
                 "model_provider=\"openai\"",
                 "--cd",
-                "/home/user/open-codewith",
+                cwd_display.as_str(),
                 "-m",
                 "gpt-test",
                 "--auth-profile",

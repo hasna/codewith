@@ -75,8 +75,8 @@ fn shimmer_highlight_rgb(
     terminal_bg: Option<(u8, u8, u8)>,
 ) -> (u8, u8, u8) {
     match terminal_bg {
-        Some(bg) if is_light(bg) => blend((0, 0, 0), base_color, 0.20),
-        _ => blend((255, 255, 255), base_color, 0.35),
+        Some(bg) if is_light(bg) => blend((0, 0, 0), base_color, /*alpha*/ 0.20),
+        _ => blend((255, 255, 255), base_color, /*alpha*/ 0.35),
     }
 }
 
@@ -115,16 +115,25 @@ mod tests {
 
     #[test]
     fn fallback_shimmer_uses_app_accent_color() {
-        assert_eq!(fallback_style_for_level(0.0).fg, Some(accent_color()));
-        assert_eq!(fallback_style_for_level(0.4).fg, Some(accent_color()));
-        assert_eq!(fallback_style_for_level(1.0).fg, Some(accent_color()));
+        assert_eq!(
+            fallback_style_for_level(/*intensity*/ 0.0).fg,
+            Some(accent_color())
+        );
+        assert_eq!(
+            fallback_style_for_level(/*intensity*/ 0.4).fg,
+            Some(accent_color())
+        );
+        assert_eq!(
+            fallback_style_for_level(/*intensity*/ 1.0).fg,
+            Some(accent_color())
+        );
         assert!(
-            fallback_style_for_level(0.0)
+            fallback_style_for_level(/*intensity*/ 0.0)
                 .add_modifier
                 .contains(Modifier::DIM)
         );
         assert!(
-            fallback_style_for_level(1.0)
+            fallback_style_for_level(/*intensity*/ 1.0)
                 .add_modifier
                 .contains(Modifier::BOLD)
         );

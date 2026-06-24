@@ -121,6 +121,13 @@ use codex_app_server_protocol::ThreadMonitorRestartResponse;
 use codex_app_server_protocol::ThreadMonitorStopParams;
 use codex_app_server_protocol::ThreadMonitorStopResponse;
 use codex_app_server_protocol::ThreadPendingInteractionStatus;
+use codex_app_server_protocol::ThreadQueuedMessageListParams;
+use codex_app_server_protocol::ThreadQueuedMessageListResponse;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
+use codex_app_server_protocol::ThreadQueuedMessageMoveParams;
+use codex_app_server_protocol::ThreadQueuedMessageMoveResponse;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateParams;
+use codex_app_server_protocol::ThreadQueuedMessageUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -561,6 +568,29 @@ impl AppServerSession {
         started_thread_from_start_response(response, config, self.thread_params_mode()).await
     }
 
+    pub(crate) async fn start_agent_thread(
+        &mut self,
+        config: &Config,
+        parent_thread_id: ThreadId,
+    ) -> Result<AppServerStartedThread> {
+        let request_id = self.next_request_id();
+        let session_config = self.session_config_with_effective_service_tier(config);
+        let response: ThreadStartResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id,
+                params: agent_thread_start_params_from_config(
+                    &session_config,
+                    self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
+                    parent_thread_id,
+                ),
+            })
+            .await
+            .map_err(|err| bootstrap_request_error("thread/start failed for agent thread", err))?;
+        started_thread_from_start_response(response, config, self.thread_params_mode()).await
+    }
+
     pub(crate) async fn resume_thread(
         &mut self,
         config: Config,
@@ -772,6 +802,64 @@ impl AppServerSession {
             .await
             .wrap_err("thread/read failed during TUI session lookup")?;
         Ok(response.thread)
+    }
+
+    pub(crate) async fn thread_queued_message_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadQueuedMessageListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageList {
+                request_id,
+                params: ThreadQueuedMessageListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("failed to list queued thread messages")
+    }
+
+    pub(crate) async fn thread_queued_message_update(
+        &mut self,
+        thread_id: ThreadId,
+        message_id: String,
+        text: String,
+    ) -> Result<ThreadQueuedMessageUpdateResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageUpdate {
+                request_id,
+                params: ThreadQueuedMessageUpdateParams {
+                    thread_id: thread_id.to_string(),
+                    message_id,
+                    text,
+                },
+            })
+            .await
+            .wrap_err("failed to update queued thread message")
+    }
+
+    pub(crate) async fn thread_queued_message_move(
+        &mut self,
+        thread_id: ThreadId,
+        message_id: String,
+        direction: ThreadQueuedMessageMoveDirection,
+    ) -> Result<ThreadQueuedMessageMoveResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadQueuedMessageMove {
+                request_id,
+                params: ThreadQueuedMessageMoveParams {
+                    thread_id: thread_id.to_string(),
+                    message_id,
+                    direction,
+                },
+            })
+            .await
+            .wrap_err("failed to move queued thread message")
     }
 
     pub(crate) async fn thread_archive(&mut self, thread_id: ThreadId) -> Result<()> {
@@ -1112,6 +1200,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         objective: Option<String>,
+        title: Option<Option<String>>,
         status: Option<ThreadGoalStatus>,
         token_budget: Option<Option<i64>>,
     ) -> Result<ThreadGoalSetResponse> {
@@ -1122,6 +1211,7 @@ impl AppServerSession {
                 params: ThreadGoalSetParams {
                     thread_id: thread_id.to_string(),
                     objective,
+                    title,
                     status,
                     token_budget,
                 },
@@ -2535,6 +2625,24 @@ fn thread_start_params_from_config(
     }
 }
 
+fn agent_thread_start_params_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
+    parent_thread_id: ThreadId,
+) -> ThreadStartParams {
+    ThreadStartParams {
+        thread_source: Some(ThreadSource::Subagent),
+        parent_thread_id: Some(parent_thread_id.to_string()),
+        ..thread_start_params_from_config(
+            config,
+            thread_params_mode,
+            remote_cwd_override,
+            /*session_start_source*/ None,
+        )
+    }
+}
+
 fn thread_resume_params_from_config(
     config: Config,
     thread_id: ThreadId,
@@ -3437,6 +3545,23 @@ mod tests {
         );
 
         assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+    }
+
+    #[tokio::test]
+    async fn agent_thread_start_params_mark_subagent_parent() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let parent_thread_id = ThreadId::new();
+
+        let params = agent_thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            parent_thread_id,
+        );
+
+        assert_eq!(params.thread_source, Some(ThreadSource::Subagent));
+        assert_eq!(params.parent_thread_id, Some(parent_thread_id.to_string()));
     }
 
     #[tokio::test]

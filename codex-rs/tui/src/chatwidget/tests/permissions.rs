@@ -141,6 +141,14 @@ async fn approvals_selection_popup_snapshot() {
     chat.open_approvals_popup();
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Saved to config.toml"),
+        "permissions popup should explain persistence scope: {popup}"
+    );
+    assert!(
+        !popup.contains("auth profile remembers"),
+        "permissions popup should not claim auth-profile persistence without a selected profile: {popup}"
+    );
     #[cfg(target_os = "windows")]
     insta::with_settings!({ snapshot_suffix => "windows" }, {
         assert_chatwidget_snapshot!("approvals_selection_popup", popup);
@@ -152,6 +160,7 @@ async fn approvals_selection_popup_snapshot() {
 #[tokio::test]
 async fn profile_permissions_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("work".to_string());
     chat.config.explicit_permission_profile_mode = true;
     chat.config
         .permissions
@@ -163,10 +172,12 @@ async fn profile_permissions_selection_popup_snapshot() {
 
     chat.open_permissions_popup();
 
-    assert_chatwidget_snapshot!(
-        "profile_permissions_selection_popup",
-        render_bottom_popup(&chat, /*width*/ 80)
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("this auth profile remembers the choice"),
+        "profile permissions popup should explain auth-profile persistence: {popup}"
     );
+    assert_chatwidget_snapshot!("profile_permissions_selection_popup", popup);
 }
 
 #[tokio::test]
@@ -971,13 +982,13 @@ async fn permissions_selection_event_full_access_to_default() {
         .permissions
         .set_permission_profile(PermissionProfile::Disabled)
         .expect("set permission profile");
+    #[cfg(target_os = "windows")]
+    let expected_label = format!("{ASK_FOR_APPROVAL_LABEL} (non-admin sandbox)");
+    #[cfg(not(target_os = "windows"))]
+    let expected_label = ASK_FOR_APPROVAL_LABEL.to_string();
 
     chat.open_permissions_popup();
-    let popup = render_bottom_popup(&chat, /*width*/ 120);
-    chat.handle_key_event(KeyEvent::from(KeyCode::Up));
-    if popup.contains("Approve for me") {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Up));
-    }
+    select_permissions_popup_row(&mut chat, expected_label.as_str());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let events = drain_app_events(&mut rx);
@@ -987,10 +998,64 @@ async fn permissions_selection_event_full_access_to_default() {
             AppEvent::SelectPermissionProfile(PermissionProfileSelection {
                 display_label,
                 ..
-            }) if display_label == ASK_FOR_APPROVAL_LABEL
+            }) if display_label == expected_label.as_str()
         )),
         "expected default permissions selection event, got: {events:?}"
     );
+}
+
+fn select_permissions_popup_row(chat: &mut ChatWidget, label: &str) {
+    for _ in 0..12 {
+        let popup = render_bottom_popup(chat, /*width*/ 120);
+        if popup
+            .lines()
+            .any(|line| selected_permissions_popup_row_matches_label(line, label))
+        {
+            return;
+        }
+        chat.handle_key_event(KeyEvent::from(KeyCode::Up));
+    }
+    panic!(
+        "permissions popup did not select `{label}`:\n{}",
+        render_bottom_popup(chat, /*width*/ 120)
+    );
+}
+
+fn selected_permissions_popup_row_matches_label(line: &str, label: &str) -> bool {
+    let Some(line) = line.strip_prefix('›') else {
+        return false;
+    };
+    let Some((_number, row)) = line.trim_start().split_once(". ") else {
+        return false;
+    };
+    let Some(suffix) = row.trim_start().strip_prefix(label) else {
+        return false;
+    };
+    suffix.is_empty() || suffix.starts_with("  ") || suffix.starts_with(" (current)")
+}
+
+#[test]
+fn selected_permissions_popup_row_matches_exact_label() {
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 2. Ask for approval              Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 2. Ask for approval (current)    Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(!selected_permissions_popup_row_matches_label(
+        "› 1. Ask for approval (non-admin sandbox)  Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
+    assert!(selected_permissions_popup_row_matches_label(
+        "› 1. Ask for approval (non-admin sandbox)  Codewith can read files",
+        "Ask for approval (non-admin sandbox)"
+    ));
+    assert!(!selected_permissions_popup_row_matches_label(
+        "  2. Ask for approval              Codewith can read files",
+        ASK_FOR_APPROVAL_LABEL
+    ));
 }
 
 #[tokio::test]

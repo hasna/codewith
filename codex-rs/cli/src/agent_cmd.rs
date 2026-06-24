@@ -167,7 +167,10 @@ pub(crate) async fn run_agent_command(
                 .await
                 .context("failed to read background agent execution snapshot")?;
             let pending_interactions = state_db
-                .list_background_agent_pending_interactions(cmd.agent_id.as_str(), None)
+                .list_background_agent_pending_interactions(
+                    cmd.agent_id.as_str(),
+                    /*status*/ None,
+                )
                 .await
                 .context("failed to list background agent pending interactions")?;
             json!({
@@ -309,7 +312,7 @@ pub(crate) async fn run_background_agent_attach(
                 limit,
             }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -329,7 +332,7 @@ pub(crate) async fn run_background_agent_logs(
                 limit,
             }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -343,7 +346,7 @@ pub(crate) async fn run_background_agent_stop(
         AgentCli {
             subcommand: AgentSubcommand::Stop(AgentIdCommand { agent_id }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -357,7 +360,7 @@ pub(crate) async fn run_background_agent_delete(
         AgentCli {
             subcommand: AgentSubcommand::Delete(AgentIdCommand { agent_id }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -416,7 +419,7 @@ async fn attach_agent(state_db: &StateRuntime, cmd: AgentLogsCommand) -> anyhow:
         .await
         .context("failed to list background agent events")?;
     let pending_interactions = state_db
-        .list_background_agent_pending_interactions(cmd.agent_id.as_str(), None)
+        .list_background_agent_pending_interactions(cmd.agent_id.as_str(), /*status*/ None)
         .await
         .context("failed to list background agent pending interactions")?;
     Ok(json!({
@@ -632,7 +635,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
         .await
         .context("failed to count background agent runs")?;
     let pending_interaction_count = state_db
-        .count_background_agent_pending_interactions(None)
+        .count_background_agent_pending_interactions(/*status*/ None)
         .await
         .context("failed to count background agent pending interactions")?;
     let max_active_runs_per_user = 8_i64;

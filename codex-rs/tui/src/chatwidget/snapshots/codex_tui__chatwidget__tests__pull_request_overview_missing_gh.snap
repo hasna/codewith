@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/pull_request_display.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Needs attention
+
+  [Current]  Open
+
+  Search PRs
+› Refresh                 Reload pull requests
+  GitHub CLI unavailable  Install gh or make it available on PATH. program not found
+
+  Read-only: no comments, reviews, pushes, branch updates, merges, or auto-fix actions.
+  Press enter to confirm or esc to go back

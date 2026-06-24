@@ -75,12 +75,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 pub use token_usage::TokenUsage;
-use tracing::Level;
 use tracing::error;
 use tracing::warn;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::filter::Targets;
 use tracing_subscriber::prelude::*;
 use url::Url;
 use uuid::Uuid;
@@ -125,6 +123,7 @@ mod common_config_options;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
+mod pull_request_summary;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
@@ -1375,7 +1374,7 @@ pub async fn run_main(
     let log_db = state_db.clone().map(log_db::start);
     let log_db_layer = log_db
         .clone()
-        .map(|layer| layer.with_filter(Targets::new().with_default(Level::TRACE)));
+        .map(|layer| layer.with_filter(log_db::default_filter()));
 
     let _ = tracing_subscriber::registry()
         .with(tui_file_layer)
@@ -2170,15 +2169,19 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serial_test::serial;
     use std::sync::Arc;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicUsize;
+    #[cfg(unix)]
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
+    #[cfg(unix)]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
@@ -2189,6 +2192,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             unsafe {
@@ -2460,12 +2464,15 @@ mod tests {
         let start_count_for_closure = Arc::clone(&start_count);
         let unexpected_socket_path = codex_home.path().join("unexpected.sock");
 
-        let socket_path =
-            maybe_start_default_daemon_socket_with(codex_home.path(), None, move |_| async move {
+        let socket_path = maybe_start_default_daemon_socket_with(
+            codex_home.path(),
+            /*codex_bin*/ None,
+            move |_| async move {
                 start_count_for_closure.fetch_add(1, Ordering::SeqCst);
                 Ok(unexpected_socket_path)
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert_eq!(socket_path, None);
         assert_eq!(start_count.load(Ordering::SeqCst), 0);
@@ -3208,11 +3215,11 @@ mod tests {
             startup_error.state_db_path(),
             codex_state::state_db_path(occupied_sqlite_home.as_path()).as_path()
         );
+        let detail = startup_error.detail();
         assert!(
-            startup_error
-                .detail()
-                .contains("failed to initialize state runtime"),
-            "startup error should preserve the underlying state db failure"
+            detail.contains("failed to initialize state runtime")
+                || detail.contains("failed to acquire state runtime startup lock"),
+            "startup error should preserve the underlying state runtime failure"
         );
         Ok(())
     }
