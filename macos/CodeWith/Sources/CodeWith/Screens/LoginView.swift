@@ -135,7 +135,7 @@ struct LoginView: View {
             primaryButton(icon: "checkmark", title: model.loginInProgress ? "Signing in…" : "Continue") {
                 Task { await model.loginWithApiKey(apiKey, providerName: selectedProvider) }
             }
-            .disabled(model.loginInProgress)
+            .disabled(model.loginInProgress || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             backLink { mode = .providers }
         }
     }

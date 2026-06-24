@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Routing
 
 enum Route: Hashable {
-    case home, search, apps, loops, machines, profiles
+    case home, search, apps, loops, goals, workflows, machines, profiles
     case chat(String)      // thread id
     case project(String)   // project path
 }
@@ -142,11 +142,16 @@ final class AppModel {
     var projects: [ProjectInfo] = []
     var loops: [LoopInfo] = []
     var loopsError: String? = nil
+    var goalStates: [ThreadGoalState] = []
+    var goalsError: String? = nil
+    var workflows: [WorkflowInfo] = []
+    var workflowsError: String? = nil
     var activeGoal: GoalInfo? = nil
     var activeGoalPlans: [GoalPlanInfo] = []
     var apps: [AppItemInfo] = []
     var machines: [MachineInfo] = []
     var machinesError: String? = nil
+    var selectedMachineId: String? = nil
     var machinePairing: MachinePairingInfo? = nil
     var authProfiles: [AuthProfileInfo] = []
     var activePeers: [ActiveSessionPeerInfo] = []
@@ -170,8 +175,11 @@ final class AppModel {
     var model: String? = nil
     var provider: String? = nil
     var effort: String = "Low"
+    var permissionProfileId = ":danger-full-access"
+    var sessionAuthProfileName: String? = nil
     var availableModels = ["gpt-5.5-codex", "gpt-5.5", "o3", "gpt-4.1"]
     var availableProviders = ["openai", "azure", "openrouter", "ollama"]
+    var availablePermissionProfiles = [":read-only", ":workspace", ":danger-full-access"]
     let availableEfforts = ["Low", "Medium", "High", "Extra High"]
 
     // Active chat
@@ -223,6 +231,33 @@ final class AppModel {
         pendingUserInputRequests = []
         pendingMcpElicitationRequests = []
         respondingServerRequestKeys.removeAll()
+    }
+
+    private func clearActiveSessionState(clearComposer: Bool, clearProject: Bool) {
+        if clearComposer { composerText = "" }
+        activeThreadId = nil
+        activeTurnId = nil
+        activeTurnThreadId = nil
+        activeGoal = nil
+        activeGoalPlans = []
+        activeMessages = []
+        pendingActivePeer = nil
+        activeAgentAttachment = nil
+        turnInProgress = false
+        streamingAssistantIndex = nil
+        sessionAuthProfileName = nil
+        toolOutputMessageIndexes.removeAll()
+        cancelTurnWatchdog()
+        if clearProject { currentProjectPath = nil }
+    }
+
+    private func detachVisibleTurnState() {
+        activeTurnId = nil
+        activeTurnThreadId = nil
+        turnInProgress = false
+        streamingAssistantIndex = nil
+        toolOutputMessageIndexes.removeAll()
+        cancelTurnWatchdog()
     }
 
     private func beginServerRequestResponse(to requestId: JSONValue) -> Bool {
@@ -332,14 +367,18 @@ final class AppModel {
     func refreshAll() async {
         async let acct: () = loadAccount()
         async let apps: () = loadApps()
+        async let machines: () = loadMachines()
         async let peers: () = loadActivePeers()
         async let agents: () = loadAgentRuns()
+        async let profiles: () = loadProfiles()
         async let requirements: () = loadConfigRequirements()
         await loadConfig()
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, apps, peers, agents, requirements, catalog)
+        await loadGoals()
+        await loadWorkflows()
+        _ = await (acct, apps, machines, peers, agents, profiles, requirements, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { [weak self] in
             guard let self else { return }
@@ -349,6 +388,8 @@ final class AppModel {
                 guardCount += 1
             }
             await self.loadLoops()
+            await self.loadGoals()
+            await self.loadWorkflows()
         }
     }
 
@@ -383,8 +424,21 @@ final class AppModel {
     func loadMachines() async {
         guard connection == .connected else { return }
         do {
-            machines = try await client.listMachines()
+            let previousMachineId = selectedMachineId
+            let loadedMachines = try await client.listMachines()
+            machines = loadedMachines
+            if let selectedMachineId,
+               loadedMachines.contains(where: { $0.machineId == selectedMachineId }) {
+                // Preserve the user's current machine selection.
+            } else {
+                selectedMachineId = loadedMachines.first(where: \.isLocal)?.machineId ?? loadedMachines.first?.machineId
+            }
+            if previousMachineId != nil, previousMachineId != selectedMachineId {
+                remoteSearchThreads = []
+                clearActiveSessionState(clearComposer: true, clearProject: true)
+            }
             machinesError = nil
+            refreshProjects()
         } catch {
             machines = []
             // Older app-servers don't implement the machine registry; show a short
@@ -473,6 +527,18 @@ final class AppModel {
         var draft = LoopCreationDraft()
         draft.prompt = loopPrompt
         await createLoop(draft, fallbackToComposer: true)
+    }
+
+    func prepareLoopComposer() {
+        let prompt = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isLoopCommand(prompt) {
+            composerText = prompt
+        } else if prompt.isEmpty {
+            composerText = "Loop: \(LoopCreationDraft.defaultPrompt)"
+        } else {
+            composerText = "Loop: \(prompt)"
+        }
+        open(.home, label: "New loop")
     }
 
     func createLoop(_ draft: LoopCreationDraft, fallbackToComposer: Bool = false) async {
@@ -567,7 +633,7 @@ final class AppModel {
             let (newThreads, next) = try await client.listThreads(cursor: cursor, limit: reset ? 200 : 50)
             if reset { threads = newThreads } else { threads.append(contentsOf: newThreads) }
             nextCursor = next
-            projects = ProjectInfo.derive(from: threads)
+            refreshProjects()
         } catch {
             // keep existing data; surface nothing fatal
         }
@@ -590,12 +656,79 @@ final class AppModel {
 
     var hasMoreThreads: Bool { nextCursor != nil }
 
+    var selectedMachine: MachineInfo? {
+        guard let selectedMachineId else { return nil }
+        return machines.first { $0.machineId == selectedMachineId }
+    }
+
+    var currentMachineLabel: String {
+        selectedMachine?.displayName ?? "This machine"
+    }
+
+    var machineScopedThreads: [ThreadInfo] {
+        guard let selectedMachineId else { return threads }
+        let anyMachineMetadata = threads.contains { $0.machineId != nil }
+        guard anyMachineMetadata else { return threads }
+        let includeLegacyLocalThreads = selectedMachine?.isLocal == true
+        return threads.filter { thread in
+            thread.machineId == selectedMachineId || (includeLegacyLocalThreads && thread.machineId == nil)
+        }
+    }
+
+    private func isThreadInSelectedMachineScope(_ thread: ThreadInfo) -> Bool {
+        guard let selectedMachineId else { return true }
+        if thread.machineId == selectedMachineId { return true }
+        return selectedMachine?.isLocal == true && thread.machineId == nil
+    }
+
+    private func currentThreadScope() -> (machineId: String?, threadIds: [String]) {
+        (selectedMachineId, machineScopedThreads.map(\.id))
+    }
+
+    private func isCurrentThreadScope(machineId: String?, threadIds: [String]) -> Bool {
+        selectedMachineId == machineId && machineScopedThreads.map(\.id) == threadIds
+    }
+
+    private func clearActiveThreadIfOutsideMachineScope() {
+        guard let activeThreadId else { return }
+        let activeThread = threads.first { $0.id == activeThreadId }
+        if let activeThread, isThreadInSelectedMachineScope(activeThread) {
+            return
+        }
+        clearActiveSessionState(clearComposer: true, clearProject: false)
+    }
+
+    func selectMachine(_ machine: MachineInfo?) {
+        let previousMachineId = selectedMachineId
+        selectedMachineId = machine?.machineId
+        currentProjectPath = nil
+        remoteSearchThreads = []
+        if previousMachineId != selectedMachineId {
+            clearActiveSessionState(clearComposer: true, clearProject: false)
+            clearPendingServerInteractions()
+        } else {
+            clearActiveThreadIfOutsideMachineScope()
+        }
+        refreshProjects()
+        Task {
+            await loadLoops()
+            await loadGoals()
+            await loadWorkflows()
+        }
+    }
+
+    private func refreshProjects() {
+        projects = ProjectInfo.derive(from: machineScopedThreads)
+    }
+
     // MARK: Search (local, over loaded data)
 
     private var q: String { searchQuery.trimmingCharacters(in: .whitespaces).lowercased() }
     var searchThreads: [ThreadInfo] {
         if q.isEmpty { return [] }
-        return remoteSearchThreads.isEmpty ? threads.filter { $0.name.lowercased().contains(q) } : remoteSearchThreads
+        return remoteSearchThreads.isEmpty
+            ? machineScopedThreads.filter { $0.name.lowercased().contains(q) }
+            : remoteSearchThreads.filter(isThreadInSelectedMachineScope)
     }
     var searchProjects: [ProjectInfo] {
         q.isEmpty ? [] : projects.filter { $0.name.lowercased().contains(q) }
@@ -607,24 +740,59 @@ final class AppModel {
 
     func runSearch() async {
         let term = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searchMachineId = selectedMachineId
         guard connection == .connected, !term.isEmpty else {
             remoteSearchThreads = []
             return
         }
         let results = (try? await client.searchThreads(term: term)) ?? []
         guard searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == term else { return }
-        remoteSearchThreads = results
+        guard selectedMachineId == searchMachineId else { return }
+        remoteSearchThreads = results.filter(isThreadInSelectedMachineScope)
     }
 
     func loadLoops() async {
         guard connection == .connected else { return }
         // Schedules/monitors are per-thread; aggregate across loaded threads.
+        let scope = currentThreadScope()
         do {
-            let loadedLoops = try await client.listLoops(threadIds: threads.map(\.id))
+            let loadedLoops = try await client.listLoops(threadIds: scope.threadIds)
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
             loops = loadedLoops
             loopsError = nil
         } catch {
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
             loopsError = error.localizedDescription
+        }
+    }
+
+    func loadGoals() async {
+        guard connection == .connected else { return }
+        let scope = currentThreadScope()
+        do {
+            let loadedGoalStates = try await client.listThreadGoalStates(threadIds: scope.threadIds)
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
+            goalStates = loadedGoalStates
+            goalsError = nil
+        } catch {
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
+            goalsError = error.localizedDescription
+        }
+    }
+
+    func loadWorkflows() async {
+        guard connection == .connected else { return }
+        let scope = currentThreadScope()
+        do {
+            let loadedWorkflows = try await client.listWorkflows(threadIds: scope.threadIds)
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
+            workflows = loadedWorkflows
+            workflowsError = nil
+        } catch {
+            guard isCurrentThreadScope(machineId: scope.machineId, threadIds: scope.threadIds) else { return }
+            workflowsError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't expose workflows."
+                : error.localizedDescription
         }
     }
 
@@ -634,11 +802,14 @@ final class AppModel {
             activeGoalPlans = []
             return
         }
+        let requestedThreadId = activeThreadId
         do {
-            let state = try await client.listThreadGoalState(threadId: activeThreadId)
+            let state = try await client.listThreadGoalState(threadId: requestedThreadId)
+            guard self.activeThreadId == requestedThreadId else { return }
             activeGoal = state.goal
             activeGoalPlans = state.goalPlans
         } catch {
+            guard self.activeThreadId == requestedThreadId else { return }
             activeGoal = nil
             activeGoalPlans = []
         }
@@ -669,15 +840,18 @@ final class AppModel {
     func loadConfig() async {
         do {
             let cfg = try await client.readFullConfig()
-            if let configModel = cfg.model { model = configModel }
-            if let configProvider = cfg.provider { provider = configProvider }
-            if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
+            if activeThreadId == nil {
+                if let configModel = cfg.model { model = configModel }
+                if let configProvider = cfg.provider { provider = configProvider }
+                if let wireEffort = cfg.effort { effort = Self.displayEffort(wireEffort) }
+                fullAccess = cfg.sandbox == "danger-full-access"
+                permissionProfileId = Self.permissionProfileId(forSandbox: cfg.sandbox)
+            }
             configApproval = cfg.approval
             configSandbox = cfg.sandbox
             customInstructions = cfg.developerInstructions ?? ""
             desktopSettings = cfg.desktop
             publishMenuBarPreference(cfg.desktop.showMenuBar)
-            fullAccess = cfg.sandbox == "danger-full-access"
             if let sandbox = cfg.sandbox, sandbox != "danger-full-access" {
                 previousNonFullSandbox = sandbox
             }
@@ -690,6 +864,7 @@ final class AppModel {
         guard connection == .connected else { return }
         do {
             configRequirements = try await client.readConfigRequirements()
+            refreshAvailablePermissionProfiles()
         } catch {
             configError = error.localizedDescription
         }
@@ -709,10 +884,33 @@ final class AppModel {
         configRequirements?.allowsSandbox("danger-full-access") ?? true
     }
 
+    private func refreshAvailablePermissionProfiles(serverProfiles: [String]? = nil) {
+        let defaults = [":read-only", ":workspace", ":danger-full-access"]
+        var profiles = serverProfiles?.isEmpty == false ? serverProfiles! : defaults
+        if let allowed = configRequirements?.allowedPermissionProfiles {
+            profiles = profiles.filter { allowed.contains($0) }
+        }
+        if profiles.isEmpty {
+            profiles = configRequirements?.permissionProfileOptions(defaults: defaults) ?? defaults
+        }
+        availablePermissionProfiles = profiles
+        if !profiles.contains(permissionProfileId) {
+            permissionProfileId = configRequirements?.defaultPermissions ?? profiles.first ?? ":workspace"
+            fullAccess = permissionProfileId == ":danger-full-access"
+        }
+    }
+
     func loadProfiles() async {
         guard connection == .connected else { return }
-        if let profiles = try? await client.listAuthProfiles() {
-            authProfiles = profiles
+        async let authProfileResult = try? client.listAuthProfiles()
+        async let permissionProfileResult = try? client.listPermissionProfiles(cwd: currentProjectPath)
+        let loadedAuthProfiles = await authProfileResult
+        let loadedPermissionProfiles = await permissionProfileResult
+        if let loadedAuthProfiles {
+            authProfiles = loadedAuthProfiles
+        }
+        if let loadedPermissionProfiles {
+            refreshAvailablePermissionProfiles(serverProfiles: loadedPermissionProfiles)
         }
     }
 
@@ -867,7 +1065,7 @@ final class AppModel {
         let requestedThreadId = t.id
         activeThreadId = t.id
         if activeTurnThreadId != t.id {
-            activeTurnId = nil
+            detachVisibleTurnState()
         }
         activeMessages = []
         toolOutputMessageIndexes.removeAll()
@@ -881,14 +1079,19 @@ final class AppModel {
         // plain read if resume isn't available. `await` can't live in a `??`
         // autoclosure, so branch explicitly.
         let messages: [ChatMessage]
-        if let resumed = try? await client.resumeThreadMessages(id: t.id) {
-            messages = resumed
+        let settings: ThreadSessionSettings?
+        if let resumed = try? await client.resumeThread(id: t.id) {
+            messages = resumed.messages
+            settings = resumed.settings
             resumedThreadIds.insert(t.id)
         } else {
-            messages = (try? await client.readThreadMessages(id: t.id)) ?? []
+            let read = try? await client.readThread(id: t.id)
+            messages = read?.messages ?? []
+            settings = read?.settings
             resumedThreadIds.remove(t.id)
         }
         guard activeThreadId == requestedThreadId else { return }
+        applyThreadSettings(settings)
         activeMessages = messages
         await loadActiveGoal()
         await loadActivePeers()
@@ -934,15 +1137,14 @@ final class AppModel {
 
     /// New session scoped to a project's directory.
     func newSessionInProject(_ path: String) {
+        clearActiveSessionState(clearComposer: true, clearProject: false)
         currentProjectPath = path
-        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeGoal = nil; activeGoalPlans = []; activeMessages = []; pendingActivePeer = nil; activeAgentAttachment = nil
-        toolOutputMessageIndexes.removeAll()
         open(.home, label: (path as NSString).lastPathComponent)
     }
 
     /// Threads belonging to a project, by repo-identity group key.
     func threads(forProjectKey key: String) -> [ThreadInfo] {
-        threads.filter { ($0.projectKey ?? $0.cwd ?? "") == key }
+        machineScopedThreads.filter { ($0.projectKey ?? $0.cwd ?? "") == key }
     }
     func project(forKey key: String) -> ProjectInfo? {
         projects.first { $0.groupKey == key }
@@ -954,7 +1156,7 @@ final class AppModel {
         return projects.first { $0.path == path }?.name ?? (path as NSString).lastPathComponent
     }
 
-    /// Select the project context for new sessions (nil = all projects / machines).
+    /// Select the project context for new sessions (nil = all projects on the selected machine).
     func selectProject(_ p: ProjectInfo?) {
         if activeThreadId != nil {
             if let p {
@@ -968,10 +1170,13 @@ final class AppModel {
     }
 
     func newChat() {
-        composerText = ""; activeThreadId = nil; activeTurnId = nil; activeGoal = nil; activeGoalPlans = []; activeMessages = []; pendingActivePeer = nil; activeAgentAttachment = nil
-        toolOutputMessageIndexes.removeAll()
-        currentProjectPath = nil
+        clearActiveSessionState(clearComposer: true, clearProject: true)
         open(.home, label: "New chat")
+    }
+
+    func openHome() {
+        clearActiveSessionState(clearComposer: true, clearProject: true)
+        open(.home, label: "Home")
     }
 
     // MARK: Sending
@@ -1182,9 +1387,22 @@ final class AppModel {
             Task { await loadAccount(); await refreshAll() }
         case "thread/started", "thread/closed", "thread/archived", "thread/unarchived":
             // A session appeared/changed — refresh the list so Projects + Chats stay live.
-            Task { await loadThreads(reset: true); await loadActivePeers(); await loadAgentRuns() }
+            Task {
+                await loadThreads(reset: true)
+                await loadLoops()
+                await loadGoals()
+                await loadWorkflows()
+                await loadActivePeers()
+                await loadAgentRuns()
+            }
         case "thread/name/updated", "thread/status/changed", "thread/metadata/updated":
-            Task { await loadThreads(reset: true); await loadActivePeers(); await loadAgentRuns() }
+            Task {
+                await loadThreads(reset: true)
+                await loadGoals()
+                await loadWorkflows()
+                await loadActivePeers()
+                await loadAgentRuns()
+            }
         case "thread/settings/updated":
             applyThreadSettingsNotification(params)
             Task { await loadModelCatalog() }
@@ -1198,6 +1416,7 @@ final class AppModel {
             } else {
                 Task { await loadActiveGoal() }
             }
+            Task { await loadGoals() }
         case "thread/goalPlan/updated":
             guard notificationBelongsToActiveThread(params) else { return }
             if let plan = params["plan"], !plan.isNull {
@@ -1205,10 +1424,15 @@ final class AppModel {
             } else {
                 Task { await loadActiveGoal() }
             }
+            Task { await loadGoals() }
         case "thread/goal/cleared":
             guard notificationBelongsToActiveThread(params) else { return }
             activeGoal = nil
             activeGoalPlans = []
+            Task { await loadGoals() }
+        case "thread/workflow/updated", "thread/workflow/deleted",
+             "thread/workflow/run/updated", "thread/workflow/run/deleted":
+            Task { await loadWorkflows() }
         case "app/list/updated":
             let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
             if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
@@ -1248,15 +1472,26 @@ final class AppModel {
 
     private func applyThreadSettingsNotification(_ params: JSONValue) {
         guard notificationBelongsToActiveThread(params) else { return }
-        let settings = params["threadSettings"] ?? params["settings"] ?? .null
-        if let nextModel = settings["model"]?.string {
+        applyThreadSettings(ThreadSessionSettings(from: params))
+    }
+
+    private func applyThreadSettings(_ settings: ThreadSessionSettings?) {
+        guard let settings else { return }
+        if let nextModel = settings.model {
             model = nextModel
         }
-        if let nextProvider = settings["modelProvider"]?.string ?? settings["model_provider"]?.string {
+        if let nextProvider = settings.provider {
             provider = nextProvider
         }
-        if let nextEffort = settings["effort"]?.string {
+        if let nextEffort = settings.effort {
             effort = Self.displayEffort(nextEffort)
+        }
+        if let activePermission = settings.permissionProfileId {
+            permissionProfileId = activePermission
+            fullAccess = activePermission == ":danger-full-access"
+        }
+        if let authProfile = settings.authProfile {
+            sessionAuthProfileName = authProfile
         }
     }
 
@@ -1271,7 +1506,7 @@ final class AppModel {
 
     private func notificationBelongsToActiveTurn(_ params: JSONValue) -> Bool {
         guard let threadId = Self.notificationThreadId(params) else { return true }
-        return threadId == activeThreadId || threadId == activeTurnThreadId
+        return threadId == activeThreadId && (activeTurnThreadId == nil || activeTurnThreadId == threadId)
     }
 
     private func notificationIsForActiveThread(_ params: JSONValue) -> Bool {
@@ -2039,10 +2274,16 @@ final class AppModel {
             return
         }
         configSandbox = s
+        permissionProfileId = Self.permissionProfileId(forSandbox: s)
+        fullAccess = s == "danger-full-access"
         if s != "danger-full-access" { previousNonFullSandbox = s }
         Task { await writeConfigValue(keyPath: "sandbox_mode", value: .string(s), reloadUserConfig: true) }
     }
     func setFullAccess(_ on: Bool) {
+        if activeThreadId != nil {
+            setPermissionProfile(on ? ":danger-full-access" : ":workspace")
+            return
+        }
         guard !on || canUseFullAccess else {
             configError = "Full access is blocked by managed requirements."
             return
@@ -2052,6 +2293,45 @@ final class AppModel {
             previousNonFullSandbox = sandbox
         }
         setSandbox(on ? "danger-full-access" : previousNonFullSandbox)
+    }
+    func setPermissionProfile(_ profileId: String) {
+        let previousProfileId = permissionProfileId
+        let previousFullAccess = fullAccess
+        permissionProfileId = profileId
+        fullAccess = profileId == ":danger-full-access"
+        if let activeThreadId {
+            Task {
+                let ok = await writeThreadSettings(threadId: activeThreadId, permissions: profileId)
+                if !ok {
+                    permissionProfileId = previousProfileId
+                    fullAccess = previousFullAccess
+                }
+            }
+            return
+        }
+
+        switch profileId {
+        case ":danger-full-access":
+            setFullAccess(true)
+        case ":workspace":
+            setSandbox("workspace-write")
+        case ":read-only":
+            setSandbox("read-only")
+        default:
+            Task { await writeConfigValue(keyPath: "default_permissions", value: .string(profileId), reloadUserConfig: true) }
+        }
+    }
+    func setSessionAuthProfile(_ name: String) {
+        if let activeThreadId {
+            Task {
+                let ok = await writeThreadSettings(threadId: activeThreadId, authProfile: .set(name))
+                if ok {
+                    sessionAuthProfileName = name
+                }
+            }
+        } else {
+            Task { await switchAuthProfile(name) }
+        }
     }
     func setWorkMode(_ value: String) {
         desktopSettings.workMode = value
@@ -2160,7 +2440,9 @@ final class AppModel {
         threadId: String,
         model: String? = nil,
         provider: String? = nil,
-        effort: String? = nil
+        effort: String? = nil,
+        permissions: String? = nil,
+        authProfile: AppServerClient.ThreadAuthProfileUpdate = .keep
     ) async -> Bool {
         configError = nil
         do {
@@ -2168,7 +2450,9 @@ final class AppModel {
                 threadId: threadId,
                 model: model,
                 provider: provider,
-                effort: effort)
+                effort: effort,
+                permissions: permissions,
+                authProfile: authProfile)
             return true
         } catch {
             configError = error.localizedDescription
@@ -2266,6 +2550,44 @@ final class AppModel {
         case "minimal": return "Minimal"
         case "none": return "None"
         default: return "Low"
+        }
+    }
+
+    static func displayProvider(_ provider: String) -> String {
+        switch provider.lowercased() {
+        case "openai": return "OpenAI"
+        case "openrouter": return "OpenRouter"
+        case "azure": return "Azure"
+        case "anthropic": return "Anthropic"
+        case "ollama": return "Ollama"
+        default:
+            return provider
+                .split(separator: "-")
+                .map { $0.prefix(1).uppercased() + String($0.dropFirst()) }
+                .joined(separator: " ")
+        }
+    }
+
+    static func permissionProfileId(forSandbox sandbox: String?) -> String {
+        switch sandbox {
+        case "danger-full-access": return ":danger-full-access"
+        case "read-only": return ":read-only"
+        default: return ":workspace"
+        }
+    }
+
+    static func displayModel(_ model: String) -> String {
+        model
+            .replacingOccurrences(of: "gpt-", with: "GPT-")
+            .replacingOccurrences(of: "codex", with: "Codex")
+    }
+
+    static func displayPermissionProfile(_ profileId: String) -> String {
+        switch profileId {
+        case ":danger-full-access": return "Full Access"
+        case ":workspace": return "Workspace Write"
+        case ":read-only": return "Read Only"
+        default: return profileId
         }
     }
 

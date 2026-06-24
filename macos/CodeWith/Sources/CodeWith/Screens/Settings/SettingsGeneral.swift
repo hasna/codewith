@@ -4,6 +4,7 @@ struct SettingsGeneral: View {
     var fullAccess: Bool = true
     var sandbox: String? = nil
     var onToggleFullAccess: () -> Void = {}
+    @State private var confirmingFullAccess = false
 
     var body: some View {
         SettingsPage(title: "General") {
@@ -31,7 +32,13 @@ struct SettingsGeneral: View {
                 SettingsRow(title: "Full access",
                             subtitle: "When CodeWith runs with full access, it can edit any file on your computer and run commands with network, without your approval. This significantly increases the risk of data loss, leaks, or unexpected behavior. Learn more about elevated risks.",
                             showDivider: false) {
-                    GlassToggle(on: fullAccess || sandbox == "danger-full-access") { onToggleFullAccess() }
+                    GlassToggle(on: fullAccess || sandbox == "danger-full-access") {
+                        if fullAccess || sandbox == "danger-full-access" {
+                            onToggleFullAccess()
+                        } else {
+                            confirmingFullAccess = true
+                        }
+                    }
                 }
                 .padding(.bottom, 14)
 
@@ -49,6 +56,12 @@ struct SettingsGeneral: View {
                     GlassToggle(on: false)
                 }
             }
+        }
+        .confirmationDialog("Allow full access?", isPresented: $confirmingFullAccess, titleVisibility: .visible) {
+            Button("Allow full access", role: .destructive, action: onToggleFullAccess)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This lets CodeWith edit any file and use network without approval.")
         }
     }
 }

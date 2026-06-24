@@ -15,7 +15,7 @@ struct ProfilesView: View {
             HStack {
                 Text("Profiles").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
                 Spacer()
-                newPill
+                newPill.opacity(0.45).help("Profile creation is not available in CodeWith.app yet.")
             }
             .padding(.horizontal, 22).frame(height: 40)
             Rectangle().fill(Theme.separator).frame(height: 1)

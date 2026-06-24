@@ -166,6 +166,31 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.activeMessages.first?.text, "right")
     }
 
+    func testOpeningDifferentThreadDetachesVisibleTurnState() {
+        let m = AppModel()
+        m.activeThreadId = "thread-a"
+        m.activeTurnThreadId = "thread-a"
+        m.activeTurnId = "turn-a"
+        m.turnInProgress = true
+
+        m.activeThreadId = "thread-b"
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testCommandOutputForPreviousTurnIgnoredAfterDetach() {
+        let m = AppModel()
+        m.activeThreadId = "thread-b"
+        m.activeTurnThreadId = "thread-a"
+
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
     func testPermissionsApprovalRequestQueuedAndResolved() {
         let m = AppModel()
         m.activeThreadId = "thread-a"
@@ -196,13 +221,13 @@ final class AppModelTests: XCTestCase {
     }
     func testAddActionPlanMode() {
         let m = AppModel(); m.showAddMenu = true
-        m.handleAddAction("Plan mode")
+        m.handleAddAction(.planMode)
         XCTAssertTrue(m.planMode); XCTAssertFalse(m.showAddMenu)
     }
     func testAddActionGoalPrefixesOnce() {
         let m = AppModel(); m.composerText = "ship it"
-        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
-        m.handleAddAction("Goal"); XCTAssertEqual(m.composerText, "Goal: ship it")
+        m.handleAddAction(.goal); XCTAssertEqual(m.composerText, "Goal: ship it")
+        m.handleAddAction(.goal); XCTAssertEqual(m.composerText, "Goal: ship it")
     }
     func testGoalObjectiveStripsExistingPrefix() {
         XCTAssertEqual(AppModel.goalObjective(from: "Goal: ship it"), "ship it")
@@ -210,11 +235,13 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.goalObjective(from: "ship it"), "ship it")
         XCTAssertEqual(AppModel.goalObjective(from: "Goal:   "), "")
     }
-    func testAddActionAgentMention() {
-        let m = AppModel(); m.composerText = "review"
-        m.handleAddAction("Apollo")
-        XCTAssertEqual(m.composerText, "@Apollo review")
-        XCTAssertFalse(m.showAddMenu)
+    func testActivePeerMessageStripsMention() {
+        let peer = ActiveSessionPeerInfo(from: obj([
+            "peerId": .string("peer-1"),
+            "displayName": .string("Apollo"),
+        ]))
+        XCTAssertEqual(AppModel.activePeerMessage(from: "@Apollo review", peer: peer), "review")
+        XCTAssertEqual(AppModel.activePeerMessage(from: "review", peer: peer), "review")
     }
     func testConfigSetters() {
         let m = AppModel()
@@ -229,12 +256,100 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.providerID(for: "Ollama"), "ollama")
     }
 
+    func testPermissionProfileMappingFromSandbox() {
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "danger-full-access"), ":danger-full-access")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "read-only"), ":read-only")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "workspace-write"), ":workspace")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: nil), ":workspace")
+    }
+
+    func testMachineScopedThreadsFallsBackWhenThreadMetadataHasNoMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1", "t2"])
+    }
+
+    func testMachineScopedThreadsFilterWhenMetadataHasMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a"), "machineId": .string("machine-a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b"), "machineId": .string("machine-b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1"])
+    }
+
+    func testLocalMachineScopeIncludesLegacyThreadsWhenMetadataIsMixed() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "local", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "remote", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("legacy"), "cwd": .string("/legacy")])),
+            ThreadInfo(from: obj(["id": .string("local-thread"), "cwd": .string("/local"), "machineId": .string("local")])),
+            ThreadInfo(from: obj(["id": .string("remote-thread"), "cwd": .string("/remote"), "machineId": .string("remote")])),
+        ]
+        m.selectedMachineId = "local"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["legacy", "local-thread"])
+    }
+
+    func testSelectingDifferentMachineClearsActiveSessionAndSearch() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "a", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "b", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.selectedMachineId = "a"
+        m.activeThreadId = "thread-a"
+        m.activeMessages = [ChatMessage(role: .assistant, text: "old")]
+        m.pendingServerRequests = [
+            PendingServerRequest(
+                requestId: .number(1),
+                threadId: "thread-a",
+                method: "serverRequest/permissions",
+                kind: .permissionsApproval,
+                title: "Approve?",
+                detail: "Approve?")
+        ]
+        m.remoteSearchThreads = [ThreadInfo(from: obj(["id": .string("thread-a"), "machineId": .string("a")]))]
+
+        m.selectMachine(m.machines[1])
+
+        XCTAssertEqual(m.selectedMachineId, "b")
+        XCTAssertNil(m.activeThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertTrue(m.pendingServerRequests.isEmpty)
+        XCTAssertTrue(m.remoteSearchThreads.isEmpty)
+    }
+
+    func testSelectingMachineClearsProjectContext() {
+        let m = AppModel()
+        m.currentProjectPath = "/old/project"
+        m.selectMachine(MachineInfo(id: "machine-a", os: "macos", status: "online", role: "local", isLocal: true))
+        XCTAssertNil(m.currentProjectPath)
+        XCTAssertEqual(m.selectedMachineId, "machine-a")
+    }
+
     func testSubmitNoOpWhenNotConnected() async {
         let m = AppModel()   // connection == .connecting
         m.composerText = "hello"
         await m.submitComposer()
         XCTAssertTrue(m.activeMessages.isEmpty)
         XCTAssertEqual(m.composerText, "hello")
+    }
+
+    func testPrepareLoopComposerDoesNotCreateLoopImmediately() {
+        let m = AppModel()
+        m.prepareLoopComposer()
+        XCTAssertEqual(m.route, .home)
+        XCTAssertEqual(m.sidebarSelection, "New loop")
+        XCTAssertTrue(m.composerText.hasPrefix("Loop: "))
+        XCTAssertTrue(m.loops.isEmpty)
     }
 
     func testSampleModelHasData() {

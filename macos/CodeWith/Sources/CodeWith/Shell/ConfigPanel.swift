@@ -4,6 +4,7 @@ import SwiftUI
 /// for the current session without leaving it. Opened by the top-right button.
 struct ConfigPanel: View {
     @Bindable var model: AppModel
+    @State private var pendingEscalation: PermissionEscalation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -20,9 +21,21 @@ struct ConfigPanel: View {
             Rectangle().fill(Theme.separator).frame(height: 1)
 
             ScrollColumn(alignment: .leading, spacing: 14) {
-                pickerRow("Model", value: model.model ?? "default", options: model.availableModels) { model.setModel($0) }
-                pickerRow("Gateway", value: model.provider ?? "openai", options: model.availableProviders) { model.setProvider($0) }
+                pickerRow("Model", value: model.model ?? "default", options: model.availableModels, display: AppModel.displayModel) { model.setModel($0) }
+                pickerRow("Gateway", value: model.provider ?? "openai", options: model.availableProviders, display: AppModel.displayProvider) { model.setProvider($0) }
                 pickerRow("Effort", value: model.effort, options: model.availableEfforts) { model.setEffort($0) }
+                pickerRow("Permissions", value: model.permissionProfileId, options: model.availablePermissionProfiles, display: AppModel.displayPermissionProfile) {
+                    if Self.isPermissionEscalation($0) {
+                        pendingEscalation = PermissionEscalation(permissionProfileId: $0)
+                    } else {
+                        model.setPermissionProfile($0)
+                    }
+                }
+                if !model.authProfiles.isEmpty {
+                    pickerRow("Auth profile", value: activeAuthProfileName, options: model.authProfiles.map(\.name)) {
+                        model.setSessionAuthProfile($0)
+                    }
+                }
 
                 Rectangle().fill(Theme.separator).frame(height: 1).padding(.vertical, 2)
 
@@ -30,14 +43,20 @@ struct ConfigPanel: View {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundStyle(Theme.warning)
                     Text("Full access").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.warning)
                     Spacer()
-                    GlassToggle(on: model.fullAccess) { model.setFullAccess(!model.fullAccess) }
+                    GlassToggle(on: model.fullAccess) {
+                        if model.fullAccess {
+                            model.setFullAccess(false)
+                        } else {
+                            pendingEscalation = PermissionEscalation(permissionProfileId: ":danger-full-access")
+                        }
+                    }
                 }
             }
             .padding(14)
 
             Spacer()
 
-            // Account footer — tap to manage profiles.
+            // Account footer: tap to manage profiles.
             Button {
                 model.showConfigPanel = false
                 model.open(.profiles, label: "Profiles")
@@ -62,18 +81,61 @@ struct ConfigPanel: View {
         }
         .frame(width: 232)
         .background(Theme.canvas)
+        .confirmationDialog(
+            "Allow full access?",
+            isPresented: Binding(
+                get: { pendingEscalation != nil },
+                set: { if !$0 { pendingEscalation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Allow full access", role: .destructive) {
+                if let pendingEscalation {
+                    model.setPermissionProfile(pendingEscalation.permissionProfileId)
+                }
+                pendingEscalation = nil
+            }
+            Button("Cancel", role: .cancel) { pendingEscalation = nil }
+        } message: {
+            Text("This lets CodeWith edit any file and use network without approval for this session.")
+        }
     }
 
-    private func pickerRow(_ label: String, value: String, options: [String], onSelect: @escaping (String) -> Void) -> some View {
+    private var activeAuthProfileName: String {
+        model.sessionAuthProfileName
+            ?? model.authProfiles.first(where: { $0.active })?.name
+            ?? model.authProfiles.first?.name
+            ?? "Profile"
+    }
+
+    private static func isPermissionEscalation(_ profileId: String) -> Bool {
+        profileId == ":danger-full-access"
+    }
+
+    private func pickerRow(
+        _ label: String,
+        value: String,
+        options: [String],
+        display: @escaping (String) -> String = { $0 },
+        onSelect: @escaping (String) -> Void
+    ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
             Menu {
                 ForEach(options, id: \.self) { opt in
-                    Button(opt) { onSelect(opt) }
+                    Button {
+                        onSelect(opt)
+                    } label: {
+                        if opt == value {
+                            Label(display(opt), systemImage: "checkmark")
+                        } else {
+                            Text(display(opt))
+                        }
+                    }
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Text(value).font(.system(size: 12)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(display(value)).font(.system(size: 12)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                     Spacer()
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
                 }
@@ -86,4 +148,9 @@ struct ConfigPanel: View {
             .fixedSize(horizontal: false, vertical: true)
         }
     }
+}
+
+private struct PermissionEscalation: Identifiable {
+    var permissionProfileId: String
+    var id: String { permissionProfileId }
 }

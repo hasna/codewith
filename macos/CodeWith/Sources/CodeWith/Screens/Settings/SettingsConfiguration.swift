@@ -9,6 +9,7 @@ struct SettingsConfiguration: View {
     var onOpenConfig: () -> Void = {}
     var onDiagnose: () -> Void = {}
     @Environment(\.snapshotMode) private var snapshot
+    @State private var pendingDangerousSetting: DangerousConfigSetting?
 
     private var approvalLabel: String {
         switch approval {
@@ -57,7 +58,13 @@ struct SettingsConfiguration: View {
                         else {
                             Menu {
                                 ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
-                                    Button(v) { onSetApproval(v) }
+                                    Button(v) {
+                                        if v == "never" {
+                                            pendingDangerousSetting = .approvalNever
+                                        } else {
+                                            onSetApproval(v)
+                                        }
+                                    }
                                 }
                             } label: { DropdownPill(text: approvalLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -68,7 +75,13 @@ struct SettingsConfiguration: View {
                         else {
                             Menu {
                                 ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
-                                    Button(v) { onSetSandbox(v) }
+                                    Button(v) {
+                                        if v == "danger-full-access" {
+                                            pendingDangerousSetting = .sandboxDangerFullAccess
+                                        } else {
+                                            onSetSandbox(v)
+                                        }
+                                    }
                                 }
                             } label: { DropdownPill(text: sandboxLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -96,6 +109,29 @@ struct SettingsConfiguration: View {
                 }
             }
         }
+        .confirmationDialog(
+            "Apply dangerous setting?",
+            isPresented: Binding(
+                get: { pendingDangerousSetting != nil },
+                set: { if !$0 { pendingDangerousSetting = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(pendingDangerousSetting?.confirmTitle ?? "Apply", role: .destructive) {
+                switch pendingDangerousSetting {
+                case .approvalNever:
+                    onSetApproval("never")
+                case .sandboxDangerFullAccess:
+                    onSetSandbox("danger-full-access")
+                case .none:
+                    break
+                }
+                pendingDangerousSetting = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDangerousSetting = nil }
+        } message: {
+            Text(pendingDangerousSetting?.message ?? "")
+        }
     }
     /// Groups rows in a subtle bordered card (reference Configuration layout).
     private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
@@ -121,5 +157,28 @@ struct SettingsConfiguration: View {
             pill(t, icon: icon, color: color)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private enum DangerousConfigSetting: String, Identifiable {
+    case approvalNever
+    case sandboxDangerFullAccess
+
+    var id: String { rawValue }
+
+    var confirmTitle: String {
+        switch self {
+        case .approvalNever: return "Use Never"
+        case .sandboxDangerFullAccess: return "Allow full access"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .approvalNever:
+            return "CodeWith will not ask before running actions."
+        case .sandboxDangerFullAccess:
+            return "CodeWith can edit any file and use network without approval."
+        }
     }
 }

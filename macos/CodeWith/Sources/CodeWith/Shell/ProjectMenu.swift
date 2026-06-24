@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Header project selector — pick the project (repo) to work in for new sessions,
-/// across all machines. "All projects" searches across everything.
+/// Header project selector for the currently selected machine.
 struct ProjectMenu: View {
     @Bindable var model: AppModel
     var compact: Bool = false
