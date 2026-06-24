@@ -1078,6 +1078,22 @@
           "format": "int64",
           "minimum": 1.0,
           "type": "integer"
+        },
+        "post_goal_context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PostGoalContextActionToml"
+            }
+          ],
+          "description": "Context lifecycle action after a completed goal when no next goal is immediately activated."
+        },
+        "post_goal_plan_context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PostGoalContextActionToml"
+            }
+          ],
+          "description": "Context lifecycle action after a goal plan completes."
         }
       },
       "type": "object"
@@ -2378,6 +2394,13 @@
       },
       "type": "object"
     },
+    "PostGoalContextActionToml": {
+      "enum": [
+        "keep",
+        "compact"
+      ],
+      "type": "string"
+    },
     "ProfileTui": {
       "additionalProperties": false,
       "description": "TUI settings supported inside a named profile.",
@@ -3081,6 +3104,14 @@
             }
           },
           "description": "Keybinding overrides for the TUI.\n\nThis supports rebinding selected actions globally and by context. Context bindings take precedence over `global` bindings."
+        },
+        "message_summary": {
+          "default": null,
+          "description": "Ordered list of final assistant-message summary item identifiers.\n\nWhen set, the TUI renders the selected items after completed assistant messages. When unset, the TUI defaults to the full built-in summary.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "model_availability_nux": {
           "allOf": [

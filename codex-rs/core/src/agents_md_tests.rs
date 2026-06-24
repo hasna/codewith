@@ -639,6 +639,78 @@ async fn project_codewith_dir_override_is_preferred() {
     assert!(discovery[0].ends_with(Path::new(LOCAL_PROJECT_AGENTS_MD_PATH)));
 }
 
+#[tokio::test]
+async fn project_rules_are_loaded_without_codewith_md() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(tmp.path(), ".codewith/rules/main.md", "rule");
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let loaded = AgentsMdManager::new(&cfg)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut Vec::new())
+        .await
+        .expect("rule expected");
+    let rule_path = tmp.path().join(".codewith/rules/main.md").abs();
+
+    assert_eq!(loaded.text(), "rule");
+    assert_eq!(loaded.sources().collect::<Vec<_>>(), vec![&rule_path]);
+}
+
+#[tokio::test]
+async fn project_rules_are_loaded_recursively_after_project_docs() {
+    let repo = tempfile::tempdir().expect("tempdir");
+    std::fs::write(repo.path().join(".git"), "").unwrap();
+    write_doc(repo.path(), DEFAULT_PROJECT_AGENTS_MD_PATH, "root doc");
+    write_doc(repo.path(), ".codewith/rules/z.md", "z rule");
+    write_doc(repo.path(), ".codewith/rules/a.md", "a rule");
+
+    let nested = repo.path().join("workspace/crate_a");
+    fs::create_dir_all(&nested).unwrap();
+    write_doc(&nested, ".codewith/rules/deep/b.md", "nested rule");
+
+    let mut cfg = make_config(&repo, /*limit*/ 4096, /*instructions*/ None).await;
+    cfg.cwd = nested.abs();
+
+    let loaded = AgentsMdManager::new(&cfg)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut Vec::new())
+        .await
+        .expect("docs expected");
+    let root_doc = repo.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH).abs();
+    let root_rule_a = repo.path().join(".codewith/rules/a.md").abs();
+    let root_rule_z = repo.path().join(".codewith/rules/z.md").abs();
+    let nested_rule = nested.join(".codewith/rules/deep/b.md").abs();
+
+    assert_eq!(loaded.text(), "root doc\n\na rule\n\nz rule\n\nnested rule");
+    assert_eq!(
+        loaded.sources().collect::<Vec<_>>(),
+        vec![&root_doc, &root_rule_a, &root_rule_z, &nested_rule]
+    );
+}
+
+#[tokio::test]
+async fn project_rules_skip_directory_symlink_cycles() {
+    let repo = tempfile::tempdir().expect("tempdir");
+    write_doc(repo.path(), DEFAULT_PROJECT_AGENTS_MD_PATH, "root doc");
+    write_doc(repo.path(), ".codewith/rules/real.md", "real rule");
+    create_directory_symlink(
+        &repo.path().join(".codewith/rules"),
+        &repo.path().join(".codewith/rules/loop"),
+    );
+
+    let cfg = make_config(&repo, /*limit*/ 4096, /*instructions*/ None).await;
+    let loaded = AgentsMdManager::new(&cfg)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut Vec::new())
+        .await
+        .expect("docs expected");
+    let root_doc = repo.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH).abs();
+    let real_rule = repo.path().join(".codewith/rules/real.md").abs();
+
+    assert_eq!(loaded.text(), "root doc\n\nreal rule");
+    assert_eq!(
+        loaded.sources().collect::<Vec<_>>(),
+        vec![&root_doc, &real_rule]
+    );
+}
+
 /// When AGENTS.md is absent but a configured fallback exists, the fallback is used.
 #[tokio::test]
 async fn uses_configured_fallback_when_agents_missing() {

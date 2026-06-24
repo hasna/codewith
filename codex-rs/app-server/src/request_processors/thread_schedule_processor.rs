@@ -169,8 +169,8 @@ impl ThreadScheduleRequestProcessor {
         let (state_db, listener_command_tx) = self.prepare_schedule_mutation(thread_id).await?;
         self.ensure_thread_schedule_capacity(&state_db, thread_id)
             .await?;
-        let recorded_auth_profile = self
-            .recorded_auth_profile_for_running_thread(thread_id)
+        let auth_profile = self
+            .auth_profile_for_schedule_create(&state_db, thread_id)
             .await;
         let (prompt, state_prompt_source) = match prompt_source {
             ThreadSchedulePromptSource::Inline => (
@@ -203,21 +203,11 @@ impl ThreadScheduleRequestProcessor {
             next_run_at,
             expires_at,
         };
-        let schedule = match recorded_auth_profile {
-            Some(auth_profile) => {
-                state_db
-                    .thread_schedules()
-                    .create_thread_schedule_for_auth_profile(create_params, auth_profile)
-                    .await
-            }
-            None => {
-                state_db
-                    .thread_schedules()
-                    .create_thread_schedule(create_params)
-                    .await
-            }
-        }
-        .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+            .await
+            .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -233,12 +223,57 @@ impl ThreadScheduleRequestProcessor {
         Ok(())
     }
 
-    async fn recorded_auth_profile_for_running_thread(
+    async fn auth_profile_for_schedule_create(
         &self,
+        state_db: &StateDbHandle,
+        thread_id: ThreadId,
+    ) -> Option<String> {
+        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+            return thread.config_snapshot().await.selected_auth_profile;
+        }
+        if let Some(auth_profile) = self
+            .auth_profile_from_thread_rollout(state_db, thread_id)
+            .await
+        {
+            return auth_profile;
+        }
+        self.config.selected_auth_profile.clone()
+    }
+
+    async fn auth_profile_from_thread_rollout(
+        &self,
+        state_db: &StateDbHandle,
         thread_id: ThreadId,
     ) -> Option<Option<String>> {
-        let thread = self.thread_manager.get_thread(thread_id).await.ok()?;
-        Some(thread.config_snapshot().await.selected_auth_profile)
+        let rollout_path = match codex_rollout::find_thread_path_by_id_str(
+            &self.config.codex_home,
+            &thread_id.to_string(),
+            Some(state_db),
+        )
+        .await
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => return None,
+            Err(err) => {
+                warn!("failed to locate rollout for schedule auth profile {thread_id}: {err}");
+                return None;
+            }
+        };
+        let initial_history =
+            match codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await {
+                Ok(history) => history,
+                Err(err) => {
+                    warn!(
+                        "failed to load rollout {} for schedule auth profile: {err}",
+                        rollout_path.display()
+                    );
+                    return None;
+                }
+            };
+        thread_schedule_runtime::schedule_resume_auth_profile(
+            /*schedule_auth_profile*/ None,
+            &initial_history,
+        )
     }
 
     async fn thread_schedule_list_inner(
@@ -397,6 +432,14 @@ impl ThreadScheduleRequestProcessor {
             effective_next_run_at = Some(computed_next_run_at);
         }
         let effective_expires_at = expires_at.unwrap_or(existing.expires_at);
+        if effective_status == codex_state::ThreadScheduleStatus::Active
+            && let Some(expires_at) = effective_expires_at
+            && expires_at <= Utc::now()
+        {
+            return Err(invalid_request(
+                "schedule expiresAt must be in the future to resume",
+            ));
+        }
         validate_schedule_expiry(effective_next_run_at, effective_expires_at)?;
         let schedule = state_db
             .thread_schedules()
@@ -447,6 +490,14 @@ impl ThreadScheduleRequestProcessor {
         let existing = self
             .load_schedule_for_thread(&state_db, thread_id, schedule_id.as_str())
             .await?;
+        if status == codex_state::ThreadScheduleStatus::Active
+            && let Some(expires_at) = existing.expires_at
+            && expires_at <= Utc::now()
+        {
+            return Err(invalid_request(
+                "schedule expiresAt must be in the future to resume",
+            ));
+        }
         let schedule = if status == codex_state::ThreadScheduleStatus::Active
             && existing.next_run_at.is_none()
         {
@@ -457,20 +508,19 @@ impl ThreadScheduleRequestProcessor {
             }
             let next_run_at =
                 next_active_recurring_run_at(&existing.schedule, existing.timezone.as_str())?;
+            validate_schedule_expiry(Some(next_run_at), existing.expires_at)?;
             state_db
                 .thread_schedules()
-                .update_thread_schedule(
-                    schedule_id.as_str(),
-                    codex_state::ThreadScheduleUpdate {
-                        prompt: None,
-                        prompt_source: None,
-                        schedule: None,
-                        timezone: None,
-                        status: Some(status),
-                        next_run_at: Some(Some(next_run_at)),
-                        expires_at: None,
-                    },
-                )
+                .resume_thread_schedule_at(schedule_id.as_str(), next_run_at)
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to update thread schedule status: {err}"))
+                })?
+        } else if status == codex_state::ThreadScheduleStatus::Active {
+            validate_schedule_expiry(existing.next_run_at, existing.expires_at)?;
+            state_db
+                .thread_schedules()
+                .resume_thread_schedule(schedule_id.as_str())
                 .await
                 .map_err(|err| {
                     internal_error(format!("failed to update thread schedule status: {err}"))
@@ -634,18 +684,17 @@ impl ThreadScheduleRequestProcessor {
             /*new_thread_memory_mode*/ None,
         )
         .await;
-        if let Some(thread) = running_thread.as_ref()
-            && state_db
+        if let Some(thread) = running_thread.as_ref() {
+            let existing_metadata = state_db
                 .get_thread(thread_id)
                 .await
-                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?
-                .is_none()
-        {
+                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?;
             self.upsert_running_thread_metadata(
                 state_db,
                 thread_id,
                 thread,
                 rollout_path.as_path(),
+                existing_metadata,
             )
             .await?;
         }
@@ -658,19 +707,37 @@ impl ThreadScheduleRequestProcessor {
         thread_id: ThreadId,
         thread: &Arc<CodexThread>,
         rollout_path: &Path,
+        existing_metadata: Option<codex_state::ThreadMetadata>,
     ) -> Result<(), JSONRPCErrorError> {
-        let session_configured = thread.session_configured();
+        let config_snapshot = thread.config_snapshot().await;
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             rollout_path.to_path_buf(),
             Utc::now(),
             SessionSource::default(),
         );
-        builder.thread_source = session_configured.thread_source;
-        builder.model_provider = Some(session_configured.model_provider_id);
-        builder.cwd = session_configured.cwd.to_path_buf();
-        builder.approval_mode = session_configured.approval_policy;
-        let metadata = builder.build(self.config.model_provider_id.as_str());
+        builder.thread_source = config_snapshot.thread_source;
+        builder.model_provider = Some(config_snapshot.model_provider_id);
+        builder.cwd = config_snapshot.cwd.to_path_buf();
+        builder.approval_mode = config_snapshot.approval_policy;
+        let session_metadata = builder.build(self.config.model_provider_id.as_str());
+        let mut metadata = existing_metadata.unwrap_or_else(|| session_metadata.clone());
+        metadata.rollout_path = session_metadata.rollout_path;
+        metadata.thread_source = session_metadata.thread_source;
+        metadata.model_provider = session_metadata.model_provider;
+        metadata.cwd = session_metadata.cwd;
+        metadata.approval_mode = session_metadata.approval_mode;
+        match serde_json::to_string(&config_snapshot.permission_profile) {
+            Ok(permission_profile) => {
+                metadata.sandbox_policy = permission_profile;
+            }
+            Err(err) => {
+                warn!(
+                    thread_id = %thread_id,
+                    "failed to serialize running thread permission profile for schedule metadata: {err}"
+                );
+            }
+        }
         state_db
             .upsert_thread(&metadata)
             .await

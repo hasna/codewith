@@ -100,13 +100,19 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
     fn spec(&self) -> ToolSpec {
         let nullable_string = |description: &str| {
             JsonSchema::any_of(
-                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                vec![
+                    JsonSchema::string(/*description*/ None),
+                    JsonSchema::null(/*description*/ None),
+                ],
                 Some(description.to_string()),
             )
         };
         let nullable_integer = |description: &str| {
             JsonSchema::any_of(
-                vec![JsonSchema::integer(None), JsonSchema::null(None)],
+                vec![
+                    JsonSchema::integer(/*description*/ None),
+                    JsonSchema::null(/*description*/ None),
+                ],
                 Some(description.to_string()),
             )
         };

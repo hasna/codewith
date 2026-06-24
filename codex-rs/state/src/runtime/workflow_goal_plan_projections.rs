@@ -518,6 +518,8 @@ fn thread_goal_plan_from_workflow_run(
                 Ok(ThreadGoalPlanNodeCreateParams {
                     key: step.step_id.clone(),
                     objective: workflow_step_objective(run, step),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: workflow_step_priority(step.sequence),
                     token_budget: workflow_step_token_budget(
                         &run.run.limits_json,
@@ -1002,7 +1004,7 @@ WHERE run_id = ? AND step_id = 'adversarial_review'
                 thread_id,
                 "Manual active goal must stay current.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("manual goal should create");

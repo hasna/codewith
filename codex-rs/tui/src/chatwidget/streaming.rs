@@ -384,9 +384,11 @@ impl ChatWidget {
             // If the previous turn inserted non-stream history (exec output, patch status, MCP
             // calls), render a separator before starting the next streamed assistant message.
             if self.transcript.needs_final_message_separator && self.transcript.had_work_activity {
-                self.add_to_history(history_cell::FinalMessageSeparator::new(
+                if let Some(separator) = self.final_message_separator(
                     /*elapsed_seconds*/ None, /*runtime_metrics*/ None,
-                ));
+                ) {
+                    self.add_to_history(separator);
+                }
                 self.transcript.needs_final_message_separator = false;
             } else if self.transcript.needs_final_message_separator {
                 // Reset the flag even if we don't show separator (no work was done)

@@ -1,5 +1,7 @@
+use super::goal_plans::recalculate_goal_plan_status_in_tx;
 use super::*;
 use crate::model::ThreadGoalRow;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -15,6 +17,7 @@ impl GoalStore {
 
 pub struct GoalUpdate {
     pub objective: Option<String>,
+    pub title: Option<Option<String>>,
     pub status: Option<crate::ThreadGoalStatus>,
     pub token_budget: Option<Option<i64>>,
     pub expected_goal_id: Option<String>,
@@ -25,12 +28,26 @@ pub enum GoalAccountingOutcome {
     Updated(crate::ThreadGoal),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalDeleteOutcome {
+    pub deleted: bool,
+    pub plan_updates: Vec<crate::ThreadGoalPlanSnapshot>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoalAccountingMode {
     ActiveStatusOnly,
     ActiveOnly,
     ActiveOrComplete,
     ActiveOrStopped,
+}
+
+const CONTEXT_TARGET_GOAL: &str = "goal";
+const CONTEXT_TARGET_GOAL_PLAN: &str = "goal_plan";
+
+enum ContextLifecycleColumn {
+    PostGoal,
+    PostGoalPlan,
 }
 
 impl GoalStore {
@@ -44,6 +61,7 @@ SELECT
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -68,6 +86,25 @@ WHERE thread_id = ?
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
+        self.replace_thread_goal_with_title(
+            thread_id,
+            objective,
+            /*title*/ None,
+            status,
+            token_budget,
+        )
+        .await
+    }
+
+    pub async fn replace_thread_goal_with_title(
+        &self,
+        thread_id: ThreadId,
+        objective: &str,
+        title: Option<&str>,
+        status: crate::ThreadGoalStatus,
+        token_budget: Option<i64>,
+    ) -> anyhow::Result<crate::ThreadGoal> {
+        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -92,16 +129,18 @@ INSERT INTO thread_goals (
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
     time_used_seconds,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
+    title = excluded.title,
     status = excluded.status,
     token_budget = excluded.token_budget,
     tokens_used = 0,
@@ -112,6 +151,7 @@ RETURNING
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -123,6 +163,7 @@ RETURNING
         .bind(thread_id.to_string())
         .bind(goal_id)
         .bind(objective)
+        .bind(title)
         .bind(status.as_str())
         .bind(token_budget)
         .bind(now_ms)
@@ -142,6 +183,25 @@ RETURNING
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.insert_thread_goal_with_title(
+            thread_id,
+            objective,
+            /*title*/ None,
+            status,
+            token_budget,
+        )
+        .await
+    }
+
+    pub async fn insert_thread_goal_with_title(
+        &self,
+        thread_id: ThreadId,
+        objective: &str,
+        title: Option<&str>,
+        status: crate::ThreadGoalStatus,
+        token_budget: Option<i64>,
+    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -151,18 +211,20 @@ INSERT INTO thread_goals (
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
     time_used_seconds,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO NOTHING
 RETURNING
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -174,6 +236,7 @@ RETURNING
         .bind(thread_id.to_string())
         .bind(goal_id)
         .bind(objective)
+        .bind(title)
         .bind(status.as_str())
         .bind(token_budget)
         .bind(now_ms)
@@ -184,6 +247,165 @@ RETURNING
         row.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
+    pub async fn set_thread_goal_context_action(
+        &self,
+        thread_id: ThreadId,
+        goal_id: &str,
+        action: crate::PostGoalContextAction,
+    ) -> anyhow::Result<()> {
+        self.upsert_context_lifecycle_policy(
+            thread_id,
+            CONTEXT_TARGET_GOAL,
+            goal_id,
+            action,
+            /*post_goal_plan_action*/ None,
+        )
+        .await
+    }
+
+    pub async fn set_thread_goal_plan_context_actions(
+        &self,
+        thread_id: ThreadId,
+        plan_id: &str,
+        post_goal_action: crate::PostGoalContextAction,
+        post_goal_plan_action: crate::PostGoalContextAction,
+    ) -> anyhow::Result<()> {
+        self.upsert_context_lifecycle_policy(
+            thread_id,
+            CONTEXT_TARGET_GOAL_PLAN,
+            plan_id,
+            post_goal_action,
+            Some(post_goal_plan_action),
+        )
+        .await
+    }
+
+    pub async fn thread_goal_context_action(
+        &self,
+        thread_id: ThreadId,
+        goal_id: &str,
+    ) -> anyhow::Result<Option<crate::PostGoalContextAction>> {
+        self.context_lifecycle_action(
+            thread_id,
+            CONTEXT_TARGET_GOAL,
+            goal_id,
+            ContextLifecycleColumn::PostGoal,
+        )
+        .await
+    }
+
+    pub async fn thread_goal_plan_context_action(
+        &self,
+        thread_id: ThreadId,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::PostGoalContextAction>> {
+        self.context_lifecycle_action(
+            thread_id,
+            CONTEXT_TARGET_GOAL_PLAN,
+            plan_id,
+            ContextLifecycleColumn::PostGoal,
+        )
+        .await
+    }
+
+    pub async fn thread_goal_plan_completion_context_action(
+        &self,
+        thread_id: ThreadId,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::PostGoalContextAction>> {
+        self.context_lifecycle_action(
+            thread_id,
+            CONTEXT_TARGET_GOAL_PLAN,
+            plan_id,
+            ContextLifecycleColumn::PostGoalPlan,
+        )
+        .await
+    }
+
+    async fn upsert_context_lifecycle_policy(
+        &self,
+        thread_id: ThreadId,
+        target_kind: &str,
+        target_id: &str,
+        post_goal_action: crate::PostGoalContextAction,
+        post_goal_plan_action: Option<crate::PostGoalContextAction>,
+    ) -> anyhow::Result<()> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_context_lifecycle (
+    thread_id,
+    target_kind,
+    target_id,
+    post_goal_action,
+    post_goal_plan_action,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(thread_id, target_kind, target_id) DO UPDATE SET
+    post_goal_action = excluded.post_goal_action,
+    post_goal_plan_action = excluded.post_goal_plan_action,
+    updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(target_kind)
+        .bind(target_id)
+        .bind(post_goal_action.as_str())
+        .bind(post_goal_plan_action.map(crate::PostGoalContextAction::as_str))
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    async fn context_lifecycle_action(
+        &self,
+        thread_id: ThreadId,
+        target_kind: &str,
+        target_id: &str,
+        column: ContextLifecycleColumn,
+    ) -> anyhow::Result<Option<crate::PostGoalContextAction>> {
+        let action: Option<String> = match column {
+            ContextLifecycleColumn::PostGoal => {
+                sqlx::query_scalar(
+                    r#"
+SELECT post_goal_action
+FROM thread_goal_context_lifecycle
+WHERE thread_id = ?
+  AND target_kind = ?
+  AND target_id = ?
+                    "#,
+                )
+                .bind(thread_id.to_string())
+                .bind(target_kind)
+                .bind(target_id)
+                .fetch_optional(self.pool.as_ref())
+                .await?
+            }
+            ContextLifecycleColumn::PostGoalPlan => sqlx::query_scalar(
+                r#"
+SELECT post_goal_plan_action
+FROM thread_goal_context_lifecycle
+WHERE thread_id = ?
+  AND target_kind = ?
+  AND target_id = ?
+                    "#,
+            )
+            .bind(thread_id.to_string())
+            .bind(target_kind)
+            .bind(target_id)
+            .fetch_optional(self.pool.as_ref())
+            .await?
+            .flatten(),
+        };
+        action
+            .as_deref()
+            .map(crate::PostGoalContextAction::try_from)
+            .transpose()
+    }
+
     pub async fn update_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -191,11 +413,16 @@ RETURNING
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
         let GoalUpdate {
             objective,
+            title,
             status,
             token_budget,
             expected_goal_id,
         } = update;
         let objective = objective.as_deref();
+        let update_title = title.is_some();
+        let title = title.as_ref().and_then(|title| title.as_deref());
+        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
+        let title = title.as_deref();
         let expected_goal_id = expected_goal_id.as_deref();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let result = match (status, token_budget) {
@@ -205,6 +432,7 @@ RETURNING
 UPDATE thread_goals
 SET
     objective = COALESCE(?, objective),
+    title = CASE WHEN ? THEN ? ELSE title END,
     status = CASE
         WHEN status IN (?, ?) AND ? != status THEN status
         WHEN status = ? AND ? IN (?, ?) THEN status
@@ -218,6 +446,8 @@ WHERE thread_id = ?
             "#,
                 )
                 .bind(objective)
+                .bind(update_title)
+                .bind(title)
                 .bind(crate::ThreadGoalStatus::Complete.as_str())
                 .bind(crate::ThreadGoalStatus::Cancelled.as_str())
                 .bind(status.as_str())
@@ -244,6 +474,7 @@ WHERE thread_id = ?
 UPDATE thread_goals
 SET
     objective = COALESCE(?, objective),
+    title = CASE WHEN ? THEN ? ELSE title END,
     status = CASE
         WHEN status IN (?, ?) AND ? != status THEN status
         WHEN status = ? AND ? IN (?, ?) THEN status
@@ -256,6 +487,8 @@ WHERE thread_id = ?
             "#,
                 )
                 .bind(objective)
+                .bind(update_title)
+                .bind(title)
                 .bind(crate::ThreadGoalStatus::Complete.as_str())
                 .bind(crate::ThreadGoalStatus::Cancelled.as_str())
                 .bind(status.as_str())
@@ -279,6 +512,7 @@ WHERE thread_id = ?
 UPDATE thread_goals
 SET
     objective = COALESCE(?, objective),
+    title = CASE WHEN ? THEN ? ELSE title END,
     token_budget = ?,
     status = CASE
         WHEN status = 'active' AND ? IS NOT NULL AND tokens_used >= ? THEN ?
@@ -290,6 +524,8 @@ WHERE thread_id = ?
             "#,
                 )
                 .bind(objective)
+                .bind(update_title)
+                .bind(title)
                 .bind(token_budget)
                 .bind(token_budget)
                 .bind(token_budget)
@@ -302,18 +538,21 @@ WHERE thread_id = ?
                 .await?
             }
             (None, None) => {
-                if let Some(objective) = objective {
+                if objective.is_some() || update_title {
                     sqlx::query(
                         r#"
 UPDATE thread_goals
 SET
-    objective = ?,
+    objective = COALESCE(?, objective),
+    title = CASE WHEN ? THEN ? ELSE title END,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                     )
                     .bind(objective)
+                    .bind(update_title)
+                    .bind(title)
                     .bind(now_ms)
                     .bind(thread_id.to_string())
                     .bind(expected_goal_id)
@@ -393,7 +632,10 @@ WHERE thread_id = ?
         self.get_thread_goal(thread_id).await
     }
 
-    pub async fn delete_thread_goal(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+    pub async fn delete_thread_goal_with_plan_updates(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<GoalDeleteOutcome> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let previous_goal_id: Option<String> = sqlx::query_scalar(
@@ -406,10 +648,12 @@ WHERE thread_id = ?
         .bind(thread_id.to_string())
         .fetch_optional(&mut *tx)
         .await?;
-        if let Some(previous_goal_id) = previous_goal_id.as_deref() {
+        let plan_updates = if let Some(previous_goal_id) = previous_goal_id.as_deref() {
             block_projected_goal_plan_nodes_in_tx(&mut tx, thread_id, previous_goal_id, now_ms)
-                .await?;
-        }
+                .await?
+        } else {
+            Vec::new()
+        };
         let result = sqlx::query(
             r#"
 DELETE FROM thread_goals
@@ -421,7 +665,16 @@ WHERE thread_id = ?
         .await?;
         tx.commit().await?;
 
-        Ok(result.rows_affected() > 0)
+        Ok(GoalDeleteOutcome {
+            deleted: result.rows_affected() > 0,
+            plan_updates,
+        })
+    }
+
+    pub async fn delete_thread_goal(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
+        self.delete_thread_goal_with_plan_updates(thread_id)
+            .await
+            .map(|outcome| outcome.deleted)
     }
 
     pub async fn account_thread_goal_usage(
@@ -517,6 +770,7 @@ RETURNING
     thread_id,
     goal_id,
     objective,
+    title,
     status,
     token_budget,
     tokens_used,
@@ -548,16 +802,16 @@ async fn block_projected_goal_plan_nodes_in_tx(
     thread_id: ThreadId,
     projected_goal_id: &str,
     now_ms: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<crate::ThreadGoalPlanSnapshot>> {
     let rows = sqlx::query(
         r#"
 UPDATE thread_goal_plan_nodes
 SET status = ?, updated_at_ms = ?
-WHERE thread_id = ?
+WHERE assigned_thread_id = ?
   AND projected_goal_id = ?
-  AND status != 'complete'
-RETURNING plan_id
-        "#,
+  AND status IN ('active', 'paused', 'blocked', 'usage_limited')
+	RETURNING plan_id
+	        "#,
     )
     .bind(crate::ThreadGoalPlanNodeStatus::Blocked.as_str())
     .bind(now_ms)
@@ -566,23 +820,19 @@ RETURNING plan_id
     .fetch_all(&mut **tx)
     .await?;
 
+    let mut plan_ids = Vec::new();
     for row in rows {
         let plan_id: String = row.try_get("plan_id")?;
-        sqlx::query(
-            r#"
-UPDATE thread_goal_plans
-SET status = ?, updated_at_ms = ?
-WHERE plan_id = ?
-  AND status != 'complete'
-            "#,
-        )
-        .bind(crate::ThreadGoalPlanStatus::Blocked.as_str())
-        .bind(now_ms)
-        .bind(plan_id)
-        .execute(&mut **tx)
-        .await?;
+        if !plan_ids.contains(&plan_id) {
+            plan_ids.push(plan_id);
+        }
     }
-    Ok(())
+    let mut snapshots = Vec::with_capacity(plan_ids.len());
+    for plan_id in plan_ids {
+        recalculate_goal_plan_status_in_tx(tx, &plan_id, now_ms).await?;
+        snapshots.push(super::goal_plans::snapshot_thread_goal_plan_in_tx(tx, &plan_id).await?);
+    }
+    Ok(snapshots)
 }
 
 fn status_after_budget_limit(
@@ -629,6 +879,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_context_lifecycle_policy_round_trips() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        let other_thread_id =
+            ThreadId::from_string("22222222-2222-4222-8222-222222222222").expect("valid thread id");
+        upsert_test_thread(&runtime, thread_id).await;
+        upsert_test_thread(&runtime, other_thread_id).await;
+
+        runtime
+            .thread_goals()
+            .set_thread_goal_context_action(
+                thread_id,
+                "goal-1",
+                crate::PostGoalContextAction::Compact,
+            )
+            .await
+            .expect("goal policy should persist");
+        runtime
+            .thread_goals()
+            .set_thread_goal_plan_context_actions(
+                thread_id,
+                "plan-1",
+                crate::PostGoalContextAction::Keep,
+                crate::PostGoalContextAction::Compact,
+            )
+            .await
+            .expect("plan policy should persist");
+        runtime
+            .thread_goals()
+            .set_thread_goal_context_action(
+                other_thread_id,
+                "goal-1",
+                crate::PostGoalContextAction::Keep,
+            )
+            .await
+            .expect("same goal id in another thread should persist independently");
+
+        assert_eq!(
+            Some(crate::PostGoalContextAction::Compact),
+            runtime
+                .thread_goals()
+                .thread_goal_context_action(thread_id, "goal-1")
+                .await
+                .expect("goal policy should load")
+        );
+        assert_eq!(
+            Some(crate::PostGoalContextAction::Keep),
+            runtime
+                .thread_goals()
+                .thread_goal_context_action(other_thread_id, "goal-1")
+                .await
+                .expect("other thread goal policy should load")
+        );
+        assert_eq!(
+            Some(crate::PostGoalContextAction::Keep),
+            runtime
+                .thread_goals()
+                .thread_goal_plan_context_action(thread_id, "plan-1")
+                .await
+                .expect("plan post-goal policy should load")
+        );
+        assert_eq!(
+            Some(crate::PostGoalContextAction::Compact),
+            runtime
+                .thread_goals()
+                .thread_goal_plan_completion_context_action(thread_id, "plan-1")
+                .await
+                .expect("plan completion policy should load")
+        );
+    }
+
+    #[tokio::test]
     async fn replace_update_and_get_thread_goal() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
@@ -665,6 +987,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: Some(Some(200_000)),
                     expected_goal_id: None,
@@ -742,6 +1065,77 @@ mod tests {
         assert_eq!(Some(0), replaced.token_budget);
         assert_eq!(0, replaced.tokens_used);
         assert_eq!(0, replaced.time_used_seconds);
+    }
+
+    #[tokio::test]
+    async fn thread_goal_title_can_be_set_preserved_and_cleared() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .replace_thread_goal_with_title(
+                thread_id,
+                "ship the status line title work",
+                Some("Ship statusline titles"),
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal replacement should succeed");
+        assert_eq!(Some("Ship statusline titles".to_string()), created.title);
+
+        let preserved = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: None,
+                    status: Some(crate::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: Some(created.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("goal update should succeed")
+            .expect("goal should exist");
+        assert_eq!(Some("Ship statusline titles".to_string()), preserved.title);
+
+        let renamed = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: Some(Some("Polish goal title".to_string())),
+                    status: None,
+                    token_budget: None,
+                    expected_goal_id: Some(created.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("goal update should succeed")
+            .expect("goal should exist");
+        assert_eq!(Some("Polish goal title".to_string()), renamed.title);
+
+        let cleared = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: Some(None),
+                    status: None,
+                    token_budget: None,
+                    expected_goal_id: Some(created.goal_id),
+                },
+            )
+            .await
+            .expect("goal update should succeed")
+            .expect("goal should exist");
+        assert_eq!(None, cleared.title);
     }
 
     #[tokio::test]
@@ -841,6 +1235,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(original.goal_id),
@@ -865,6 +1260,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(replacement.goal_id),
@@ -962,6 +1358,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: Some("draft the report clearly".to_string()),
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: Some(Some(200)),
                     expected_goal_id: Some(accounted.goal_id.clone()),
@@ -1000,6 +1397,7 @@ mod tests {
             thread_id,
             GoalUpdate {
                 objective: None,
+                title: None,
                 status: Some(crate::ThreadGoalStatus::Paused),
                 token_budget: None,
                 expected_goal_id: None,
@@ -1009,6 +1407,7 @@ mod tests {
             thread_id,
             GoalUpdate {
                 objective: None,
+                title: None,
                 status: None,
                 token_budget: Some(Some(200_000)),
                 expected_goal_id: None,
@@ -1063,6 +1462,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: None,
@@ -1274,6 +1674,7 @@ mod tests {
                 thread_id,
                 crate::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: None,
                     expected_goal_id: None,
@@ -1334,6 +1735,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: None,
                     token_budget: Some(Some(40)),
                     expected_goal_id: None,
@@ -1381,6 +1783,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: Some("stay within budget, with clearer wording".to_string()),
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Active),
                     token_budget: None,
                     expected_goal_id: None,
@@ -1432,6 +1835,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: None,
                     expected_goal_id: None,
@@ -1482,6 +1886,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Blocked),
                     token_budget: None,
                     expected_goal_id: None,
@@ -1572,6 +1977,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Paused),
                     token_budget: None,
                     expected_goal_id: None,

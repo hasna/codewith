@@ -168,7 +168,13 @@ impl App {
         };
 
         let result = app_server
-            .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
+            .thread_goal_set(
+                thread_id,
+                Some(objective),
+                /*title*/ Some(None),
+                Some(status),
+                token_budget,
+            )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -197,6 +203,7 @@ impl App {
             .thread_goal_set(
                 thread_id,
                 /*objective*/ None,
+                /*title*/ None,
                 Some(status),
                 /*token_budget*/ None,
             )
@@ -430,6 +437,7 @@ mod tests {
             thread_id: ThreadId::new().to_string(),
             goal_id: "goal-test".to_string(),
             objective: "Finish the thing.".to_string(),
+            title: None,
             status,
             token_budget: None,
             tokens_used: 0,

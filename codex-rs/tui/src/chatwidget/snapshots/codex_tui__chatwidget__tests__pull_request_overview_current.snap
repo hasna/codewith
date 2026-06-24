@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/pull_request_display.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  1 current PR
+
+  [Current]  Open
+
+  Search PRs
+› Refresh                               Reload pull requests
+  #42 Add native pull request overview  Open | by hasna | open-pr-overview -> main | 1 pending/4 checks | review Appr…
+
+  Read-only: no comments, reviews, pushes, branch updates, merges, or auto-fix actions.
+  Press enter to confirm or esc to go back

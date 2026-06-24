@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: "lines_to_single_string(&cells[0])"
+---
+■ This session is still starting and cannot be forked yet. Send a message first, then try /fork again.

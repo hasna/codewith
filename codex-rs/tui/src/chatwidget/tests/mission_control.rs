@@ -280,8 +280,8 @@ async fn mission_control_not_loaded_session_row_selects_thread() {
         "Archived operator session",
         "/tmp/codewith/archived",
         LocalSessionStatus::NotLoaded,
-        None,
-        None,
+        /*model*/ None,
+        /*branch*/ None,
     );
     local_session.runtime_session_id = None;
     local_session.peer = None;
@@ -559,6 +559,7 @@ fn test_goal(thread_id: &str, status: ThreadGoalStatus) -> ThreadGoal {
         thread_id: thread_id.to_string(),
         goal_id: format!("goal-{thread_id}"),
         objective: "Build the operator overview without touching workflow internals".to_string(),
+        title: None,
         status,
         token_budget: Some(80_000),
         tokens_used: 12_345,
@@ -669,10 +670,12 @@ fn test_plan_node(
         node_id: format!("node-{key}"),
         plan_id: format!("plan-{thread_id}"),
         thread_id: thread_id.to_string(),
+        assigned_thread_id: thread_id.to_string(),
         key: key.to_string(),
         sequence: 1,
         priority: 0,
         objective: format!("Execute {key}"),
+        title: None,
         status,
         ready,
         token_budget: Some(50_000),

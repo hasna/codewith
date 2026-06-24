@@ -130,7 +130,7 @@ Example with notification opt-out:
 
 ## API Overview
 
-- `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread. When the request includes a `cwd` and the resolved sandbox is `workspace-write` or full access, app-server also marks that project as trusted in the user `config.toml`. Pass `sessionStartSource: "clear"` when starting a replacement thread after clearing the current session so `SessionStart` hooks receive `source: "clear"` instead of the default `"startup"`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. For permissions, prefer experimental `permissions` profile selection by id; the legacy `sandbox` shorthand is still accepted but cannot be combined with `permissions`. Experimental `environments` selects the sticky execution environments for turns on the thread; omit it to use the server default, pass `[]` to disable environments, or pass explicit environment ids with per-environment `cwd`.
+- `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread. When the request includes a `cwd` and the resolved sandbox is `workspace-write` or full access, app-server also marks that project as trusted in the user `config.toml`. Pass `sessionStartSource: "clear"` when starting a replacement thread after clearing the current session so `SessionStart` hooks receive `source: "clear"` instead of the default `"startup"`. To create a fresh child agent thread, pass `threadSource: "subagent"` with `parentThreadId`; the returned thread and `thread/started` notification include the subagent source and parent id. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. For permissions, prefer experimental `permissions` profile selection by id; the legacy `sandbox` shorthand is still accepted but cannot be combined with `permissions`. Experimental `environments` selects the sticky execution environments for turns on the thread; omit it to use the server default, pass `[]` to disable environments, or pass explicit environment ids with per-environment `cwd`.
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it. Accepts the same permission override rules as `thread/start`.
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; if the source thread is currently mid-turn, the fork records the same interruption marker as `turn/interrupt` instead of inheriting an unmarked partial turn suffix. The returned `thread.forkedFromId` points at the source thread when known. Accepts `ephemeral: true` for an in-memory temporary fork, emits `thread/started` (including the current `thread.status`), and auto-subscribes you to turn/item events for the new thread. Experimental clients can pass `excludeTurns: true` when they plan to page fork history via `thread/turns/list` instead of receiving the full turn array immediately. Accepts the same permission override rules as `thread/start`.
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. Experimental clients can read `runtimeWorkspaceRoots` for the thread-scoped runtime roots and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known.
@@ -160,6 +160,7 @@ Example with notification opt-out:
 - `thread/workflow/run/get` and `thread/workflow/run/list` — experimental; fetch or page through sanitized workflow run state for a materialized thread.
 - `thread/workflow/run/pause`, `thread/workflow/run/resume`, and `thread/workflow/run/cancel` — experimental; request lifecycle changes for a workflow run in the same materialized thread and keep any projected goal plan in sync when the run status actually changes.
 - `thread/mailbox/enqueue`, `thread/mailbox/list`, `thread/mailbox/read`, `thread/mailbox/claim`, `thread/mailbox/ack`, `thread/mailbox/fail`, and `thread/mailbox/receipts/list` — experimental; persist local durable mailbox messages for materialized threads with idempotency, leases, attempts, receipts, retry/poison state, and redacted list views. This is separate from `activeSession/send`.
+- `thread/queuedMessage/list`, `thread/queuedMessage/update`, and `thread/queuedMessage/move` — inspect and manage in-memory active-session messages that have been delivered through `activeSession/send` while the target thread is busy and are waiting for the next turn. These calls require the thread to be loaded; they do not resume unloaded threads or mutate durable mailbox rows.
 - `missionControl/overview`, `missionControl/enqueueInstruction`, `missionControl/mailboxReceipts`, and `missionControl/respondInteraction` — experimental; local-first orchestration facade that combines local session inventory, durable mailbox enqueue/receipts, pending interactions, current goals, and goal-plan summaries. It does not mutate workflow definitions or expose shell, filesystem, or remote-machine control.
 - `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
 - `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
@@ -853,7 +854,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag indicate pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -877,12 +878,14 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
         "blockedNodeCount": 0,
         "usageLimitedNodeCount": 0,
         "budgetLimitedNodeCount": 0,
+        "cancelledNodeCount": 0,
         "createdAt": 1776272400,
         "updatedAt": 1776272400,
         "nodes": [{
             "nodeId": "node_123",
             "planId": "plan_123",
             "threadId": "thr_123",
+            "assignedThreadId": "thr_123",
             "key": "implement",
             "sequence": 0,
             "priority": 10,
@@ -1000,7 +1003,7 @@ Use `thread/workflow/run/start` to start a saved workflow for the same thread. T
 { "id": 39, "result": { "run": { "run": { "runId": "run_123", "status": "waiting" } } } }
 
 { "method": "thread/workflow/run/cancel", "id": 40, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "stop this workflow" } }
-{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "cancel_requested" } } } }
+{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "cancelRequested" } } } }
 ```
 
 ### Example: Schedule a thread loop

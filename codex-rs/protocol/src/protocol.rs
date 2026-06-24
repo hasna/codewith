@@ -2975,6 +2975,13 @@ pub struct TurnContextItem {
     pub current_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// Stable local Codewith installation id for the machine that produced the
+    /// turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// Best-effort normalized host name for the machine that produced the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<String>,
     pub approval_policy: AskForApproval,
     pub sandbox_policy: SandboxPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3729,6 +3736,8 @@ pub enum ThreadGoalStatus {
 }
 
 pub const MAX_THREAD_GOAL_OBJECTIVE_CHARS: usize = 4_000;
+pub const MAX_THREAD_GOAL_TITLE_CHARS: usize = 80;
+pub const MAX_THREAD_GOAL_TITLE_WORDS: usize = 5;
 
 pub fn validate_thread_goal_objective(value: &str) -> Result<(), String> {
     if value.is_empty() {
@@ -3742,6 +3751,72 @@ pub fn validate_thread_goal_objective(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_thread_goal_title(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("goal title must not be empty".to_string());
+    }
+    if value.chars().count() > MAX_THREAD_GOAL_TITLE_CHARS {
+        return Err(format!(
+            "goal title must be at most {MAX_THREAD_GOAL_TITLE_CHARS} characters"
+        ));
+    }
+    if value.split_whitespace().count() > MAX_THREAD_GOAL_TITLE_WORDS {
+        return Err(format!(
+            "goal title must be at most {MAX_THREAD_GOAL_TITLE_WORDS} words"
+        ));
+    }
+    Ok(())
+}
+
+pub fn normalize_thread_goal_title(value: Option<&str>) -> Result<Option<String>, String> {
+    match value {
+        Some(value) => {
+            let value = value.trim();
+            validate_thread_goal_title(value)?;
+            Ok(Some(value.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+pub fn thread_goal_display_title(title: Option<&str>, objective: &str) -> String {
+    title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| derive_thread_goal_title_from_objective(objective))
+}
+
+pub fn derive_thread_goal_title_from_objective(objective: &str) -> String {
+    let title = objective
+        .split_whitespace()
+        .take(MAX_THREAD_GOAL_TITLE_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|ch: char| matches!(ch, ',' | '.' | ':' | ';'))
+        .to_string();
+    if title.is_empty() {
+        return "Goal".to_string();
+    }
+    let title = if title.chars().count() > MAX_THREAD_GOAL_TITLE_CHARS {
+        title
+            .chars()
+            .take(MAX_THREAD_GOAL_TITLE_CHARS)
+            .collect::<String>()
+            .trim_matches(|ch: char| matches!(ch, ',' | '.' | ':' | ';'))
+            .trim()
+            .to_string()
+    } else {
+        title
+    };
+    if title.is_empty() {
+        "Goal".to_string()
+    } else {
+        title
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "protocol/")]
@@ -3749,6 +3824,9 @@ pub struct ThreadGoal {
     pub thread_id: ThreadId,
     pub goal_id: String,
     pub objective: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
     pub status: ThreadGoalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -3771,6 +3849,8 @@ impl<'de> Deserialize<'de> for ThreadGoal {
             #[serde(default)]
             goal_id: Option<String>,
             objective: String,
+            #[serde(default)]
+            title: Option<String>,
             status: ThreadGoalStatus,
             #[serde(default)]
             token_budget: Option<i64>,
@@ -3788,6 +3868,7 @@ impl<'de> Deserialize<'de> for ThreadGoal {
                 .filter(|goal_id| !goal_id.trim().is_empty())
                 .unwrap_or_else(|| legacy_thread_goal_id(wire.thread_id)),
             objective: wire.objective,
+            title: wire.title,
             status: wire.status,
             token_budget: wire.token_budget,
             tokens_used: wire.tokens_used,
@@ -3855,10 +3936,16 @@ pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assigned_thread_id: Option<ThreadId>,
     pub key: String,
     pub sequence: i64,
     pub priority: i64,
     pub objective: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
     pub status: ThreadGoalPlanNodeStatus,
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4307,6 +4394,25 @@ mod tests {
             SessionSource::from_startup_arg("app-server").unwrap(),
             SessionSource::Mcp
         );
+    }
+
+    #[test]
+    fn thread_goal_display_title_prefers_explicit_title_and_derives_fallback() {
+        assert_eq!(
+            thread_goal_display_title(
+                Some("Ship statusline titles"),
+                "ship the statusline title work"
+            ),
+            "Ship statusline titles"
+        );
+        assert_eq!(
+            thread_goal_display_title(
+                /*title*/ None,
+                "ship the statusline title work before release"
+            ),
+            "ship the statusline title work"
+        );
+        assert_eq!(thread_goal_display_title(/*title*/ None, "   "), "Goal");
     }
 
     #[test]
@@ -5377,6 +5483,8 @@ mod tests {
         }))?;
 
         assert_eq!(item.network, None);
+        assert_eq!(item.machine_id, None);
+        assert_eq!(item.machine_name, None);
         assert_eq!(item.file_system_sandbox_policy, None);
         Ok(())
     }
@@ -5423,6 +5531,8 @@ mod tests {
             workspace_roots: None,
             current_date: None,
             timezone: None,
+            machine_id: None,
+            machine_name: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             permission_profile: None,

@@ -157,6 +157,45 @@ impl ChatWidget {
         self.refresh_terminal_title();
     }
 
+    /// Returns the configured final-message summary ids, or the default ordering when unset.
+    pub(crate) fn configured_message_summary_items(&self) -> Vec<String> {
+        let Some(items) = self.config.tui_message_summary.as_ref() else {
+            return default_message_summary_item_ids();
+        };
+        if items.is_empty()
+            || items
+                .iter()
+                .any(|item| item.parse::<history_cell::MessageSummaryItem>().is_ok())
+        {
+            return items.clone();
+        }
+
+        default_message_summary_item_ids()
+    }
+
+    pub(super) fn message_summary_items(&self) -> Vec<history_cell::MessageSummaryItem> {
+        let mut seen = std::collections::HashSet::new();
+        self.configured_message_summary_items()
+            .into_iter()
+            .filter_map(|id| id.parse::<history_cell::MessageSummaryItem>().ok())
+            .filter(|item| seen.insert(*item))
+            .collect()
+    }
+
+    /// Applies a user-confirmed final-message summary item selection.
+    ///
+    /// An empty selection persists as an explicit empty list and hides the separator.
+    pub(crate) fn setup_message_summary(&mut self, items: Vec<history_cell::MessageSummaryItem>) {
+        tracing::info!("message summary setup confirmed with items: {items:#?}");
+        let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+        self.config.tui_message_summary = Some(ids);
+    }
+
+    /// Records that message summary setup was canceled.
+    pub(crate) fn cancel_message_summary_setup(&self) {
+        tracing::info!("Message summary setup canceled by user");
+    }
+
     /// Stores async git-branch lookup results for the current status-line cwd.
     ///
     /// Results are dropped when they target an out-of-date cwd to avoid rendering stale branch
@@ -350,6 +389,16 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
+    pub(super) fn open_message_summary_setup(&mut self) {
+        let configured_message_summary_items = self.configured_message_summary_items();
+        let view = MessageSummarySetupView::new(
+            Some(configured_message_summary_items.as_slice()),
+            self.app_event_tx.clone(),
+            self.bottom_pane.list_keymap(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
     pub(super) fn status_surface_preview_data(&mut self) -> StatusSurfacePreviewData {
         let mut preview_data = StatusSurfacePreviewData::from_iter(
             StatusSurfacePreviewItem::iter().filter_map(|item| {
@@ -441,4 +490,11 @@ impl ChatWidget {
             Some(effort) => effort.as_str().to_string(),
         }
     }
+}
+
+fn default_message_summary_item_ids() -> Vec<String> {
+    history_cell::DEFAULT_MESSAGE_SUMMARY_ITEMS
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }

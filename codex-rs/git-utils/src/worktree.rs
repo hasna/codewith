@@ -121,6 +121,22 @@ pub fn resolve_git_ref(repo_path: &Path, git_ref: &str) -> Result<Option<String>
     }
 }
 
+pub fn validate_git_branch_name(repo_path: &Path, branch: &str) -> Result<bool, GitToolingError> {
+    match run_git_for_status(
+        repo_path,
+        [
+            OsString::from("check-ref-format"),
+            OsString::from("--branch"),
+            OsString::from(branch),
+        ],
+        /*env*/ None,
+    ) {
+        Ok(()) => Ok(true),
+        Err(GitToolingError::GitCommand { .. }) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
 pub fn remove_linked_git_worktree(
     base_repo_path: &Path,
     worktree_path: &Path,
@@ -217,6 +233,22 @@ pub fn fast_forward_merge_ref(
     )
 }
 
+pub fn worktree_has_commits_after(
+    worktree_path: &Path,
+    base_ref: &str,
+) -> Result<bool, GitToolingError> {
+    let output = run_git_for_stdout(
+        worktree_path,
+        [
+            OsString::from("rev-list"),
+            OsString::from("--count"),
+            OsString::from(format!("{base_ref}..HEAD")),
+        ],
+        /*env*/ None,
+    )?;
+    Ok(output.trim().parse::<u32>().unwrap_or(1) > 0)
+}
+
 fn parse_worktree_list_porcelain(output: &str) -> Vec<GitWorktreeEntry> {
     let mut entries = Vec::new();
     let mut current = None::<GitWorktreeEntry>;
@@ -292,6 +324,36 @@ fn paths_match(left: &Path, right: &Path) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run_git(repo_path: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .status()
+            .expect("git command should run");
+        assert!(status.success(), "git command failed: {args:?}");
+    }
+
+    fn git_stdout(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .expect("git command should run");
+        assert!(output.status.success(), "git command failed: {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo(repo_path: &Path) {
+        run_git(repo_path, &["init", "--initial-branch=main"]);
+        run_git(repo_path, &["config", "user.email", "codewith@example.com"]);
+        run_git(repo_path, &["config", "user.name", "Codewith Test"]);
+        std::fs::write(repo_path.join("README.md"), "worktree test\n").expect("write README");
+        run_git(repo_path, &["add", "README.md"]);
+        run_git(repo_path, &["commit", "-m", "initial"]);
+    }
 
     #[test]
     fn parses_worktree_list_porcelain_z() {
@@ -359,5 +421,29 @@ detached\0";
                 ],
             }
         );
+    }
+
+    #[test]
+    fn validates_git_branch_names() {
+        let temp = tempdir().expect("tempdir");
+        init_repo(temp.path());
+
+        assert!(validate_git_branch_name(temp.path(), "codewith/valid-branch").expect("valid"));
+        assert!(!validate_git_branch_name(temp.path(), "bad branch").expect("invalid"));
+        assert!(!validate_git_branch_name(temp.path(), "-bad").expect("invalid"));
+    }
+
+    #[test]
+    fn detects_commits_after_base_ref() {
+        let temp = tempdir().expect("tempdir");
+        init_repo(temp.path());
+        let base_sha = git_stdout(temp.path(), &["rev-parse", "HEAD"]);
+        assert!(!worktree_has_commits_after(temp.path(), base_sha.as_str()).expect("check"));
+
+        std::fs::write(temp.path().join("feature.txt"), "feature\n").expect("write feature");
+        run_git(temp.path(), &["add", "feature.txt"]);
+        run_git(temp.path(), &["commit", "-m", "feature"]);
+
+        assert!(worktree_has_commits_after(temp.path(), base_sha.as_str()).expect("check"));
     }
 }

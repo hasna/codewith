@@ -153,7 +153,10 @@ impl ActiveChannelRouter {
                     }
                 };
                 match target_thread
-                    .deliver_inter_agent_communication(communication)
+                    .deliver_inter_agent_communication_with_id(
+                        envelope.message_id.clone(),
+                        communication,
+                    )
                     .await
                 {
                     Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
@@ -253,7 +256,7 @@ mod tests {
                 label: Some("Codewith".to_string()),
                 agent_path: Some("/root".to_string()),
             },
-            None,
+            /*claimed_sender*/ None,
             ActiveChannelEndpoint {
                 id: "claude:session-1".to_string(),
                 kind: ActiveChannelEndpointKind::ClaudeCodeSession,

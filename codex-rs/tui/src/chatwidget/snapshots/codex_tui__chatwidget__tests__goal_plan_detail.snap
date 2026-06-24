@@ -6,8 +6,9 @@ expression: "render_bottom_popup(&chat, 110)"
   active · 0/2 goals complete · ai-directed · 25K tokens · time 3m
 
   Search plan goals
-› Current: Map existing goal persistence and UI surfaces · active · time … no dependencies · 12.5K tokens ·
-                                                                           time 1m
+› Current: Map existing goal persistence and · active · time 1m   Map existing goal persistence and UI
+                                                                  surfaces · no dependencies · 12.5K tokens
+                                                                  · time 1m
   Implement durable dependent goal execution · pending · time 1m
   Back to goals
 

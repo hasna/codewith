@@ -581,6 +581,21 @@ fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics
     assert!(rendered[0].contains("Responses API inference: 1.9s"));
     assert!(rendered[0].contains("TTFT: 410ms (iapi) 460ms (service)"));
     assert!(rendered[0].contains("TBT: 1.2s (iapi) 1.2s (service)"));
+
+    let websocket_send = rendered[0]
+        .find("WebSocket: 1 events send")
+        .expect("websocket send label should render");
+    let streams = rendered[0]
+        .find("Streams: 6 events")
+        .expect("stream label should render");
+    let websocket_receive = rendered[0]
+        .find("4 events received")
+        .expect("websocket receive label should render");
+    assert!(
+        websocket_send < streams && streams < websocket_receive,
+        "default summary ordering should match the historical websocket/stream label order: {}",
+        rendered[0]
+    );
 }
 
 #[test]
@@ -2158,7 +2173,7 @@ fn plan_update_with_note_and_wrapping_snapshot() {
             ],
         };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     // Narrow width to force wrapping for both the note and steps
     let lines = cell.display_lines(/*width*/ 32);
     let rendered = render_lines(&lines).join("\n");
@@ -2181,7 +2196,7 @@ fn plan_update_without_note_snapshot() {
         ],
     };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     let lines = cell.display_lines(/*width*/ 40);
     let rendered = render_lines(&lines).join("\n");
     insta::assert_snapshot!(rendered);
@@ -2226,7 +2241,7 @@ fn plan_update_does_not_split_url_like_tokens_in_note_or_step() {
         }],
     };
 
-    let cell = new_plan_update(update, None);
+    let cell = new_plan_update(update, /*goal_context*/ None);
     let rendered = render_lines(&cell.display_lines(/*width*/ 30));
 
     assert_eq!(

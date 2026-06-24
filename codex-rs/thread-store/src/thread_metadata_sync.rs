@@ -563,6 +563,7 @@ mod tests {
                 thread_id,
                 goal_id: "goal-1".to_string(),
                 objective: objective.to_string(),
+                title: None,
                 status: ThreadGoalStatus::Active,
                 token_budget: None,
                 tokens_used: 0,
