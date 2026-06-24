@@ -185,6 +185,7 @@ pub(crate) async fn run_turn(
 
     let mut last_agent_message: Option<String> = None;
     let mut stop_hook_active = false;
+    let mut sampling_context_compact_attempted = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
@@ -238,6 +239,7 @@ pub(crate) async fn run_turn(
         .await
         {
             Ok(sampling_request_output) => {
+                sampling_context_compact_attempted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -341,6 +343,31 @@ pub(crate) async fn run_turn(
             Err(CodexErr::TurnAborted) => {
                 // Aborted turn is reported via a different event.
                 break;
+            }
+            Err(err @ CodexErr::ContextWindowExceeded) if !sampling_context_compact_attempted => {
+                sampling_context_compact_attempted = true;
+                info!(
+                    turn_id = %turn_context.sub_id,
+                    error = %err,
+                    "sampling request exceeded context window; running auto compact before retry"
+                );
+                if let Err(err) = run_auto_compact(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                    InitialContextInjection::BeforeLastUserMessage,
+                    CompactionReason::ContextLimit,
+                    CompactionPhase::MidTurn,
+                )
+                .await
+                {
+                    let error = err.to_codex_protocol_error();
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                        .await;
+                    return None;
+                }
+                can_drain_pending_input = false;
+                continue;
             }
             Err(codex_error @ CodexErr::InvalidImageRequest()) => {
                 {
