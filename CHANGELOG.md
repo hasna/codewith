@@ -34,9 +34,10 @@ Known evidence gaps:
 
 ## [Unreleased]
 
-### Notes
+### Fixed
 
-- No unreleased product changes are recorded here yet.
+- Recovered loop-driven and long-running turns from context-window overflow
+  errors by compacting mid-turn and retrying once before surfacing the failure.
 
 ## [0.1.45] - 2026-06-24
 
