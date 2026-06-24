@@ -22,6 +22,7 @@ use codex_app_server_protocol::ActiveSessionListResponse;
 use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::ActiveSessionSendResponse;
+use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AgentAttachParams;
 use codex_app_server_protocol::AgentAttachResponse;
 use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
@@ -986,6 +987,7 @@ impl AppServerSession {
         effort: Option<codex_protocol::openai_models::ReasoningEffort>,
         summary: Option<codex_protocol::config_types::ReasoningSummary>,
         service_tier: Option<Option<String>>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
         collaboration_mode: Option<codex_protocol::config_types::CollaborationMode>,
         personality: Option<codex_protocol::config_types::Personality>,
         output_schema: Option<serde_json::Value>,
@@ -1001,7 +1003,7 @@ impl AppServerSession {
                     client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context,
                     environments: None,
                     cwd: Some(cwd),
                     runtime_workspace_roots: Some(workspace_roots.to_vec()),
@@ -1052,6 +1054,7 @@ impl AppServerSession {
         thread_id: ThreadId,
         turn_id: String,
         items: Vec<UserInput>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
     ) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
         let request_id = self.next_request_id();
         self.client
@@ -1062,7 +1065,7 @@ impl AppServerSession {
                     client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context,
                     expected_turn_id: turn_id,
                 },
             })

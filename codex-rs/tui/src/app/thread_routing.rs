@@ -515,6 +515,7 @@ impl App {
                 summary,
                 service_tier,
                 final_output_json_schema,
+                additional_context,
                 collaboration_mode,
                 personality,
             } => {
@@ -524,7 +525,12 @@ impl App {
                     let mut retried_after_turn_mismatch = false;
                     loop {
                         match app_server
-                            .turn_steer(thread_id, steer_turn_id.clone(), items.to_vec())
+                            .turn_steer(
+                                thread_id,
+                                steer_turn_id.clone(),
+                                items.to_vec(),
+                                additional_context.clone(),
+                            )
                             .await
                         {
                             Ok(_) => return Ok(true),
@@ -608,6 +614,7 @@ impl App {
                             effort.clone(),
                             *summary,
                             service_tier.clone(),
+                            additional_context.clone(),
                             collaboration_mode.clone(),
                             *personality,
                             final_output_json_schema.clone(),

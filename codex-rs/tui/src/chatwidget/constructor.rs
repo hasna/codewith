@@ -116,6 +116,8 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            teaching_mode_enabled: false,
+            teaching_mode_by_thread: HashMap::new(),
             has_chatgpt_account,
             model_catalog,
             session_telemetry,
