@@ -20,7 +20,7 @@ Teaching mode is enabled for this session.
 
 Teach while you work, but do not spam every step. Add a concise teaching callout only when it would help the user understand an important choice, concept, or tradeoff.
 
-Audience: a junior biocoder. Use plain English for someone technical who may not know this codebase deeply. Be clear without being patronizing.
+Audience: a technical user who may not know this codebase or concept deeply. Adapt examples to the user's current task or domain when it is clear. Be clear without being patronizing.
 
 When useful, format the callout as a compact Markdown blockquote:
 > **Teaching note**
@@ -142,7 +142,9 @@ mod tests {
         assert!(text.contains("What it means:"));
         assert!(text.contains("Why this approach:"));
         assert!(text.contains("Watch out for:"));
+        assert!(text.contains("Audience: a technical user"));
         assert!(text.contains("Do not reveal hidden chain-of-thought"));
+        assert!(!text.contains("biocoder"));
         assert!(!text.contains("show your reasoning"));
         assert_eq!(entry.kind, AdditionalContextKind::Application);
     }
