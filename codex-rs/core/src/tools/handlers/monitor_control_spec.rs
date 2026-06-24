@@ -57,7 +57,7 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         (
             "cwd".to_string(),
             JsonSchema::string(Some(
-                "Optional working directory for the command. Relative output_file paths are resolved from this directory."
+                "Optional thread-cwd-relative working directory for the command. Relative output_file paths are resolved from this directory."
                     .to_string(),
             )),
         ),
@@ -74,7 +74,7 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         (
             "output_file".to_string(),
             JsonSchema::string(Some(
-                "Required when routing is file or both. Absolute or cwd-relative file path where monitor output should be appended."
+                "Required when routing is file or both. Thread-cwd-relative path where monitor output should be appended."
                     .to_string(),
             )),
         ),

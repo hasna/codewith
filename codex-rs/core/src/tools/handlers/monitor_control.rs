@@ -15,6 +15,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::Component;
+use std::path::Path;
 use std::sync::Arc;
 
 const MAX_THREAD_MONITOR_NAME_CHARS: usize = 120;
@@ -195,12 +197,13 @@ async fn create_monitor(
             .ok_or_else(|| model_error("command is required when action is create"))?,
         MAX_THREAD_MONITOR_COMMAND_CHARS,
     )?;
-    let cwd = validate_optional_monitor_path("cwd", args.cwd.as_deref())?;
+    let cwd = validate_optional_monitor_relative_path("cwd", args.cwd.as_deref())?;
     let routing = args
         .routing
         .map(monitor_routing_arg_to_state)
         .unwrap_or(codex_state::ThreadMonitorRouting::Stream);
-    let output_file = validate_optional_monitor_path("output_file", args.output_file.as_deref())?;
+    let output_file =
+        validate_optional_monitor_relative_path("output_file", args.output_file.as_deref())?;
     let output_file = validate_output_file_for_routing(routing, output_file)?;
     let monitor = state_db
         .thread_monitors()
@@ -459,6 +462,43 @@ fn validate_optional_monitor_path(
         .transpose()
 }
 
+fn validate_optional_monitor_relative_path(
+    field_name: &str,
+    value: Option<&str>,
+) -> Result<Option<String>, FunctionCallError> {
+    validate_optional_monitor_path(field_name, value)?
+        .map(|value| validate_monitor_relative_path(field_name, value))
+        .transpose()
+}
+
+fn validate_monitor_relative_path(
+    field_name: &str,
+    value: String,
+) -> Result<String, FunctionCallError> {
+    let path = Path::new(&value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(model_error(format!(
+            "{field_name} must be a relative path within the thread cwd"
+        )));
+    }
+    if !path
+        .components()
+        .any(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(model_error(format!(
+            "{field_name} must include a path component"
+        )));
+    }
+    Ok(value)
+}
+
 fn validate_output_file_for_routing(
     routing: codex_state::ThreadMonitorRouting,
     output_file: Option<String>,
@@ -528,5 +568,24 @@ impl From<codex_state::ThreadMonitorEvent> for MonitorEventSnapshot {
             text: event.text,
             created_at: event.created_at.timestamp(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn validates_monitor_relative_paths() {
+        assert_eq!(
+            Some("logs/monitor.log".to_string()),
+            validate_optional_monitor_relative_path("output_file", Some(" logs/monitor.log "),)
+                .expect("relative output file should be valid")
+        );
+
+        assert!(validate_optional_monitor_relative_path("output_file", Some("/tmp/out")).is_err());
+        assert!(validate_optional_monitor_relative_path("output_file", Some("../out")).is_err());
+        assert!(validate_optional_monitor_relative_path("output_file", Some(".")).is_err());
     }
 }

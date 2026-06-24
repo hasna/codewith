@@ -1586,10 +1586,14 @@ pub struct ThreadMonitorCreateParams {
     pub name: String,
     pub prompt: String,
     pub command: String,
+    /// Optional working directory relative to the thread cwd. Parent directory
+    /// traversal and absolute paths are rejected.
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub routing: Option<ThreadMonitorRouting>,
+    /// Optional output file relative to the monitor cwd. Parent directory
+    /// traversal, absolute paths, and symlink targets are rejected.
     #[ts(optional = nullable)]
     pub output_file: Option<String>,
 }

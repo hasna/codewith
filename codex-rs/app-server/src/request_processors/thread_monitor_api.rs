@@ -1,4 +1,6 @@
 use super::*;
+use std::path::Component;
+use std::path::Path;
 
 const DEFAULT_MONITOR_LIMIT: usize = 50;
 pub(super) const MAX_MONITOR_LIMIT: usize = 50;
@@ -64,6 +66,43 @@ pub(super) fn validate_optional_monitor_path(
             Ok(value.to_string())
         })
         .transpose()
+}
+
+pub(super) fn validate_optional_monitor_relative_path(
+    field_name: &str,
+    value: Option<String>,
+) -> Result<Option<String>, JSONRPCErrorError> {
+    validate_optional_monitor_path(field_name, value)?
+        .map(|value| validate_monitor_relative_path(field_name, value))
+        .transpose()
+}
+
+fn validate_monitor_relative_path(
+    field_name: &str,
+    value: String,
+) -> Result<String, JSONRPCErrorError> {
+    let path = Path::new(&value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(invalid_request(format!(
+            "{field_name} must be a relative path within the thread cwd"
+        )));
+    }
+    if !path
+        .components()
+        .any(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid_request(format!(
+            "{field_name} must include a path component"
+        )));
+    }
+    Ok(value)
 }
 
 pub(super) fn validate_monitor_output_file_for_routing(
@@ -223,6 +262,31 @@ mod tests {
                 Some("monitor.log".to_string()),
             )
             .expect("output file should be valid")
+        );
+    }
+
+    #[test]
+    fn validates_monitor_relative_paths() {
+        assert_eq!(
+            Some("logs/monitor.log".to_string()),
+            validate_optional_monitor_relative_path(
+                "monitor outputFile",
+                Some(" logs/monitor.log ".to_string()),
+            )
+            .expect("relative output file should be valid")
+        );
+
+        assert!(
+            validate_optional_monitor_relative_path("monitor outputFile", Some("/tmp/out".into()))
+                .is_err()
+        );
+        assert!(
+            validate_optional_monitor_relative_path("monitor outputFile", Some("../out".into()))
+                .is_err()
+        );
+        assert!(
+            validate_optional_monitor_relative_path("monitor outputFile", Some(".".into()))
+                .is_err()
         );
     }
 }
