@@ -16,6 +16,7 @@ pub(crate) struct TurnRequestProcessor {
     thread_watch_manager: ThreadWatchManager,
     thread_list_state_permit: Arc<Semaphore>,
     skills_watcher: Arc<SkillsWatcher>,
+    state_db: Option<StateDbHandle>,
 }
 
 fn map_additional_context(
@@ -41,6 +42,13 @@ fn map_additional_context(
         .collect()
 }
 
+fn path_is_inside(path: &Path, root: &Path) -> bool {
+    if let (Ok(path), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        return path.starts_with(root);
+    }
+    path.starts_with(root)
+}
+
 struct ThreadSettingsBuildParams {
     method: &'static str,
     cwd: Option<AbsolutePathBuf>,
@@ -57,6 +65,7 @@ struct ThreadSettingsBuildParams {
     summary: Option<ReasoningSummary>,
     collaboration_mode: Option<CollaborationMode>,
     personality: Option<Personality>,
+    worktree_mode: Option<SessionWorktreeMode>,
 }
 
 impl TurnRequestProcessor {
@@ -74,6 +83,7 @@ impl TurnRequestProcessor {
         thread_watch_manager: ThreadWatchManager,
         thread_list_state_permit: Arc<Semaphore>,
         skills_watcher: Arc<SkillsWatcher>,
+        state_db: Option<StateDbHandle>,
     ) -> Self {
         Self {
             auth_manager,
@@ -88,6 +98,7 @@ impl TurnRequestProcessor {
             thread_watch_manager,
             thread_list_state_permit,
             skills_watcher,
+            state_db,
         }
     }
 
@@ -427,8 +438,17 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    worktree_mode: None,
                 },
             )
+            .await?;
+        let config_snapshot = thread.config_snapshot().await;
+        let effective_cwd = thread_settings
+            .cwd
+            .as_ref()
+            .map(AbsolutePathBuf::to_path_buf)
+            .unwrap_or_else(|| config_snapshot.cwd.to_path_buf());
+        self.ensure_pr_mode_worktree_ready(thread_id, &config_snapshot, effective_cwd.as_path())
             .await?;
 
         // Start the turn by submitting the user input. Return its submission id as turn_id.
@@ -454,7 +474,6 @@ impl TurnRequestProcessor {
             })?;
 
         if turn_has_input {
-            let config_snapshot = thread.config_snapshot().await;
             codex_memories_write::start_memories_startup_task(
                 Arc::clone(&self.thread_manager),
                 Arc::clone(&self.auth_manager),
@@ -503,6 +522,7 @@ impl TurnRequestProcessor {
             summary,
             collaboration_mode,
             personality,
+            worktree_mode,
         } = params;
 
         if sandbox_policy.is_some() && permissions.is_some() {
@@ -553,7 +573,8 @@ impl TurnRequestProcessor {
             || effort.is_some()
             || summary.is_some()
             || collaboration_mode.is_some()
-            || personality.is_some();
+            || personality.is_some()
+            || worktree_mode.is_some();
 
         let runtime_workspace_roots =
             runtime_workspace_roots_request.map(resolve_runtime_workspace_roots);
@@ -630,6 +651,7 @@ impl TurnRequestProcessor {
                     service_tier: service_tier.clone(),
                     collaboration_mode: collaboration_mode.clone(),
                     personality,
+                    worktree_mode,
                 })
                 .await
                 .map_err(|err| {
@@ -655,6 +677,7 @@ impl TurnRequestProcessor {
             service_tier,
             collaboration_mode,
             personality,
+            worktree_mode,
         })
     }
 
@@ -684,6 +707,7 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    worktree_mode: params.worktree_mode,
                 },
             )
             .await?;
@@ -699,6 +723,47 @@ impl TurnRequestProcessor {
         }
 
         Ok(ThreadSettingsUpdateResponse {})
+    }
+
+    async fn ensure_pr_mode_worktree_ready(
+        &self,
+        thread_id: ThreadId,
+        config_snapshot: &ThreadConfigSnapshot,
+        effective_cwd: &Path,
+    ) -> Result<(), JSONRPCErrorError> {
+        if config_snapshot.worktree_mode != SessionWorktreeMode::PullRequest {
+            return Ok(());
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return Err(invalid_request(
+                "pull-request worktree mode requires managed worktree state",
+            ));
+        };
+        let worktree = state_db
+            .managed_worktrees()
+            .active_thread_managed_worktree(thread_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to read active worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Err(invalid_request(
+                "pull-request mode requires an attached active managed worktree before starting a turn",
+            ));
+        };
+        if worktree.mode != codex_state::ManagedWorktreeMode::IsolatedWorktree {
+            return Err(invalid_request(format!(
+                "pull-request mode requires an isolated managed worktree, but worktree {} is {:?}",
+                worktree.worktree_id, worktree.mode
+            )));
+        }
+        if !path_is_inside(effective_cwd, worktree.worktree_path.as_path()) {
+            return Err(invalid_request(format!(
+                "pull-request mode requires cwd {} to be inside attached managed worktree {}",
+                effective_cwd.display(),
+                worktree.worktree_path.display()
+            )));
+        }
+
+        Ok(())
     }
 
     async fn thread_inject_items_response_inner(

@@ -6362,6 +6362,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         },
     };
     app.enqueue_thread_notification(

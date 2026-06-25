@@ -9,6 +9,7 @@ use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeSessionMode;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::PathBuf;
 
@@ -60,6 +61,7 @@ impl App {
                 branch,
                 start_point,
                 Some(WorktreeCleanupPolicy::DeleteIfClean),
+                /*thread_id*/ None,
             )
             .await
         {
@@ -80,6 +82,101 @@ impl App {
             Err(err) => self
                 .chat_widget
                 .add_error_message(format!("Failed to create worktree: {err}")),
+        }
+    }
+
+    pub(super) async fn start_pull_request_mode(
+        &mut self,
+        app_server: &mut AppServerSession,
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    ) {
+        let Some(thread_id) = self.active_thread_id else {
+            self.chat_widget.add_error_message(
+                "Cannot start PR mode before the current session is ready".to_string(),
+            );
+            return;
+        };
+        let base_repo_path = self.current_worktree_base_repo_path().await;
+        let create_response = app_server
+            .worktree_create(
+                base_repo_path,
+                name.or_else(|| Some("pull-request".to_string())),
+                branch,
+                start_point,
+                Some(WorktreeCleanupPolicy::DeleteIfClean),
+                Some(thread_id.to_string()),
+            )
+            .await;
+        let response = match create_response {
+            Ok(response) => response,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to start PR mode: {err}"));
+                return;
+            }
+        };
+
+        let worktree = response.worktree;
+        let worktree_id = worktree.worktree_id.clone();
+        let worktree_path = worktree.worktree_path.clone();
+        let params = ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            cwd: Some(PathBuf::from(&worktree_path)),
+            worktree_mode: Some(SessionWorktreeMode::PullRequest),
+            ..ThreadSettingsUpdateParams::default()
+        };
+        match app_server.thread_settings_update(params).await {
+            Ok(()) => {
+                if let Ok(cwd) =
+                    AbsolutePathBuf::from_absolute_path_checked(PathBuf::from(&worktree_path))
+                {
+                    self.config.cwd = cwd;
+                }
+                let short_id = worktree_id.chars().take(8).collect::<String>();
+                self.chat_widget.add_info_message(
+                    "Started PR mode".to_string(),
+                    Some(format!("{short_id} at {worktree_path}")),
+                );
+                self.chat_widget
+                    .show_worktree_actions(worktree, response.policy);
+            }
+            Err(err) => {
+                let detach_result = app_server
+                    .worktree_detach(
+                        worktree_id.clone(),
+                        Some(thread_id.to_string()),
+                        /*agent_run_id*/ None,
+                    )
+                    .await;
+                let release_result = if detach_result.is_ok() {
+                    app_server
+                        .worktree_release(
+                            worktree_id,
+                            Some(WorktreeCleanupPolicy::DeleteIfClean),
+                            Some(false),
+                        )
+                        .await
+                        .map(|_| ())
+                } else {
+                    Ok(())
+                };
+                let rollback_suffix = match (detach_result, release_result) {
+                    (Ok(_), Ok(_)) => {
+                        " The new worktree assignment was rolled back and queued for safe cleanup."
+                            .to_string()
+                    }
+                    (Err(detach_err), _) => {
+                        format!(" Assignment rollback failed: {detach_err}")
+                    }
+                    (_, Err(release_err)) => {
+                        format!(" Safe cleanup release failed: {release_err}")
+                    }
+                };
+                self.chat_widget
+                    .add_error_message(format!("Failed to start PR mode: {err}.{rollback_suffix}"));
+            }
         }
     }
 

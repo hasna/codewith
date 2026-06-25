@@ -1624,6 +1624,41 @@ async fn pr_slash_command_opens_read_only_overview() {
 }
 
 #[tokio::test]
+async fn pr_start_slash_command_starts_pull_request_mode() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let _ = drain_insert_history(&mut rx);
+    let command = "/pr start auth-fix --branch codewith/auth-fix --start main";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected pr mode start event");
+    match event {
+        AppEvent::StartPullRequestMode {
+            name,
+            branch,
+            start_point,
+        } => {
+            assert_eq!(name, Some("auth-fix".to_string()));
+            assert_eq!(branch, Some("codewith/auth-fix".to_string()));
+            assert_eq!(start_point, Some("main".to_string()));
+        }
+        other => panic!("expected StartPullRequestMode event, got {other:?}"),
+    }
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::AppendMessageHistoryEntry {
+            thread_id: event_thread_id,
+            text,
+        }) if event_thread_id == thread_id && text == command
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
 async fn worktree_slash_command_emits_manage_events() {
     let cases = [
         ("/worktree", "list", None),
