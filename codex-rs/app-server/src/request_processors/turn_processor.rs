@@ -42,11 +42,16 @@ fn map_additional_context(
         .collect()
 }
 
-fn path_is_inside(path: &Path, root: &Path) -> bool {
-    if let (Ok(path), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
-        return path.starts_with(root);
+fn existing_dir_is_inside(path: &Path, root: &Path) -> std::io::Result<bool> {
+    let path = std::fs::canonicalize(path)?;
+    let root = std::fs::canonicalize(root)?;
+    if !path.is_dir() || !root.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path and root must both be directories",
+        ));
     }
-    path.starts_with(root)
+    Ok(path.starts_with(root))
 }
 
 struct ThreadSettingsBuildParams {
@@ -755,7 +760,15 @@ impl TurnRequestProcessor {
                 worktree.worktree_id, worktree.mode
             )));
         }
-        if !path_is_inside(effective_cwd, worktree.worktree_path.as_path()) {
+        let cwd_inside_worktree =
+            existing_dir_is_inside(effective_cwd, worktree.worktree_path.as_path()).map_err(
+                |err| {
+                    invalid_request(format!(
+                        "pull-request mode requires cwd and attached managed worktree paths to be existing directories: {err}"
+                    ))
+                },
+            )?;
+        if !cwd_inside_worktree {
             return Err(invalid_request(format!(
                 "pull-request mode requires cwd {} to be inside attached managed worktree {}",
                 effective_cwd.display(),
@@ -1372,4 +1385,81 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::existing_dir_is_inside;
+    use pretty_assertions::assert_eq;
+    use std::fs;
+
+    #[test]
+    fn existing_dir_is_inside_accepts_existing_child_directory() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let child = worktree.join("src");
+        fs::create_dir_all(&child)?;
+
+        assert!(existing_dir_is_inside(&child, &worktree)?);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_existing_sibling_directory() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let sibling = tmp.path().join("sibling");
+        fs::create_dir_all(&worktree)?;
+        fs::create_dir_all(&sibling)?;
+
+        assert!(!existing_dir_is_inside(&sibling, &worktree)?);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_lexical_escape_when_target_is_missing() -> std::io::Result<()>
+    {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(worktree.join("nested"))?;
+        let lexical_escape = worktree
+            .join("nested")
+            .join("..")
+            .join("..")
+            .join("outside");
+
+        let err = existing_dir_is_inside(&lexical_escape, &worktree)
+            .expect_err("missing lexical escape should not fall back to starts_with");
+        assert_eq!(std::io::ErrorKind::NotFound, err.kind());
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_file_inside_worktree() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(&worktree)?;
+        let file = worktree.join("README.md");
+        fs::write(&file, "not a directory")?;
+
+        let err = existing_dir_is_inside(&file, &worktree)
+            .expect_err("cwd must be an existing directory");
+        assert_eq!(std::io::ErrorKind::InvalidInput, err.kind());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_dir_is_inside_rejects_symlink_escape() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let outside = tmp.path().join("outside");
+        let link = worktree.join("linked-outside");
+        fs::create_dir_all(&worktree)?;
+        fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, &link)?;
+
+        assert!(!existing_dir_is_inside(&link, &worktree)?);
+        Ok(())
+    }
 }
