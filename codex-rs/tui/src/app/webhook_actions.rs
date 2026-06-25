@@ -13,7 +13,15 @@ impl App {
         thread_id: Option<ThreadId>,
     ) {
         match app_server
-            .webhook_event_list(/*target_thread_id*/ None)
+            .webhook_event_list(
+                /*target_thread_id*/ None,
+                Some(vec![
+                    WebhookEventStatus::Unread,
+                    WebhookEventStatus::Processed,
+                    WebhookEventStatus::Injected,
+                    WebhookEventStatus::Queued,
+                ]),
+            )
             .await
         {
             Ok(response) => self
@@ -31,29 +39,17 @@ impl App {
         event_id: String,
         thread_id: Option<ThreadId>,
     ) {
-        let result = app_server.webhook_event_read(event_id.clone()).await;
         if thread_id.is_some() && self.current_displayed_thread_id() != thread_id {
             return;
         }
-        match result {
-            Ok(response) => {
-                if let Some(event) = response.event {
-                    self.chat_widget
-                        .show_webhook_event_actions(thread_id, event);
-                } else {
-                    self.chat_widget.add_info_message(
-                        "Webhook event not found".to_string(),
-                        Some(format!(
-                            "Could not find event {}.",
-                            short_event_id(&event_id)
-                        )),
-                    );
-                }
-            }
-            Err(err) => self
-                .chat_widget
-                .add_error_message(format!("Failed to read webhook event: {err}")),
-        }
+        let Some(event) = self
+            .read_webhook_event_for_action(app_server, event_id.clone(), thread_id)
+            .await
+        else {
+            return;
+        };
+        self.chat_widget
+            .show_webhook_event_actions(thread_id, event);
     }
 
     pub(super) async fn mark_webhook_event(
@@ -63,13 +59,16 @@ impl App {
         status: WebhookEventStatus,
         thread_id: Option<ThreadId>,
     ) {
-        let result = app_server
-            .webhook_event_mark(event_id.clone(), status)
-            .await;
-        if thread_id.is_some() && self.current_displayed_thread_id() != thread_id {
+        let Some(_event) = self
+            .read_webhook_event_for_action(app_server, event_id.clone(), thread_id)
+            .await
+        else {
             return;
-        }
-        match result {
+        };
+        match app_server
+            .webhook_event_mark(event_id.clone(), status)
+            .await
+        {
             Ok(response) => {
                 if response.event.is_some() {
                     self.chat_widget.add_info_message(

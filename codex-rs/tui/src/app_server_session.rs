@@ -1511,21 +1511,37 @@ impl AppServerSession {
     pub(crate) async fn webhook_event_list(
         &mut self,
         target_thread_id: Option<ThreadId>,
+        statuses: Option<Vec<WebhookEventStatus>>,
     ) -> Result<WebhookEventListResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::WebhookEventList {
-                request_id,
-                params: WebhookEventListParams {
-                    source_app_id: None,
-                    target_thread_id: target_thread_id.map(|thread_id| thread_id.to_string()),
-                    statuses: None,
-                    cursor: None,
-                    limit: Some(100),
-                },
-            })
-            .await
-            .wrap_err("webhook/event/list failed in TUI")
+        let mut data = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request_id = self.next_request_id();
+            let response: WebhookEventListResponse = self
+                .client
+                .request_typed(ClientRequest::WebhookEventList {
+                    request_id,
+                    params: WebhookEventListParams {
+                        source_app_id: None,
+                        target_thread_id: target_thread_id
+                            .as_ref()
+                            .map(std::string::ToString::to_string),
+                        statuses: statuses.clone(),
+                        cursor: cursor.clone(),
+                        limit: Some(200),
+                    },
+                })
+                .await
+                .wrap_err("webhook/event/list failed in TUI")?;
+            data.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                return Ok(WebhookEventListResponse {
+                    data,
+                    next_cursor: None,
+                });
+            };
+            cursor = Some(next_cursor);
+        }
     }
 
     pub(crate) async fn webhook_event_read(

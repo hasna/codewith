@@ -29,6 +29,7 @@ fn webhook_inbox_params(
     thread_id: Option<ThreadId>,
     mut events: Vec<WebhookEventSummary>,
 ) -> SelectionViewParams {
+    events = webhook_visible_events(thread_id.as_ref(), events);
     events.sort_by_key(|event| {
         (
             webhook_status_sort_key(event.status),
@@ -76,6 +77,31 @@ fn webhook_inbox_params(
         search_placeholder: Some("Search webhook events".to_string()),
         col_width_mode: ColumnWidthMode::Fixed,
         ..Default::default()
+    }
+}
+
+fn webhook_visible_events(
+    thread_id: Option<&ThreadId>,
+    events: Vec<WebhookEventSummary>,
+) -> Vec<WebhookEventSummary> {
+    match thread_id {
+        Some(thread_id) => {
+            let thread_id = thread_id.to_string();
+            events
+                .into_iter()
+                .filter(|event| {
+                    event.status != WebhookEventStatus::Archived
+                        && event
+                            .target_thread_id
+                            .as_ref()
+                            .is_none_or(|target_thread_id| target_thread_id == &thread_id)
+                })
+                .collect()
+        }
+        None => events
+            .into_iter()
+            .filter(|event| event.status != WebhookEventStatus::Archived)
+            .collect(),
     }
 }
 
@@ -291,6 +317,7 @@ fn format_timestamp(timestamp: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::WebhookEventSummary;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -336,6 +363,57 @@ mod tests {
                 "processe  GitHub  pull_request".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn inbox_hides_archived_and_other_thread_events() {
+        let current_thread_id = ThreadId::new();
+        let other_thread_id = ThreadId::new();
+        let params = webhook_inbox_params(
+            Some(current_thread_id),
+            vec![
+                WebhookEventSummary {
+                    target_thread_id: Some(other_thread_id.to_string()),
+                    status: WebhookEventStatus::Unread,
+                    event_id: "other-thread".to_string(),
+                    source_app_id: "github".to_string(),
+                    source_app_name: Some("GitHub".to_string()),
+                    subscription_id: Some("sub".to_string()),
+                    event_type: "issue".to_string(),
+                    external_delivery_id: Some("delivery".to_string()),
+                    idempotency_key: None,
+                    payload_sha256: "abc".to_string(),
+                    payload_preview: "{\"action\":\"opened\"}".to_string(),
+                    redactions: Vec::new(),
+                    received_at: 4,
+                    updated_at: 4,
+                },
+                WebhookEventSummary {
+                    target_thread_id: Some(current_thread_id.to_string()),
+                    status: WebhookEventStatus::Archived,
+                    event_id: "archived".to_string(),
+                    source_app_id: "github".to_string(),
+                    source_app_name: Some("GitHub".to_string()),
+                    subscription_id: Some("sub".to_string()),
+                    event_type: "push".to_string(),
+                    external_delivery_id: Some("delivery".to_string()),
+                    idempotency_key: None,
+                    payload_sha256: "def".to_string(),
+                    payload_preview: "{\"action\":\"closed\"}".to_string(),
+                    redactions: Vec::new(),
+                    received_at: 3,
+                    updated_at: 3,
+                },
+                event(WebhookEventStatus::Unread, 5, "visible"),
+            ],
+        );
+
+        let names = params
+            .items
+            .iter()
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["visible  GitHub  pull_request".to_string()]);
     }
 
     #[test]
