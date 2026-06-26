@@ -180,6 +180,7 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let prompt_source = update.prompt_source.unwrap_or(existing.prompt_source);
         let schedule = update.schedule.unwrap_or(existing.schedule);
         let timezone = update.timezone.unwrap_or(existing.timezone);
+        let reset_failure_count = update.status == Some(crate::ThreadScheduleStatus::Active);
         let status = update.status.unwrap_or(existing.status);
         let next_run_at = update.next_run_at.unwrap_or(existing.next_run_at);
         let expires_at = update.expires_at.unwrap_or(existing.expires_at);
@@ -198,6 +199,7 @@ SET
     status = ?,
     next_run_at_ms = ?,
     expires_at_ms = ?,
+    failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,
     updated_at_ms = ?
 WHERE schedule_id = ?
 RETURNING
@@ -214,6 +216,7 @@ RETURNING
             .bind(status.as_str())
             .bind(next_run_at.map(datetime_to_epoch_millis))
             .bind(expires_at.map(datetime_to_epoch_millis))
+            .bind(reset_failure_count)
             .bind(datetime_to_epoch_millis(Utc::now()))
             .bind(schedule_id)
             .fetch_optional(self.pool.as_ref())
@@ -235,6 +238,26 @@ RETURNING
                 timezone: None,
                 status: Some(status),
                 next_run_at: None,
+                expires_at: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn resume_thread_schedule_at(
+        &self,
+        schedule_id: &str,
+        next_run_at: DateTime<Utc>,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        self.update_thread_schedule(
+            schedule_id,
+            ThreadScheduleUpdate {
+                prompt: None,
+                prompt_source: None,
+                schedule: None,
+                timezone: None,
+                status: Some(crate::ThreadScheduleStatus::Active),
+                next_run_at: Some(Some(next_run_at)),
                 expires_at: None,
             },
         )
