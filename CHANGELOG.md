@@ -38,6 +38,29 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.49] - 2026-06-26
+
+Tag: `rust-v0.1.49`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.49>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.47...rust-v0.1.49>
+
+### Notes
+
+- Corrective release that intentionally supersedes `0.1.48`. The `0.1.48`
+  publish came from a broad spark01 preservation branch and could trigger local
+  SQLite migration checksum failures; this release returns to the migration-safe
+  `0.1.47` base and reapplies the loop and mailbox fixes.
+
+### Fixed
+
+- Hardened scheduled `/loop` execution so usage waits and busy threads defer
+  runs without incrementing failure counts, then re-arm correctly after retry.
+- Restored repeated interval loop injection as visible interactive turns, with
+  regression coverage proving each firing creates a fresh turn, persists user
+  and assistant messages, and submits a distinct model request.
+- Reapplied mailbox dispatcher fixes on the safe migration base, including
+  queued mailbox input handling and local active-session migration stability.
+
 ## [0.1.43] - 2026-06-21
 
 Tag: `rust-v0.1.43`
