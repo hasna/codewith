@@ -459,6 +459,45 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
 }
 
 #[tokio::test]
+async fn thread_mailbox_dispatcher_resumes_unloaded_thread_by_default() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_body = responses::sse(vec![
+        responses::ev_response_created("resp-default-dispatch"),
+        responses::ev_assistant_message("msg-default-dispatch", "Done"),
+        responses::ev_completed("resp-default-dispatch"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, response_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_default_features(codex_home.path(), &server.uri())?;
+
+    let thread_id = seed_unloaded_thread(codex_home.path()).await?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let enqueued = enqueue_message_with_payload_and_max_attempts(
+        &mut mcp,
+        &thread_id,
+        "dispatcher-resume-default",
+        json!({
+            "text": "decompose this",
+            "delivery": "resumeAndTrigger",
+        }),
+        /*max_attempts*/ 3,
+    )
+    .await?;
+
+    let acknowledged = wait_for_message_matching(
+        &mut mcp,
+        &thread_id,
+        &enqueued.message.message_id,
+        |message| message.status == ThreadMailboxMessageStatus::Acknowledged,
+    )
+    .await?;
+    assert_eq!(acknowledged.attempt_count, 1);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Result<()> {
     let server = responses::start_mock_server().await;
     let first_body = create_request_user_input_body("call-busy")?;
@@ -1015,12 +1054,32 @@ fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()
     create_config_toml_with_mailbox_dispatcher(codex_home, server_uri, /*enabled*/ false)
 }
 
+fn create_config_toml_with_default_features(
+    codex_home: &Path,
+    server_uri: &str,
+) -> std::io::Result<()> {
+    write_config_toml(
+        codex_home, server_uri, /*mailbox_dispatcher_enabled*/ None,
+    )
+}
+
 fn create_config_toml_with_mailbox_dispatcher(
     codex_home: &Path,
     server_uri: &str,
     mailbox_dispatcher_enabled: bool,
 ) -> std::io::Result<()> {
+    write_config_toml(codex_home, server_uri, Some(mailbox_dispatcher_enabled))
+}
+
+fn write_config_toml(
+    codex_home: &Path,
+    server_uri: &str,
+    mailbox_dispatcher_enabled: Option<bool>,
+) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
+    let feature_config = mailbox_dispatcher_enabled
+        .map(|enabled| format!("\n[features]\nmailbox_dispatcher = {enabled}\n"))
+        .unwrap_or_default();
     std::fs::write(
         config_toml,
         format!(
@@ -1037,11 +1096,8 @@ base_url = "{server_uri}/v1"
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
-
-[features]
-mailbox_dispatcher = {mailbox_dispatcher_enabled}
-"#
-        ),
+"#,
+        ) + feature_config.as_str(),
     )
 }
 
