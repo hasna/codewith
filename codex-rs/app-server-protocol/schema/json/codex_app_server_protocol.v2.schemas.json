@@ -20800,6 +20800,7 @@
       "enum": [
         "leased",
         "running",
+        "deferred",
         "completed",
         "failed"
       ],
@@ -20909,6 +20910,10 @@
           "format": "int64",
           "type": "integer"
         },
+        "deferredRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
         "failedRuns": {
           "format": "int64",
           "type": "integer"
@@ -20948,6 +20953,7 @@
       },
       "required": [
         "completedRuns",
+        "deferredRuns",
         "failedRuns",
         "leasedRuns",
         "runningRuns",

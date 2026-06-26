@@ -5399,6 +5399,7 @@
       "enum": [
         "leased",
         "running",
+        "deferred",
         "completed",
         "failed"
       ],

@@ -1161,6 +1161,7 @@ pub struct ThreadSchedule {
 pub enum ThreadScheduleRunStatus {
     Leased,
     Running,
+    Deferred,
     Completed,
     Failed,
 }
@@ -1196,6 +1197,8 @@ pub struct ThreadScheduleStats {
     pub leased_runs: i64,
     #[ts(type = "number")]
     pub running_runs: i64,
+    #[ts(type = "number")]
+    pub deferred_runs: i64,
     #[ts(type = "number")]
     pub completed_runs: i64,
     #[ts(type = "number")]

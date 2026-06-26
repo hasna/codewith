@@ -221,6 +221,14 @@ impl ChatWidget {
                     short_schedule_id(&run.schedule_id)
                 )),
             ),
+            ThreadScheduleRunStatus::Deferred => self.add_info_message(
+                "Loop run deferred".to_string(),
+                Some(format!(
+                    "{} deferred for {}.",
+                    short_schedule_run_id(&run.run_id),
+                    short_schedule_id(&run.schedule_id)
+                )),
+            ),
             ThreadScheduleRunStatus::Failed => self.add_warning_message(format!(
                 "Loop run failed for {}: {}",
                 run.schedule_id,
@@ -842,6 +850,8 @@ fn thread_schedule_stats_lines(
         stats.completed_runs.to_string().into(),
         "  failed ".dim(),
         stats.failed_runs.to_string().into(),
+        "  deferred ".dim(),
+        stats.deferred_runs.to_string().into(),
         "  running ".dim(),
         stats.running_runs.to_string().into(),
         "  leased ".dim(),
@@ -1049,8 +1059,9 @@ mod tests {
             total_runs: 40,
             leased_runs: 0,
             running_runs: 0,
+            deferred_runs: 4,
             completed_runs: 25,
-            failed_runs: 15,
+            failed_runs: 11,
             last_started_at: Some(1_700_000_300),
             last_completed_at: Some(1_700_000_320),
             last_error: Some(
@@ -1070,7 +1081,9 @@ mod tests {
             "stats should show consecutive failure streak: {rendered}"
         );
         assert!(
-            rendered.contains("Runs: total 40  completed 25  failed 15  running 0  leased 0"),
+            rendered.contains(
+                "Runs: total 40  completed 25  failed 11  deferred 4  running 0  leased 0"
+            ),
             "stats should show exact run counts: {rendered}"
         );
         assert!(

@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/loop_menu.rs
+expression: rendered
+---
+• Loop run started 0eb8d7d4 started for 02f1072a.
+
+• Loop run completed 0eb8d7d4 completed for 02f1072a.
+
+• Loop run deferred 2de3e518 deferred for 02f1072a.
+
+⚠ Loop run failed for 02f1072a-c22e-447e-9448-c41bc7717ab1: scheduled turn
+  completed without a final assistant message

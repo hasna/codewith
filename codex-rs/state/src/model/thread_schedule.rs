@@ -113,6 +113,7 @@ impl TryFrom<&str> for ThreadScheduleIntervalUnit {
 pub enum ThreadScheduleRunStatus {
     Leased,
     Running,
+    Deferred,
     Completed,
     Failed,
 }
@@ -122,6 +123,7 @@ impl ThreadScheduleRunStatus {
         match self {
             Self::Leased => "leased",
             Self::Running => "running",
+            Self::Deferred => "deferred",
             Self::Completed => "completed",
             Self::Failed => "failed",
         }
@@ -135,6 +137,7 @@ impl TryFrom<&str> for ThreadScheduleRunStatus {
         match value {
             "leased" => Ok(Self::Leased),
             "running" => Ok(Self::Running),
+            "deferred" => Ok(Self::Deferred),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             other => Err(anyhow!("unknown thread schedule run status `{other}`")),
@@ -185,6 +188,7 @@ pub struct ThreadScheduleStats {
     pub total_runs: i64,
     pub leased_runs: i64,
     pub running_runs: i64,
+    pub deferred_runs: i64,
     pub completed_runs: i64,
     pub failed_runs: i64,
     pub last_started_at: Option<DateTime<Utc>>,

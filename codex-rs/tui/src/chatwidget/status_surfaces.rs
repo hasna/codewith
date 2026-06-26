@@ -688,7 +688,9 @@ impl ChatWidget {
                     .insert(run.schedule_id.clone());
                 self.status_line_schedules_by_id.remove(&run.schedule_id);
             }
-            ThreadScheduleRunStatus::Completed | ThreadScheduleRunStatus::Failed => {
+            ThreadScheduleRunStatus::Deferred
+            | ThreadScheduleRunStatus::Completed
+            | ThreadScheduleRunStatus::Failed => {
                 self.status_line_running_schedule_ids
                     .remove(&run.schedule_id);
                 self.status_line_schedules_by_id.remove(&run.schedule_id);

@@ -51,7 +51,9 @@ fn test_schedule_run(
 ) -> ThreadScheduleRun {
     let completed_at = if matches!(
         status,
-        ThreadScheduleRunStatus::Completed | ThreadScheduleRunStatus::Failed
+        ThreadScheduleRunStatus::Deferred
+            | ThreadScheduleRunStatus::Completed
+            | ThreadScheduleRunStatus::Failed
     ) {
         Some(1_700_000_002)
     } else {
@@ -199,6 +201,12 @@ async fn loop_run_updates_surface_active_thread_progress() {
         "0eb8d7d4-a324-47a8-9e1c-6912c6d76e87",
         ThreadScheduleRunStatus::Completed,
     ));
+    chat.on_thread_schedule_run_updated(test_schedule_run(
+        thread_id,
+        "02f1072a-c22e-447e-9448-c41bc7717ab1",
+        "2de3e518-a42e-4f77-8763-1344c919f127",
+        ThreadScheduleRunStatus::Deferred,
+    ));
     let mut failed = test_schedule_run(
         thread_id,
         "02f1072a-c22e-447e-9448-c41bc7717ab1",
@@ -213,6 +221,7 @@ async fn loop_run_updates_surface_active_thread_progress() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
         .join("");
+    assert_chatwidget_snapshot!("loop_run_updates_surface_active_thread_progress", rendered);
 
     assert!(rendered.contains("Loop run started"), "{rendered}");
     assert!(
@@ -222,6 +231,11 @@ async fn loop_run_updates_surface_active_thread_progress() {
     assert!(rendered.contains("Loop run completed"), "{rendered}");
     assert!(
         rendered.contains("0eb8d7d4 completed for 02f1072a"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Loop run deferred"), "{rendered}");
+    assert!(
+        rendered.contains("2de3e518 deferred for 02f1072a"),
         "{rendered}"
     );
     assert!(

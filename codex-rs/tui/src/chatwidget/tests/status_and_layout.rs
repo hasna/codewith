@@ -146,7 +146,9 @@ fn status_line_test_schedule_run(
         started_at: 1_700_000_091,
         completed_at: matches!(
             status,
-            ThreadScheduleRunStatus::Completed | ThreadScheduleRunStatus::Failed
+            ThreadScheduleRunStatus::Deferred
+                | ThreadScheduleRunStatus::Completed
+                | ThreadScheduleRunStatus::Failed
         )
         .then_some(1_700_000_120),
     }
@@ -3158,6 +3160,46 @@ async fn status_line_schedule_countdown_suppresses_running_schedule_and_refetche
     assert!(
         requested_refresh,
         "completed schedule run should request fresh native schedule state"
+    );
+
+    chat.set_status_line_schedules(
+        thread_id,
+        vec![status_line_test_loop(
+            thread_id,
+            "active-loop",
+            ThreadScheduleStatus::Active,
+            Some(now + 90),
+            None,
+        )],
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.on_thread_schedule_run_updated(status_line_test_schedule_run(
+        thread_id,
+        "active-loop",
+        ThreadScheduleRunStatus::Running,
+    ));
+    assert_eq!(chat.status_line_schedule_countdown_text_at(now), None);
+    while rx.try_recv().is_ok() {}
+
+    chat.on_thread_schedule_run_updated(status_line_test_schedule_run(
+        thread_id,
+        "active-loop",
+        ThreadScheduleRunStatus::Deferred,
+    ));
+
+    let mut requested_refresh = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(
+            event,
+            AppEvent::StatusLineSchedulesRefresh { thread_id: requested } if requested == thread_id
+        ) {
+            requested_refresh = true;
+        }
+    }
+    assert!(
+        requested_refresh,
+        "deferred schedule run should request fresh native schedule state"
     );
 }
 

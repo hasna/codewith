@@ -167,7 +167,7 @@ Example with notification opt-out:
 - `thread/schedule/update` — update prompt, schedule, timezone, status, or run timestamps for a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
-- `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
+- `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, deferred, completed, or failed states. Deferred runs are retryable non-failures, for example when the thread is busy or eligible auth profiles need time to reset.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.

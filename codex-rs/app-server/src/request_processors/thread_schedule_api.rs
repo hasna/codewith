@@ -285,6 +285,7 @@ pub(super) fn api_thread_schedule_stats_from_state(
         total_runs: stats.total_runs,
         leased_runs: stats.leased_runs,
         running_runs: stats.running_runs,
+        deferred_runs: stats.deferred_runs,
         completed_runs: stats.completed_runs,
         failed_runs: stats.failed_runs,
         last_started_at: stats.last_started_at.map(|datetime| datetime.timestamp()),
@@ -299,6 +300,7 @@ fn thread_schedule_run_status_from_state(
     match status {
         codex_state::ThreadScheduleRunStatus::Leased => ThreadScheduleRunStatus::Leased,
         codex_state::ThreadScheduleRunStatus::Running => ThreadScheduleRunStatus::Running,
+        codex_state::ThreadScheduleRunStatus::Deferred => ThreadScheduleRunStatus::Deferred,
         codex_state::ThreadScheduleRunStatus::Completed => ThreadScheduleRunStatus::Completed,
         codex_state::ThreadScheduleRunStatus::Failed => ThreadScheduleRunStatus::Failed,
     }
