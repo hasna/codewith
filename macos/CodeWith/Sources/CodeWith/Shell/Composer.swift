@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The prompt composer. Send button, "+", and the inline config pills are all
-/// real, clickable controls.
+/// The prompt composer. The config pills are real controls; the trailing filled
+/// action swaps from microphone at rest to send/stop while active.
 struct Composer: View {
     var placeholder: String = "Do anything"
     var showSend: Bool = true
@@ -22,13 +22,13 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(alignment: .top) {
                 if let text, !snapshot {
                     TextField(placeholder, text: text, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.textPrimary)
-                        .lineLimit(1...5)
+                        .lineLimit(2...6)
                         .onSubmit { onSubmit?() }
                 } else {
                     // Static placeholder (also used in snapshot mode — ImageRenderer
@@ -36,18 +36,13 @@ struct Composer: View {
                     Text(text?.wrappedValue.isEmpty == false ? text!.wrappedValue : placeholder)
                         .font(.system(size: 13))
                         .foregroundStyle(text?.wrappedValue.isEmpty == false ? Theme.textPrimary : Theme.textTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
                 }
                 Spacer()
             }
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+            .padding(.horizontal, 14).padding(.top, 13).padding(.bottom, 13)
 
             HStack(spacing: 10) {
-                Button { onPlus?() } label: {
-                    Image(systemName: "plus").font(.system(size: 13, weight: .regular)).foregroundStyle(Theme.textTertiary)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).disabled(onPlus == nil)
-
                 // Full access pill — subtle; opens the in-session config panel.
                 Button { onConfigTap?() } label: {
                     HStack(spacing: 4) {
@@ -71,29 +66,26 @@ struct Composer: View {
                 }
                 .buttonStyle(.plain).disabled(onConfigTap == nil)
 
-                Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-
                 if showSend {
-                    // Active (black) while typing or running; gray only when empty/idle.
                     let hasText = !(text?.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                    let active = stopMode || hasText
+                    let icon = stopMode ? "stop.fill" : (hasText ? "arrow.up" : "mic.fill")
                     Button { stopMode ? onStop?() : onSubmit?() } label: {
                         Circle()
-                            .fill(active ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
-                            .frame(width: 22, height: 22)
-                            .overlay(Image(systemName: stopMode ? "stop.fill" : "arrow.up")
+                            .fill(Theme.accent)
+                            .frame(width: 28, height: 28)
+                            .overlay(Image(systemName: icon)
                                 .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12).padding(.bottom, 10)
+            .padding(.horizontal, 12).padding(.bottom, 12)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }

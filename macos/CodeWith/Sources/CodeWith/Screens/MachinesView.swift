@@ -78,7 +78,7 @@ struct MachinesView: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12).frame(height: 26)
-            .background(Capsule().fill(Color(hex: 0x202020)))
+            .background(Capsule().fill(Theme.accent))
         }
         .buttonStyle(.plain)
     }
@@ -144,7 +144,7 @@ struct MachinesView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14)
                         .frame(height: 28)
-                        .background(Capsule().fill(Color(hex: 0x202020)))
+                        .background(Capsule().fill(Theme.accent))
                 }
                 .buttonStyle(.plain)
                 .disabled(pairing == nil)

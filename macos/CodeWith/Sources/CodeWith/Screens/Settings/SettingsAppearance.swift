@@ -17,14 +17,14 @@ struct SettingsAppearance: View {
                     codeBlock(lines: [
                         ("1", "const themePreview: ThemeConfig = {", .plain),
                         ("2", "  surface: \"sidebar\",", .del),
-                        ("3", "  accent: \"#2563eb\",", .del),
+                        ("3", "  accent: \"#737373\",", .del),
                         ("4", "  contrast: 42,", .del),
                         ("5", "};", .plain),
                     ], side: .del)
                     codeBlock(lines: [
                         ("1", "const themePreview: ThemeConfig = {", .plain),
                         ("2", "  surface: \"sidebar-elevated\",", .add),
-                        ("3", "  accent: \"#0ea5e9\",", .add),
+                        ("3", "  accent: \"#0A0A0A\",", .add),
                         ("4", "  contrast: 68,", .add),
                         ("5", "};", .plain),
                     ], side: .add)
@@ -128,7 +128,7 @@ struct SettingsAppearance: View {
                 }
             }
             .padding(.bottom, 8)
-            colorRow("Accent", "#339CFF", Color(hex: 0x339CFF))
+            colorRow("Accent", "#0A0A0A", Theme.accent)
             colorRow("Background", bg, bgColor)
             colorRow("Foreground", fg, fgColor)
             fieldRow("UI font", "-apple-system, Blink")

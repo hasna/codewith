@@ -87,6 +87,7 @@ struct AppShell: View {
 
     private func handleTap(_ title: String) {
         switch title {
+        case "Home":     model.open(.home, label: title)
         case "New chat": model.newChat()
         case "Search":   model.open(.search, label: title)
         case "Apps":     model.open(.apps, label: title)

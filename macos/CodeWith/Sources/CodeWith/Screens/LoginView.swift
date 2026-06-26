@@ -30,7 +30,7 @@ struct LoginView: View {
             VStack {
                 HStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(hex: 0x6E6BF2), Color(hex: 0x4B47E0)], startPoint: .top, endPoint: .bottom))
+                        .fill(Theme.accent)
                         .frame(width: 44, height: 26)
                         .overlay(Image(systemName: "person.crop.rectangle").font(.system(size: 12)).foregroundStyle(.white))
                     Spacer()
@@ -151,7 +151,7 @@ struct LoginView: View {
                 Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
             }
             .frame(width: 360, height: 52).contentShape(Rectangle())
-            .background(Capsule().fill(Color(hex: 0x0D0D0D)))
+            .background(Capsule().fill(Theme.accent))
         }.buttonStyle(.plain)
     }
     private func secondaryButton(title: String, action: @escaping () -> Void) -> some View {
@@ -175,7 +175,7 @@ struct LoginView: View {
 
 /// A soft multi-lobed "cloud/flower" blob mark with a thin `>_` prompt glyph.
 struct BrandBlob: View {
-    private let grad = LinearGradient(colors: [Color(hex: 0x7E9BF5), Color(hex: 0x6E8BF2), Color(hex: 0x4D54E8)],
+    private let grad = LinearGradient(colors: [Theme.accent, Color(hex: 0x262626)],
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {
@@ -195,6 +195,6 @@ struct BrandBlob: View {
             }
             .foregroundStyle(.white)
         }
-        .shadow(color: Color(hex: 0x4B47E0).opacity(0.14), radius: 5, y: 2)
+        .shadow(color: Color.black.opacity(0.08), radius: 5, y: 2)
     }
 }

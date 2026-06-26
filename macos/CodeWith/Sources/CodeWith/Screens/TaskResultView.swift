@@ -203,11 +203,11 @@ struct DiffPanel: View {
     enum K { case plain, add, del }
     private func hunkHeader(_ text: String) -> some View {
         HStack(spacing: 0) {
-            Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(Color(hex: 0x6E8BB5))
+            Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textSecondary)
             Spacer()
         }
         .padding(.horizontal, 8).padding(.vertical, 2)
-        .background(Color(hex: 0xEAF0FB))
+        .background(Theme.controlFill)
     }
     private func diffLine(_ num: String, _ text: String, _ k: K) -> some View {
         HStack(spacing: 0) {
@@ -223,6 +223,6 @@ struct DiffPanel: View {
         }
         .padding(.trailing, 6).padding(.vertical, 1.0)
         .background(k == .add ? Color(hex: 0xE6FFEC) : (k == .del ? Color(hex: 0xFFEBE9) : Color.clear))
-        .overlay(alignment: .leading) { Rectangle().fill(Color(hex: 0xEFEFEF)).frame(width: 1).padding(.leading, 20) }
+        .overlay(alignment: .leading) { Rectangle().fill(Theme.cardStroke).frame(width: 1).padding(.leading, 20) }
     }
 }

@@ -41,7 +41,7 @@ struct LoopsView: View {
                 }
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12).frame(height: 26)
-                .background(Capsule().fill(Color(hex: 0x202020)))
+                .background(Capsule().fill(Theme.accent))
             }
             .buttonStyle(.plain)
         }

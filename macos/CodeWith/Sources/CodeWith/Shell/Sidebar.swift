@@ -12,7 +12,6 @@ struct SidebarItem: Identifiable {
 }
 
 /// Left navigation rail, driven by live app-server data.
-/// Colors/metrics are unchanged from the approved design.
 struct Sidebar: View {
     var model: AppModel
     var onTap: (String) -> Void = { _ in }
@@ -21,6 +20,7 @@ struct Sidebar: View {
     var onLoadMore: () -> Void = {}
 
     private let topItems: [SidebarItem] = [
+        .init(icon: "house", title: "Home"),
         .init(icon: "square.and.pencil", title: "New chat"),
         .init(icon: "magnifyingglass", title: "Search"),
         .init(icon: "square.grid.2x2", title: "Apps"),
@@ -32,6 +32,17 @@ struct Sidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             // Minimal top inset to clear the window traffic-light row.
             Color.clear.frame(height: 28)
+
+            HStack(spacing: 9) {
+                BrandMark()
+                Text("Codewith")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
+            .padding(.bottom, 12)
 
             ScrollColumn(alignment: .leading, spacing: 1) {
                 ForEach(topItems) { row(for: $0) }
@@ -139,12 +150,12 @@ struct Sidebar: View {
 
 struct BrandMark: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(LinearGradient(colors: [Color(hex: 0x6E6BF2), Color(hex: 0x4B47E0)], startPoint: .top, endPoint: .bottom))
-            .frame(width: 30, height: 19)
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(Theme.accent)
+            .frame(width: 26, height: 26)
             .overlay(
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white)
             )
     }

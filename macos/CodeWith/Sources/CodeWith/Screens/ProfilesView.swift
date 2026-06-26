@@ -7,7 +7,7 @@ struct ProfilesView: View {
     var activeEmail: String = ""
     var onSwitch: (String) -> Void = { _ in }
 
-    private let avatarColors: [UInt32] = [0x4AB58E, 0x3B82F6, 0xE9943B, 0x6E6BF2, 0xDB5B5B]
+    private let avatarColors: [UInt32] = [0xF97316, 0x22C55E, 0x0A0A0A, 0xEF4444, 0x737373]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,7 +63,7 @@ struct ProfilesView: View {
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 12).frame(height: 26)
-        .background(Capsule().fill(Color(hex: 0x202020)))
+        .background(Capsule().fill(Theme.accent))
     }
 
     private func profileRow(_ p: AuthProfileInfo, color: Color) -> some View {

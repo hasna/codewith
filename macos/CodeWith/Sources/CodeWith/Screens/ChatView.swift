@@ -85,7 +85,7 @@ struct ChatView: View {
             HStack { Spacer()
                 Text(m.text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0xEDEDEF)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Theme.controlFill))
             }
             .padding(.bottom, 16)
         case .assistant:

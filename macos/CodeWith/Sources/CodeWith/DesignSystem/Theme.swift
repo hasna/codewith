@@ -1,40 +1,28 @@
 import SwiftUI
 
-/// Design tokens for CodeWith — a Codex-parity macOS app using the macOS 26
-/// "Liquid Glass" design language. Values are tuned against the reference
-/// screenshots (light theme).
+/// Design tokens for Codewith, mapped to the neutral Hasna/Open dashboard
+/// references found locally: white card surfaces, near-black primary controls,
+/// low-contrast gray chrome, and 10px-radius controls.
 enum Theme {
     // MARK: Palette (light)
-    /// App window background — the main detail canvas is pure white.
     static let canvas = Color.white
-    /// Sidebar background — sampled from the reference (#EFEFEF over desktop glass).
-    static let sidebar = Color(hex: 0xEFEFEF)
-    /// Hairline separators.
-    static let separator = Color(nsColor: NSColor(calibratedWhite: 0.0, alpha: 0.08))
-    /// Primary text.
-    static let textPrimary = Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1.0))
-    /// Secondary / muted text.
-    static let textSecondary = Color(nsColor: NSColor(calibratedWhite: 0.42, alpha: 1.0))
-    /// Tertiary / very muted (timestamps, placeholders).
-    static let textTertiary = Color(nsColor: NSColor(calibratedWhite: 0.62, alpha: 1.0))
-    /// Accent — the indigo/violet used by the brand mark & primary actions.
-    static let accent = Color(red: 0.36, green: 0.34, blue: 0.92)
-    /// Toggle / control "on" blue (Codex uses Apple's system blue, not the brand violet).
-    static let toggleBlue = Color(hex: 0x0A84FF)
-    /// Warning red-orange used by "Full access" (sampled from the reference, #D3642F).
-    static let warning = Color(hex: 0xD3642F)
-    /// Success green.
-    static let success = Color(red: 0.18, green: 0.62, blue: 0.34)
-    /// Danger red.
-    static let danger = Color(red: 0.84, green: 0.22, blue: 0.20)
+    static let sidebar = Color(hex: 0xFAFAFA)
+    static let separator = Color(hex: 0xE5E5E5)
+    static let textPrimary = Color(hex: 0x171717)
+    static let textSecondary = Color(hex: 0x737373)
+    static let textTertiary = Color(hex: 0xA3A3A3)
+    static let accent = Color(hex: 0x0A0A0A)
+    static let toggleBlue = Color(hex: 0x0A0A0A)
+    static let warning = Color(hex: 0xF97316)
+    static let success = Color(hex: 0x22C55E)
+    static let danger = Color(hex: 0xEF4444)
 
-    /// Hover / selected row fill in the sidebar.
-    static let rowSelected = Color(nsColor: NSColor(calibratedWhite: 0.0, alpha: 0.06))
-    static let rowHover = Color(nsColor: NSColor(calibratedWhite: 0.0, alpha: 0.035))
+    static let rowSelected = Color(hex: 0xF5F5F5)
+    static let rowHover = Color(hex: 0xF5F5F5)
 
-    /// Subtle field/card fills.
-    static let fieldFill = Color(nsColor: NSColor(calibratedWhite: 0.97, alpha: 1.0))
-    static let cardStroke = Color(nsColor: NSColor(calibratedWhite: 0.0, alpha: 0.07))
+    static let fieldFill = Color.white
+    static let controlFill = Color(hex: 0xF5F5F5)
+    static let cardStroke = Color(hex: 0xE5E5E5)
 
     // MARK: Typography
     static func font(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
@@ -48,8 +36,8 @@ enum Theme {
 
     // MARK: Metrics
     static let sidebarWidth: CGFloat = 215
-    static let rowRadius: CGFloat = 7
-    static let cardRadius: CGFloat = 12
+    static let rowRadius: CGFloat = 8
+    static let cardRadius: CGFloat = 10
     static let windowRadius: CGFloat = 12
 }
 

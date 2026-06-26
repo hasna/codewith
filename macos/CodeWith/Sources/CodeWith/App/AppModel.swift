@@ -125,7 +125,7 @@ final class AppModel {
 
     // Navigation / UI
     var route: Route = .home
-    var sidebarSelection = "New chat"
+    var sidebarSelection = "Home"
     var showSettings = false
     var settingsPage = "General"
     var composerText = ""
