@@ -107,7 +107,7 @@ SELECT
     created_at_ms
 FROM thread_mailbox_receipts
 WHERE message_id = ?
-ORDER BY created_at_ms ASC, receipt_id ASC
+ORDER BY created_at_ms ASC, rowid ASC
 "#,
     )
     .bind(message_id)
