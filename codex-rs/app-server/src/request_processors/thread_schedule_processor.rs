@@ -296,10 +296,7 @@ impl ThreadScheduleRequestProcessor {
                     return None;
                 }
             };
-        thread_schedule_runtime::schedule_resume_auth_profile(
-            /*schedule_auth_profile*/ None,
-            &initial_history,
-        )
+        initial_history.get_auth_profile()
     }
 
     async fn thread_schedule_list_inner(

@@ -814,6 +814,73 @@ WHERE schedule_id = ? AND lease_id = ?
         .await
     }
 
+    pub async fn defer_thread_schedule_run(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        next_run_at: DateTime<Utc>,
+        error: String,
+    ) -> anyhow::Result<bool> {
+        let completed_at_ms = datetime_to_epoch_millis(completed_at);
+        let requested_next_run_at_ms = datetime_to_epoch_millis(next_run_at);
+        let mut tx = self.pool.begin().await?;
+        let schedule_result = sqlx::query(
+            r#"
+UPDATE thread_schedules
+SET
+    status = CASE
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN 'expired'
+        ELSE status
+    END,
+    lease_id = NULL,
+    lease_expires_at_ms = NULL,
+    last_run_at_ms = ?,
+    next_run_at_ms = CASE
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN NULL
+        ELSE ?
+    END,
+    updated_at_ms = ?
+WHERE schedule_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(requested_next_run_at_ms)
+        .bind(completed_at_ms)
+        .bind(requested_next_run_at_ms)
+        .bind(requested_next_run_at_ms)
+        .bind(completed_at_ms)
+        .bind(schedule_id)
+        .bind(lease_id)
+        .execute(&mut *tx)
+        .await?;
+        if schedule_result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let run_result = sqlx::query(
+            r#"
+UPDATE thread_schedule_runs
+SET status = ?, error = ?, completed_at_ms = ?
+WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(crate::ThreadScheduleRunStatus::Failed.as_str())
+        .bind(error)
+        .bind(completed_at_ms)
+        .bind(schedule_id)
+        .bind(run_id)
+        .bind(lease_id)
+        .execute(&mut *tx)
+        .await?;
+        if run_result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn expire_thread_schedules(&self, now: DateTime<Utc>) -> anyhow::Result<u64> {
         let now_ms = datetime_to_epoch_millis(now);
         let result = sqlx::query(
@@ -2211,6 +2278,74 @@ mod tests {
                 ..after_failure
             },
             resumed
+        );
+    }
+
+    #[tokio::test]
+    async fn defer_thread_schedule_run_rearms_without_incrementing_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 16);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "wait for usage", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-wait", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = now + chrono::Duration::seconds(5);
+        let retry_at = now + chrono::Duration::minutes(20);
+        let error = "all eligible auth profiles are exhausted".to_string();
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .defer_thread_schedule_run(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-wait",
+                    completed_at,
+                    retry_at,
+                    error.clone(),
+                )
+                .await
+                .expect("run should defer")
+        );
+
+        let deferred = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(retry_at),
+                last_run_at: Some(completed_at),
+                failure_count: 0,
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: deferred.updated_at,
+                ..schedule
+            },
+            deferred
+        );
+        let run_id = claim.run.run_id.clone();
+        assert_eq!(
+            Some(crate::ThreadScheduleRun {
+                status: crate::ThreadScheduleRunStatus::Failed,
+                error: Some(error),
+                completed_at: Some(completed_at),
+                ..claim.run
+            }),
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_run(&run_id)
+                .await
+                .expect("run should load")
         );
     }
 
