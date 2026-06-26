@@ -16,6 +16,7 @@ const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_SCHEDULE_EXPIRATION_DAYS: i64 = 7;
 const MAX_SCHEDULE_RUN_ERROR_CHARS: usize = 1_000;
 const SCHEDULE_IDLE_RETRY_DELAY_SECONDS: i64 = 30;
+const SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub(crate) struct ThreadScheduleRuntime {
@@ -131,11 +132,18 @@ impl ThreadScheduleRuntime {
         {
             warn!("failed to expire thread schedules: {err}");
         }
+        let local_active_fresh_after = schedule_local_active_fresh_after(now);
         for _ in 0..MAX_SCHEDULE_CLAIMS_PER_TICK {
             let lease_id = Uuid::new_v4().to_string();
             let claim = match state_db
                 .thread_schedules()
-                .claim_due_thread_schedule(now, lease_id.as_str(), SCHEDULE_LEASE_DURATION)
+                .claim_due_thread_schedule_with_params(codex_state::ThreadScheduleDueClaimParams {
+                    now,
+                    lease_id: lease_id.as_str(),
+                    lease_duration: SCHEDULE_LEASE_DURATION,
+                    local_active_owner_id: Some(self.local_active_owner_id.as_str()),
+                    local_active_fresh_after: Some(local_active_fresh_after),
+                })
                 .await
             {
                 Ok(Some(claim)) => claim,
@@ -857,6 +865,16 @@ fn schedule_broker_retry_at_datetime(
     let buffer_secs = i64::try_from(reset_retry_buffer_secs).ok()?;
     let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
     (retry_at > now).then_some(retry_at)
+}
+
+fn schedule_local_active_fresh_after(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - ChronoDuration::seconds(duration_seconds_i64(
+        SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER,
+    ))
+}
+
+fn duration_seconds_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 async fn finish_scheduled_run_state(

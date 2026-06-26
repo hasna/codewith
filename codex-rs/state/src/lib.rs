@@ -200,6 +200,7 @@ pub use runtime::ThreadMonitorEventCreateParams;
 pub use runtime::ThreadMonitorUpdate;
 pub use runtime::ThreadScheduleClaim;
 pub use runtime::ThreadScheduleCreateParams;
+pub use runtime::ThreadScheduleDueClaimParams;
 pub use runtime::ThreadScheduleUpdate;
 pub use runtime::WorkflowGoalPlanProjectionOutcome;
 pub use runtime::WorkflowGoalPlanProjectionParams;

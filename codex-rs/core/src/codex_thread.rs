@@ -332,6 +332,11 @@ impl CodexThread {
     }
 
     #[doc(hidden)]
+    pub async fn try_ensure_rollout_materialized(&self) -> std::io::Result<()> {
+        self.codex.session.try_ensure_rollout_materialized().await
+    }
+
+    #[doc(hidden)]
     pub async fn flush_rollout(&self) -> std::io::Result<()> {
         self.codex.session.flush_rollout().await
     }

@@ -68,6 +68,7 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db::StateDbHandle;
 use pretty_assertions::assert_eq;
@@ -1443,6 +1444,62 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
                     .contains("Produce exactly one visible final response for this scheduled run")
                 && body.contains("summarize the latest test status")),
             "scheduled prompt should be wrapped as a fresh visible scheduled run: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn schedule_create_materializes_fresh_thread_rollout_before_first_user_turn() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let _: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "future loop should be resumable".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp() + 3_600),
+                    expires_at: Some(Utc::now().timestamp() + 86_400),
+                },
+            })
+            .await;
+
+        let rollout_path = codex_rollout::find_thread_path_by_id_str(
+            harness._codex_home.path(),
+            &thread_id,
+            Option::<&codex_state::StateRuntime>::None,
+        )
+        .await?
+        .expect("fresh scheduled thread should have a materialized rollout");
+        assert!(
+            rollout_path.exists(),
+            "materialized rollout path should exist: {}",
+            rollout_path.display()
+        );
+        let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        assert_eq!(
+            Some(harness.workspace.path().to_path_buf()),
+            history.session_cwd()
+        );
+        assert!(
+            history.scan_rollout_items(|item| matches!(
+                item,
+                RolloutItem::SessionMeta(meta) if meta.meta.id.to_string() == thread_id
+            )),
+            "materialized rollout should contain session metadata for {thread_id}"
         );
 
         harness.shutdown().await;

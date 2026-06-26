@@ -608,11 +608,27 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         let running_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let rollout_path = match running_thread.as_ref() {
-            Some(thread) => thread.rollout_path().ok_or_else(|| {
-                invalid_request(format!(
-                    "ephemeral thread does not support scheduled tasks: {thread_id}"
-                ))
-            })?,
+            Some(thread) => {
+                let rollout_path = thread.rollout_path().ok_or_else(|| {
+                    invalid_request(format!(
+                        "ephemeral thread does not support scheduled tasks: {thread_id}"
+                    ))
+                })?;
+                thread
+                    .try_ensure_rollout_materialized()
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to materialize thread rollout before scheduling: {err}"
+                        ))
+                    })?;
+                thread.flush_rollout().await.map_err(|err| {
+                    internal_error(format!(
+                        "failed to flush thread rollout before scheduling: {err}"
+                    ))
+                })?;
+                rollout_path
+            }
             None => codex_rollout::find_thread_path_by_id_str(
                 &self.config.codex_home,
                 &thread_id.to_string(),
