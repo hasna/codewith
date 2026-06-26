@@ -1,6 +1,7 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+use crate::codex_thread::TryStartUserInputTurnIfIdleError;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::test_config;
@@ -202,6 +203,36 @@ fn assistant_message(text: &str) -> ResponseItem {
         }],
         phase: None,
     }
+}
+
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_call_output(call_id: &str, output: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text(output.to_string()),
+    }
+}
+
+fn function_call_output_text<'a>(items: &'a [ResponseItem], call_id: &str) -> &'a str {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: item_call_id,
+                output,
+            } if item_call_id == call_id => output.text_content(),
+            _ => None,
+        })
+        .expect("function output should exist")
 }
 
 fn test_session_telemetry_without_metadata() -> SessionTelemetry {
@@ -2731,6 +2762,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        session_prompt: None,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -3381,6 +3413,7 @@ async fn set_rate_limits_retains_previous_credits() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -3489,6 +3522,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -3809,6 +3843,17 @@ async fn build_test_config(codex_home: &Path) -> Config {
         .build()
         .await
         .expect("load default test config")
+}
+
+fn api_key_auth_dot_json_for_tests(api_key: &str) -> codex_login::AuthDotJson {
+    codex_login::AuthDotJson {
+        auth_mode: Some(codex_app_server_protocol::AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+    }
 }
 
 fn session_telemetry(
@@ -4386,6 +4431,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5179,6 +5225,101 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
 }
 
 #[tokio::test]
+async fn user_input_auth_profile_override_switches_auth_manager() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    assert_eq!(None, session.services.auth_manager.selected_auth_profile());
+
+    session
+        .new_turn_with_sub_id(
+            "auth-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("work"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(
+        Some("work-key"),
+        session
+            .services
+            .auth_manager
+            .auth_cached()
+            .expect("work auth should be cached")
+            .api_key()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_input_external_subscription_profile_override_updates_selection_without_openai_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "claude",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+
+    let turn_context = session
+        .new_turn_with_sub_id(
+            "external-profile-turn".to_string(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("claude".to_string())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        Some("claude"),
+        turn_context.config.selected_auth_profile.as_deref()
+    );
+    assert_eq!(
+        Some("claude"),
+        session
+            .services
+            .auth_manager
+            .selected_auth_profile()
+            .as_deref()
+    );
+    assert_eq!(None, session.services.auth_manager.auth_cached());
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let mut config = build_test_config(codex_home.path()).await;
@@ -5211,6 +5352,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5328,6 +5470,7 @@ async fn make_session_and_context_with_events()
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5574,6 +5717,7 @@ async fn make_session_with_config_and_rx(
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5679,6 +5823,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -7386,7 +7531,8 @@ where
     let state_db = None;
     let config = Arc::new(config);
     let thread_id = ThreadId::default();
-    let auth_manager = AuthManager::from_auth_for_testing(auth);
+    let auth_manager =
+        AuthManager::from_auth_for_testing_with_home(auth, config.codex_home.to_path_buf());
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
         auth_manager.clone(),
@@ -7416,6 +7562,7 @@ where
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -7889,6 +8036,56 @@ async fn build_settings_update_items_emits_realtime_start_when_session_becomes_l
             .iter()
             .any(|text| text.contains("<realtime_conversation>")),
         "expected a realtime start update, got {developer_texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn build_settings_update_items_emits_session_prompt_set_and_clear() {
+    let (session, previous_context) = make_session_and_context().await;
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.session_prompt = Some("Prefer short diffs.".to_string());
+
+    let update_items = session
+        .build_settings_update_items(
+            Some(&previous_context.to_turn_context_item()),
+            &current_context,
+        )
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        developer_texts.iter().any(|text| {
+            text.contains("<session_prompt>")
+                && text.contains("Prefer short diffs.")
+                && text.contains("</session_prompt>")
+        }),
+        "expected session prompt set update, got {developer_texts:?}"
+    );
+
+    let previous_context_item = current_context.to_turn_context_item();
+    let mut cleared_context = current_context
+        .with_model(
+            current_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    cleared_context.session_prompt = None;
+    let update_items = session
+        .build_settings_update_items(Some(&previous_context_item), &cleared_context)
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        developer_texts.iter().any(|text| {
+            text.contains("<session_prompt>")
+                && text.contains("Ignore any earlier session-scoped extra prompt instructions")
+        }),
+        "expected session prompt clear update, got {developer_texts:?}"
     );
 }
 
@@ -9498,6 +9695,107 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
 }
 
 #[tokio::test]
+async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let call_id = "goal-headless-output";
+    let long_output = "goal continuation historical stdout\n".repeat(2_500);
+    sess.replace_history(
+        vec![
+            function_call(call_id),
+            function_call_output(call_id, &long_output),
+        ],
+        None,
+    )
+    .await;
+
+    sess.try_start_turn_if_idle(vec![user_message("continue active goal")])
+        .await
+        .expect("idle goal continuation should start");
+    let prompt = sess
+        .clone_history()
+        .await
+        .for_prompt(&tc.model_info.input_modalities);
+    let output = function_call_output_text(&prompt, call_id);
+    assert_ne!(long_output, output);
+    assert!(
+        output.contains("tokens truncated"),
+        "expected historical output to be truncated: {output}"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let call_id = "scheduled-headless-output";
+    let long_output = "scheduled run historical web output\n".repeat(2_500);
+    sess.replace_history(
+        vec![
+            function_call(call_id),
+            function_call_output(call_id, &long_output),
+        ],
+        None,
+    )
+    .await;
+
+    sess.try_start_user_input_turn_if_idle(
+        "scheduled-turn".to_string(),
+        vec![UserInput::Text {
+            text: "run scheduled prompt".to_string(),
+            text_elements: Vec::new(),
+        }],
+        Default::default(),
+        SessionSettingsUpdate::default(),
+    )
+    .await
+    .expect("idle scheduled turn should start");
+    let prompt = sess
+        .clone_history()
+        .await
+        .for_prompt(&tc.model_info.input_modalities);
+    let output = function_call_output_text(&prompt, call_id);
+    assert_ne!(long_output, output);
+    assert!(
+        output.contains("tokens truncated"),
+        "expected historical output to be truncated: {output}"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_plan_mode_update_without_mutating() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    assert_eq!(ModeKind::Default, collaboration_mode.mode);
+    collaboration_mode.mode = ModeKind::Plan;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-plan-turn".to_string(),
+            vec![UserInput::Text {
+                text: "run scheduled prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("plan-mode scheduled turn update should be rejected");
+
+    assert_eq!(
+        Some(TryStartTurnIfIdleRejectionReason::PlanMode),
+        err.reason()
+    );
+    assert!(sess.active_turn.lock().await.is_none());
+    assert_eq!(ModeKind::Default, sess.collaboration_mode().await.mode);
+}
+
+#[tokio::test]
 async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.spawn_task(
@@ -9524,6 +9822,71 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_active_turn_without_switching_auth()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (sess, tc, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-turn".to_string(),
+            vec![UserInput::Text {
+                text: "scheduled".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("active turn should reject scheduled idle-only input");
+
+    assert!(matches!(
+        err,
+        TryStartUserInputTurnIfIdleError::Rejected(TryStartTurnIfIdleRejectionReason::Busy)
+    ));
+    assert_eq!(None, sess.services.auth_manager.selected_auth_profile());
+    assert_eq!(
+        Some("root-key"),
+        sess.services
+            .auth_manager
+            .auth_cached()
+            .expect("root auth should remain cached")
+            .api_key()
+    );
+    assert_eq!(
+        Vec::<TurnInput>::new(),
+        sess.input_queue.get_pending_input(&sess.active_turn).await
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    Ok(())
 }
 
 #[tokio::test]

@@ -1736,6 +1736,12 @@ impl MessageProcessor {
             ClientRequest::CancelLoginAccount { params, .. } => {
                 self.account_processor.cancel_login_account(params).await
             }
+            ClientRequest::AuthProfileList { params, .. } => {
+                self.account_processor.list_auth_profiles(params).await
+            }
+            ClientRequest::AuthProfileSwitch { params, .. } => {
+                self.account_processor.switch_auth_profile(params).await
+            }
             ClientRequest::GetAccount { params, .. } => {
                 self.account_processor.get_account(params).await
             }

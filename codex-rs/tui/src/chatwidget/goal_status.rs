@@ -76,6 +76,7 @@ pub(super) fn goal_status_indicator_from_app_goal(
         AppThreadGoalStatus::Paused => Some(GoalStatusIndicator::Paused),
         AppThreadGoalStatus::Blocked => Some(GoalStatusIndicator::Blocked),
         AppThreadGoalStatus::UsageLimited => Some(GoalStatusIndicator::UsageLimited),
+        AppThreadGoalStatus::Deferred => Some(GoalStatusIndicator::Deferred),
         AppThreadGoalStatus::BudgetLimited => Some(GoalStatusIndicator::BudgetLimited {
             usage: stopped_goal_budget_usage(goal.token_budget, goal.tokens_used),
         }),
@@ -386,6 +387,7 @@ mod tests {
             ready_node_count: 0,
             active_node_count: count_status(ThreadGoalPlanNodeStatus::Active),
             pending_node_count: count_status(ThreadGoalPlanNodeStatus::Pending),
+            deferred_node_count: count_status(ThreadGoalPlanNodeStatus::Deferred),
             paused_node_count: 0,
             blocked_node_count: 0,
             usage_limited_node_count: 0,

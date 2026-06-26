@@ -32,6 +32,7 @@ use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 use tempfile::TempDir;
@@ -379,6 +380,70 @@ async fn mission_control_respond_interaction_dry_run_validates_without_mutating(
     assert_eq!(
         applied.interaction.as_ref().map(|item| item.status),
         Some(ThreadPendingInteractionStatus::Responded)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mission_control_respond_interaction_dry_run_rejects_status_payload_mismatch() -> Result<()>
+{
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
+    state_db
+        .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
+            interaction_id: "interaction-status-mismatch".to_string(),
+            thread_id: parsed_thread_id,
+            source_kind: codex_state::PendingInteractionSourceKind::Thread,
+            source_id: None,
+            turn_id: Some("turn-1".to_string()),
+            worker_request_id: Some("worker-1".to_string()),
+            server_request_id_json: None,
+            kind: codex_state::PendingInteractionKind::UserInput,
+            request_payload_json: json!({ "questions": [] }),
+            request_payload_preview: "question".to_string(),
+            request_redactions_json: json!([]),
+            no_client_policy: "persist".to_string(),
+            timeout_at: None,
+        })
+        .await?;
+
+    let request_id = mcp
+        .send_mission_control_respond_interaction_request(MissionControlRespondInteractionParams {
+            interaction_id: "interaction-status-mismatch".to_string(),
+            thread_id: Some(thread_id),
+            terminal_status: ThreadPendingInteractionTerminalStatus::Denied,
+            response: ThreadPendingInteractionResponsePayload::RequestUserInput {
+                answers: HashMap::new(),
+            },
+            dry_run: true,
+        })
+        .await?;
+    let err = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert!(
+        err.error.message.contains(
+            "pending interaction terminalStatus must be responded for this response payload"
+        ),
+        "{err:?}"
+    );
+
+    let stored = state_db
+        .get_thread_pending_interaction("interaction-status-mismatch")
+        .await?
+        .expect("pending interaction should remain");
+    assert_eq!(
+        stored.status,
+        codex_state::PendingInteractionStatus::Pending
     );
     Ok(())
 }

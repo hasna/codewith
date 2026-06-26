@@ -458,6 +458,12 @@ pub struct ThreadSettingsOverrides {
     /// Takes precedence over model, effort, and developer instructions if set.
     pub collaboration_mode: Option<CollaborationMode>,
 
+    /// Session-scoped extra prompt for future turns.
+    ///
+    /// Use `Some(Some(_))` to set a prompt, `Some(None)` to clear it, or `None`
+    /// to leave the current prompt unchanged.
+    pub session_prompt: Option<Option<String>>,
+
     /// Updated personality preference.
     pub personality: Option<Personality>,
 }
@@ -1947,6 +1953,9 @@ pub struct ThreadSettingsSnapshot {
     pub collaboration_mode: CollaborationMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub session_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub selected_auth_profile: Option<String>,
 }
 
@@ -2991,6 +3000,8 @@ pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collaboration_mode: Option<CollaborationMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Auth profile selected for model requests in this turn.
     ///
@@ -3724,6 +3735,7 @@ pub enum ThreadGoalStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -3844,6 +3856,7 @@ pub enum ThreadGoalPlanNodeStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -3899,6 +3912,7 @@ pub struct ThreadGoalPlan {
     pub blocked_node_count: i64,
     pub usage_limited_node_count: i64,
     pub budget_limited_node_count: i64,
+    pub deferred_node_count: i64,
     pub cancelled_node_count: i64,
     pub created_at: i64,
     pub updated_at: i64,

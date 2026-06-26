@@ -547,6 +547,7 @@ pub(super) fn api_thread_goal_plan_from_state(
         blocked_node_count: summary.blocked_node_count,
         usage_limited_node_count: summary.usage_limited_node_count,
         budget_limited_node_count: summary.budget_limited_node_count,
+        deferred_node_count: summary.deferred_node_count,
         cancelled_node_count: summary.cancelled_node_count,
         created_at: snapshot.plan.created_at.timestamp(),
         updated_at: snapshot.plan.updated_at.timestamp(),
@@ -592,6 +593,7 @@ fn api_thread_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> T
         codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Deferred => ThreadGoalStatus::Deferred,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
         codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
@@ -634,6 +636,7 @@ fn api_thread_goal_plan_node_status_from_state(
         codex_state::ThreadGoalPlanNodeStatus::BudgetLimited => {
             ThreadGoalPlanNodeStatus::BudgetLimited
         }
+        codex_state::ThreadGoalPlanNodeStatus::Deferred => ThreadGoalPlanNodeStatus::Deferred,
         codex_state::ThreadGoalPlanNodeStatus::Complete => ThreadGoalPlanNodeStatus::Complete,
         codex_state::ThreadGoalPlanNodeStatus::Cancelled => ThreadGoalPlanNodeStatus::Cancelled,
     }

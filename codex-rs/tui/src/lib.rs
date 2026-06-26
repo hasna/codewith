@@ -125,6 +125,7 @@ mod common_config_options;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
+mod pull_request_summary;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
@@ -364,9 +365,7 @@ async fn init_state_db_for_app_server_target(
                 err.to_string(),
             ))
         }),
-        AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
-            Ok(state_db::get_state_db(config).await)
-        }
+        AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => Ok(None),
     }
 }
 
@@ -3211,7 +3210,7 @@ mod tests {
         assert!(
             startup_error
                 .detail()
-                .contains("failed to initialize state runtime"),
+                .contains("failed to acquire state runtime startup lock"),
             "startup error should preserve the underlying state db failure"
         );
         Ok(())

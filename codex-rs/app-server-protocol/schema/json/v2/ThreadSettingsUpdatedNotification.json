@@ -340,6 +340,12 @@
             "null"
           ]
         },
+        "sessionPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "summary": {
           "anyOf": [
             {

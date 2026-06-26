@@ -3,6 +3,9 @@ use crate::model::ThreadScheduleRow;
 use crate::model::ThreadScheduleRunRow;
 use uuid::Uuid;
 
+pub const MAX_THREAD_SCHEDULE_NESTING_DEPTH: i64 = 3;
+const DYNAMIC_LOOP_CADENCE_SECONDS: i64 = 60;
+
 #[derive(Clone)]
 pub struct ScheduleStore {
     pool: Arc<SqlitePool>,
@@ -41,13 +44,20 @@ pub struct ThreadScheduleClaim {
     pub run: crate::ThreadScheduleRun,
 }
 
+struct ScheduleNesting {
+    parent_schedule_id: Option<String>,
+    nesting_depth: i64,
+}
+
 impl ScheduleStore {
     pub async fn create_thread_schedule(
         &self,
         params: ThreadScheduleCreateParams,
     ) -> anyhow::Result<crate::ThreadSchedule> {
-        self.create_thread_schedule_with_recorded_auth_profile(params, None)
-            .await
+        self.create_thread_schedule_with_recorded_auth_profile(
+            params, /*parent_schedule_id*/ None, /*auth_profile*/ None,
+        )
+        .await
     }
 
     pub async fn create_thread_schedule_for_auth_profile(
@@ -55,15 +65,50 @@ impl ScheduleStore {
         params: ThreadScheduleCreateParams,
         auth_profile: Option<String>,
     ) -> anyhow::Result<crate::ThreadSchedule> {
-        self.create_thread_schedule_with_recorded_auth_profile(params, Some(auth_profile))
-            .await
+        self.create_thread_schedule_with_recorded_auth_profile(
+            params,
+            /*parent_schedule_id*/ None,
+            Some(auth_profile),
+        )
+        .await
+    }
+
+    pub async fn create_nested_thread_schedule(
+        &self,
+        params: ThreadScheduleCreateParams,
+        parent_schedule_id: String,
+    ) -> anyhow::Result<crate::ThreadSchedule> {
+        self.create_thread_schedule_with_recorded_auth_profile(
+            params,
+            Some(parent_schedule_id),
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_nested_thread_schedule_for_auth_profile(
+        &self,
+        params: ThreadScheduleCreateParams,
+        parent_schedule_id: String,
+        auth_profile: Option<String>,
+    ) -> anyhow::Result<crate::ThreadSchedule> {
+        self.create_thread_schedule_with_recorded_auth_profile(
+            params,
+            Some(parent_schedule_id),
+            Some(auth_profile),
+        )
+        .await
     }
 
     async fn create_thread_schedule_with_recorded_auth_profile(
         &self,
         params: ThreadScheduleCreateParams,
+        parent_schedule_id: Option<String>,
         auth_profile: Option<Option<String>>,
     ) -> anyhow::Result<crate::ThreadSchedule> {
+        let nesting = self
+            .validate_schedule_create_nesting(&params, parent_schedule_id)
+            .await?;
         let schedule_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let spec = schedule_bindings(&params.schedule);
@@ -74,6 +119,8 @@ impl ScheduleStore {
 INSERT INTO thread_schedules (
     schedule_id,
     thread_id,
+    parent_schedule_id,
+    nesting_depth,
     prompt_source,
     prompt,
     schedule_kind,
@@ -88,13 +135,15 @@ INSERT INTO thread_schedules (
     expires_at_ms,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
 "#,
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(schedule_id)
             .bind(params.thread_id.to_string())
+            .bind(nesting.parent_schedule_id)
+            .bind(nesting.nesting_depth)
             .bind(params.prompt_source.as_str())
             .bind(params.prompt)
             .bind(spec.kind)
@@ -139,6 +188,8 @@ SELECT
 SELECT
     schedule_id,
     thread_id,
+    parent_schedule_id,
+    nesting_depth,
     prompt_source,
     prompt,
     schedule_kind,
@@ -176,10 +227,20 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let Some(existing) = self.get_thread_schedule(schedule_id).await? else {
             return Ok(None);
         };
+        if let Some(schedule) = update
+            .schedule
+            .as_ref()
+            .filter(|schedule| *schedule != &existing.schedule)
+        {
+            self.validate_schedule_update_nesting(&existing, schedule)
+                .await?;
+        }
         let prompt = update.prompt.unwrap_or(existing.prompt);
         let prompt_source = update.prompt_source.unwrap_or(existing.prompt_source);
         let schedule = update.schedule.unwrap_or(existing.schedule);
         let timezone = update.timezone.unwrap_or(existing.timezone);
+        let reset_failure_count =
+            matches!(update.status, Some(crate::ThreadScheduleStatus::Active));
         let status = update.status.unwrap_or(existing.status);
         let next_run_at = update.next_run_at.unwrap_or(existing.next_run_at);
         let expires_at = update.expires_at.unwrap_or(existing.expires_at);
@@ -198,6 +259,7 @@ SET
     status = ?,
     next_run_at_ms = ?,
     expires_at_ms = ?,
+    failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,
     updated_at_ms = ?
 WHERE schedule_id = ?
 RETURNING
@@ -214,6 +276,7 @@ RETURNING
             .bind(status.as_str())
             .bind(next_run_at.map(datetime_to_epoch_millis))
             .bind(expires_at.map(datetime_to_epoch_millis))
+            .bind(reset_failure_count)
             .bind(datetime_to_epoch_millis(Utc::now()))
             .bind(schedule_id)
             .fetch_optional(self.pool.as_ref())
@@ -241,12 +304,100 @@ RETURNING
         .await
     }
 
-    pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM thread_schedules WHERE schedule_id = ?")
+    pub async fn resume_thread_schedule(
+        &self,
+        schedule_id: &str,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        self.resume_thread_schedule_with_next_run_at(schedule_id, None)
+            .await
+    }
+
+    pub async fn resume_thread_schedule_at(
+        &self,
+        schedule_id: &str,
+        next_run_at: DateTime<Utc>,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        self.resume_thread_schedule_with_next_run_at(schedule_id, Some(next_run_at))
+            .await
+    }
+
+    async fn resume_thread_schedule_with_next_run_at(
+        &self,
+        schedule_id: &str,
+        next_run_at: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Option<crate::ThreadSchedule>> {
+        let sql = schedule_returning(
+            r#"
+UPDATE thread_schedules
+SET
+    status = ?,
+    next_run_at_ms = COALESCE(?, next_run_at_ms),
+    failure_count = 0,
+    updated_at_ms = ?
+WHERE schedule_id = ?
+RETURNING
+"#,
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(crate::ThreadScheduleStatus::Active.as_str())
+            .bind(next_run_at.map(datetime_to_epoch_millis))
+            .bind(datetime_to_epoch_millis(Utc::now()))
             .bind(schedule_id)
-            .execute(self.pool.as_ref())
+            .fetch_optional(self.pool.as_ref())
             .await?;
+        row.map(|row| thread_schedule_from_row(&row)).transpose()
+    }
+
+    pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+WITH RECURSIVE schedule_tree(schedule_id) AS (
+    SELECT schedule_id
+    FROM thread_schedules
+    WHERE schedule_id = ?
+    UNION ALL
+    SELECT child.schedule_id
+    FROM thread_schedules AS child
+    JOIN schedule_tree AS parent ON child.parent_schedule_id = parent.schedule_id
+)
+DELETE FROM thread_schedules
+WHERE schedule_id IN (SELECT schedule_id FROM schedule_tree)
+            "#,
+        )
+        .bind(schedule_id)
+        .execute(self.pool.as_ref())
+        .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_thread_schedule_tree_ids(
+        &self,
+        schedule_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query(
+            r#"
+WITH RECURSIVE schedule_tree(schedule_id, depth, created_at_ms) AS (
+    SELECT schedule_id, 0, created_at_ms
+    FROM thread_schedules
+    WHERE schedule_id = ?
+    UNION ALL
+    SELECT child.schedule_id, parent.depth + 1, child.created_at_ms
+    FROM thread_schedules AS child
+    JOIN schedule_tree AS parent ON child.parent_schedule_id = parent.schedule_id
+)
+SELECT schedule_id
+FROM schedule_tree
+ORDER BY depth, created_at_ms, schedule_id
+            "#,
+        )
+        .bind(schedule_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        let ids = rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("schedule_id"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
     }
 
     pub async fn delete_thread_schedules_for_thread(
@@ -258,6 +409,103 @@ RETURNING
             .execute(self.pool.as_ref())
             .await?;
         Ok(result.rows_affected())
+    }
+
+    async fn validate_schedule_create_nesting(
+        &self,
+        params: &ThreadScheduleCreateParams,
+        parent_schedule_id: Option<String>,
+    ) -> anyhow::Result<ScheduleNesting> {
+        let Some(parent_schedule_id) = parent_schedule_id else {
+            return Ok(ScheduleNesting {
+                parent_schedule_id: None,
+                nesting_depth: 1,
+            });
+        };
+        let parent_schedule_id = parent_schedule_id.trim();
+        if parent_schedule_id.is_empty() {
+            anyhow::bail!("invalid nested loop: parent schedule id cannot be empty");
+        }
+        if matches!(params.schedule, crate::ThreadScheduleSpec::Once) {
+            anyhow::bail!("invalid nested loop: one-time schedules cannot be nested");
+        }
+        let parent = self
+            .get_thread_schedule(parent_schedule_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid nested loop: parent schedule not found: {parent_schedule_id}"
+                )
+            })?;
+        self.validate_parent_schedule(&parent, params.thread_id, &params.schedule)?;
+        Ok(ScheduleNesting {
+            parent_schedule_id: Some(parent.schedule_id),
+            nesting_depth: parent.nesting_depth + 1,
+        })
+    }
+
+    async fn validate_schedule_update_nesting(
+        &self,
+        existing: &crate::ThreadSchedule,
+        schedule: &crate::ThreadScheduleSpec,
+    ) -> anyhow::Result<()> {
+        if self
+            .has_child_thread_schedules(existing.schedule_id.as_str())
+            .await?
+        {
+            anyhow::bail!(
+                "invalid nested loop: cannot update loop cadence while it has nested child loops; update or clear child loops first"
+            );
+        }
+        let Some(parent_schedule_id) = existing.parent_schedule_id.as_deref() else {
+            return Ok(());
+        };
+        if matches!(schedule, crate::ThreadScheduleSpec::Once) {
+            anyhow::bail!("invalid nested loop: one-time schedules cannot be nested");
+        }
+        let parent = self
+            .get_thread_schedule(parent_schedule_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid nested loop: parent schedule not found: {parent_schedule_id}"
+                )
+            })?;
+        self.validate_parent_schedule(&parent, existing.thread_id, schedule)
+    }
+
+    fn validate_parent_schedule(
+        &self,
+        parent: &crate::ThreadSchedule,
+        thread_id: ThreadId,
+        child_schedule: &crate::ThreadScheduleSpec,
+    ) -> anyhow::Result<()> {
+        if parent.thread_id != thread_id {
+            anyhow::bail!("invalid nested loop: parent schedule must belong to the same thread");
+        }
+        if matches!(parent.schedule, crate::ThreadScheduleSpec::Once) {
+            anyhow::bail!("invalid nested loop: parent schedule must be recurring");
+        }
+        if parent.nesting_depth >= MAX_THREAD_SCHEDULE_NESTING_DEPTH {
+            anyhow::bail!(
+                "invalid nested loop: maximum nesting depth is {MAX_THREAD_SCHEDULE_NESTING_DEPTH}"
+            );
+        }
+        validate_nested_loop_cadence(&parent.schedule, child_schedule)
+    }
+
+    async fn has_child_thread_schedules(&self, schedule_id: &str) -> anyhow::Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)
+FROM thread_schedules
+WHERE parent_schedule_id = ?
+            "#,
+        )
+        .bind(schedule_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        Ok(count > 0)
     }
 
     pub async fn get_thread_schedule_run(
@@ -701,9 +949,56 @@ fn schedule_bindings(schedule: &crate::ThreadScheduleSpec) -> ScheduleBindings<'
     }
 }
 
+fn validate_nested_loop_cadence(
+    parent_schedule: &crate::ThreadScheduleSpec,
+    child_schedule: &crate::ThreadScheduleSpec,
+) -> anyhow::Result<()> {
+    let parent_seconds = recurring_loop_cadence_seconds(parent_schedule, "parent")?;
+    let child_seconds = recurring_loop_cadence_seconds(child_schedule, "child")?;
+    if child_seconds <= parent_seconds {
+        anyhow::bail!(
+            "invalid nested loop: child cadence must be slower than parent cadence (parent: {parent_seconds}s, child: {child_seconds}s)"
+        );
+    }
+    Ok(())
+}
+
+fn recurring_loop_cadence_seconds(
+    schedule: &crate::ThreadScheduleSpec,
+    role: &str,
+) -> anyhow::Result<i64> {
+    match schedule {
+        crate::ThreadScheduleSpec::Dynamic => Ok(DYNAMIC_LOOP_CADENCE_SECONDS),
+        crate::ThreadScheduleSpec::Interval(interval) => {
+            let unit_seconds = match interval.unit {
+                crate::ThreadScheduleIntervalUnit::Minutes => 60,
+                crate::ThreadScheduleIntervalUnit::Hours => 3_600,
+                crate::ThreadScheduleIntervalUnit::Days => 86_400,
+            };
+            interval
+                .amount
+                .checked_mul(unit_seconds)
+                .filter(|seconds| *seconds > 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("invalid nested loop: {role} interval cadence is invalid")
+                })
+        }
+        crate::ThreadScheduleSpec::Cron { .. } => {
+            anyhow::bail!(
+                "invalid nested loop: {role} cron schedules cannot be nested; use dynamic or interval cadence"
+            );
+        }
+        crate::ThreadScheduleSpec::Once => {
+            anyhow::bail!("invalid nested loop: {role} schedule must be recurring");
+        }
+    }
+}
+
 const SCHEDULE_COLUMNS: &str = r#"
     schedule_id,
     thread_id,
+    parent_schedule_id,
+    nesting_depth,
     prompt_source,
     prompt,
     schedule_kind,
@@ -806,6 +1101,16 @@ mod tests {
         prompt: &str,
         next_run_at: Option<DateTime<Utc>>,
     ) -> crate::ThreadSchedule {
+        create_interval_schedule_minutes(runtime, thread_id, prompt, 5, next_run_at).await
+    }
+
+    async fn create_interval_schedule_minutes(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+        prompt: &str,
+        minutes: i64,
+        next_run_at: Option<DateTime<Utc>>,
+    ) -> crate::ThreadSchedule {
         runtime
             .thread_schedules()
             .create_thread_schedule(ThreadScheduleCreateParams {
@@ -813,7 +1118,7 @@ mod tests {
                 prompt: prompt.to_string(),
                 prompt_source: crate::ThreadSchedulePromptSource::Inline,
                 schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
-                    amount: 5,
+                    amount: minutes,
                     unit: crate::ThreadScheduleIntervalUnit::Minutes,
                 }),
                 timezone: "UTC".to_string(),
@@ -842,6 +1147,8 @@ mod tests {
         let expected_created = crate::ThreadSchedule {
             thread_id,
             schedule_id: created.schedule_id.clone(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
             auth_profile: None,
             prompt: "summarize new alerts".to_string(),
             prompt_source: crate::ThreadSchedulePromptSource::Inline,
@@ -954,6 +1261,8 @@ mod tests {
             crate::ThreadSchedule {
                 thread_id,
                 schedule_id: created.schedule_id.clone(),
+                parent_schedule_id: None,
+                nesting_depth: 1,
                 auth_profile: None,
                 prompt: "ask one question".to_string(),
                 prompt_source: crate::ThreadSchedulePromptSource::Inline,
@@ -971,6 +1280,352 @@ mod tests {
             },
             created
         );
+    }
+
+    #[tokio::test]
+    async fn create_nested_thread_schedule_derives_parent_and_depth() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 16);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let parent =
+            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
+                .await;
+
+        let child = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "child loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 2,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(2)),
+                    expires_at: None,
+                },
+                parent.schedule_id.clone(),
+            )
+            .await
+            .expect("nested schedule should be created");
+        assert_eq!(Some(parent.schedule_id.clone()), child.parent_schedule_id);
+        assert_eq!(2, child.nesting_depth);
+
+        let grandchild = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "grandchild loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 3,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(3)),
+                    expires_at: None,
+                },
+                child.schedule_id.clone(),
+            )
+            .await
+            .expect("third-level schedule should be created");
+        assert_eq!(
+            Some(child.schedule_id.clone()),
+            grandchild.parent_schedule_id
+        );
+        assert_eq!(3, grandchild.nesting_depth);
+
+        let err = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "too deep".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 4,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(4)),
+                    expires_at: None,
+                },
+                grandchild.schedule_id.clone(),
+            )
+            .await
+            .expect_err("fourth-level nested schedule should be rejected");
+        assert!(
+            err.to_string().contains("maximum nesting depth is 3"),
+            "unexpected error: {err}"
+        );
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .delete_thread_schedule(&parent.schedule_id)
+                .await
+                .expect("parent delete should succeed")
+        );
+        assert_eq!(
+            None,
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&child.schedule_id)
+                .await
+                .expect("child lookup should succeed")
+        );
+        assert_eq!(
+            None,
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&grandchild.schedule_id)
+                .await
+                .expect("grandchild lookup should succeed")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_nested_thread_schedule_rejects_impractical_cadence() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let parent =
+            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
+                .await;
+
+        let err = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "same minute child".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Dynamic,
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(1)),
+                    expires_at: None,
+                },
+                parent.schedule_id,
+            )
+            .await
+            .expect_err("one-minute child under one-minute parent should be rejected");
+        assert!(
+            err.to_string()
+                .contains("child cadence must be slower than parent cadence"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_nested_thread_schedule_rejects_cron_cadences() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 18);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let cron_parent = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "cron parent".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Cron {
+                    expression: "*/5 * * * *".to_string(),
+                },
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now + chrono::Duration::minutes(5)),
+                expires_at: None,
+            })
+            .await
+            .expect("cron parent should be created");
+
+        let err = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "child".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 10,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(10)),
+                    expires_at: None,
+                },
+                cron_parent.schedule_id,
+            )
+            .await
+            .expect_err("cron parent should reject nested child loops");
+        assert!(
+            err.to_string()
+                .contains("parent cron schedules cannot be nested"),
+            "unexpected error: {err}"
+        );
+
+        let interval_parent =
+            create_interval_schedule_minutes(&runtime, thread_id, "interval parent", 5, Some(now))
+                .await;
+        let err = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "cron child".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Cron {
+                        expression: "*/10 * * * *".to_string(),
+                    },
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(10)),
+                    expires_at: None,
+                },
+                interval_parent.schedule_id,
+            )
+            .await
+            .expect_err("cron child should be rejected");
+        assert!(
+            err.to_string()
+                .contains("child cron schedules cannot be nested"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_thread_schedule_enforces_nested_loop_constraints() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 19);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let parent =
+            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
+                .await;
+        let child = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "child loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 2,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(2)),
+                    expires_at: None,
+                },
+                parent.schedule_id.clone(),
+            )
+            .await
+            .expect("nested child should be created");
+
+        let renamed_parent = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &parent.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: Some("renamed parent loop".to_string()),
+                    prompt_source: None,
+                    schedule: Some(parent.schedule.clone()),
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("unchanged parent cadence with prompt update should succeed")
+            .expect("parent schedule should exist");
+        assert_eq!("renamed parent loop", renamed_parent.prompt);
+        assert_eq!(parent.schedule, renamed_parent.schedule);
+
+        let err = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &parent.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: Some(crate::ThreadScheduleSpec::Interval(
+                        crate::ThreadScheduleInterval {
+                            amount: 10,
+                            unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                        },
+                    )),
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect_err("parent cadence update should be rejected while children exist");
+        assert!(
+            err.to_string()
+                .contains("cannot update loop cadence while it has nested child loops"),
+            "unexpected error: {err}"
+        );
+
+        let err = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &child.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: Some(crate::ThreadScheduleSpec::Dynamic),
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect_err("child cadence update should be revalidated");
+        assert!(
+            err.to_string()
+                .contains("child cadence must be slower than parent cadence"),
+            "unexpected error: {err}"
+        );
+
+        let updated_child = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &child.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: Some(crate::ThreadScheduleSpec::Interval(
+                        crate::ThreadScheduleInterval {
+                            amount: 3,
+                            unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                        },
+                    )),
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("valid child cadence update should succeed")
+            .expect("child schedule should exist");
+        assert_eq!(Some(parent.schedule_id), updated_child.parent_schedule_id);
+        assert_eq!(2, updated_child.nesting_depth);
     }
 
     #[tokio::test]
@@ -1436,6 +2091,126 @@ mod tests {
                 .get_thread_schedule_run(&failed_claim.run.run_id)
                 .await
                 .expect("failed run should load through the schedule store")
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_thread_schedule_resets_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 14);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = create_interval_schedule(&runtime, thread_id, "retry me", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-fail", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                now + chrono::Duration::seconds(10),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
+
+        let after_failure = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, after_failure.status);
+        assert_eq!(None, after_failure.next_run_at);
+        assert_eq!(1, after_failure.failure_count);
+
+        let resumed_at = now + chrono::Duration::minutes(5);
+        let resumed = runtime
+            .thread_schedules()
+            .resume_thread_schedule_at(&schedule.schedule_id, resumed_at)
+            .await
+            .expect("schedule should resume")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(resumed_at),
+                failure_count: 0,
+                updated_at: resumed.updated_at,
+                ..after_failure
+            },
+            resumed
+        );
+    }
+
+    #[tokio::test]
+    async fn update_thread_schedule_to_active_resets_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 15);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = create_interval_schedule(&runtime, thread_id, "retry me", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-fail", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                now + chrono::Duration::seconds(10),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
+
+        let after_failure = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, after_failure.status);
+        assert_eq!(1, after_failure.failure_count);
+
+        let resumed_at = now + chrono::Duration::minutes(5);
+        let resumed = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(crate::ThreadScheduleStatus::Active),
+                    next_run_at: Some(Some(resumed_at)),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(resumed_at),
+                failure_count: 0,
+                updated_at: resumed.updated_at,
+                ..after_failure
+            },
+            resumed
         );
     }
 

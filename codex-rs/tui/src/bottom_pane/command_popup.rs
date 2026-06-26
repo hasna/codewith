@@ -97,12 +97,9 @@ impl CommandPopup {
         // Keep built-in availability in sync with the composer.
         let commands = commands_for_input(flags.into(), &service_tier_commands)
             .into_iter()
-            .filter_map(|command| match command {
-                SlashCommandItem::Builtin(
-                    SlashCommand::MemoryDrop | SlashCommand::MemoryUpdate,
-                ) => None,
-                SlashCommandItem::Builtin(cmd) => Some(CommandItem::Builtin(cmd)),
-                SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
+            .map(|command| match command {
+                SlashCommandItem::Builtin(cmd) => CommandItem::Builtin(cmd),
+                SlashCommandItem::ServiceTier(command) => CommandItem::ServiceTier(command),
             })
             .collect();
         Self {
@@ -268,7 +265,6 @@ impl CommandItem {
 
     fn aliases(&self) -> &'static [&'static str] {
         match self {
-            Self::Builtin(SlashCommand::Stop) => &["clean"],
             Self::Builtin(SlashCommand::Pets) => &["pet"],
             Self::Builtin(_) | Self::ServiceTier(_) => &[],
         }
@@ -616,14 +612,44 @@ mod tests {
     }
 
     #[test]
-    fn alias_filter_finds_canonical_stop_command() {
+    fn removed_clean_alias_matches_no_command() {
+        // Debloat: `/stop` and its `/clean` alias were removed entirely, so the
+        // popup must not surface anything for them.
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/clean".to_string());
+        assert!(filtered_command_names(&popup).is_empty());
+
+        popup.on_composer_text_change("/stop".to_string());
+        assert!(filtered_command_names(&popup).is_empty());
+    }
+
+    #[test]
+    fn exact_pr_filter_beats_longer_pr_commands() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/pr".to_string());
 
         assert_eq!(
             filtered_command_names(&popup).first().map(String::as_str),
-            Some("stop")
+            Some("pr")
         );
+    }
+
+    #[test]
+    fn pair_command_popup_snapshot() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/pa".to_string());
+
+        let width = 84;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+
+        insta::assert_snapshot!("command_popup_pair", format!("{buf:?}"));
     }
 
     #[test]
@@ -671,15 +697,18 @@ mod tests {
     }
 
     #[test]
-    fn btw_shown_in_empty_filter_and_for_prefix() {
+    fn btw_is_hidden_but_side_is_shown() {
+        // Debloat: `/btw` is a hidden duplicate of `/side`; it should never
+        // surface in the completion popup, even on its own prefix.
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
         let items = popup.filtered_items();
-        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Side)));
 
         popup.on_composer_text_change("/bt".to_string());
         let items = popup.filtered_items();
-        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
     }
 
     #[test]
@@ -697,7 +726,7 @@ mod tests {
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Changelog)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Session)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Agent)));
-        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Side)));
         assert!(items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
     }
 

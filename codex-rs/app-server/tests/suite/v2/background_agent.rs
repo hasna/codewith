@@ -48,12 +48,15 @@ use codex_app_server_protocol::WorktreeDetachResponse;
 use codex_app_server_protocol::WorktreeLifecycleStatus;
 use codex_app_server_protocol::WorktreeListResponse;
 use codex_app_server_protocol::WorktreeMergeCandidateApplyResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateDismissResponse;
+use codex_app_server_protocol::WorktreeMergeCandidateListResponse;
 use codex_app_server_protocol::WorktreeMergeCandidateRefreshResponse;
 use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_state::BackgroundAgentDesiredState as StateBackgroundAgentDesiredState;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
@@ -236,6 +239,74 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_records_initial_goal_objective() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut params = start_params(
+        "fix the flaky test",
+        Some("initial-goal-start".to_string()),
+        codex_home.path(),
+    );
+    params.initial_goal_objective = Some("Investigate flaky regression".to_string());
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let start = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(
+        start.execution_snapshot.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+    assert_eq!(
+        start.event.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+
+    let retry = start_agent(
+        &mut mcp,
+        start_params(
+            "retry with different params",
+            Some("initial-goal-start".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+
+    assert_eq!(retry.agent.agent_id, start.agent.agent_id);
+    assert_eq!(
+        retry.execution_snapshot.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_empty_initial_goal_objective() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut params = start_params(
+        "fix the flaky test",
+        Some("empty-initial-goal-start".to_string()),
+        codex_home.path(),
+    );
+    params.initial_goal_objective = Some(" \t ".to_string());
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let error = start_agent_error(&mut mcp, params).await?;
+
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(error.error.message, "goal objective must not be empty");
+    let list = agent_list(&mut mcp).await?;
+    assert!(list.data.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
@@ -359,6 +430,175 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         start.execution_snapshot.payload.get("serviceTier"),
         Some(&JsonValue::Null)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let created_worktree_id = created.worktree.worktree_id.clone();
+    let created_worktree_path = created.worktree.worktree_path.clone();
+    let mut params = start_params(
+        "run inside the managed worktree",
+        Some("validated-managed-worktree-cwd".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(created_worktree_path.clone());
+    let context = params
+        .execution_context
+        .as_mut()
+        .expect("test params include execution context");
+    context.workspace_roots = Some(vec!["/tmp/client-root".to_string()]);
+
+    let start = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(
+        start.execution_snapshot.payload.get("cwd"),
+        Some(&json!(created_worktree_path))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("workspaceRoots"),
+        Some(&json!([created_worktree_path]))
+    );
+    let read_request_id = mcp
+        .send_raw_request(
+            "worktree/read",
+            Some(json!({
+                "worktreeId": created_worktree_id,
+            })),
+        )
+        .await?;
+    let read: WorktreeReadResponse = read_response(&mut mcp, read_request_id).await?;
+    let worktree = read.worktree.expect("managed worktree should still exist");
+    assert_eq!(
+        Some(start.agent.agent_id.as_str()),
+        worktree.owner_agent_run_id.as_deref()
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config_with_sandbox_mode_and_extra(
+        codex_home.path(),
+        server.uri().as_str(),
+        "workspace-write",
+        r#"
+[sandbox_workspace_write]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+"#,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start-write",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let created_worktree_path = created.worktree.worktree_path.clone();
+    let mut params = start_params(
+        "run inside the managed writable worktree",
+        Some("validated-managed-worktree-permissions".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(created_worktree_path.clone());
+
+    let start = start_agent(&mut mcp, params).await?;
+
+    let permission_profile: PermissionProfile = serde_json::from_value(
+        start
+            .execution_snapshot
+            .payload
+            .get("permissionProfile")
+            .expect("execution snapshot should include permissionProfile")
+            .clone(),
+    )?;
+    let file_system_policy = permission_profile.file_system_sandbox_policy();
+    let worktree_path = Path::new(created_worktree_path.as_str());
+    assert!(
+        file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
+        "managed worktree should be writable, policy: {file_system_policy:?}"
+    );
+    assert!(
+        !file_system_policy.can_write_path_with_cwd(codex_home.path(), worktree_path),
+        "base checkout must not stay writable after worktree rebinding, policy: {file_system_policy:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_shared_repository_managed_worktree_cwd() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_managed_worktree_with_mode(
+        state_db.as_ref(),
+        "wt-shared-agent-start",
+        codex_home.path(),
+        codex_state::ManagedWorktreeMode::SharedRepository,
+    )
+    .await?;
+
+    let mut params = start_params(
+        "run inside a shared-repository worktree",
+        Some("shared-repository-managed-worktree-cwd".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(
+        codex_home
+            .path()
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-shared-agent-start")
+            .display()
+            .to_string(),
+    );
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let error = start_agent_error(&mut mcp, params).await?;
+
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, error.error.code);
+    assert_eq!(
+        "agent/start worktree cwd requires an isolated managed worktree",
+        error.error.message
+    );
+    let list = agent_list(&mut mcp).await?;
+    assert!(list.data.is_empty());
+
     Ok(())
 }
 
@@ -1048,6 +1288,20 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let other_repo = codex_home.path().join("other-repo");
     std::fs::create_dir_all(other_repo.join(".git"))?;
     create_managed_worktree(state_db.as_ref(), "wt-other", other_repo.as_path()).await?;
+    state_db
+        .managed_worktrees()
+        .record_merge_candidate(codex_state::ManagedWorktreeMergeCandidateRecordParams {
+            candidate_id: Some("candidate-other-repo".to_string()),
+            worktree_id: "wt-other".to_string(),
+            target_ref: "HEAD".to_string(),
+            target_sha: Some("target-sha".to_string()),
+            base_sha: "base-sha".to_string(),
+            head_sha: "head-sha".to_string(),
+            status: codex_state::ManagedWorktreeMergeCandidateStatus::Open,
+            conflict_summary: None,
+            test_summary_json: None,
+        })
+        .await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let list_request_id = mcp
@@ -1098,6 +1352,57 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
         read_requested_repo.policy.current_base_repo_path
     );
 
+    let list_other_candidates_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/list",
+            Some(json!({
+                "worktreeId": "wt-other",
+            })),
+        )
+        .await?;
+    let other_candidates: WorktreeMergeCandidateListResponse =
+        read_response(&mut mcp, list_other_candidates_request_id).await?;
+    assert_eq!(Vec::<String>::new(), merge_candidate_ids(&other_candidates));
+
+    let refresh_other_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/refresh",
+        json!({
+            "worktreeId": "wt-other",
+            "targetRef": "HEAD",
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, refresh_other_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/refresh worktree not found",
+        refresh_other_error.error.message
+    );
+
+    let apply_other_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/apply",
+            Some(json!({
+                "candidateId": "candidate-other-repo",
+            })),
+        )
+        .await?;
+    let apply_other: WorktreeMergeCandidateApplyResponse =
+        read_response(&mut mcp, apply_other_request_id).await?;
+    assert_eq!(None, apply_other.candidate);
+
+    let dismiss_other_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/dismiss",
+            Some(json!({
+                "candidateId": "candidate-other-repo",
+            })),
+        )
+        .await?;
+    let dismiss_other: WorktreeMergeCandidateDismissResponse =
+        read_response(&mut mcp, dismiss_other_request_id).await?;
+    assert_eq!(None, dismiss_other.candidate);
+
     Ok(())
 }
 
@@ -1109,6 +1414,26 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     write_config(codex_home.path(), server.uri().as_str())?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
+    let invalid_branch_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "invalid",
+            "branch": "bad..branch",
+            "startPoint": "HEAD",
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, invalid_branch_error.error.code);
+    assert!(
+        invalid_branch_error
+            .error
+            .message
+            .contains("is not a valid git branch name"),
+        "unexpected invalid branch error: {}",
+        invalid_branch_error.error.message
+    );
+
     let create_request_id = mcp
         .send_raw_request(
             "worktree/create",
@@ -1131,6 +1456,42 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
             .as_deref()
             .is_some_and(|branch| branch.starts_with("codewith/feature-"))
     );
+    let retained_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "retained",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let retained: WorktreeCreateResponse = read_response(&mut mcp, retained_request_id).await?;
+    let retained_path = std::path::PathBuf::from(retained.worktree.worktree_path.as_str());
+    std::fs::write(retained_path.join("retained.txt"), "committed work\n")?;
+    git(retained_path.as_path(), &["add", "retained.txt"])?;
+    git(
+        retained_path.as_path(),
+        &["commit", "-m", "retain committed work"],
+    )?;
+    let retained_cleanup_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": retained.worktree.worktree_id,
+                "forceDelete": false,
+            })),
+        )
+        .await?;
+    let retained_cleanup: WorktreeCleanupResponse =
+        read_response(&mut mcp, retained_cleanup_request_id).await?;
+    let retained_after_cleanup = retained_cleanup
+        .worktree
+        .expect("retained cleanup response should include worktree");
+    assert_eq!(
+        WorktreeLifecycleStatus::CleanupPending,
+        retained_after_cleanup.lifecycle_status
+    );
+    assert!(retained_path.exists());
 
     let outside_root_path = codex_home.path().join("outside-root-worktree");
     git(
@@ -1233,6 +1594,7 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
         "agent-run-release",
         "lease-release",
         codex_home.path(),
+        StateBackgroundAgentRunStatus::Completed,
     )
     .await?;
 
@@ -1313,6 +1675,283 @@ async fn worktree_release_background_agent_lease_uses_lease_release_path() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_release_and_cleanup_reject_active_background_agent_lease() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_background_agent_git_worktree_lease(
+        state_db.as_ref(),
+        "agent-run-active-lease",
+        "lease-active",
+        codex_home.path(),
+        StateBackgroundAgentRunStatus::Running,
+    )
+    .await?;
+    create_background_agent_git_worktree_lease(
+        state_db.as_ref(),
+        "agent-run-stopping-lease",
+        "lease-stopping",
+        codex_home.path(),
+        StateBackgroundAgentRunStatus::Stopping,
+    )
+    .await?;
+    state_db
+        .set_background_agent_desired_state(
+            "agent-run-stopping-lease",
+            StateBackgroundAgentDesiredState::Stopped,
+        )
+        .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let release_error = raw_request_error(
+        &mut mcp,
+        "worktree/release",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, release_error.error.code);
+    assert!(
+        release_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected release error: {}",
+        release_error.error.message
+    );
+    let cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/cleanup",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, cleanup_error.error.code);
+    assert!(
+        cleanup_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected cleanup error: {}",
+        cleanup_error.error.message
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-active")
+        .await?
+        .expect("active lease should remain");
+    assert_eq!(None, lease.released_at);
+    assert_eq!(None, lease.deleted_at);
+    assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    let stopping_release_error = raw_request_error(
+        &mut mcp,
+        "worktree/release",
+        json!({
+            "worktreeId": "lease-stopping",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, stopping_release_error.error.code);
+    assert!(
+        stopping_release_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected stopping release error: {}",
+        stopping_release_error.error.message
+    );
+    let stopping_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/cleanup",
+        json!({
+            "worktreeId": "lease-stopping",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, stopping_cleanup_error.error.code);
+    assert!(
+        stopping_cleanup_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected stopping cleanup error: {}",
+        stopping_cleanup_error.error.message
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-stopping")
+        .await?
+        .expect("stopping lease should remain");
+    assert_eq!(None, lease.released_at);
+    assert_eq!(None, lease.deleted_at);
+    assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-active-lease",
+            StateBackgroundAgentRunStatus::Orphaned,
+            Some("supervisor heartbeat stale"),
+        )
+        .await?;
+    let orphan_release_error = raw_request_error(
+        &mut mcp,
+        "worktree/release",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, orphan_release_error.error.code);
+    assert!(
+        orphan_release_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected orphan release error: {}",
+        orphan_release_error.error.message
+    );
+    let orphan_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/cleanup",
+        json!({
+            "worktreeId": "lease-active",
+            "forceDelete": true,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, orphan_cleanup_error.error.code);
+    assert!(
+        orphan_cleanup_error
+            .error
+            .message
+            .contains("active background agent run"),
+        "unexpected orphan cleanup error: {}",
+        orphan_cleanup_error.error.message
+    );
+    let lease = state_db
+        .get_background_agent_worktree_lease("lease-active")
+        .await?
+        .expect("orphaned lease should remain");
+    assert_eq!(None, lease.released_at);
+    assert_eq!(None, lease.deleted_at);
+    assert!(Path::new(lease.worktree_path.as_str()).exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    seed_queued_agent_run(
+        state_db.as_ref(),
+        "agent-run-cleanup-guard",
+        None,
+        "guard nonterminal owner cleanup",
+    )
+    .await?;
+    state_db
+        .set_background_agent_desired_state(
+            "agent-run-cleanup-guard",
+            StateBackgroundAgentDesiredState::Stopped,
+        )
+        .await?;
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-cleanup-guard",
+            StateBackgroundAgentRunStatus::Stopping,
+            Some("stop requested"),
+        )
+        .await?;
+    let base_sha_output = Command::new("git")
+        .current_dir(codex_home.path())
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !base_sha_output.status.success() {
+        anyhow::bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&base_sha_output.stderr)
+        );
+    }
+    let base_sha = String::from_utf8(base_sha_output.stdout)?
+        .trim()
+        .to_string();
+    let worktree_path = codex_home
+        .path()
+        .join(".codewith")
+        .join("worktrees")
+        .join("cleanup-guard");
+    let worktree_parent = worktree_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("worktree path has no parent"))?;
+    std::fs::create_dir_all(worktree_parent)?;
+    git(
+        codex_home.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "codewith/cleanup-guard",
+            worktree_path.to_string_lossy().as_ref(),
+            "HEAD",
+        ],
+    )?;
+    state_db
+        .managed_worktrees()
+        .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
+            worktree_id: Some("cleanup-guard".to_string()),
+            identity: Some("test:cleanup-guard".to_string()),
+            mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+            base_repo_path: codex_home.path().to_path_buf(),
+            worktree_path: worktree_path.clone(),
+            branch: Some("codewith/cleanup-guard".to_string()),
+            base_sha: Some(base_sha.clone()),
+            head_sha: Some(base_sha),
+            status_snapshot_json: json!({"dirty": false, "source": "seed"}),
+            dirty: false,
+            cleanup_policy: codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean,
+            owner_kind: codex_state::ManagedWorktreeOwnerKind::BackgroundAgent,
+            owner_thread_id: None,
+            owner_agent_run_id: Some("agent-run-cleanup-guard".to_string()),
+            cleanup_after: None,
+        })
+        .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let cleanup_request_id = mcp
+        .send_raw_request(
+            "worktree/cleanup",
+            Some(json!({
+                "worktreeId": "cleanup-guard",
+                "forceDelete": true,
+            })),
+        )
+        .await?;
+    let cleanup: WorktreeCleanupResponse = read_response(&mut mcp, cleanup_request_id).await?;
+    assert_eq!(
+        WorktreeLifecycleStatus::CleanupPending,
+        cleanup
+            .worktree
+            .expect("cleanup response should include worktree")
+            .lifecycle_status
+    );
+    assert!(worktree_path.exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;
@@ -1324,6 +1963,7 @@ async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Re
         "agent-run-cleanup",
         "lease-cleanup",
         codex_home.path(),
+        StateBackgroundAgentRunStatus::Completed,
     )
     .await?;
 
@@ -1434,6 +2074,117 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         refreshed.candidate.status
     );
     let candidate_id = refreshed.candidate.candidate_id.clone();
+    let list_open_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/list",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "status": "open",
+            })),
+        )
+        .await?;
+    let open_candidates: WorktreeMergeCandidateListResponse =
+        read_response(&mut mcp, list_open_request_id).await?;
+    assert_eq!(
+        vec![candidate_id.clone()],
+        open_candidates
+            .data
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let dismiss_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/dismiss",
+            Some(json!({
+                "candidateId": candidate_id,
+            })),
+        )
+        .await?;
+    let dismissed: WorktreeMergeCandidateDismissResponse =
+        read_response(&mut mcp, dismiss_request_id).await?;
+    assert_eq!(
+        Some(WorktreeMergeCandidateStatus::Dismissed),
+        dismissed.candidate.map(|candidate| candidate.status)
+    );
+    let list_dismissed_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/list",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "status": "dismissed",
+            })),
+        )
+        .await?;
+    let dismissed_candidates: WorktreeMergeCandidateListResponse =
+        read_response(&mut mcp, list_dismissed_request_id).await?;
+    assert_eq!(1, dismissed_candidates.data.len());
+
+    let refresh_again_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let refreshed_again: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, refresh_again_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        refreshed_again.candidate.status
+    );
+    let stale_candidate_id = refreshed_again.candidate.candidate_id.clone();
+    std::fs::write(worktree_path.join("later.txt"), "later work\n")?;
+    git(worktree_path.as_path(), &["add", "later.txt"])?;
+    git(worktree_path.as_path(), &["commit", "-m", "add later work"])?;
+    let stale_apply_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": stale_candidate_id,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, stale_apply_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/apply source changed; refresh before applying",
+        stale_apply_error.error.message
+    );
+
+    let final_refresh_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let final_refreshed: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, final_refresh_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        final_refreshed.candidate.status
+    );
+    let candidate_id = final_refreshed.candidate.candidate_id.clone();
+    let list_final_open_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/list",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "status": "open",
+            })),
+        )
+        .await?;
+    let final_open_candidates: WorktreeMergeCandidateListResponse =
+        read_response(&mut mcp, list_final_open_request_id).await?;
+    assert_eq!(
+        vec![candidate_id.clone()],
+        merge_candidate_ids(&final_open_candidates)
+    );
 
     let apply_request_id = mcp
         .send_raw_request(
@@ -1452,6 +2203,23 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     assert_eq!(
         "merge candidate\n",
         std::fs::read_to_string(codex_home.path().join("feature.txt"))?
+    );
+    assert_eq!(
+        "later work\n",
+        std::fs::read_to_string(codex_home.path().join("later.txt"))?
+    );
+    let dismiss_applied_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/dismiss",
+        json!({
+            "candidateId": candidate_id.clone(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, dismiss_applied_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+        dismiss_applied_error.error.message
     );
 
     let apply_again_error = raw_request_error(
@@ -1743,12 +2511,27 @@ async fn create_managed_worktree(
     worktree_id: &str,
     base_repo_path: &Path,
 ) -> Result<()> {
+    create_managed_worktree_with_mode(
+        state_db,
+        worktree_id,
+        base_repo_path,
+        codex_state::ManagedWorktreeMode::IsolatedWorktree,
+    )
+    .await
+}
+
+async fn create_managed_worktree_with_mode(
+    state_db: &codex_state::StateRuntime,
+    worktree_id: &str,
+    base_repo_path: &Path,
+    mode: codex_state::ManagedWorktreeMode,
+) -> Result<()> {
     state_db
         .managed_worktrees()
         .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
             worktree_id: Some(worktree_id.to_string()),
             identity: Some(format!("test:{worktree_id}")),
-            mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+            mode,
             base_repo_path: base_repo_path.to_path_buf(),
             worktree_path: base_repo_path
                 .join(".codewith")
@@ -1774,6 +2557,7 @@ async fn create_background_agent_git_worktree_lease(
     agent_id: &str,
     lease_id: &str,
     codex_home: &Path,
+    run_status: StateBackgroundAgentRunStatus,
 ) -> Result<()> {
     seed_queued_agent_run(
         state_db,
@@ -1783,6 +2567,19 @@ async fn create_background_agent_git_worktree_lease(
     )
     .await?;
     let branch = format!("codewith/{agent_id}");
+    let base_sha_output = Command::new("git")
+        .current_dir(codex_home)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !base_sha_output.status.success() {
+        anyhow::bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&base_sha_output.stderr)
+        );
+    }
+    let base_sha = String::from_utf8(base_sha_output.stdout)?
+        .trim()
+        .to_string();
     let worktree_path = codex_home
         .join(".codewith")
         .join("worktrees")
@@ -1812,11 +2609,18 @@ async fn create_background_agent_git_worktree_lease(
                 base_repo_path: codex_home.to_string_lossy().to_string(),
                 worktree_path: worktree_path.to_string_lossy().to_string(),
                 branch: Some(branch),
-                head_sha: None,
+                head_sha: Some(base_sha),
                 status_snapshot_json: json!({"dirty": false, "source": "seed"}),
                 dirty: false,
                 cleanup_after: None,
             },
+        )
+        .await?;
+    state_db
+        .update_background_agent_run_status(
+            agent_id,
+            run_status,
+            Some("worktree lease test status"),
         )
         .await?;
     Ok(())
@@ -1887,18 +2691,35 @@ fn worktree_ids(response: &WorktreeListResponse) -> Vec<String> {
         .collect()
 }
 
+fn merge_candidate_ids(response: &WorktreeMergeCandidateListResponse) -> Vec<String> {
+    response
+        .data
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect()
+}
+
 fn write_config(codex_home: &Path, server_uri: &str) -> Result<()> {
     write_config_with_extra(codex_home, server_uri, "")
 }
 
 fn write_config_with_extra(codex_home: &Path, server_uri: &str, extra_toml: &str) -> Result<()> {
+    write_config_with_sandbox_mode_and_extra(codex_home, server_uri, "read-only", extra_toml)
+}
+
+fn write_config_with_sandbox_mode_and_extra(
+    codex_home: &Path,
+    server_uri: &str,
+    sandbox_mode: &str,
+    extra_toml: &str,
+) -> Result<()> {
     std::fs::write(
         codex_home.join("config.toml"),
         format!(
             r#"
 model = "mock-model"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "{sandbox_mode}"
 model_provider = "mock_provider"
 suppress_unstable_features_warning = true
 
@@ -2027,6 +2848,7 @@ fn start_params(
 ) -> AgentStartParams {
     AgentStartParams {
         prompt: prompt.to_string(),
+        initial_goal_objective: None,
         cwd: Some(codex_home.display().to_string()),
         idempotency_key,
         request_id: None,

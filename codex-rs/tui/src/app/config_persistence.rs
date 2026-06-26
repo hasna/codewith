@@ -340,6 +340,7 @@ impl App {
                 /*summary*/ None,
                 /*service_tier*/ None,
                 /*collaboration_mode*/ None,
+                /*session_prompt*/ None,
                 /*personality*/ None,
             )));
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -906,6 +907,7 @@ impl App {
                 /*summary*/ None,
                 /*service_tier*/ None,
                 /*collaboration_mode*/ None,
+                /*session_prompt*/ None,
                 /*personality*/ None,
             );
             let replay_state_op =
@@ -1213,6 +1215,7 @@ impl App {
             /*summary*/ None,
             /*service_tier*/ None,
             /*collaboration_mode*/ None,
+            /*session_prompt*/ None,
             /*personality*/ None,
         );
         let replay_state_op =
@@ -1292,6 +1295,7 @@ impl App {
                     /*summary*/ None,
                     /*service_tier*/ None,
                     /*collaboration_mode*/ None,
+                    /*session_prompt*/ None,
                     /*personality*/ None,
                 )));
         }

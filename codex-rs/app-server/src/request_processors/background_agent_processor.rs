@@ -77,6 +77,7 @@ use codex_background_agent::lifecycle_effect_for;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::validate_thread_goal_objective;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rollout::StateDbHandle;
@@ -111,6 +112,7 @@ impl BackgroundAgentRequestProcessor {
         let state_db = self.state_db()?;
         let AgentStartParams {
             prompt,
+            initial_goal_objective,
             cwd,
             idempotency_key,
             request_id,
@@ -131,6 +133,7 @@ impl BackgroundAgentRequestProcessor {
         } = params;
         let execution_context = execution_context.map(|context| *context);
         let prompt = validate_agent_prompt(prompt)?;
+        let initial_goal_objective = validate_agent_initial_goal_objective(initial_goal_objective)?;
         let mut existing_run = match idempotency_key.as_deref() {
             Some(idempotency_key) => state_db
                 .get_run_by_idempotency_key(idempotency_key)
@@ -219,6 +222,7 @@ impl BackgroundAgentRequestProcessor {
             &run,
             InitialExecutionSnapshotPayloadParams {
                 cwd: cwd.as_deref(),
+                initial_goal_objective: initial_goal_objective.as_deref(),
                 execution_context: execution_context.as_ref(),
                 recovery_policy: recovery_policy.as_str(),
             },
@@ -272,6 +276,7 @@ impl BackgroundAgentRequestProcessor {
                     &json!({
                         "cwd": cwd,
                         "prompt": prompt,
+                        "initialGoalObjective": initial_goal_objective,
                         "promptSnapshotRef": run.prompt_snapshot_ref.as_str(),
                     }),
                 )
@@ -1185,6 +1190,7 @@ async fn load_agent_quota_snapshot(
 
 struct InitialExecutionSnapshotPayloadParams<'a> {
     cwd: Option<&'a str>,
+    initial_goal_objective: Option<&'a str>,
     execution_context: Option<&'a AgentExecutionContextParams>,
     recovery_policy: &'a str,
 }
@@ -1196,6 +1202,7 @@ fn initial_execution_snapshot_payload(
     json!({
         "snapshotSource": "agent/start",
         "cwd": params.cwd,
+        "initialGoalObjective": params.initial_goal_objective,
         "workspaceRoots": params
             .execution_context
             .and_then(|context| context.workspace_roots.as_ref()),
@@ -1264,6 +1271,17 @@ fn validate_agent_prompt(prompt: String) -> Result<String, JSONRPCErrorError> {
         return Err(invalid_request("agent prompt must not be empty"));
     }
     Ok(prompt)
+}
+
+fn validate_agent_initial_goal_objective(
+    objective: Option<String>,
+) -> Result<Option<String>, JSONRPCErrorError> {
+    let Some(objective) = objective else {
+        return Ok(None);
+    };
+    let objective = objective.trim().to_string();
+    validate_thread_goal_objective(objective.as_str()).map_err(invalid_request)?;
+    Ok(Some(objective))
 }
 
 fn normalize_agent_list_limit(limit: Option<u32>) -> Result<usize, JSONRPCErrorError> {

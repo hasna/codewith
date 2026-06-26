@@ -39,16 +39,16 @@ impl ChatWidget {
             StatusDetailsCapitalization::Preserve,
             details_max_lines,
         );
-        let title_uses_status = self
-            .config
-            .tui_terminal_title
-            .as_ref()
-            .is_some_and(|items| {
+        let uses_status = |items: Option<&[String]>| {
+            items.is_some_and(|items| {
                 items
                     .iter()
                     .any(|item| item == "run-state" || item == "status")
-            });
-        if title_uses_status {
+            })
+        };
+        if uses_status(self.config.tui_status_line.as_deref())
+            || uses_status(self.config.tui_terminal_title.as_deref())
+        {
             self.refresh_status_surfaces();
         }
     }
@@ -155,6 +155,39 @@ impl ChatWidget {
         self.terminal_title_setup_original_items = None;
         self.config.tui_terminal_title = Some(ids);
         self.refresh_terminal_title();
+    }
+
+    /// Returns the configured final-message summary ids, or the default ordering when unset.
+    pub(crate) fn configured_message_summary_items(&self) -> Vec<String> {
+        self.config.tui_message_summary.clone().unwrap_or_else(|| {
+            history_cell::DEFAULT_MESSAGE_SUMMARY_ITEMS
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        })
+    }
+
+    pub(super) fn message_summary_items(&self) -> Vec<history_cell::MessageSummaryItem> {
+        let mut seen = std::collections::HashSet::new();
+        self.configured_message_summary_items()
+            .into_iter()
+            .filter_map(|id| id.parse::<history_cell::MessageSummaryItem>().ok())
+            .filter(|item| seen.insert(*item))
+            .collect()
+    }
+
+    /// Applies a user-confirmed final-message summary item selection.
+    ///
+    /// An empty selection persists as an explicit empty list and hides the separator.
+    pub(crate) fn setup_message_summary(&mut self, items: Vec<history_cell::MessageSummaryItem>) {
+        tracing::info!("message summary setup confirmed with items: {items:#?}");
+        let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+        self.config.tui_message_summary = Some(ids);
+    }
+
+    /// Records that message summary setup was canceled.
+    pub(crate) fn cancel_message_summary_setup(&self) {
+        tracing::info!("Message summary setup canceled by user");
     }
 
     /// Stores async git-branch lookup results for the current status-line cwd.
@@ -344,6 +377,16 @@ impl ChatWidget {
         let view = TerminalTitleSetupView::new(
             Some(configured_terminal_title_items.as_slice()),
             self.terminal_title_preview_data(),
+            self.app_event_tx.clone(),
+            self.bottom_pane.list_keymap(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
+    pub(super) fn open_message_summary_setup(&mut self) {
+        let configured_message_summary_items = self.configured_message_summary_items();
+        let view = MessageSummarySetupView::new(
+            Some(configured_message_summary_items.as_slice()),
             self.app_event_tx.clone(),
             self.bottom_pane.list_keymap(),
         );

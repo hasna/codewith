@@ -441,8 +441,7 @@ WHERE thread_id = ?
         }
 
         let now_ms = datetime_to_epoch_millis(Utc::now());
-        let active_or_stopped_status_filter =
-            "status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited')";
+        let active_or_stopped_status_filter = "status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'deferred')";
         let status_filter = match mode {
             GoalAccountingMode::ActiveStatusOnly => "status = 'active'",
             GoalAccountingMode::ActiveOnly => "status IN ('active', 'budget_limited')",

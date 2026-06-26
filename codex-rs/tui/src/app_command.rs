@@ -74,6 +74,7 @@ pub(crate) enum AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
+        session_prompt: Option<Option<String>>,
         personality: Option<Personality>,
     },
     ExecApproval {
@@ -223,6 +224,7 @@ impl AppCommand {
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         }
     }
@@ -240,6 +242,7 @@ impl AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
+        session_prompt: Option<Option<String>>,
         personality: Option<Personality>,
     ) -> Self {
         Self::OverrideTurnContext {
@@ -256,6 +259,7 @@ impl AppCommand {
             summary,
             service_tier,
             collaboration_mode,
+            session_prompt,
             personality,
         }
     }
@@ -280,6 +284,7 @@ impl AppCommand {
             summary: None,
             service_tier: None,
             collaboration_mode,
+            session_prompt: None,
             personality: None,
         }
     }

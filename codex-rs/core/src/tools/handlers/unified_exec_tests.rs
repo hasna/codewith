@@ -310,6 +310,47 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
 }
 
 #[tokio::test]
+async fn exec_command_post_tool_use_payload_bounds_large_completed_output() {
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({ "cmd": "generate lots", "tty": false }).to_string(),
+    };
+    let raw_output = format!(
+        "HEAD\n{}TAIL\n",
+        (0..200)
+            .map(|idx| format!("MIDDLE-{idx:03} {}\n", "x".repeat(40)))
+            .collect::<String>()
+    );
+    let output = ExecCommandToolOutput {
+        event_call_id: "call-bounded".to_string(),
+        chunk_id: "chunk-bounded".to_string(),
+        wall_time: std::time::Duration::from_millis(498),
+        raw_output: raw_output.as_bytes().to_vec(),
+        truncation_policy: TruncationPolicy::Tokens(32),
+        max_output_tokens: Some(32),
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: Some("generate lots".to_string()),
+    };
+    let invocation = invocation_for_payload("exec_command", "call-bounded", payload).await;
+    let handler = ExecCommandHandler::default();
+    let post_payload = handler
+        .post_tool_use_payload(&invocation, &output)
+        .expect("completed exec should emit post-tool-use payload");
+    let text = post_payload
+        .tool_response
+        .as_str()
+        .expect("exec post-tool-use response should be text");
+
+    assert_eq!(post_payload.tool_use_id, "call-bounded");
+    assert!(text.len() < raw_output.len());
+    assert!(text.contains("tokens truncated"));
+    assert!(text.contains("HEAD"));
+    assert!(text.contains("TAIL"));
+    assert!(!text.contains("MIDDLE-100"));
+}
+
+#[tokio::test]
 async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completion() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "cmd": "echo three", "tty": true }).to_string(),

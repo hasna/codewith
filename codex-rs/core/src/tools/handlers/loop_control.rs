@@ -36,6 +36,7 @@ pub struct ManageLoopHandler;
 struct ManageLoopArgs {
     action: LoopAction,
     schedule_id: Option<String>,
+    parent_schedule_id: Option<String>,
     prompt: Option<String>,
     schedule: Option<LoopScheduleSpecArg>,
     timezone: Option<String>,
@@ -94,6 +95,8 @@ struct ManageLoopResponse {
 struct LoopScheduleSnapshot {
     thread_id: String,
     schedule_id: String,
+    parent_schedule_id: Option<String>,
+    nesting_depth: i64,
     prompt: String,
     prompt_source: String,
     schedule: LoopScheduleSpecSnapshot,
@@ -228,37 +231,43 @@ async fn manage_loop(
                     unreachable!("action matched above")
                 }
             };
-            let schedule = if action == LoopAction::Resume && existing.next_run_at.is_none() {
-                let next_run_at =
-                    next_loop_run_at(&existing.schedule, &existing.timezone, Utc::now())?
-                        .ok_or_else(|| {
-                            FunctionCallError::RespondToModel(
-                                "cannot resume loop because no next run time could be computed"
-                                    .to_string(),
-                            )
-                        })?;
+            let schedule = if action == LoopAction::Resume {
+                let now = Utc::now();
                 if let Some(expires_at) = existing.expires_at
-                    && expires_at <= next_run_at
+                    && expires_at <= now
                 {
                     return Err(FunctionCallError::RespondToModel(
-                        "loop expires_at must be later than next_run_at".to_string(),
+                        "loop expires_at must be in the future to resume".to_string(),
                     ));
                 }
-                state_db
-                    .thread_schedules()
-                    .update_thread_schedule(
-                        schedule_id.as_str(),
-                        codex_state::ThreadScheduleUpdate {
-                            prompt: None,
-                            prompt_source: None,
-                            schedule: None,
-                            timezone: None,
-                            status: Some(status),
-                            next_run_at: Some(Some(next_run_at)),
-                            expires_at: None,
-                        },
-                    )
-                    .await
+                if existing.next_run_at.is_none() {
+                    let next_run_at =
+                        next_loop_run_at(&existing.schedule, &existing.timezone, now)?.ok_or_else(
+                            || {
+                                FunctionCallError::RespondToModel(
+                                    "cannot resume loop because no next run time could be computed"
+                                        .to_string(),
+                                )
+                            },
+                        )?;
+                    if let Some(expires_at) = existing.expires_at
+                        && expires_at <= next_run_at
+                    {
+                        return Err(FunctionCallError::RespondToModel(
+                            "loop expires_at must be later than next_run_at".to_string(),
+                        ));
+                    }
+                    state_db
+                        .thread_schedules()
+                        .resume_thread_schedule_at(schedule_id.as_str(), next_run_at)
+                        .await
+                } else {
+                    validate_loop_expiry(existing.next_run_at, existing.expires_at)?;
+                    state_db
+                        .thread_schedules()
+                        .resume_thread_schedule(schedule_id.as_str())
+                        .await
+                }
             } else {
                 state_db
                     .thread_schedules()
@@ -338,6 +347,18 @@ async fn create_loop(
         .schedule
         .ok_or_else(|| model_error("schedule is required when action is create"))
         .and_then(loop_schedule_spec_arg_to_state)?;
+    let parent_schedule_id = args
+        .parent_schedule_id
+        .as_deref()
+        .map(str::trim)
+        .map(|value| {
+            if value.is_empty() {
+                Err(model_error("parent_schedule_id cannot be empty"))
+            } else {
+                Ok(value.to_string())
+            }
+        })
+        .transpose()?;
     let timezone = normalize_timezone(args.timezone)?;
     let now = Utc::now();
     let explicit_next_run_at = args
@@ -359,23 +380,35 @@ async fn create_loop(
         .or_else(|| default_loop_expires_at(now));
     validate_loop_expiry(next_run_at, expires_at)?;
 
-    let schedule = state_db
-        .thread_schedules()
-        .create_thread_schedule_for_auth_profile(
-            codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt,
-                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule,
-                timezone,
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at,
-                expires_at,
-            },
-            auth_profile,
-        )
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    let create_params = codex_state::ThreadScheduleCreateParams {
+        thread_id,
+        prompt,
+        prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+        schedule,
+        timezone,
+        status: codex_state::ThreadScheduleStatus::Active,
+        next_run_at,
+        expires_at,
+    };
+    let schedule = match parent_schedule_id {
+        Some(parent_schedule_id) => {
+            state_db
+                .thread_schedules()
+                .create_nested_thread_schedule_for_auth_profile(
+                    create_params,
+                    parent_schedule_id,
+                    auth_profile,
+                )
+                .await
+        }
+        None => {
+            state_db
+                .thread_schedules()
+                .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                .await
+        }
+    }
+    .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
     let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
     let schedules = list_loop_snapshots(&state_db, thread_id).await?;
     let schedule_id = affected_schedule.schedule_id.clone();
@@ -641,6 +674,8 @@ async fn loop_schedule_snapshot(
     Ok(LoopScheduleSnapshot {
         thread_id: schedule.thread_id.to_string(),
         schedule_id: schedule.schedule_id,
+        parent_schedule_id: schedule.parent_schedule_id,
+        nesting_depth: schedule.nesting_depth,
         prompt: schedule.prompt,
         prompt_source: schedule.prompt_source.as_str().to_string(),
         schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
@@ -748,6 +783,7 @@ mod tests {
         ManageLoopArgs {
             action,
             schedule_id: None,
+            parent_schedule_id: None,
             prompt: None,
             schedule: None,
             timezone: None,
@@ -899,6 +935,78 @@ mod tests {
                 unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn create_loop_accepts_nested_parent_schedule_id() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let parent_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                prompt: Some("Parent loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("parent loop should be created");
+        let parent_schedule_id = parent_response
+            .schedule_id
+            .expect("parent schedule id should be returned");
+
+        let child_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id.clone()),
+                prompt: Some("Child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+        let child = child_response
+            .affected_schedule
+            .expect("child schedule should be returned");
+        assert_eq!(Some(parent_schedule_id.clone()), child.parent_schedule_id);
+        assert_eq!(2, child.nesting_depth);
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id),
+                prompt: Some("Same minute child".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Dynamic),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("same-minute child should be rejected");
+        match err {
+            FunctionCallError::RespondToModel(message) => assert!(
+                message.contains("child cadence must be slower than parent cadence"),
+                "unexpected model error: {message}"
+            ),
+            other => panic!("expected model error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1263,7 +1371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_recomputes_missing_next_run_at() {
+    async fn resume_recomputes_missing_next_run_at_and_resets_failure_count() {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 6);
         upsert_test_thread(&runtime, thread_id).await;
@@ -1271,26 +1379,31 @@ mod tests {
             &runtime,
             thread_id,
             "check CI",
-            codex_state::ThreadScheduleStatus::Paused,
+            codex_state::ThreadScheduleStatus::Active,
         )
         .await;
-        runtime
+        let claim = runtime
             .thread_schedules()
-            .update_thread_schedule(
-                &schedule.schedule_id,
-                codex_state::ThreadScheduleUpdate {
-                    prompt: None,
-                    prompt_source: None,
-                    schedule: None,
-                    timezone: None,
-                    status: None,
-                    next_run_at: Some(None),
-                    expires_at: None,
-                },
+            .claim_due_thread_schedule(
+                at(/*seconds*/ 1_700_000_300),
+                "lease-fail",
+                Duration::from_secs(300),
             )
             .await
-            .expect("schedule should update")
-            .expect("schedule should exist");
+            .expect("run should claim")
+            .expect("run should be due");
+        runtime
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-fail",
+                at(/*seconds*/ 1_700_000_310),
+                None,
+                "model unavailable".to_string(),
+            )
+            .await
+            .expect("run should fail");
         let before_resume = Utc::now();
 
         let response = manage_loop(
@@ -1312,12 +1425,64 @@ mod tests {
             .expect("schedule should load")
             .expect("schedule should exist");
         assert_eq!(codex_state::ThreadScheduleStatus::Active, updated.status);
+        assert_eq!(0, updated.failure_count);
         let next_run_at = updated.next_run_at.expect("next_run_at should be set");
         assert!(next_run_at >= before_resume);
         let affected_schedule = response
             .affected_schedule
             .expect("affected schedule should be returned");
         assert_eq!(Some(next_run_at.timestamp()), affected_schedule.next_run_at);
+        assert_eq!(0, affected_schedule.failure_count);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_loop_with_past_expiry() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "check CI",
+            codex_state::ThreadScheduleStatus::Paused,
+        )
+        .await;
+        runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                codex_state::ThreadScheduleUpdate {
+                    prompt: None,
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: None,
+                    expires_at: Some(Some(at(/*seconds*/ 1_700_000_600))),
+                },
+            )
+            .await
+            .expect("schedule should update")
+            .expect("schedule should exist");
+
+        let error = manage_loop(
+            runtime,
+            thread_id,
+            None,
+            ManageLoopArgs {
+                schedule_id: Some(schedule.schedule_id),
+                ..loop_args(LoopAction::Resume)
+            },
+        )
+        .await
+        .expect_err("expired loop should not resume");
+
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "loop expires_at must be in the future to resume".to_string()
+            )
+        );
     }
 
     #[tokio::test]

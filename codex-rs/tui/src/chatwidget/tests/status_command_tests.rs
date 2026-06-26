@@ -19,7 +19,7 @@ async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgp
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     let rendered = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
@@ -46,7 +46,7 @@ async fn status_command_refresh_updates_cached_limits_for_future_status_outputs(
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(_)) => {}
@@ -64,7 +64,7 @@ async fn status_command_refresh_updates_cached_limits_for_future_status_outputs(
     chat.finish_status_rate_limit_refresh(first_request_id);
     drain_insert_history(&mut rx);
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
     let refreshed = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
             lines_to_single_string(&cell.display_lines(/*width*/ 80))
@@ -81,7 +81,7 @@ async fn status_command_refresh_updates_cached_limits_for_future_status_outputs(
 async fn status_command_renders_immediately_without_rate_limit_refresh() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
     assert!(
@@ -97,7 +97,7 @@ async fn stats_command_refreshes_minimax_usage_for_minimax_provider() {
     chat.config.model_provider_id = MINIMAX_PROVIDER_ID.to_string();
     chat.config.model_provider = ModelProviderInfo::create_minimax_provider();
 
-    chat.dispatch_command(SlashCommand::Stats);
+    chat.show_status_report();
 
     let cell = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => cell,
@@ -105,8 +105,8 @@ async fn stats_command_refreshes_minimax_usage_for_minimax_provider() {
     };
     let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 100));
     assert!(
-        rendered.contains("stats") && rendered.contains("refreshing Token Plan usage"),
-        "expected /stats to render MiniMax refresh state, got: {rendered}"
+        rendered.contains("status") && rendered.contains("refreshing Token Plan usage"),
+        "expected the status report to render MiniMax refresh state, got: {rendered}"
     );
     assert!(
         !rendered.contains("Limits"),
@@ -160,7 +160,7 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
     .expect("save auth profile");
 
     chat.set_auth_profile(Some("work".to_string()));
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     let rendered = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
@@ -184,6 +184,40 @@ async fn status_command_reflects_auth_profile_switch_account_state() {
         !std::iter::from_fn(|| rx.try_recv().ok())
             .any(|event| matches!(event, AppEvent::RefreshRateLimits { .. })),
         "API key profiles should not request a ChatGPT rate-limit refresh"
+    );
+}
+
+#[tokio::test]
+async fn status_command_opens_interactive_panel_instead_of_dumping_text() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    assert!(
+        chat.bottom_pane.no_modal_or_popup_active(),
+        "precondition: no popup before /status"
+    );
+
+    chat.dispatch_command(SlashCommand::Status);
+
+    assert!(
+        !chat.bottom_pane.no_modal_or_popup_active(),
+        "/status should open the interactive status panel"
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),
+        "/status should no longer dump a static history cell"
+    );
+}
+
+#[tokio::test]
+async fn stats_alias_opens_interactive_panel() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Stats);
+
+    assert!(
+        !chat.bottom_pane.no_modal_or_popup_active(),
+        "/stats should open the same interactive status panel"
     );
 }
 
@@ -215,7 +249,7 @@ async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config.model_reasoning_effort = None;
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     let rendered = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
@@ -234,7 +268,7 @@ async fn status_command_renders_instruction_sources_from_thread_session() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.instruction_source_paths = vec![chat.config.cwd.join("AGENTS.md")];
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
 
     let rendered = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
@@ -257,7 +291,7 @@ async fn status_command_overlapping_refreshes_update_matching_cells_only() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
     match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(_)) => {}
         other => panic!("expected first status output, got {other:?}"),
@@ -270,7 +304,7 @@ async fn status_command_overlapping_refreshes_update_matching_cells_only() {
         other => panic!("expected first refresh request, got {other:?}"),
     };
 
-    chat.dispatch_command(SlashCommand::Status);
+    chat.show_status_report();
     let second_rendered = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
             lines_to_single_string(&cell.display_lines(/*width*/ 80))

@@ -58,6 +58,7 @@ use codex_realtime_webrtc::RealtimeWebrtcEvent;
 use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
 use crate::history_cell::HistoryCell;
+use crate::slash_command::SlashCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioDeviceKind {
@@ -662,6 +663,7 @@ pub(crate) enum AppEvent {
     /// Start a durable background agent.
     StartBackgroundAgent {
         prompt: String,
+        initial_goal_objective: Option<String>,
         worktree_id: Option<String>,
     },
 
@@ -810,6 +812,15 @@ pub(crate) enum AppEvent {
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
+
+    /// Open the read-only pull request overview.
+    OpenPullRequestOverview,
+
+    /// Result of loading pull request data for the read-only overview.
+    PullRequestOverviewLoaded {
+        request_id: u64,
+        overview: crate::pull_request_summary::PullRequestOverview,
+    },
 
     /// Open the app link view in the bottom pane.
     OpenAppLink {
@@ -1473,6 +1484,20 @@ pub(crate) enum AppEvent {
     /// Re-open the permissions presets popup.
     OpenPermissionsPopup,
 
+    /// Run a built-in slash command, as if the user had typed it. Used by the
+    /// interactive `/status` panel to launch pickers (model, permissions, MCP…)
+    /// from its actionable rows.
+    DispatchSlashCommand(SlashCommand),
+
+    /// Append the detailed, text-based status report to the transcript. Reached
+    /// from the `/status` panel's "Full report" row as a drill-down.
+    ShowStatusReport,
+
+    /// Set or clear the extra prompt scoped to the current session/thread.
+    SetSessionPrompt {
+        prompt: Option<String>,
+    },
+
     /// Live update for the in-progress voice recording placeholder. Carries
     /// the placeholder `id` and the text to display (e.g., an ASCII meter).
     #[cfg(not(target_os = "linux"))]
@@ -1540,6 +1565,10 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         summary: crate::chatwidget::StatusLineGitSummary,
     },
+    /// Request the current native schedules for status-line countdown rendering.
+    StatusLineSchedulesRefresh {
+        thread_id: ThreadId,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
@@ -1558,6 +1587,13 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the terminal-title setup UI without changing config.
     TerminalTitleSetupCancelled,
+
+    /// Apply a user-confirmed final message summary item ordering/selection.
+    MessageSummarySetup {
+        items: Vec<crate::history_cell::MessageSummaryItem>,
+    },
+    /// Dismiss the final message summary setup UI without changing config.
+    MessageSummarySetupCancelled,
 
     /// Apply a user-confirmed syntax theme selection.
     SyntaxThemeSelected {

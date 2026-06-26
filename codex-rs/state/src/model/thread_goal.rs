@@ -16,6 +16,7 @@ pub enum ThreadGoalStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -28,6 +29,7 @@ impl ThreadGoalStatus {
             Self::Blocked => "blocked",
             Self::UsageLimited => "usage_limited",
             Self::BudgetLimited => "budget_limited",
+            Self::Deferred => "deferred",
             Self::Complete => "complete",
             Self::Cancelled => "cancelled",
         }
@@ -52,6 +54,7 @@ impl TryFrom<&str> for ThreadGoalStatus {
             "blocked" => Ok(Self::Blocked),
             "usage_limited" => Ok(Self::UsageLimited),
             "budget_limited" => Ok(Self::BudgetLimited),
+            "deferred" => Ok(Self::Deferred),
             "complete" => Ok(Self::Complete),
             "cancelled" | "canceled" => Ok(Self::Cancelled),
             other => Err(anyhow!("unknown thread goal status `{other}`")),
@@ -155,6 +158,7 @@ pub enum ThreadGoalPlanNodeStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -168,6 +172,7 @@ impl ThreadGoalPlanNodeStatus {
             Self::Blocked => "blocked",
             Self::UsageLimited => "usage_limited",
             Self::BudgetLimited => "budget_limited",
+            Self::Deferred => "deferred",
             Self::Complete => "complete",
             Self::Cancelled => "cancelled",
         }
@@ -185,6 +190,7 @@ impl TryFrom<&str> for ThreadGoalPlanNodeStatus {
             "blocked" => Ok(Self::Blocked),
             "usage_limited" => Ok(Self::UsageLimited),
             "budget_limited" => Ok(Self::BudgetLimited),
+            "deferred" => Ok(Self::Deferred),
             "complete" => Ok(Self::Complete),
             "cancelled" | "canceled" => Ok(Self::Cancelled),
             other => Err(anyhow!("unknown thread goal plan node status `{other}`")),
@@ -200,6 +206,7 @@ impl From<ThreadGoalStatus> for ThreadGoalPlanNodeStatus {
             ThreadGoalStatus::Blocked => Self::Blocked,
             ThreadGoalStatus::UsageLimited => Self::UsageLimited,
             ThreadGoalStatus::BudgetLimited => Self::BudgetLimited,
+            ThreadGoalStatus::Deferred => Self::Deferred,
             ThreadGoalStatus::Complete => Self::Complete,
             ThreadGoalStatus::Cancelled => Self::Cancelled,
         }
@@ -253,6 +260,7 @@ pub struct ThreadGoalPlanUsageSummary {
     pub blocked_node_count: i64,
     pub usage_limited_node_count: i64,
     pub budget_limited_node_count: i64,
+    pub deferred_node_count: i64,
     pub cancelled_node_count: i64,
     pub total_tokens_used: i64,
     pub total_time_used_seconds: i64,
@@ -311,6 +319,7 @@ impl ThreadGoalPlanSnapshot {
             blocked_node_count: 0,
             usage_limited_node_count: 0,
             budget_limited_node_count: 0,
+            deferred_node_count: 0,
             cancelled_node_count: 0,
             total_tokens_used: 0,
             total_time_used_seconds: 0,
@@ -328,6 +337,7 @@ impl ThreadGoalPlanSnapshot {
                 ThreadGoalPlanNodeStatus::Blocked => summary.blocked_node_count += 1,
                 ThreadGoalPlanNodeStatus::UsageLimited => summary.usage_limited_node_count += 1,
                 ThreadGoalPlanNodeStatus::BudgetLimited => summary.budget_limited_node_count += 1,
+                ThreadGoalPlanNodeStatus::Deferred => summary.deferred_node_count += 1,
                 ThreadGoalPlanNodeStatus::Complete => summary.completed_node_count += 1,
                 ThreadGoalPlanNodeStatus::Cancelled => summary.cancelled_node_count += 1,
             }

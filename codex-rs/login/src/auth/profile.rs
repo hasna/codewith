@@ -200,16 +200,24 @@ pub fn list_auth_profiles(
         }
         let profile_dir = entry.path();
         let metadata = load_profile_metadata(&profile_dir)?;
+        let profile_auth =
+            if metadata.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt {
+                load_optional_profile_auth(codex_home, auth_credentials_store_mode, &name)?
+            } else {
+                None
+            };
+        let active = active_profile.as_deref() == Some(name.as_str())
+            && match profile_auth.as_ref() {
+                Some(auth) => active_auth.as_ref().is_some_and(|active| active == auth),
+                None => true,
+            };
         if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
-            let active = active_profile.as_deref() == Some(name.as_str());
             profiles.push(profile_from_metadata(name, metadata, active));
             continue;
         }
-        let storage = create_auth_storage(profile_dir, auth_credentials_store_mode);
-        if let Some(auth) = storage.load()? {
-            let active = active_profile.as_deref() == Some(name.as_str())
-                && active_auth.as_ref().is_some_and(|active| active == &auth);
-            profiles.push(profile_from_auth(name, &auth, active, metadata));
+        match profile_auth {
+            Some(auth) => profiles.push(profile_from_auth(name, &auth, active, metadata)),
+            None => profiles.push(profile_from_metadata(name, metadata, active)),
         }
     }
     sort_auth_profiles(codex_home, &mut profiles)?;
@@ -707,8 +715,40 @@ fn load_active_auth(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> Result<Option<AuthDotJson>, AuthProfileError> {
-    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    Ok(storage.load()?)
+    load_auth_with_fallback(
+        codex_home.to_path_buf(),
+        auth_credentials_store_mode,
+        /*profile_name*/ None,
+    )
+}
+
+fn load_auth_with_fallback(
+    storage_home: PathBuf,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    profile_name: Option<&str>,
+) -> Result<Option<AuthDotJson>, AuthProfileError> {
+    let primary_storage = create_auth_storage(storage_home.clone(), auth_credentials_store_mode);
+    match primary_storage.load() {
+        Ok(Some(auth)) => Ok(Some(auth)),
+        Ok(None) if auth_credentials_store_mode != AuthCredentialsStoreMode::File => {
+            let fallback_storage =
+                create_auth_storage(storage_home, AuthCredentialsStoreMode::File);
+            fallback_storage.load().map_err(Into::into)
+        }
+        Ok(None) => Ok(None),
+        Err(err) if auth_credentials_store_mode != AuthCredentialsStoreMode::File => {
+            tracing::debug!(
+                profile = profile_name.unwrap_or("<root>"),
+                mode = ?auth_credentials_store_mode,
+                error = %err,
+                "failed to load auth from configured storage, falling back to file"
+            );
+            let fallback_storage =
+                create_auth_storage(storage_home, AuthCredentialsStoreMode::File);
+            fallback_storage.load().map_err(Into::into)
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn save_profile_auth(
@@ -746,8 +786,7 @@ fn load_optional_profile_auth(
             name: name.to_string(),
         });
     }
-    let storage = create_auth_storage(profile_dir, auth_credentials_store_mode);
-    Ok(storage.load()?)
+    load_auth_with_fallback(profile_dir, auth_credentials_store_mode, Some(name))
 }
 
 fn delete_profile_storage_dir(

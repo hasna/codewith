@@ -17,6 +17,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context_manager::estimate_response_item_model_visible_bytes;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -39,7 +40,9 @@ use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
+use crate::session::auth_profile_auto_switch::AuthProfileAutoSwitchTurnState;
 use crate::session::session::Session;
+use crate::session::session::SessionSettingsUpdate;
 use crate::session::turn_context::TurnContext;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
@@ -79,6 +82,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::build_hook_prompt_message;
@@ -100,6 +104,8 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_stream_parser::AssistantTextChunk;
 use codex_utils_stream_parser::AssistantTextStreamParser;
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -142,16 +148,41 @@ pub(crate) async fn run_turn(
 ) -> Option<String> {
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.runtime_model_client().new_session());
+    let mut auth_profile_auto_switch = AuthProfileAutoSwitchTurnState::default();
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
-        let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-            .await;
-        error!("Failed to run pre-sampling compact");
-        return None;
+    loop {
+        match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
+            Ok(()) => break,
+            Err(CodexErr::UsageLimitReached(err)) => {
+                if switch_auth_profile_for_usage_limit(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                    &mut auth_profile_auto_switch,
+                    &err,
+                )
+                .await
+                {
+                    continue;
+                }
+                let err = CodexErr::UsageLimitReached(err);
+                let error = err.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                error!("Failed to run pre-sampling compact");
+                return None;
+            }
+            Err(err) => {
+                let error = err.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                error!("Failed to run pre-sampling compact");
+                return None;
+            }
+        }
     }
 
     sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
@@ -185,6 +216,7 @@ pub(crate) async fn run_turn(
 
     let mut last_agent_message: Option<String> = None;
     let mut stop_hook_active = false;
+    let mut sampling_context_compact_attempted = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
@@ -238,6 +270,7 @@ pub(crate) async fn run_turn(
         .await
         {
             Ok(sampling_request_output) => {
+                sampling_context_compact_attempted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -282,10 +315,30 @@ pub(crate) async fn run_turn(
                     )
                     .await
                     {
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
-                        return None;
+                        if let CodexErr::UsageLimitReached(usage_err) = err {
+                            if switch_auth_profile_for_usage_limit(
+                                &sess,
+                                &turn_context,
+                                &mut client_session,
+                                &mut auth_profile_auto_switch,
+                                &usage_err,
+                            )
+                            .await
+                            {
+                                can_drain_pending_input = false;
+                                continue;
+                            }
+                            let err = CodexErr::UsageLimitReached(usage_err);
+                            let error = err.to_codex_protocol_error();
+                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                                .await;
+                            return None;
+                        } else {
+                            let error = err.to_codex_protocol_error();
+                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                                .await;
+                            return None;
+                        }
                     }
                     can_drain_pending_input = !model_needs_follow_up;
                     continue;
@@ -342,6 +395,74 @@ pub(crate) async fn run_turn(
                 // Aborted turn is reported via a different event.
                 break;
             }
+            Err(err @ CodexErr::ContextWindowExceeded) if !sampling_context_compact_attempted => {
+                sampling_context_compact_attempted = true;
+                info!(
+                    turn_id = %turn_context.sub_id,
+                    error = %err,
+                    "sampling request exceeded context window; running auto compact before retry"
+                );
+                if let Err(err) = run_auto_compact(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                    InitialContextInjection::BeforeLastUserMessage,
+                    CompactionReason::ContextLimit,
+                    CompactionPhase::MidTurn,
+                )
+                .await
+                {
+                    if let CodexErr::UsageLimitReached(usage_err) = err {
+                        if switch_auth_profile_for_usage_limit(
+                            &sess,
+                            &turn_context,
+                            &mut client_session,
+                            &mut auth_profile_auto_switch,
+                            &usage_err,
+                        )
+                        .await
+                        {
+                            can_drain_pending_input = false;
+                            continue;
+                        }
+                        let err = CodexErr::UsageLimitReached(usage_err);
+                        let error = err.to_codex_protocol_error();
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                            .await;
+                        return None;
+                    } else {
+                        let error = err.to_codex_protocol_error();
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                            .await;
+                        return None;
+                    }
+                }
+                can_drain_pending_input = false;
+                continue;
+            }
+            Err(CodexErr::UsageLimitReached(err)) => {
+                if switch_auth_profile_for_usage_limit(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                    &mut auth_profile_auto_switch,
+                    &err,
+                )
+                .await
+                {
+                    can_drain_pending_input = false;
+                    continue;
+                }
+                let e = CodexErr::UsageLimitReached(err);
+                info!("Turn error: {e:#}");
+                let error = e.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                sess.send_event(&turn_context, event).await;
+                break;
+            }
             Err(codex_error @ CodexErr::InvalidImageRequest()) => {
                 {
                     let mut state = sess.state.lock().await;
@@ -380,6 +501,62 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
+}
+
+async fn switch_auth_profile_for_usage_limit(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: &mut ModelClientSession,
+    auth_profile_auto_switch: &mut AuthProfileAutoSwitchTurnState,
+    err: &UsageLimitReachedError,
+) -> bool {
+    let previous_profile = sess.selected_auth_profile().await;
+    let Some(next_profile) = auth_profile_auto_switch
+        .next_profile_for_usage_limit(sess, err)
+        .await
+    else {
+        return false;
+    };
+
+    let updates = SessionSettingsUpdate {
+        auth_profile: Some(Some(next_profile.clone())),
+        ..Default::default()
+    };
+    if let Err(err) = sess.update_settings(updates).await {
+        warn!(
+            previous_auth_profile = ?previous_profile,
+            next_auth_profile = %next_profile,
+            "failed to auto-switch auth profile after usage limit: {err}"
+        );
+        sess.send_event(
+            turn_context,
+            EventMsg::Warning(WarningEvent {
+                message: format!(
+                    "Auth profile auto-switch could not switch to {next_profile}: {err}"
+                ),
+            }),
+        )
+        .await;
+        return false;
+    }
+
+    *client_session = sess.runtime_model_client().new_session();
+    let previous_label = previous_profile.as_deref().unwrap_or("default");
+    info!(
+        previous_auth_profile = previous_label,
+        next_auth_profile = %next_profile,
+        "auto-switched auth profile after usage limit"
+    );
+    sess.send_event(
+        turn_context,
+        EventMsg::Warning(WarningEvent {
+            message: format!(
+                "Auth profile auto-switch: usage limit reached on {previous_label}; retrying with {next_profile}."
+            ),
+        }),
+    )
+    .await;
+    true
 }
 
 async fn turn_diff_display_roots(turn_context: &TurnContext) -> Vec<(String, PathBuf)> {
@@ -978,9 +1155,7 @@ pub(crate) fn build_prompt(
         base_instructions,
         personality: turn_context.personality,
         output_schema: turn_context.final_output_json_schema.clone(),
-        output_schema_strict: !crate::guardian::is_guardian_reviewer_source(
-            &turn_context.session_source,
-        ),
+        output_schema_strict: true,
     }
 }
 
@@ -1797,6 +1972,7 @@ async fn try_run_sampling_request(
         turn_context.provider.info().name.as_str(),
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
+    reject_oversized_sampling_prompt(prompt, turn_context.as_ref())?;
     let mut stream = client_session
         .stream(
             prompt,
@@ -2257,6 +2433,61 @@ async fn try_run_sampling_request(
     }
 
     outcome
+}
+
+fn reject_oversized_sampling_prompt(
+    prompt: &Prompt,
+    turn_context: &TurnContext,
+) -> CodexResult<()> {
+    if !turn_context.enforce_context_window_before_sampling {
+        return Ok(());
+    }
+
+    let Some(context_window) = turn_context.model_context_window() else {
+        return Ok(());
+    };
+    if context_window <= 0 {
+        return Ok(());
+    }
+
+    let estimated_input_tokens = estimate_sampling_prompt_input_tokens(prompt);
+    if estimated_input_tokens <= context_window {
+        return Ok(());
+    }
+
+    warn!(
+        turn_id = %turn_context.sub_id,
+        model = %turn_context.model_info.slug,
+        estimated_input_tokens,
+        context_window,
+        "sampling prompt exceeds local model context cap; skipping provider request"
+    );
+    Err(CodexErr::ContextWindowExceeded)
+}
+
+fn estimate_sampling_prompt_input_tokens(prompt: &Prompt) -> i64 {
+    let instruction_tokens =
+        i64::try_from(approx_token_count(&prompt.base_instructions.text)).unwrap_or(i64::MAX);
+    let input_tokens = prompt
+        .input
+        .iter()
+        .map(estimate_response_item_model_visible_bytes)
+        .map(approx_tokens_from_byte_count_i64)
+        .fold(0i64, i64::saturating_add);
+    let tool_tokens = prompt
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_string(tool)
+                .map(|serialized| approx_token_count(&serialized))
+                .unwrap_or_default()
+        })
+        .map(|tokens| i64::try_from(tokens).unwrap_or(i64::MAX))
+        .fold(0i64, i64::saturating_add);
+
+    instruction_tokens
+        .saturating_add(input_tokens)
+        .saturating_add(tool_tokens)
 }
 
 pub(crate) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {

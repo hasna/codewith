@@ -167,6 +167,84 @@ async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn create_goal_plan_appends_followup_nodes_to_active_plan() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "first",
+                    "objective": "Run the first goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("plan id should be returned"))?
+        .to_string();
+
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-append-goal-plan",
+        json!({
+            "append_to_plan_id": plan_id,
+            "goals": [
+                {
+                    "key": "second",
+                    "objective": "Run the appended follow-up goal",
+                    "depends_on": ["first"],
+                    "token_budget": 1000
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["objective"], "Run the first goal");
+    assert_eq!(result["activatedGoal"], serde_json::Value::Null);
+    assert_eq!(result["goalPlans"][0]["nodeCount"], 2);
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "active");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "pending");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["dependsOn"][0], "first");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["tokenBudget"], 1000);
+
+    let plan_events = harness.sink.goal_plan_events();
+    assert_eq!(2, plan_events.len());
+    assert_eq!(2, plan_events[1].node_count);
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-first-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Run the appended follow-up goal"
+    );
+    assert_eq!(result["activatedGoal"]["tokenBudget"], 1000);
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "complete");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "active");
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -427,6 +505,89 @@ async fn update_goal_uses_current_auto_execute_config_after_mid_turn_change() ->
 }
 
 #[tokio::test]
+async fn update_goal_can_defer_and_activate_independent_ready_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime.clone(),
+        thread_id,
+        GoalExtensionConfig {
+            enabled: true,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
+            max_auto_goals_per_plan: 12,
+            max_tokens_per_goal_plan: None,
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-deferred-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "investigate",
+                        "objective": "Investigate deferred branch",
+                        "priority": 10
+                    },
+                    {
+                        "key": "dependent",
+                        "objective": "Run only after deferred work completes",
+                        "priority": 5,
+                        "depends_on": ["investigate"]
+                    },
+                    {
+                        "key": "independent",
+                        "objective": "Run independent goal after deferral",
+                        "priority": 0
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-defer-first-goal",
+        json!({ "status": "deferred" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["status"], "deferred");
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Run independent goal after deferral"
+    );
+    assert_eq!(result["goalPlans"][0]["status"], "active");
+    assert_eq!(result["goalPlans"][0]["deferredNodeCount"], 1);
+    assert_eq!(
+        vec!["deferred", "pending", "active"],
+        result["goalPlans"][0]["nodes"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
+            .iter()
+            .map(|node| node["status"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("independent goal should be active"))?;
+    assert_eq!("Run independent goal after deferral", goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
 async fn update_goal_can_complete_auto_activated_next_goal_in_same_turn() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -539,6 +700,78 @@ async fn create_goal_plan_rejects_invalid_node_keys() -> anyhow::Result<()> {
         err,
         FunctionCallError::RespondToModel(
             "goal plan node key `invalid key` must contain only ASCII letters, numbers, underscores, or hyphens"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_append_rejects_replacement_and_budget_options() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+
+    let clear_err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-append-with-clear",
+            json!({
+                "append_to_plan_id": "plan-123",
+                "clear_existing_goal": true,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Append with an invalid clear request"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("append with clear_existing_goal should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        clear_err,
+        FunctionCallError::RespondToModel(
+            "append_to_plan_id cannot be combined with clear_existing_goal".to_string()
+        )
+    );
+
+    let budget_err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-append-with-plan-budget",
+            json!({
+                "append_to_plan_id": "plan-123",
+                "max_tokens_per_goal_plan": 1000,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Append with an invalid plan budget request"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("append with max_tokens_per_goal_plan should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        budget_err,
+        FunctionCallError::RespondToModel(
+            "append_to_plan_id cannot be combined with max_tokens_per_goal_plan; appending does not change an existing plan budget"
                 .to_string()
         )
     );
@@ -1161,6 +1394,84 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal_plan")
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-loop-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "init",
+                        "objective": "Initialize a headless loop run"
+                    },
+                    {
+                        "key": "finish",
+                        "objective": "Finish the headless loop run",
+                        "depends_on": ["init"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+
+    let plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(codex_state::ThreadGoalPlanStatus::Blocked, plan.plan.status);
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Blocked,
+        plan.nodes[0].status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Pending,
+        plan.nodes[1].status
+    );
+
+    let pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::Blocked,
+    )
+    .await?;
+    assert_eq!(1, pending.len());
+    assert_eq!(Some(goal.goal_id.as_str()), pending[0].source_id.as_deref());
+    assert_eq!(Some("turn-1"), pending[0].turn_id.as_deref());
+    assert_eq!(pending[0].request_payload_json["reason"], "turn-error");
+    assert_eq!(
+        pending[0].request_payload_json["terminalError"],
+        json!({
+            "codexErrorInfo": "context_window_exceeded",
+            "code": "context_window_exceeded",
+            "action": "The turn exceeded the model context window. Reduce prompt/history size or run a cleanup/compaction before retrying the loop.",
+        })
+    );
     Ok(())
 }
 
@@ -2885,6 +3196,7 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
         codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Deferred => ThreadGoalStatus::Deferred,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
         codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }

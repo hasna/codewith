@@ -87,6 +87,14 @@ pub(crate) enum StatusLineItem {
     #[strum(to_string = "run-state", serialize = "status")]
     Status,
 
+    /// Time until the next active native loop or one-time schedule.
+    #[strum(
+        to_string = "schedule-countdown",
+        serialize = "loop-countdown",
+        serialize = "next-schedule"
+    )]
+    ScheduleCountdown,
+
     /// Active permission profile or sandbox summary.
     Permissions,
 
@@ -160,7 +168,12 @@ impl StatusLineItem {
             StatusLineItem::BranchChanges => {
                 "Committed branch changes against the default branch (omitted when unavailable)"
             }
-            StatusLineItem::Status => "Compact session run-state text (Ready, Working, Thinking)",
+            StatusLineItem::Status => {
+                "Compact session run-state text (Idle, Working, Thinking, Waiting)"
+            }
+            StatusLineItem::ScheduleCountdown => {
+                "Time until the next active native loop or schedule (omitted when none is scheduled)"
+            }
             StatusLineItem::Permissions => "Active permission profile or sandbox mode",
             StatusLineItem::ApprovalMode => "Active command approval mode",
             StatusLineItem::AuthProfile => "Selected authentication profile",
@@ -206,6 +219,7 @@ impl StatusLineItem {
             StatusLineItem::PullRequestNumber => StatusSurfacePreviewItem::PullRequestNumber,
             StatusLineItem::BranchChanges => StatusSurfacePreviewItem::BranchChanges,
             StatusLineItem::Status => StatusSurfacePreviewItem::Status,
+            StatusLineItem::ScheduleCountdown => StatusSurfacePreviewItem::ScheduleCountdown,
             StatusLineItem::Permissions => StatusSurfacePreviewItem::Permissions,
             StatusLineItem::ApprovalMode => StatusSurfacePreviewItem::ApprovalMode,
             StatusLineItem::AuthProfile => StatusSurfacePreviewItem::AuthProfile,
@@ -479,6 +493,26 @@ mod tests {
         assert_eq!(
             "status".parse::<StatusLineItem>(),
             Ok(StatusLineItem::Status)
+        );
+    }
+
+    #[test]
+    fn schedule_countdown_is_selectable_and_accepts_aliases() {
+        assert_eq!(
+            StatusLineItem::ScheduleCountdown.to_string(),
+            "schedule-countdown"
+        );
+        assert_eq!(
+            "schedule-countdown".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ScheduleCountdown)
+        );
+        assert_eq!(
+            "loop-countdown".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ScheduleCountdown)
+        );
+        assert_eq!(
+            "next-schedule".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ScheduleCountdown)
         );
     }
 

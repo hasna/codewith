@@ -181,6 +181,13 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
     } else {
         None
     };
+    let merge_disabled_reason = if worktree.lifecycle_status != WorktreeLifecycleStatus::Active {
+        Some("Only active worktrees can refresh merge candidates".to_string())
+    } else if worktree.dirty {
+        Some("Dirty worktrees must be cleaned up before refreshing merge candidates".to_string())
+    } else {
+        None
+    };
     let mut items = vec![
         worktree_action_item(
             "Read details",
@@ -225,9 +232,8 @@ fn worktree_actions_params(worktree: Worktree, policy: &WorktreePolicy) -> Selec
         worktree_action_item(
             "Merge candidate",
             "Dry-run merge this worktree into the current target",
-            worktree.lifecycle_status != WorktreeLifecycleStatus::Active,
-            (worktree.lifecycle_status != WorktreeLifecycleStatus::Active)
-                .then(|| "Only active worktrees can refresh merge candidates".to_string()),
+            merge_disabled_reason.is_some(),
+            merge_disabled_reason,
             move || AppEvent::RefreshWorktreeMergeCandidate {
                 worktree_id: merge_worktree_id.clone(),
                 base_repo_path: merge_base_repo_path.clone(),

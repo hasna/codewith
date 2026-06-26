@@ -251,6 +251,7 @@ mod tests {
                 },
             },
             personality: None,
+            session_prompt: None,
         }
     }
 

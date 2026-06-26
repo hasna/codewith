@@ -58,6 +58,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],

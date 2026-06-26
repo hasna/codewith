@@ -376,6 +376,7 @@ impl GoalService {
                 goal.status,
                 codex_state::ThreadGoalStatus::Complete
                     | codex_state::ThreadGoalStatus::BudgetLimited
+                    | codex_state::ThreadGoalStatus::Deferred
                     | codex_state::ThreadGoalStatus::Cancelled
             )
         }) {
@@ -453,7 +454,9 @@ async fn sync_external_goal_without_runtime(
 ) -> Result<Option<codex_state::ThreadGoalPlanAdvanceOutcome>, GoalServiceError> {
     if matches!(
         goal.status,
-        codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::Complete
+        codex_state::ThreadGoalStatus::Active
+            | codex_state::ThreadGoalStatus::Deferred
+            | codex_state::ThreadGoalStatus::Complete
     ) && let Some(previous_goal) = previous_goal
         && matches!(
             previous_goal.status,
@@ -481,6 +484,7 @@ async fn sync_external_goal_without_runtime(
             codex_state::ThreadGoalStatus::Active
             | codex_state::ThreadGoalStatus::Paused
             | codex_state::ThreadGoalStatus::BudgetLimited
+            | codex_state::ThreadGoalStatus::Deferred
             | codex_state::ThreadGoalStatus::Complete
             | codex_state::ThreadGoalStatus::Cancelled => unreachable!("status matched above"),
         };
@@ -493,16 +497,27 @@ async fn sync_external_goal_without_runtime(
         }
     }
 
-    let plan_update = if goal.status == codex_state::ThreadGoalStatus::Complete {
-        state_db
+    let plan_update = match goal.status {
+        codex_state::ThreadGoalStatus::Complete => state_db
             .thread_goals()
             .complete_goal_plan_node_and_maybe_advance(thread_id, goal, auto_execute)
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to advance goal plan: {err}"))
-            })?
-    } else {
-        state_db
+            })?,
+        codex_state::ThreadGoalStatus::Deferred => state_db
+            .thread_goals()
+            .defer_goal_plan_node_and_maybe_advance(thread_id, goal, auto_execute)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to advance deferred goal plan: {err}"))
+            })?,
+        codex_state::ThreadGoalStatus::Active
+        | codex_state::ThreadGoalStatus::Paused
+        | codex_state::ThreadGoalStatus::Blocked
+        | codex_state::ThreadGoalStatus::UsageLimited
+        | codex_state::ThreadGoalStatus::BudgetLimited
+        | codex_state::ThreadGoalStatus::Cancelled => state_db
             .thread_goals()
             .sync_goal_plan_node_for_goal(thread_id, goal)
             .await
@@ -510,7 +525,7 @@ async fn sync_external_goal_without_runtime(
             .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
                 snapshot,
                 activated_goal: None,
-            })
+            }),
     };
     Ok(plan_update)
 }

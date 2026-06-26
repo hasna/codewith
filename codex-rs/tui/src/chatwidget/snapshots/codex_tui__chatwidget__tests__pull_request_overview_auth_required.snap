@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/pull_request_display.rs
+assertion_line: 66
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Needs attention
+
+  [Current]  Open
+
+  Search PRs
+› Refresh                         Reload pull requests
+  GitHub authentication required  Run gh auth login for this workspace. To get started with GitHu…
+
+  Read-only: no comments, reviews, pushes, branch updates, merges, or auto-fix actions.
+  Press enter to confirm or esc to go back

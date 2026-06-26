@@ -61,6 +61,7 @@ impl ChatWidget {
                         /*summary*/ None,
                         /*service_tier*/ None,
                         /*collaboration_mode*/ None,
+                        /*session_prompt*/ None,
                         Some(personality),
                     )));
                     tx.send(AppEvent::UpdatePersonality(personality));

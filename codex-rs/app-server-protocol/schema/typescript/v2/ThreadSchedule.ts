@@ -5,4 +5,4 @@ import type { ThreadSchedulePromptSource } from "./ThreadSchedulePromptSource";
 import type { ThreadScheduleSpec } from "./ThreadScheduleSpec";
 import type { ThreadScheduleStatus } from "./ThreadScheduleStatus";
 
-export type ThreadSchedule = { threadId: string, scheduleId: string, prompt: string, promptSource: ThreadSchedulePromptSource, schedule: ThreadScheduleSpec, timezone: string, status: ThreadScheduleStatus, nextRunAt: number | null, lastRunAt: number | null, expiresAt: number | null, failureCount: number, leaseExpiresAt: number | null, createdAt: number, updatedAt: number, };
+export type ThreadSchedule = { threadId: string, scheduleId: string, parentScheduleId: string | null, nestingDepth: number, prompt: string, promptSource: ThreadSchedulePromptSource, schedule: ThreadScheduleSpec, timezone: string, status: ThreadScheduleStatus, nextRunAt: number | null, lastRunAt: number | null, expiresAt: number | null, failureCount: number, leaseExpiresAt: number | null, createdAt: number, updatedAt: number, };

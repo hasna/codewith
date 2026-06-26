@@ -4,6 +4,7 @@ import SwiftUI
 /// for the current session without leaving it. Opened by the top-right button.
 struct ConfigPanel: View {
     @Bindable var model: AppModel
+    @State private var confirmingFullAccess = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,13 +25,20 @@ struct ConfigPanel: View {
                 pickerRow("Gateway", value: model.provider ?? "openai", options: model.availableProviders) { model.setProvider($0) }
                 pickerRow("Effort", value: model.effort, options: model.availableEfforts) { model.setEffort($0) }
 
+                if let configError = model.configError {
+                    warningRow(configError)
+                }
+
                 Rectangle().fill(Theme.separator).frame(height: 1).padding(.vertical, 2)
 
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundStyle(Theme.warning)
                     Text("Full access").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.warning)
                     Spacer()
-                    GlassToggle(on: model.fullAccess) { model.setFullAccess(!model.fullAccess) }
+                    GlassToggle(on: model.fullAccess) { toggleFullAccess() }
+                        .disabled(!model.canUseFullAccess && !model.fullAccess)
+                        .opacity(!model.canUseFullAccess && !model.fullAccess ? 0.45 : 1)
+                        .help(model.canUseFullAccess ? "" : "Full access is blocked by managed requirements.")
                 }
             }
             .padding(14)
@@ -62,6 +70,37 @@ struct ConfigPanel: View {
         }
         .frame(width: 232)
         .background(Theme.canvas)
+        .confirmationDialog("Allow high-risk setting?", isPresented: $confirmingFullAccess) {
+            Button("Apply", role: .destructive) { model.setFullAccess(true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This can let CodeWith run with broader filesystem and network access.")
+        }
+    }
+
+    private func toggleFullAccess() {
+        guard model.fullAccess || model.canUseFullAccess else { return }
+        if !model.fullAccess, SettingsConfiguration.requiresConfirmation(sandbox: "danger-full-access") {
+            confirmingFullAccess = true
+        } else {
+            model.setFullAccess(!model.fullAccess)
+        }
+    }
+
+    private func warningRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.warning)
+                .padding(.top, 2)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.warning.opacity(0.08)))
     }
 
     private func pickerRow(_ label: String, value: String, options: [String], onSelect: @escaping (String) -> Void) -> some View {

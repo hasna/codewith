@@ -18,6 +18,29 @@ impl ChatWidget {
         self.refresh_status_surfaces();
     }
 
+    pub(super) fn final_message_separator(
+        &self,
+        elapsed_seconds: Option<u64>,
+        runtime_metrics: Option<RuntimeMetricsSummary>,
+    ) -> Option<history_cell::FinalMessageSeparator> {
+        if self.config.tui_message_summary.is_none() {
+            return Some(history_cell::FinalMessageSeparator::new(
+                elapsed_seconds,
+                runtime_metrics,
+            ));
+        }
+
+        let summary_items = self.message_summary_items();
+        if summary_items.is_empty() {
+            return None;
+        }
+        Some(history_cell::FinalMessageSeparator::new_with_items(
+            elapsed_seconds,
+            runtime_metrics,
+            summary_items,
+        ))
+    }
+
     pub(super) fn collect_runtime_metrics_delta(&mut self) {
         if let Some(delta) = self.session_telemetry.runtime_metrics_summary() {
             self.apply_runtime_metrics_delta(delta);
@@ -148,10 +171,11 @@ impl ChatWidget {
                 } else {
                     None
                 };
-                self.add_to_history(history_cell::FinalMessageSeparator::new(
-                    elapsed_seconds,
-                    runtime_metrics,
-                ));
+                if let Some(separator) =
+                    self.final_message_separator(elapsed_seconds, runtime_metrics)
+                {
+                    self.add_to_history(separator);
+                }
             }
             self.turn_runtime_metrics = RuntimeMetricsSummary::default();
             self.transcript.needs_final_message_separator = false;

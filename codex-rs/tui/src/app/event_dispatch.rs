@@ -488,6 +488,16 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::OpenPullRequestOverview => {
+                self.chat_widget.open_pull_request_overview();
+            }
+            AppEvent::PullRequestOverviewLoaded {
+                request_id,
+                overview,
+            } => {
+                self.chat_widget
+                    .show_pull_request_overview(request_id, overview);
+            }
             AppEvent::OpenAppLink {
                 app_id,
                 title,
@@ -1161,10 +1171,16 @@ impl App {
             }
             AppEvent::StartBackgroundAgent {
                 prompt,
+                initial_goal_objective,
                 worktree_id,
             } => {
-                self.start_background_agent(app_server, prompt, worktree_id)
-                    .await;
+                self.start_background_agent(
+                    app_server,
+                    prompt,
+                    initial_goal_objective,
+                    worktree_id,
+                )
+                .await;
             }
             AppEvent::StartExternalAgentChildThread {
                 runtime_id,
@@ -1932,6 +1948,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -1959,6 +1976,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -1991,6 +2009,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -2488,6 +2507,15 @@ impl App {
             AppEvent::OpenPermissionsPopup => {
                 self.chat_widget.open_permissions_popup();
             }
+            AppEvent::DispatchSlashCommand(command) => {
+                self.chat_widget.run_slash_command(command);
+            }
+            AppEvent::ShowStatusReport => {
+                self.chat_widget.show_status_report();
+            }
+            AppEvent::SetSessionPrompt { prompt } => {
+                self.chat_widget.apply_session_prompt(prompt);
+            }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
             }
@@ -2626,6 +2654,27 @@ impl App {
                 self.chat_widget.set_status_line_git_summary(cwd, summary);
                 self.refresh_status_line();
             }
+            AppEvent::StatusLineSchedulesRefresh { thread_id } => {
+                let result = app_server.thread_schedule_list(thread_id).await;
+                if self.current_displayed_thread_id() != Some(thread_id) {
+                    return Ok(AppRunControl::Continue);
+                }
+                match result {
+                    Ok(response) => {
+                        self.chat_widget
+                            .set_status_line_schedules(thread_id, response.data);
+                        self.refresh_status_line();
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            error = %err,
+                            "failed to refresh status-line schedules"
+                        );
+                        self.chat_widget
+                            .finish_status_line_schedule_refresh_failed(thread_id);
+                    }
+                }
+            }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
@@ -2655,6 +2704,29 @@ impl App {
             }
             AppEvent::TerminalTitleSetupCancelled => {
                 self.chat_widget.cancel_terminal_title_setup();
+            }
+            AppEvent::MessageSummarySetup { items } => {
+                let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let edit = crate::legacy_core::config::edit::message_summary_items_edit(&ids);
+                let apply_result = ConfigEditsBuilder::for_config(&self.config)
+                    .with_edits([edit])
+                    .apply()
+                    .await;
+                match apply_result {
+                    Ok(()) => {
+                        self.config.tui_message_summary = Some(ids.clone());
+                        self.chat_widget.setup_message_summary(items);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist message summary items; keeping previous selection");
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save message summary items: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::MessageSummarySetupCancelled => {
+                self.chat_widget.cancel_message_summary_setup();
             }
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = crate::legacy_core::config::edit::syntax_theme_edit(&name);
@@ -2759,6 +2831,7 @@ impl App {
                                 summary: None,
                                 service_tier: None,
                                 collaboration_mode: None,
+                                session_prompt: None,
                                 personality: None,
                             },
                             Err(err) => {

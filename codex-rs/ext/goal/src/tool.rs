@@ -367,10 +367,13 @@ impl GoalToolExecutor {
         let args: UpdateGoalArgs = parse_arguments(invocation.function_arguments()?)?;
         if !matches!(
             args.status,
-            ThreadGoalStatus::Complete | ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled
+            ThreadGoalStatus::Complete
+                | ThreadGoalStatus::Blocked
+                | ThreadGoalStatus::Deferred
+                | ThreadGoalStatus::Cancelled
         ) {
             return Err(FunctionCallError::RespondToModel(
-                "update_goal can only mark the existing goal complete, blocked, or cancelled; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
+                "update_goal can only mark the existing goal complete, blocked, deferred, or cancelled; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
                     .to_string(),
             ));
         }
@@ -389,9 +392,9 @@ impl GoalToolExecutor {
             invocation.turn_id.as_str(),
             match args.status {
                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
-                ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled => {
-                    codex_state::GoalAccountingMode::ActiveOrStopped
-                }
+                ThreadGoalStatus::Blocked
+                | ThreadGoalStatus::Deferred
+                | ThreadGoalStatus::Cancelled => codex_state::GoalAccountingMode::ActiveOrStopped,
                 ThreadGoalStatus::Active
                 | ThreadGoalStatus::Paused
                 | ThreadGoalStatus::UsageLimited
@@ -442,31 +445,58 @@ impl GoalToolExecutor {
         }
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
-        let plan_outcome = if args.status == ThreadGoalStatus::Complete {
-            let plan_config = self.plan_config.as_ref().ok_or_else(|| {
-                FunctionCallError::Fatal("goal update tool missing runtime config".to_string())
-            })?;
-            self.state_db
-                .thread_goals()
-                .complete_goal_plan_node_and_maybe_advance(
-                    self.thread_id,
-                    &goal,
-                    plan_config.current().auto_execute,
-                )
-                .await
-                .map_err(|err| {
-                    FunctionCallError::RespondToModel(format!("failed to advance goal plan: {err}"))
-                })?
-                .map(|outcome| (outcome.snapshot, outcome.activated_goal))
-        } else {
-            self.state_db
+        let plan_outcome = match args.status {
+            ThreadGoalStatus::Complete => {
+                let plan_config = self.plan_config.as_ref().ok_or_else(|| {
+                    FunctionCallError::Fatal("goal update tool missing runtime config".to_string())
+                })?;
+                self.state_db
+                    .thread_goals()
+                    .complete_goal_plan_node_and_maybe_advance(
+                        self.thread_id,
+                        &goal,
+                        plan_config.current().auto_execute,
+                    )
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "failed to advance goal plan: {err}"
+                        ))
+                    })?
+                    .map(|outcome| (outcome.snapshot, outcome.activated_goal))
+            }
+            ThreadGoalStatus::Deferred => {
+                let plan_config = self.plan_config.as_ref().ok_or_else(|| {
+                    FunctionCallError::Fatal("goal update tool missing runtime config".to_string())
+                })?;
+                self.state_db
+                    .thread_goals()
+                    .defer_goal_plan_node_and_maybe_advance(
+                        self.thread_id,
+                        &goal,
+                        plan_config.current().auto_execute,
+                    )
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "failed to advance deferred goal plan: {err}"
+                        ))
+                    })?
+                    .map(|outcome| (outcome.snapshot, outcome.activated_goal))
+            }
+            ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled => self
+                .state_db
                 .thread_goals()
                 .sync_goal_plan_node_for_goal(self.thread_id, &goal)
                 .await
                 .map_err(|err| {
                     FunctionCallError::RespondToModel(format!("failed to sync goal plan: {err}"))
                 })?
-                .map(|snapshot| (snapshot, None))
+                .map(|snapshot| (snapshot, None)),
+            ThreadGoalStatus::Active
+            | ThreadGoalStatus::Paused
+            | ThreadGoalStatus::UsageLimited
+            | ThreadGoalStatus::BudgetLimited => unreachable!("status validated above"),
         };
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
@@ -532,6 +562,7 @@ impl GoalToolExecutor {
         match existing_goal.status {
             codex_state::ThreadGoalStatus::Paused
             | codex_state::ThreadGoalStatus::Blocked
+            | codex_state::ThreadGoalStatus::Deferred
             | codex_state::ThreadGoalStatus::UsageLimited => {}
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 self.accounting_state.clear_active_goal();
@@ -901,6 +932,7 @@ fn protocol_status_from_state(status: codex_state::ThreadGoalStatus) -> ThreadGo
         codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Deferred => ThreadGoalStatus::Deferred,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
         codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
@@ -915,6 +947,7 @@ pub(crate) fn state_status_from_protocol(
         ThreadGoalStatus::Blocked => codex_state::ThreadGoalStatus::Blocked,
         ThreadGoalStatus::UsageLimited => codex_state::ThreadGoalStatus::UsageLimited,
         ThreadGoalStatus::BudgetLimited => codex_state::ThreadGoalStatus::BudgetLimited,
+        ThreadGoalStatus::Deferred => codex_state::ThreadGoalStatus::Deferred,
         ThreadGoalStatus::Complete => codex_state::ThreadGoalStatus::Complete,
         ThreadGoalStatus::Cancelled => codex_state::ThreadGoalStatus::Cancelled,
     }

@@ -110,6 +110,7 @@ pub(crate) enum GoalStatusIndicator {
     Paused,
     Blocked,
     UsageLimited,
+    Deferred,
     BudgetLimited {
         usage: Option<String>,
     },
@@ -586,6 +587,7 @@ pub(crate) fn goal_status_indicator_line(
         GoalStatusIndicator::Paused => "Goal paused (/goal resume)".to_string(),
         GoalStatusIndicator::Blocked => "Goal blocked (/goal resume)".to_string(),
         GoalStatusIndicator::UsageLimited => "Goal hit usage limits (/goal resume)".to_string(),
+        GoalStatusIndicator::Deferred => "Goal deferred (/goal resume)".to_string(),
         GoalStatusIndicator::BudgetLimited { usage } => {
             if let Some(usage) = usage {
                 format!("Goal unmet ({usage})")

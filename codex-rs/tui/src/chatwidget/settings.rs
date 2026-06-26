@@ -693,6 +693,7 @@ impl ChatWidget {
         self.set_approvals_reviewer(settings.approvals_reviewer.to_core());
         self.set_auth_profile(settings.auth_profile.clone());
         self.config.personality = settings.personality;
+        self.set_session_prompt_from_settings(settings.session_prompt.clone());
         self.set_auth_profile(settings.auth_profile.clone());
 
         let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
@@ -993,6 +994,7 @@ impl ChatWidget {
                 /*summary*/ None,
                 /*service_tier*/ None,
                 Some(self.effective_collaboration_mode()),
+                /*session_prompt*/ None,
                 /*personality*/ None,
             ),
         });

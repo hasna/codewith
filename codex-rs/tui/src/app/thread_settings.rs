@@ -129,6 +129,7 @@ impl App {
             summary,
             service_tier,
             collaboration_mode,
+            session_prompt,
             personality,
         } = op
         else {
@@ -150,6 +151,7 @@ impl App {
             summary: *summary,
             service_tier: service_tier.clone(),
             collaboration_mode: collaboration_mode.clone(),
+            session_prompt: session_prompt.clone(),
             personality: *personality,
             ..ThreadSettingsUpdateParams::default()
         };
@@ -234,5 +236,6 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.effort.is_some()
         || params.summary.is_some()
         || params.collaboration_mode.is_some()
+        || params.session_prompt.is_some()
         || params.personality.is_some()
 }

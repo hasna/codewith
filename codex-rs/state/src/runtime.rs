@@ -88,6 +88,8 @@ use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
 use std::collections::BTreeSet;
+use std::fs::OpenOptions;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -119,9 +121,14 @@ mod workflow_orchestrator;
 mod workflow_verifiers;
 mod workflows;
 
+const STATE_RUNTIME_STARTUP_LOCK_FILENAME: &str = ".state-runtime-startup.lock";
+const STATE_RUNTIME_STARTUP_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
+const STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::ThreadGoalPlanAdvanceOutcome;
+pub use goal_plans::ThreadGoalPlanAppendParams;
 pub use goal_plans::ThreadGoalPlanCreateParams;
 pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
@@ -172,6 +179,7 @@ pub use pending_interactions::PendingInteractionListParams;
 pub use pending_interactions::PendingInteractionPage;
 pub use pending_interactions::PendingInteractionRespondForSourceParams;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use schedules::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;
@@ -298,6 +306,56 @@ pub struct StateRuntime {
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
+pub struct StateRuntimeStartupLock {
+    _file: std::fs::File,
+}
+
+pub fn state_runtime_startup_lock_path(sqlite_home: &Path) -> PathBuf {
+    sqlite_home.join(STATE_RUNTIME_STARTUP_LOCK_FILENAME)
+}
+
+pub async fn acquire_state_runtime_startup_lock(
+    sqlite_home: &Path,
+) -> anyhow::Result<StateRuntimeStartupLock> {
+    tokio::fs::create_dir_all(sqlite_home).await?;
+    let lock_path = state_runtime_startup_lock_path(sqlite_home);
+    let deadline = Instant::now() + STATE_RUNTIME_STARTUP_LOCK_TIMEOUT;
+    loop {
+        if let Some(lock) = try_acquire_state_runtime_startup_lock(lock_path.clone()).await? {
+            return Ok(lock);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for Codewith state startup lock at {} after {:?}; another Codewith process may be starting, backfilling, or suspended while holding the lock",
+                lock_path.display(),
+                STATE_RUNTIME_STARTUP_LOCK_TIMEOUT
+            );
+        }
+        tokio::time::sleep(STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL).await;
+    }
+}
+
+async fn try_acquire_state_runtime_startup_lock(
+    lock_path: PathBuf,
+) -> anyhow::Result<Option<StateRuntimeStartupLock>> {
+    tokio::task::spawn_blocking(move || -> io::Result<Option<StateRuntimeStartupLock>> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path.as_path())?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(StateRuntimeStartupLock { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("state startup lock task failed: {err}"))?
+    .map_err(anyhow::Error::from)
+}
+
 impl StateRuntime {
     /// Initialize the state runtime using the provided Codewith home and default provider.
     ///
@@ -305,6 +363,15 @@ impl StateRuntime {
     /// keeping logs in a dedicated file to reduce lock contention with the
     /// rest of the state store.
     pub async fn init(codex_home: PathBuf, default_provider: String) -> anyhow::Result<Arc<Self>> {
+        let startup_lock = acquire_state_runtime_startup_lock(codex_home.as_path()).await?;
+        Self::init_with_acquired_startup_lock(codex_home, default_provider, &startup_lock).await
+    }
+
+    pub async fn init_with_acquired_startup_lock(
+        codex_home: PathBuf,
+        default_provider: String,
+        _startup_lock: &StateRuntimeStartupLock,
+    ) -> anyhow::Result<Arc<Self>> {
         Self::init_inner(
             codex_home,
             default_provider,
@@ -319,6 +386,7 @@ impl StateRuntime {
         default_provider: String,
         telemetry_override: &dyn DbTelemetry,
     ) -> anyhow::Result<Arc<Self>> {
+        let _startup_lock = acquire_state_runtime_startup_lock(codex_home.as_path()).await?;
         Self::init_inner(codex_home, default_provider, Some(telemetry_override)).await
     }
 
@@ -491,7 +559,7 @@ fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5))
+        .busy_timeout(Duration::from_secs(30))
         .log_statements(LevelFilter::Off)
 }
 
@@ -772,6 +840,33 @@ mod tests {
             .expect("integrity check should run");
 
         assert_eq!(result, vec!["ok".to_string()]);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn state_runtime_startup_lock_serializes_waiters() {
+        let codex_home = unique_temp_dir();
+        let first_lock = super::acquire_state_runtime_startup_lock(codex_home.as_path())
+            .await
+            .expect("first startup lock");
+        let mut second_lock = tokio::spawn({
+            let codex_home = codex_home.clone();
+            async move { super::acquire_state_runtime_startup_lock(codex_home.as_path()).await }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !second_lock.is_finished(),
+            "second startup lock should wait while first is held"
+        );
+
+        drop(first_lock);
+        let second_lock = tokio::time::timeout(std::time::Duration::from_secs(2), &mut second_lock)
+            .await
+            .expect("second startup lock should acquire after first drops")
+            .expect("second lock task should complete")
+            .expect("second startup lock should succeed");
+        drop(second_lock);
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 

@@ -2682,6 +2682,54 @@
             },
             "method": {
               "enum": [
+                "authProfile/list"
+              ],
+              "title": "AuthProfile/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "authProfile/switch"
+              ],
+              "title": "AuthProfile/switchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileSwitchParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/switchRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/logout"
               ],
               "title": "Account/logoutRequestMethod",
@@ -8372,6 +8420,100 @@
             "type": "string"
           }
         ]
+      },
+      "AuthProfileListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "AuthProfileListParams",
+        "type": "object"
+      },
+      "AuthProfileListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/AuthProfileSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "AuthProfileListResponse",
+        "type": "object"
+      },
+      "AuthProfileSummary": {
+        "properties": {
+          "accountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "authMode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AuthMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "plan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subscriptionProvider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active",
+          "name",
+          "subscriptionProvider"
+        ],
+        "type": "object"
+      },
+      "AuthProfileSwitchParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AuthProfileSwitchParams",
+        "type": "object"
+      },
+      "AuthProfileSwitchResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "profile": {
+            "$ref": "#/definitions/v2/AuthProfileSummary"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "AuthProfileSwitchResponse",
+        "type": "object"
       },
       "AutoCompactTokenLimitScope": {
         "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
@@ -19321,6 +19463,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "deferredNodeCount": {
+            "format": "int64",
+            "type": "integer"
+          },
           "maxTokens": {
             "format": "int64",
             "type": [
@@ -19391,6 +19537,7 @@
           "cancelledNodeCount",
           "completedNodeCount",
           "createdAt",
+          "deferredNodeCount",
           "nodeCount",
           "nodes",
           "pausedNodeCount",
@@ -19541,6 +19688,7 @@
           "blocked",
           "usageLimited",
           "budgetLimited",
+          "deferred",
           "complete",
           "cancelled"
         ],
@@ -19636,6 +19784,7 @@
           "blocked",
           "usageLimited",
           "budgetLimited",
+          "deferred",
           "complete",
           "cancelled"
         ],
@@ -22215,10 +22364,20 @@
               "null"
             ]
           },
+          "nestingDepth": {
+            "format": "int64",
+            "type": "integer"
+          },
           "nextRunAt": {
             "format": "int64",
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "parentScheduleId": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -22251,6 +22410,7 @@
         "required": [
           "createdAt",
           "failureCount",
+          "nestingDepth",
           "prompt",
           "promptSource",
           "schedule",
@@ -22276,6 +22436,12 @@
             "format": "int64",
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "parentScheduleId": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -22982,6 +23148,12 @@
             "$ref": "#/definitions/v2/SandboxPolicy"
           },
           "serviceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionPrompt": {
             "type": [
               "string",
               "null"

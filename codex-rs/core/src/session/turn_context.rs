@@ -82,6 +82,7 @@ pub struct TurnContext {
     pub(crate) timezone: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
+    pub(crate) session_prompt: Option<String>,
     pub(crate) compact_prompt: Option<String>,
     pub(crate) user_instructions: Option<String>,
     pub(crate) collaboration_mode: CollaborationMode,
@@ -97,6 +98,7 @@ pub struct TurnContext {
     pub features: ManagedFeatures,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
+    pub(crate) enforce_context_window_before_sampling: bool,
     pub(crate) codex_self_exe: Option<PathBuf>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) truncation_policy: TruncationPolicy,
@@ -274,6 +276,7 @@ impl TurnContext {
             timezone: self.timezone.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
+            session_prompt: self.session_prompt.clone(),
             compact_prompt: self.compact_prompt.clone(),
             user_instructions: self.user_instructions.clone(),
             collaboration_mode,
@@ -289,6 +292,7 @@ impl TurnContext {
             features,
             ghost_snapshot: self.ghost_snapshot.clone(),
             final_output_json_schema: self.final_output_json_schema.clone(),
+            enforce_context_window_before_sampling: self.enforce_context_window_before_sampling,
             codex_self_exe: self.codex_self_exe.clone(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             truncation_policy,
@@ -386,6 +390,7 @@ impl TurnContext {
             model_provider_id: Some(self.config.model_provider_id.clone()),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
+            session_prompt: self.session_prompt.clone(),
             multi_agent_version: Some(self.multi_agent_version),
             auth_profile: Some(self.config.selected_auth_profile.clone()),
             realtime_active: Some(self.realtime_active),
@@ -631,6 +636,7 @@ impl Session {
             timezone: Some(timezone),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
+            session_prompt: session_configuration.session_prompt.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration
                 .user_instructions
@@ -649,6 +655,7 @@ impl Session {
             features: per_turn_config.features.clone(),
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
+            enforce_context_window_before_sampling: false,
             codex_self_exe: per_turn_config.codex_self_exe.clone(),
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             truncation_policy: model_info.truncation_policy.into(),
@@ -667,6 +674,31 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
+        let prepared_auth_profile_switch = if let Some(auth_profile) = updates.auth_profile.clone()
+        {
+            match self
+                .services
+                .auth_manager
+                .prepare_auth_profile_switch(auth_profile)
+                .await
+            {
+                Ok(prepared) => Some(prepared),
+                Err(err) => {
+                    let message = format!("invalid thread settings override: {err}");
+                    self.send_event_raw(Event {
+                        id: sub_id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: message.clone(),
+                            codex_error_info: Some(CodexErrorInfo::BadRequest),
+                        }),
+                    })
+                    .await;
+                    return Err(CodexErr::InvalidRequest(message));
+                }
+            }
+        } else {
+            None
+        };
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
@@ -704,7 +736,9 @@ impl Session {
                         .clone();
                     let model_provider_changed = previous_model_provider_id
                         != next.original_config_do_not_use.model_provider_id;
-                    let model_runtime_configuration = model_provider_changed.then(|| next.clone());
+                    let model_runtime_configuration = (model_provider_changed
+                        || updates.auth_profile.is_some())
+                    .then(|| next.clone());
                     state.session_configuration = next.clone();
                     Ok((
                         next,
@@ -748,6 +782,11 @@ impl Session {
             }
         };
 
+        if let Some(prepared_auth_profile_switch) = prepared_auth_profile_switch {
+            self.services
+                .auth_manager
+                .apply_prepared_auth_profile_switch(prepared_auth_profile_switch);
+        }
         if let Some(model_runtime_configuration) = model_runtime_configuration.as_ref() {
             if let Some(startup_prewarm) = self.take_session_startup_prewarm().await {
                 startup_prewarm.abort();

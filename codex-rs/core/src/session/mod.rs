@@ -28,6 +28,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
+use crate::context::SessionPromptInstructions;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::exec_policy::ExecPolicyManager;
@@ -197,6 +198,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod auth_profile_auto_switch;
 mod config_lock;
 mod handlers;
 pub(crate) use handlers::inter_agent_communication as handle_inter_agent_communication;
@@ -606,6 +608,7 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             service_tier,
             developer_instructions: config.developer_instructions.clone(),
+            session_prompt: None,
             user_instructions,
             personality: config.personality,
             base_instructions,
@@ -1898,7 +1901,10 @@ impl Session {
             return;
         }
 
-        if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+        if !matches!(
+            msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
+        ) {
             return;
         }
 
@@ -3051,6 +3057,11 @@ impl Session {
             && !developer_instructions.is_empty()
         {
             developer_sections.push(developer_instructions.to_string());
+        }
+        if let Some(session_prompt) = turn_context.session_prompt.as_deref()
+            && let Some(instructions) = SessionPromptInstructions::from_prompt(session_prompt)
+        {
+            developer_sections.push(instructions.render());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if turn_context.config.include_collaboration_mode_instructions

@@ -34,16 +34,6 @@ Known evidence gaps:
 
 ## [Unreleased]
 
-### Notes
-
-- No unreleased product changes are recorded here yet.
-
-## [0.1.43] - 2026-06-21
-
-Tag: `rust-v0.1.43`
-npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.43>
-Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
-
 ### Added
 
 - Added `/tmux --session <name> --window <name>` handoff support so an active

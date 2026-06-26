@@ -3,6 +3,7 @@ use super::thread_goal_processor::api_thread_goal_plan_from_state;
 use super::thread_pending_interaction_processor::api_pending_interaction;
 use super::thread_pending_interaction_processor::read_pending_interaction;
 use super::thread_pending_interaction_processor::validate_response_matches_interaction;
+use super::thread_pending_interaction_processor::validate_response_status_matches_payload;
 use super::thread_schedule_api::api_thread_schedule_from_state;
 use super::*;
 use codex_app_server_protocol::LocalSessionListParams;
@@ -275,6 +276,7 @@ impl ThreadRequestProcessor {
             )
             .await?;
             validate_response_matches_interaction(interaction.kind, &params.response)?;
+            validate_response_status_matches_payload(&params.response, params.terminal_status)?;
             return Ok(MissionControlRespondInteractionResponse {
                 dry_run: true,
                 updated: false,

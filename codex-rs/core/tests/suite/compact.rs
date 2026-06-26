@@ -2578,6 +2578,106 @@ async fn manual_compact_retries_after_context_window_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sampling_context_window_error_runs_auto_compact_then_retries() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+
+    let first_turn = sse(vec![
+        ev_assistant_message("m1", FIRST_REPLY),
+        ev_completed_with_tokens("r1", /*total_tokens*/ 100),
+    ]);
+    let rejected_sampling = sse_failed(
+        "sampling-context-failed",
+        "context_length_exceeded",
+        CONTEXT_LIMIT_MESSAGE,
+    );
+    let auto_compact_turn = sse(vec![
+        ev_assistant_message("m2", SUMMARY_TEXT),
+        ev_completed_with_tokens("r2", /*total_tokens*/ 10),
+    ]);
+    let retried_sampling = sse(vec![
+        ev_assistant_message("m3", FINAL_REPLY),
+        ev_completed_with_tokens("r3", /*total_tokens*/ 20),
+    ]);
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            first_turn,
+            rejected_sampling,
+            auto_compact_turn,
+            retried_sampling,
+        ],
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let codex = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            config.model_auto_compact_token_limit = Some(200_000);
+        })
+        .build(&server)
+        .await
+        .expect("build codex")
+        .codex;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "USER_ONE".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit first user");
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "USER_TWO".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit second user");
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "expected first sampling, failed sampling, auto compact, and retry"
+    );
+
+    let failed_sampling = &requests[1];
+    assert!(failed_sampling.body_contains_text("USER_TWO"));
+    assert!(!failed_sampling.body_contains_text(SUMMARIZATION_PROMPT));
+
+    let compact_request = &requests[2];
+    assert!(compact_request.body_contains_text(SUMMARIZATION_PROMPT));
+    assert!(compact_request.body_contains_text("USER_TWO"));
+
+    let retry_request = &requests[3];
+    assert!(retry_request.body_contains_text(SUMMARY_TEXT));
+    assert!(retry_request.body_contains_text("USER_TWO"));
+    assert!(!retry_request.body_contains_text(FIRST_REPLY));
+    assert!(!retry_request.body_contains_text(SUMMARIZATION_PROMPT));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 // TODO(ccunningham): Re-enable after the follow-up compaction behavior PR lands.
 // Current main behavior around non-context manual /compact failures is known-incorrect.
 #[ignore = "behavior change covered in follow-up compaction PR"]
