@@ -1,6 +1,8 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
+use crate::session::QueuedMailboxMessage;
+use crate::session::QueuedMailboxMoveDirection;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
