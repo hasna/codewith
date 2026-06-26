@@ -38,6 +38,24 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.50] - 2026-06-26
+
+Tag: `rust-v0.1.50`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.50>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.49...rust-v0.1.50>
+
+### Fixed
+
+- Fixed fresh interactive `/loop` sessions so creating a loop materializes the
+  thread rollout before the loop can fire, allowing cold resume and cross-process
+  recovery instead of failing with `thread not found`.
+- Routed due scheduled loop claims away from other local Codewith processes
+  while a fresh live owner is active, so background pollers cannot consume a
+  loop that should inject into the visible interactive session.
+- Added regression coverage for fresh no-turn loop materialization, foreign
+  active-owner claim suppression, stale-owner recovery, and repeated visible
+  scheduled-turn injection.
+
 ## [0.1.49] - 2026-06-26
 
 Tag: `rust-v0.1.49`
