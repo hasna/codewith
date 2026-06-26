@@ -36,8 +36,8 @@ struct ProjectSessionsView: View {
                         Image(systemName: "square.and.pencil").font(.system(size: 10, weight: .semibold))
                         Text("New session").font(.system(size: 11.5, weight: .medium))
                     }
-                    .foregroundStyle(.white).padding(.horizontal, 12).frame(height: 26)
-                    .background(Capsule().fill(Color(hex: 0x202020))).contentShape(Capsule())
+                    .foregroundStyle(Theme.accentForeground).padding(.horizontal, 12).frame(height: 26)
+                    .background(Capsule().fill(Theme.accent)).contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }

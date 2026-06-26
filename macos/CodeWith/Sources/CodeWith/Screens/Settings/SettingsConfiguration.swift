@@ -103,7 +103,7 @@ struct SettingsConfiguration: View {
             .padding(.horizontal, 14).padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white)
+                    .fill(Theme.fieldFill)
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
             )
     }

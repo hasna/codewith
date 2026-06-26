@@ -17,25 +17,25 @@ struct SettingsAppearance: View {
                     codeBlock(lines: [
                         ("1", "const themePreview: ThemeConfig = {", .plain),
                         ("2", "  surface: \"sidebar\",", .del),
-                        ("3", "  accent: \"#2563eb\",", .del),
+                        ("3", "  accent: \"#0A0A0A\",", .del),
                         ("4", "  contrast: 42,", .del),
                         ("5", "};", .plain),
                     ], side: .del)
                     codeBlock(lines: [
                         ("1", "const themePreview: ThemeConfig = {", .plain),
-                        ("2", "  surface: \"sidebar-elevated\",", .add),
-                        ("3", "  accent: \"#0ea5e9\",", .add),
-                        ("4", "  contrast: 68,", .add),
+                        ("2", "  surface: \"nopen-sidebar\",", .add),
+                        ("3", "  accent: \"#007595\",", .add),
+                        ("4", "  contrast: 45,", .add),
                         ("5", "};", .plain),
                     ], side: .add)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
                 .padding(.bottom, 22)
 
-                themeEditor(title: "Light theme", bg: "#FFFFFF", bgColor: .white, fg: "#1A1C1F", fgColor: Color(hex: 0x1A1C1F))
+                themeEditor(title: "Light theme", bg: "#FFFFFF", bgColor: Theme.canvas, fg: "#0C0C09", fgColor: Theme.textPrimary)
                 Rectangle().fill(Theme.separator).frame(height: 1).padding(.vertical, 14)
-                themeEditor(title: "Dark theme", bg: "#181818", bgColor: Color(hex: 0x181818), fg: "#FFFFFF", fgColor: .white)
+                themeEditor(title: "Dark theme", bg: "#0C0C09", bgColor: Theme.textPrimary, fg: "#FBFBF9", fgColor: Theme.sidebar)
             }
         }
     }
@@ -56,21 +56,19 @@ struct SettingsAppearance: View {
                 }
             }
             .frame(height: 88)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Theme.toggleBlue : Theme.cardStroke, lineWidth: selected ? 2 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(selected ? Theme.toggleBlue : Theme.cardStroke, lineWidth: selected ? 2 : 1))
             Text(title).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity)
     }
 
-    /// A neutral app-window preview: faint sidebar + content lines + window dots,
-    /// matching the reference's muted gray/light/dark theme thumbnails.
+    /// A compact Nopen-style app-window preview: warm sidebar and content bands.
     private func miniApp(dark: Bool) -> some View {
-        let bg = dark ? Color(hex: 0x3A3A3C) : Color(hex: 0xF6F6F8)
-        let side = dark ? Color(hex: 0x303032) : Color(hex: 0xEAEAEC)
-        let ink = (dark ? Color.white : Color.black)
+        let bg = dark ? Color(hex: 0x0C0C09) : Theme.canvas
+        let side = dark ? Color(hex: 0x1D1D16) : Theme.sidebar
+        let ink = dark ? Theme.sidebar : Theme.textPrimary
         return HStack(spacing: 0) {
-            // faint sidebar
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 2) {
                     ForEach(0..<3, id: \.self) { _ in Circle().fill(ink.opacity(0.22)).frame(width: 3, height: 3) }
@@ -108,12 +106,12 @@ struct SettingsAppearance: View {
                     Spacer()
                 }
                 .padding(.horizontal, 8).padding(.vertical, 2)
-                .background(ln.2 == .del ? Color(hex: 0xFDECEC) : (ln.2 == .add ? Color(hex: 0xE6F6EC) : Color.clear))
+                .background(ln.2 == .del ? Theme.danger.opacity(0.06) : (ln.2 == .add ? Theme.accent.opacity(0.08) : Color.clear))
             }
         }
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(hex: 0xFBFBFB))
+        .background(Theme.sidebar)
     }
 
     private func themeEditor(title: String, bg: String, bgColor: Color, fg: String, fgColor: Color) -> some View {
@@ -128,7 +126,7 @@ struct SettingsAppearance: View {
                 }
             }
             .padding(.bottom, 8)
-            colorRow("Accent", "#339CFF", Color(hex: 0x339CFF))
+            colorRow("Accent", "#007595", Theme.accent)
             colorRow("Background", bg, bgColor)
             colorRow("Foreground", fg, fgColor)
             fieldRow("UI font", "-apple-system, Blink")
@@ -137,8 +135,8 @@ struct SettingsAppearance: View {
             HStack {
                 Text("Contrast").font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
                 Spacer()
-                Capsule().fill(Color(hex: 0xD8D8DC)).frame(width: 160, height: 4)
-                    .overlay(alignment: .leading) { Circle().fill(.white).frame(width: 14, height: 14).overlay(Circle().strokeBorder(Theme.cardStroke)).offset(x: 80) }
+                Capsule().fill(Theme.cardStroke).frame(width: 160, height: 4)
+                    .overlay(alignment: .leading) { Circle().fill(Theme.fieldFill).frame(width: 14, height: 14).overlay(Circle().strokeBorder(Theme.cardStroke)).offset(x: 80) }
                 Text("45").font(.system(size: 12)).foregroundStyle(Theme.textSecondary).frame(width: 22)
             }
             .padding(.vertical, 7)
@@ -149,10 +147,10 @@ struct SettingsAppearance: View {
             Text(label).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
             Spacer()
             HStack(spacing: 8) {
-                Text(hex).font(.system(size: 11, design: .monospaced)).foregroundStyle(color == .white ? Theme.textSecondary : .white)
+                Text(hex).font(.system(size: 11, design: .monospaced)).foregroundStyle(color == Theme.canvas ? Theme.textSecondary : Theme.accentForeground)
             }
             .padding(.horizontal, 10).frame(width: 110, height: 24)
-            .background(RoundedRectangle(cornerRadius: 6).fill(color).overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(color).overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)))
         }
         .padding(.vertical, 6)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }

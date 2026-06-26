@@ -30,9 +30,9 @@ struct SettingsProfile: View {
             .padding(.horizontal, 22).frame(height: 40)
 
             VStack(spacing: 0) {
-                Circle().fill(Color(hex: 0x4AB58E))
+                Circle().fill(Theme.accent)
                     .frame(width: 64, height: 64)
-                    .overlay(Text(account?.initials ?? "ME").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white))
+                    .overlay(Text(account?.initials ?? "ME").font(.system(size: 22, weight: .semibold)).foregroundStyle(Theme.accentForeground))
                     .padding(.top, 26).padding(.bottom, 12)
                 Text(account?.name ?? "Signed out").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 HStack(spacing: 6) {
@@ -87,7 +87,7 @@ struct SettingsProfile: View {
                     Text("Most used plugins").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).padding(.bottom, 8)
                     ForEach(Array(plugins.enumerated()), id: \.0) { i, row in
                         HStack(spacing: 8) {
-                            Circle().fill([Color(hex: 0xE9A23B), Color(hex: 0x4AB58E), Color(hex: 0x6E6BF2), Color(hex: 0xDB5B5B), Color(hex: 0x3B82F6)][i % 5]).frame(width: 14, height: 14)
+                            Circle().fill([Theme.warning, Theme.success, Theme.accent, Theme.danger, Theme.textSecondary][i % 5]).frame(width: 14, height: 14)
                             Text(row.0).font(.system(size: 12)).foregroundStyle(Theme.textPrimary)
                             Spacer()
                             Text(row.1).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
@@ -120,7 +120,7 @@ struct Heatmap: View {
                         ForEach(0..<rows, id: \.self) { r in
                             let v = intensity(c, r)
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(v == 0 ? Color(hex: 0xEFF1F4) : Color(hex: 0xDCE3F8).mix(with: Color(hex: 0x5B8DEF), by: v))
+                                .fill(v == 0 ? Theme.controlFill : Color(hex: 0xD4D4D4).mix(with: Theme.accent, by: v * 0.75))
                                 .frame(width: 16, height: 11)
                         }
                     }

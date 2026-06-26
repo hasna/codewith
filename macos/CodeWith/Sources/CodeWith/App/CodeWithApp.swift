@@ -3,6 +3,7 @@ import AppKit
 
 extension Notification.Name {
     static let codeWithOpenURL = Notification.Name("CodeWithOpenURL")
+    static let codeWithMenuBarPreferenceChanged = Notification.Name("CodeWithMenuBarPreferenceChanged")
 }
 
 @main
