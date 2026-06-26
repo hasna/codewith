@@ -298,6 +298,7 @@ SELECT
     COUNT(*) AS total_runs,
     COALESCE(SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END), 0) AS leased_runs,
     COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running_runs,
+    COALESCE(SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END), 0) AS deferred_runs,
     COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_runs,
     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_runs,
     MAX(started_at_ms) AS last_started_at_ms,
@@ -314,6 +315,7 @@ WHERE schedule_id = ?
 SELECT error
 FROM thread_schedule_runs
 WHERE schedule_id = ?
+  AND status = 'failed'
   AND error IS NOT NULL
   AND TRIM(error) != ''
 ORDER BY completed_at_ms DESC, started_at_ms DESC
@@ -327,6 +329,7 @@ LIMIT 1
             total_runs: row.try_get("total_runs")?,
             leased_runs: row.try_get("leased_runs")?,
             running_runs: row.try_get("running_runs")?,
+            deferred_runs: row.try_get("deferred_runs")?,
             completed_runs: row.try_get("completed_runs")?,
             failed_runs: row.try_get("failed_runs")?,
             last_started_at: row
@@ -613,11 +616,11 @@ WHERE schedule_id = ? AND lease_id = ?
         let run_result = sqlx::query(
             r#"
 UPDATE thread_schedule_runs
-SET status = ?, error = ?, completed_at_ms = ?
+SET status = ?, turn_id = NULL, error = ?, completed_at_ms = ?
 WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
             "#,
         )
-        .bind(crate::ThreadScheduleRunStatus::Failed.as_str())
+        .bind(crate::ThreadScheduleRunStatus::Deferred.as_str())
         .bind(error)
         .bind(completed_at_ms)
         .bind(schedule_id)
@@ -1643,6 +1646,7 @@ mod tests {
         let completed_at = now + chrono::Duration::seconds(5);
         let retry_at = now + chrono::Duration::minutes(20);
         let error = "all eligible auth profiles are exhausted".to_string();
+        let schedule_id = schedule.schedule_id.clone();
 
         assert!(
             runtime
@@ -1681,7 +1685,8 @@ mod tests {
         let run_id = claim.run.run_id.clone();
         assert_eq!(
             Some(crate::ThreadScheduleRun {
-                status: crate::ThreadScheduleRunStatus::Failed,
+                status: crate::ThreadScheduleRunStatus::Deferred,
+                turn_id: None,
                 error: Some(error),
                 completed_at: Some(completed_at),
                 ..claim.run
@@ -1691,6 +1696,21 @@ mod tests {
                 .get_thread_schedule_run(&run_id)
                 .await
                 .expect("run should load")
+        );
+        assert_eq!(
+            crate::ThreadScheduleStats {
+                total_runs: 1,
+                deferred_runs: 1,
+                last_started_at: Some(now),
+                last_completed_at: Some(completed_at),
+                last_error: None,
+                ..crate::ThreadScheduleStats::default()
+            },
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(&schedule_id)
+                .await
+                .expect("deferred run stats should load")
         );
     }
 

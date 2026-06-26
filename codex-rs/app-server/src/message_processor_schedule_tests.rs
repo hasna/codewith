@@ -21,6 +21,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadScheduleCreateParams;
 use codex_app_server_protocol::ThreadScheduleCreateResponse;
 use codex_app_server_protocol::ThreadScheduleDeleteParams;
@@ -46,6 +48,16 @@ use codex_app_server_protocol::ThreadScheduleUpdateResponse;
 use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadUnsubscribeStatus;
+use codex_app_server_protocol::TurnCompletedNotification;
+use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnStartedNotification;
+use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::UserInput;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
@@ -140,6 +152,10 @@ impl ScheduleHarness {
             })
             .await;
         assert!(harness.session.initialized());
+        harness
+            .processor
+            .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
+            .await;
         Ok(harness)
     }
 
@@ -225,6 +241,32 @@ impl ScheduleHarness {
 
     async fn start_ephemeral_thread(&mut self) -> ThreadStartResponse {
         self.start_thread(/*ephemeral*/ true).await
+    }
+
+    async fn unsubscribe_thread(&mut self, thread_id: &str) -> ThreadUnsubscribeResponse {
+        let request_id = self.request_id();
+        self.request(ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: thread_id.to_string(),
+            },
+        })
+        .await
+    }
+
+    async fn list_turns(&mut self, thread_id: &str) -> ThreadTurnsListResponse {
+        let request_id = self.request_id();
+        self.request(ClientRequest::ThreadTurnsList {
+            request_id,
+            params: ThreadTurnsListParams {
+                thread_id: thread_id.to_string(),
+                cursor: None,
+                limit: Some(10),
+                sort_direction: Some(SortDirection::Asc),
+                items_view: Some(TurnItemsView::Full),
+            },
+        })
+        .await
     }
 
     async fn read_response<T>(&mut self, request_id: i64) -> T
@@ -387,6 +429,159 @@ impl ScheduleHarness {
         }
     }
 
+    async fn read_scheduled_run_lifecycle(
+        &mut self,
+        thread_id: &str,
+        run_id: &str,
+    ) -> (
+        ThreadScheduleRunUpdatedNotification,
+        TurnStartedNotification,
+        ThreadScheduleUpdatedNotification,
+        ThreadScheduleRunUpdatedNotification,
+        TurnCompletedNotification,
+    ) {
+        let mut running_run = None;
+        let mut started_by_turn_id = BTreeMap::new();
+        let mut schedule_update = None;
+        let mut completed_run = None;
+        let mut completed_by_turn_id = BTreeMap::new();
+        loop {
+            let notification = self.read_server_notification().await;
+            match notification {
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.run_id == run_id
+                        && notification.run.status == ThreadScheduleRunStatus::Running =>
+                {
+                    running_run = Some(notification);
+                }
+                ServerNotification::TurnStarted(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    started_by_turn_id.insert(notification.turn.id.clone(), notification);
+                }
+                ServerNotification::ThreadScheduleUpdated(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    schedule_update = Some(notification);
+                }
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.run_id == run_id
+                        && notification.run.status == ThreadScheduleRunStatus::Completed =>
+                {
+                    completed_run = Some(notification);
+                }
+                ServerNotification::TurnCompleted(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    completed_by_turn_id.insert(notification.turn.id.clone(), notification);
+                }
+                _ => {}
+            }
+            let Some(running_run_ref) = running_run.as_ref() else {
+                continue;
+            };
+            let Some(turn_id) = running_run_ref.run.turn_id.as_ref() else {
+                continue;
+            };
+            let Some(started_turn) = started_by_turn_id.get(turn_id) else {
+                continue;
+            };
+            let Some(completed_turn) = completed_by_turn_id.get(turn_id) else {
+                continue;
+            };
+            if let (Some(running_run), Some(schedule_update), Some(completed_run)) = (
+                running_run.clone(),
+                schedule_update.clone(),
+                completed_run.clone(),
+            ) {
+                return (
+                    running_run,
+                    started_turn.clone(),
+                    schedule_update,
+                    completed_run,
+                    completed_turn.clone(),
+                );
+            }
+        }
+    }
+
+    async fn read_scheduled_run_lifecycle_for_schedule(
+        &mut self,
+        thread_id: &str,
+        schedule_id: &str,
+    ) -> (
+        ThreadScheduleRunUpdatedNotification,
+        TurnStartedNotification,
+        ThreadScheduleUpdatedNotification,
+        ThreadScheduleRunUpdatedNotification,
+        TurnCompletedNotification,
+    ) {
+        let mut running_run = None;
+        let mut started_by_turn_id = BTreeMap::new();
+        let mut schedule_update = None;
+        let mut completed_by_run_id = BTreeMap::new();
+        let mut completed_by_turn_id = BTreeMap::new();
+        loop {
+            let notification = self.read_server_notification().await;
+            match notification {
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.schedule_id == schedule_id
+                        && notification.run.status == ThreadScheduleRunStatus::Running =>
+                {
+                    running_run = Some(notification);
+                }
+                ServerNotification::TurnStarted(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    started_by_turn_id.insert(notification.turn.id.clone(), notification);
+                }
+                ServerNotification::ThreadScheduleUpdated(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    schedule_update = Some(notification);
+                }
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.schedule_id == schedule_id
+                        && notification.run.status == ThreadScheduleRunStatus::Completed =>
+                {
+                    completed_by_run_id.insert(notification.run.run_id.clone(), notification);
+                }
+                ServerNotification::TurnCompleted(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    completed_by_turn_id.insert(notification.turn.id.clone(), notification);
+                }
+                _ => {}
+            }
+            let Some(running_run_ref) = running_run.as_ref() else {
+                continue;
+            };
+            let Some(turn_id) = running_run_ref.run.turn_id.as_ref() else {
+                continue;
+            };
+            let Some(started_turn) = started_by_turn_id.get(turn_id) else {
+                continue;
+            };
+            let Some(completed_run) = completed_by_run_id.get(&running_run_ref.run.run_id) else {
+                continue;
+            };
+            let Some(completed_turn) = completed_by_turn_id.get(turn_id) else {
+                continue;
+            };
+            if let (Some(running_run), Some(schedule_update)) =
+                (running_run.clone(), schedule_update.clone())
+            {
+                return (
+                    running_run,
+                    started_turn.clone(),
+                    schedule_update,
+                    completed_run.clone(),
+                    completed_turn.clone(),
+                );
+            }
+        }
+    }
+
     async fn read_failed_run_and_schedule_update(
         &mut self,
         thread_id: &str,
@@ -483,6 +678,23 @@ where
         })?
         .join()
         .expect("schedule harness thread should not panic")
+}
+
+fn turn_contains_user_text(turn: &codex_app_server_protocol::Turn, expected: &str) -> bool {
+    turn.items.iter().any(|item| {
+        if let ThreadItem::UserMessage { content, .. } = item {
+            return content.iter().any(
+                |input| matches!(input, UserInput::Text { text, .. } if text.contains(expected)),
+            );
+        }
+        false
+    })
+}
+
+fn turn_contains_agent_text(turn: &codex_app_server_protocol::Turn, expected: &str) -> bool {
+    turn.items.iter().any(
+        |item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains(expected)),
+    )
 }
 
 async fn build_test_config(
@@ -1067,124 +1279,6 @@ fn thread_schedule_crud_requests_round_trip_through_app_server() -> Result<()> {
     })
 }
 
-#[test]
-fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
-    run_schedule_harness_test(async {
-        let mut harness = ScheduleHarness::new().await?;
-        let thread = harness.start_materialized_thread().await;
-        let thread_id = thread.thread.id.clone();
-
-        let request_id = harness.request_id();
-        let parent_response: ThreadScheduleCreateResponse = harness
-            .request(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    parent_schedule_id: None,
-                    prompt: "parent loop".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Interval {
-                        amount: 1,
-                        unit: ThreadScheduleIntervalUnit::Minutes,
-                    },
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(1_900_000_060),
-                    expires_at: Some(1_900_604_800),
-                },
-            })
-            .await;
-        let parent = parent_response.schedule;
-        assert_eq!(None, parent.parent_schedule_id);
-        assert_eq!(1, parent.nesting_depth);
-        harness.read_schedule_updated(&thread_id).await;
-
-        let request_id = harness.request_id();
-        let child_response: ThreadScheduleCreateResponse = harness
-            .request(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    parent_schedule_id: Some(parent.schedule_id.clone()),
-                    prompt: "child loop".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Interval {
-                        amount: 2,
-                        unit: ThreadScheduleIntervalUnit::Minutes,
-                    },
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(1_900_000_120),
-                    expires_at: Some(1_900_604_800),
-                },
-            })
-            .await;
-        let child = child_response.schedule;
-        assert_eq!(Some(parent.schedule_id.clone()), child.parent_schedule_id);
-        assert_eq!(2, child.nesting_depth);
-        assert_eq!(
-            child,
-            harness.read_schedule_updated(&thread_id).await.schedule
-        );
-
-        let request_id = harness.request_id();
-        let error = harness
-            .request_error(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    parent_schedule_id: Some(parent.schedule_id.clone()),
-                    prompt: "same minute child".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Dynamic,
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(1_900_000_180),
-                    expires_at: Some(1_900_604_800),
-                },
-            })
-            .await;
-        assert!(
-            error
-                .message
-                .contains("child cadence must be slower than parent cadence"),
-            "unexpected error: {error:?}"
-        );
-
-        let request_id = harness.request_id();
-        let delete_response: ThreadScheduleDeleteResponse = harness
-            .request(ClientRequest::ThreadScheduleDelete {
-                request_id,
-                params: ThreadScheduleDeleteParams {
-                    thread_id: thread_id.clone(),
-                    schedule_id: parent.schedule_id.clone(),
-                },
-            })
-            .await;
-        assert!(delete_response.deleted);
-        harness
-            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
-            .await;
-        harness
-            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
-            .await;
-
-        let request_id = harness.request_id();
-        let after_delete: ThreadScheduleListResponse = harness
-            .request(ClientRequest::ThreadScheduleList {
-                request_id,
-                params: ThreadScheduleListParams {
-                    thread_id,
-                    cursor: None,
-                    limit: Some(10),
-                },
-            })
-            .await;
-        assert!(after_delete.data.is_empty());
-
-        harness.shutdown().await;
-        Ok(())
-    })
-}
-
-#[test]
 fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -1227,7 +1321,6 @@ fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Res
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
-                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1322,7 +1415,6 @@ fn unloaded_thread_schedule_create_records_latest_root_turn_auth() -> Result<()>
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
-                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1435,7 +1527,6 @@ fn unloaded_thread_schedule_create_records_latest_root_session_auth() -> Result<
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
-                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -1587,16 +1678,21 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
         assert_eq!(ThreadScheduleRunStatus::Leased, run_now.run.status);
         assert_eq!(schedule.schedule_id, run_now.run.schedule_id);
 
-        let running = harness
-            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+        let (running, started_turn, updated_schedule, completed, completed_turn) = harness
+            .read_scheduled_run_lifecycle(&thread_id, &run_now.run.run_id)
             .await;
         assert_eq!(thread_id, running.thread_id);
         assert_eq!(run_now.run.scheduled_for_at, running.run.scheduled_for_at);
-        assert!(running.run.turn_id.is_some());
-
-        let (updated_schedule, completed) = harness
-            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
-            .await;
+        let turn_id = running
+            .run
+            .turn_id
+            .as_deref()
+            .expect("running scheduled run should expose the interactive turn id");
+        assert_eq!(turn_id, started_turn.turn.id);
+        assert_eq!(TurnStatus::InProgress, started_turn.turn.status);
+        assert_eq!(Some(turn_id.to_string()), completed.run.turn_id);
+        assert_eq!(turn_id, completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, completed_turn.turn.status);
         assert_eq!(None, completed.run.error);
         assert!(completed.run.completed_at.is_some());
         let next_run_at = updated_schedule
@@ -1621,6 +1717,150 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
                     .contains("Produce exactly one visible final response for this scheduled run")
                 && body.contains("summarize the latest test status")),
             "scheduled prompt should be wrapped as a fresh visible scheduled run: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn due_thread_schedule_executes_visible_interactive_turn() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check due loop visibility".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp()),
+                    expires_at: Some(Utc::now().timestamp() + 86_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+
+        let (running, started_turn, updated_schedule, completed, completed_turn) = harness
+            .read_scheduled_run_lifecycle_for_schedule(&thread_id, &schedule.schedule_id)
+            .await;
+        assert_eq!(ThreadScheduleRunStatus::Running, running.run.status);
+        let turn_id = running
+            .run
+            .turn_id
+            .as_deref()
+            .expect("due scheduled run should expose a turn id");
+        assert_eq!(turn_id, started_turn.turn.id);
+        assert_eq!(TurnStatus::InProgress, started_turn.turn.status);
+        assert_eq!(Some(turn_id.to_string()), completed.run.turn_id);
+        assert_eq!(turn_id, completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, completed_turn.turn.status);
+        assert_eq!(None, completed.run.error);
+        let completed_at = completed
+            .run
+            .completed_at
+            .expect("completed scheduled run should have a completion timestamp");
+        assert!(
+            updated_schedule
+                .schedule
+                .next_run_at
+                .expect("recurring loop should re-arm")
+                > completed_at
+        );
+
+        let response_request_bodies = harness.response_request_bodies().await;
+        assert!(
+            response_request_bodies.iter().any(|body| body
+                .contains("You are running one new scheduled Codewith prompt")
+                && body.contains("check due loop visibility")),
+            "due scheduled prompt should be sent as a normal visible turn: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn completed_unsubscribed_scheduled_run_is_recoverable_from_turn_history() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "write unsubscribed loop result".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Hours,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp() + 86_400),
+                    expires_at: Some(Utc::now().timestamp() + 172_800),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let unsubscribe = harness.unsubscribe_thread(&thread_id).await;
+        assert_eq!(ThreadUnsubscribeStatus::Unsubscribed, unsubscribe.status);
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        let running = harness
+            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+            .await;
+        let turn_id = running
+            .run
+            .turn_id
+            .clone()
+            .expect("unsubscribed scheduled run should still persist a turn id");
+        harness
+            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+
+        let turns = harness.list_turns(&thread_id).await;
+        let turn = turns
+            .data
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("completed unsubscribed scheduled run should be recoverable from history");
+        assert_eq!(TurnStatus::Completed, turn.status);
+        assert!(
+            turn_contains_user_text(turn, "write unsubscribed loop result"),
+            "scheduled user prompt should be recoverable from persisted turn: {turn:#?}"
+        );
+        assert!(
+            turn_contains_agent_text(turn, "Scheduled done"),
+            "scheduled assistant output should be recoverable from persisted turn: {turn:#?}"
         );
 
         harness.shutdown().await;

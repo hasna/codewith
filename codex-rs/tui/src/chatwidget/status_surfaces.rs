@@ -553,6 +553,181 @@ impl ChatWidget {
         });
     }
 
+    fn sync_status_line_schedule_state(&mut self, selections: &StatusSurfaceSelections) {
+        if !selections.uses_schedule_countdown() {
+            self.status_line_schedule_thread_id = None;
+            self.status_line_schedules_by_id.clear();
+            self.status_line_schedules_pending = false;
+            self.status_line_schedules_loaded = false;
+            self.status_line_running_schedule_ids.clear();
+            return;
+        }
+
+        let Some(thread_id) = self.thread_id else {
+            self.status_line_schedule_thread_id = None;
+            self.status_line_schedules_by_id.clear();
+            self.status_line_schedules_pending = false;
+            self.status_line_schedules_loaded = false;
+            self.status_line_running_schedule_ids.clear();
+            return;
+        };
+
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            self.status_line_schedule_thread_id = Some(thread_id);
+            self.status_line_schedules_by_id.clear();
+            self.status_line_schedules_pending = false;
+            self.status_line_schedules_loaded = false;
+            self.status_line_running_schedule_ids.clear();
+        }
+
+        if self.status_line_schedules_pending || self.status_line_schedules_loaded {
+            return;
+        }
+
+        self.status_line_schedules_pending = true;
+        self.app_event_tx
+            .send(AppEvent::StatusLineSchedulesRefresh { thread_id });
+    }
+
+    pub(crate) fn set_status_line_schedules(
+        &mut self,
+        thread_id: ThreadId,
+        schedules: Vec<ThreadSchedule>,
+    ) {
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            self.status_line_schedule_thread_id = Some(thread_id);
+        }
+        self.status_line_schedules_by_id = schedules
+            .into_iter()
+            .map(|schedule| (schedule.schedule_id.clone(), schedule))
+            .collect();
+        self.status_line_schedules_pending = false;
+        self.status_line_schedules_loaded = true;
+        self.refresh_status_surfaces();
+    }
+
+    pub(crate) fn finish_status_line_schedule_refresh_failed(&mut self, thread_id: ThreadId) {
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            return;
+        }
+        self.status_line_schedules_pending = false;
+        self.status_line_schedules_loaded = false;
+        self.frame_requester
+            .schedule_frame_in(Duration::from_secs(1));
+    }
+
+    pub(crate) fn upsert_status_line_schedule(&mut self, schedule: ThreadSchedule) {
+        let Ok(thread_id) = ThreadId::from_string(&schedule.thread_id) else {
+            return;
+        };
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            return;
+        }
+        let schedule_id = schedule.schedule_id.clone();
+        self.status_line_schedules_by_id
+            .insert(schedule_id.clone(), schedule);
+        self.status_line_running_schedule_ids.remove(&schedule_id);
+        self.status_line_schedules_loaded = true;
+        self.status_line_schedules_pending = false;
+        self.refresh_status_surfaces();
+    }
+
+    pub(crate) fn remove_status_line_schedule(&mut self, thread_id: &str, schedule_id: &str) {
+        let Ok(thread_id) = ThreadId::from_string(thread_id) else {
+            return;
+        };
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            return;
+        }
+        self.status_line_schedules_by_id.remove(schedule_id);
+        self.status_line_running_schedule_ids.remove(schedule_id);
+        self.status_line_schedules_loaded = true;
+        self.status_line_schedules_pending = false;
+        self.refresh_status_surfaces();
+    }
+
+    pub(crate) fn on_status_line_schedule_run_updated(&mut self, run: &ThreadScheduleRun) {
+        let Ok(thread_id) = ThreadId::from_string(&run.thread_id) else {
+            return;
+        };
+        if self.status_line_schedule_thread_id != Some(thread_id) {
+            return;
+        }
+        match run.status {
+            ThreadScheduleRunStatus::Leased | ThreadScheduleRunStatus::Running => {
+                self.status_line_running_schedule_ids
+                    .insert(run.schedule_id.clone());
+                self.status_line_schedules_by_id.remove(&run.schedule_id);
+            }
+            ThreadScheduleRunStatus::Deferred
+            | ThreadScheduleRunStatus::Completed
+            | ThreadScheduleRunStatus::Failed => {
+                self.status_line_running_schedule_ids
+                    .remove(&run.schedule_id);
+                self.status_line_schedules_by_id.remove(&run.schedule_id);
+                self.status_line_schedules_loaded = false;
+                self.status_line_schedules_pending = false;
+            }
+        }
+        self.refresh_status_surfaces();
+    }
+
+    fn status_line_schedule_countdown_text(&self) -> Option<String> {
+        self.status_line_schedule_countdown_text_at(unix_timestamp_now())
+    }
+
+    pub(crate) fn status_line_uses_schedule_countdown(&self) -> bool {
+        self.status_surface_selections().uses_schedule_countdown()
+    }
+
+    pub(crate) fn status_line_schedule_countdown_text_at(&self, now: i64) -> Option<String> {
+        let next = self
+            .status_line_schedules_by_id
+            .values()
+            .filter(|schedule| schedule.status == ThreadScheduleStatus::Active)
+            .filter(|schedule| {
+                !self
+                    .status_line_running_schedule_ids
+                    .contains(&schedule.schedule_id)
+            })
+            .filter(|schedule| {
+                schedule
+                    .expires_at
+                    .is_none_or(|expires_at| expires_at > now)
+            })
+            .filter(|schedule| {
+                schedule
+                    .lease_expires_at
+                    .is_none_or(|lease_expires_at| lease_expires_at <= now)
+            })
+            .filter_map(|schedule| {
+                let next_run_at = schedule.next_run_at?;
+                let kind = match schedule.schedule {
+                    ThreadScheduleSpec::Once => StatusLineScheduleKind::Schedule,
+                    ThreadScheduleSpec::Dynamic
+                    | ThreadScheduleSpec::Interval { .. }
+                    | ThreadScheduleSpec::Cron { .. } => StatusLineScheduleKind::Loop,
+                };
+                Some((next_run_at, kind, schedule.schedule_id.as_str()))
+            })
+            .min_by_key(|(next_run_at, kind, schedule_id)| {
+                (*next_run_at, kind.sort_key(), *schedule_id)
+            })?;
+
+        Some(format!(
+            "Next {} {}",
+            next.1.label(),
+            format_schedule_countdown(next.0.saturating_sub(now))
+        ))
+    }
+
+    fn schedule_next_countdown_refresh(&self) {
+        if self.status_line_schedule_countdown_text().is_some() {
+            self.frame_requester
+                .schedule_frame_in(Duration::from_secs(1));
+        }
+    }
+
     /// Resolves a display string for one configured status-line item.
     ///
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
