@@ -163,6 +163,11 @@ impl ThreadScheduleRuntime {
                 thread_id = %thread_id,
                 "failed to submit scheduled thread run: {err}"
             );
+            if let Some(wait) = err.downcast_ref::<ScheduleUsageProfileWait>() {
+                self.defer_claimed_run_for_usage_profile_wait(state_db, claim, wait.clone())
+                    .await;
+                return;
+            }
             self.fail_claimed_run_after_submit_error(state_db, claim, schedule_submit_error(&err))
                 .await;
         }
@@ -193,7 +198,7 @@ impl ThreadScheduleRuntime {
             Utc::now(),
         ) {
             Ok(resolved) => resolved,
-            Err(wait) => anyhow::bail!("{wait}"),
+            Err(wait) => return Err(anyhow::Error::new(wait)),
         };
         let thread = self
             .load_or_resume_thread(thread_id, claim_auth_profile.clone())
@@ -479,6 +484,29 @@ impl ThreadScheduleRuntime {
         }
     }
 
+    async fn defer_claimed_run_for_usage_profile_wait(
+        &self,
+        state_db: StateDbHandle,
+        claim: codex_state::ThreadScheduleClaim,
+        wait: ScheduleUsageProfileWait,
+    ) {
+        match defer_scheduled_run_for_usage_profile_wait_state(&state_db, &claim, &wait, Utc::now())
+            .await
+        {
+            Ok(Some((schedule, run))) => {
+                self.emit_schedule_updated(claim.schedule.thread_id, schedule)
+                    .await;
+                self.emit_schedule_run_updated(claim.schedule.thread_id, run)
+                    .await;
+            }
+            Ok(None) => {}
+            Err(err) => warn!(
+                schedule_id = %claim.schedule.schedule_id,
+                "failed to defer scheduled thread run for auth profile usage reset: {err}"
+            ),
+        }
+    }
+
     async fn emit_schedule_updated(
         &self,
         thread_id: ThreadId,
@@ -684,6 +712,8 @@ impl std::fmt::Display for ScheduleUsageProfileWait {
     }
 }
 
+impl std::error::Error for ScheduleUsageProfileWait {}
+
 fn schedule_auth_profile_after_broker_decision(
     current_auth_profile: Option<Option<String>>,
     decision: super::usage_profile_broker::UsageProfileBrokerDecision,
@@ -796,6 +826,39 @@ async fn finish_scheduled_run_state(
     Ok(Some((schedule, run)))
 }
 
+async fn defer_scheduled_run_for_usage_profile_wait_state(
+    state_db: &StateDbHandle,
+    claim: &codex_state::ThreadScheduleClaim,
+    wait: &ScheduleUsageProfileWait,
+    completed_at: DateTime<Utc>,
+) -> anyhow::Result<Option<(codex_state::ThreadSchedule, codex_state::ThreadScheduleRun)>> {
+    let updated = state_db
+        .thread_schedules()
+        .defer_thread_schedule_run(
+            claim.schedule.schedule_id.as_str(),
+            claim.run.run_id.as_str(),
+            claim.run.lease_id.as_str(),
+            completed_at,
+            wait.retry_at,
+            wait.to_string(),
+        )
+        .await?;
+    if !updated {
+        return Ok(None);
+    }
+    let schedule = state_db
+        .thread_schedules()
+        .get_thread_schedule(&claim.schedule.schedule_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("deferred schedule missing after state update"))?;
+    let run = state_db
+        .thread_schedules()
+        .get_thread_schedule_run(&claim.run.run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("deferred schedule run missing after state update"))?;
+    Ok(Some((schedule, run)))
+}
+
 async fn apply_persisted_schedule_resume_metadata(
     state_db: &StateDbHandle,
     thread_id: ThreadId,
@@ -853,23 +916,27 @@ pub(super) fn schedule_resume_auth_profile(
 
     let history_auth_profile = initial_history.get_auth_profile();
     if matches!(history_auth_profile, Some(None))
-        && let Some(Some(auth_profile)) = initial_session_auth_profile(initial_history)
+        && let Some(Some(auth_profile)) = latest_session_auth_profile(initial_history)
     {
         return Some(Some(auth_profile));
     }
     history_auth_profile
 }
 
-fn initial_session_auth_profile(initial_history: &InitialHistory) -> Option<Option<String>> {
+fn latest_session_auth_profile(initial_history: &InitialHistory) -> Option<Option<String>> {
     match initial_history {
         InitialHistory::New | InitialHistory::Cleared => None,
-        InitialHistory::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
-            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == resumed.conversation_id => {
-                meta_line.meta.auth_profile.clone()
-            }
-            _ => None,
-        }),
-        InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+        InitialHistory::Resumed(resumed) => {
+            resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta_line)
+                    if meta_line.meta.id == resumed.conversation_id =>
+                {
+                    meta_line.meta.auth_profile.clone()
+                }
+                _ => None,
+            })
+        }
+        InitialHistory::Forked(items) => items.iter().rev().find_map(|item| match item {
             RolloutItem::SessionMeta(meta_line) => meta_line.meta.auth_profile.clone(),
             _ => None,
         }),
@@ -1473,6 +1540,36 @@ mod tests {
     }
 
     #[test]
+    fn legacy_schedule_auth_preserves_latest_root_session_profile() {
+        let thread_id = ThreadId::new();
+        let mut history = resumed_history_with_session_and_turn_auth_profile(
+            thread_id,
+            Some(Some("account002")),
+            Some(None),
+        );
+        let InitialHistory::Resumed(resumed) = &mut history else {
+            panic!("test history should be resumed");
+        };
+        resumed.history.insert(
+            1,
+            RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    auth_profile: Some(None),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        );
+
+        assert_eq!(Some(None), history.get_auth_profile());
+        assert_eq!(
+            Some(None),
+            schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &history)
+        );
+    }
+
+    #[test]
     fn schedule_auth_profile_uses_broker_selected_profile_for_pinned_loop() {
         let decision = super::usage_profile_broker::UsageProfileBrokerDecision {
             selected_profile: Some("account003".to_string()),
@@ -1518,6 +1615,93 @@ mod tests {
         assert_eq!(
             "all eligible auth profiles are exhausted; retrying scheduled run after 2023-11-14T22:16:05+00:00",
             wait.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_profile_wait_defers_claim_without_incrementing_failure_count() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule_for_auth_profile(
+                codex_state::ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "wait for usage".to_string(),
+                    prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                    schedule: codex_state::ThreadScheduleSpec::Interval(
+                        codex_state::ThreadScheduleInterval {
+                            amount: 5,
+                            unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                        },
+                    ),
+                    timezone: "UTC".to_string(),
+                    status: codex_state::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now),
+                    expires_at: None,
+                },
+                Some("account001".to_string()),
+            )
+            .await
+            .expect("schedule should create");
+        let claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-wait", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = now + chrono::Duration::seconds(5);
+        let wait = ScheduleUsageProfileWait {
+            retry_at: now + chrono::Duration::minutes(20),
+        };
+
+        let (deferred_schedule, deferred_run) = defer_scheduled_run_for_usage_profile_wait_state(
+            &state_db,
+            &claim,
+            &wait,
+            completed_at,
+        )
+        .await
+        .expect("usage wait should defer")
+        .expect("deferred rows should load");
+
+        assert_eq!(
+            codex_state::ThreadSchedule {
+                next_run_at: Some(wait.retry_at),
+                last_run_at: Some(completed_at),
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: deferred_schedule.updated_at,
+                ..schedule
+            },
+            deferred_schedule
+        );
+        assert_eq!(
+            codex_state::ThreadScheduleRun {
+                status: codex_state::ThreadScheduleRunStatus::Failed,
+                error: Some(wait.to_string()),
+                completed_at: Some(completed_at),
+                ..claim.run
+            },
+            deferred_run
         );
     }
 
