@@ -31,7 +31,6 @@ pub(crate) struct ThreadScheduleRuntime {
     skills_watcher: Arc<SkillsWatcher>,
     state_db: Option<StateDbHandle>,
     local_active_owner_id: String,
-    goal_service: Arc<GoalService>,
     cancel_token: CancellationToken,
     tasks: TaskTracker,
 }
@@ -51,7 +50,6 @@ impl ThreadScheduleRuntime {
         skills_watcher: Arc<SkillsWatcher>,
         state_db: Option<StateDbHandle>,
         local_active_owner_id: String,
-        goal_service: Arc<GoalService>,
     ) -> Self {
         Self {
             auth_manager,
@@ -66,7 +64,6 @@ impl ThreadScheduleRuntime {
             skills_watcher,
             state_db,
             local_active_owner_id,
-            goal_service,
             cancel_token: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }

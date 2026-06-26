@@ -24,10 +24,33 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
+/// A pending inter-agent message waiting in the session mailbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedMailboxMessage {
+    pub id: String,
+    pub communication: InterAgentCommunication,
+}
+
+impl QueuedMailboxMessage {
+    pub fn content(&self) -> &str {
+        &self.communication.content
+    }
+
+    pub fn trigger_turn(&self) -> bool {
+        self.communication.trigger_turn
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueuedMailboxMoveDirection {
+    Up,
+    Down,
+}
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
-    mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
+    mailbox_pending_mails: Mutex<VecDeque<QueuedMailboxMessage>>,
 }
 
 impl InputQueue {
@@ -51,10 +74,19 @@ impl InputQueue {
         &self,
         communication: InterAgentCommunication,
     ) {
+        self.enqueue_mailbox_communication_with_id(uuid::Uuid::now_v7().to_string(), communication)
+            .await;
+    }
+
+    pub(crate) async fn enqueue_mailbox_communication_with_id(
+        &self,
+        id: String,
+        communication: InterAgentCommunication,
+    ) {
         self.mailbox_pending_mails
             .lock()
             .await
-            .push_back(communication);
+            .push_back(QueuedMailboxMessage { id, communication });
         self.mailbox_tx.send_replace(());
     }
 
@@ -67,7 +99,48 @@ impl InputQueue {
             .lock()
             .await
             .iter()
-            .any(|mail| mail.trigger_turn)
+            .any(QueuedMailboxMessage::trigger_turn)
+    }
+
+    pub(crate) async fn list_mailbox_messages(&self) -> Vec<QueuedMailboxMessage> {
+        self.mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn update_mailbox_message(
+        &self,
+        message_id: &str,
+        text: String,
+    ) -> Option<QueuedMailboxMessage> {
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        let mail = mails.iter_mut().find(|mail| mail.id == message_id)?;
+        mail.communication.content = text;
+        Some(mail.clone())
+    }
+
+    pub(crate) async fn move_mailbox_message(
+        &self,
+        message_id: &str,
+        direction: QueuedMailboxMoveDirection,
+    ) -> Option<QueuedMailboxMessage> {
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        let index = mails.iter().position(|mail| mail.id == message_id)?;
+        let target = match direction {
+            QueuedMailboxMoveDirection::Up => index.checked_sub(1)?,
+            QueuedMailboxMoveDirection::Down => {
+                let next = index + 1;
+                if next >= mails.len() {
+                    return None;
+                }
+                next
+            }
+        };
+        mails.swap(index, target);
+        mails.get(target).cloned()
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<ResponseItem> {
@@ -75,7 +148,7 @@ impl InputQueue {
             .lock()
             .await
             .drain(..)
-            .map(|mail| ResponseItem::from(mail.to_response_input_item()))
+            .map(|mail| ResponseItem::from(mail.communication.to_response_input_item()))
             .collect()
     }
 
@@ -355,5 +428,62 @@ mod tests {
             ))
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_updates_and_moves_mailbox_messages_by_id() {
+        let input_queue = InputQueue::new();
+        input_queue
+            .enqueue_mailbox_communication_with_id(
+                "one".to_string(),
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "one",
+                    /*trigger_turn*/ false,
+                ),
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication_with_id(
+                "two".to_string(),
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "two",
+                    /*trigger_turn*/ false,
+                ),
+            )
+            .await;
+
+        let updated = input_queue
+            .update_mailbox_message("two", "updated".to_string())
+            .await
+            .expect("message should update");
+        assert_eq!(updated.content(), "updated");
+
+        let moved = input_queue
+            .move_mailbox_message("two", QueuedMailboxMoveDirection::Up)
+            .await
+            .expect("message should move");
+        assert_eq!(moved.id, "two");
+        assert_eq!(
+            input_queue
+                .list_mailbox_messages()
+                .await
+                .into_iter()
+                .map(|message| (message.id, message.communication.content))
+                .collect::<Vec<_>>(),
+            vec![
+                ("two".to_string(), "updated".to_string()),
+                ("one".to_string(), "one".to_string())
+            ]
+        );
+        assert!(
+            input_queue
+                .move_mailbox_message("two", QueuedMailboxMoveDirection::Up)
+                .await
+                .is_none()
+        );
     }
 }
