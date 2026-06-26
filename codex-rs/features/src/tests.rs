@@ -135,9 +135,9 @@ fn scheduled_tasks_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn mailbox_dispatcher_is_under_development_and_disabled_by_default() {
-    assert_eq!(Feature::MailboxDispatcher.stage(), Stage::UnderDevelopment);
-    assert_eq!(Feature::MailboxDispatcher.default_enabled(), false);
+fn mailbox_dispatcher_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::MailboxDispatcher.stage(), Stage::Stable);
+    assert_eq!(Feature::MailboxDispatcher.default_enabled(), true);
     assert_eq!(
         feature_for_key("mailbox_dispatcher"),
         Some(Feature::MailboxDispatcher)
