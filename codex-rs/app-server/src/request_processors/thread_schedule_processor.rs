@@ -546,14 +546,18 @@ impl ThreadScheduleRequestProcessor {
             .resolve_schedule_id_for_thread(&state_db, thread_id, params.schedule_id.as_str())
             .await?;
         let lease_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let local_active_fresh_after = self.schedule_runtime.local_active_fresh_after(now);
         let claim = state_db
             .thread_schedules()
-            .claim_thread_schedule_now(
-                schedule_id.as_str(),
-                Utc::now(),
-                lease_id.as_str(),
-                Duration::from_secs(RUN_NOW_LEASE_SECONDS),
-            )
+            .claim_thread_schedule_now_with_params(codex_state::ThreadScheduleNowClaimParams {
+                schedule_id: schedule_id.as_str(),
+                now,
+                lease_id: lease_id.as_str(),
+                lease_duration: Duration::from_secs(RUN_NOW_LEASE_SECONDS),
+                local_active_owner_id: Some(self.schedule_runtime.local_active_owner_id()),
+                local_active_fresh_after: Some(local_active_fresh_after),
+            })
             .await
             .map_err(|err| internal_error(format!("failed to claim thread schedule: {err}")))?
             .ok_or_else(|| {

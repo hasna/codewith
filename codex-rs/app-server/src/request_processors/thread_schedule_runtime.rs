@@ -84,6 +84,14 @@ impl ThreadScheduleRuntime {
         self.cancel_token.cancel();
     }
 
+    pub(crate) fn local_active_owner_id(&self) -> &str {
+        self.local_active_owner_id.as_str()
+    }
+
+    pub(crate) fn local_active_fresh_after(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        schedule_local_active_fresh_after(now)
+    }
+
     pub(crate) async fn drain_background_tasks(&self) {
         self.shutdown();
         self.tasks.close();
