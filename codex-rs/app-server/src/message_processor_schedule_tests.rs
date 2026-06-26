@@ -1068,6 +1068,402 @@ fn thread_schedule_crud_requests_round_trip_through_app_server() -> Result<()> {
 }
 
 #[test]
+fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let parent_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "parent loop".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_060),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        let parent = parent_response.schedule;
+        assert_eq!(None, parent.parent_schedule_id);
+        assert_eq!(1, parent.nesting_depth);
+        harness.read_schedule_updated(&thread_id).await;
+
+        let request_id = harness.request_id();
+        let child_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: Some(parent.schedule_id.clone()),
+                    prompt: "child loop".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 2,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_120),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        let child = child_response.schedule;
+        assert_eq!(Some(parent.schedule_id.clone()), child.parent_schedule_id);
+        assert_eq!(2, child.nesting_depth);
+        assert_eq!(
+            child,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: Some(parent.schedule_id.clone()),
+                    prompt: "same minute child".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Dynamic,
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_180),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert!(
+            error
+                .message
+                .contains("child cadence must be slower than parent cadence"),
+            "unexpected error: {error:?}"
+        );
+
+        let request_id = harness.request_id();
+        let delete_response: ThreadScheduleDeleteResponse = harness
+            .request(ClientRequest::ThreadScheduleDelete {
+                request_id,
+                params: ThreadScheduleDeleteParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: parent.schedule_id.clone(),
+                },
+            })
+            .await;
+        assert!(delete_response.deleted);
+        harness
+            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .await;
+
+        let request_id = harness.request_id();
+        let after_delete: ThreadScheduleListResponse = harness
+            .request(ClientRequest::ThreadScheduleList {
+                request_id,
+                params: ThreadScheduleListParams {
+                    thread_id,
+                    cursor: None,
+                    limit: Some(10),
+                },
+            })
+            .await;
+        assert!(after_delete.data.is_empty());
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread_id = create_fake_rollout(
+            harness._codex_home.path(),
+            "2025-01-05T12-00-00",
+            "2025-01-05T12:00:00Z",
+            "root profile thread",
+            Some("mock_provider"),
+            /*git_info*/ None,
+        )?;
+        let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
+        let rollout_file_path = rollout_path(
+            harness._codex_home.path(),
+            "2025-01-05T12-00-00",
+            &thread_id,
+        );
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: parsed_thread_id,
+                    timestamp: "2025-01-05T12:00:01Z".to_string(),
+                    cwd: harness.workspace.path().to_path_buf(),
+                    originator: "codex".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    model_provider: Some("mock_provider".to_string()),
+                    auth_profile: Some(None),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        )
+        .await?;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "check the deploy".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+
+        let stored = harness
+            .state_db
+            .thread_schedules()
+            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
+            .await?
+            .expect("created schedule should be persisted");
+        assert_eq!(parsed_thread_id, stored.thread_id);
+        assert_eq!(Some(None), stored.auth_profile);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn unloaded_thread_schedule_create_records_latest_root_turn_auth() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let filename_ts = "2025-01-05T12-05-00";
+        let thread_id = create_fake_rollout(
+            harness._codex_home.path(),
+            filename_ts,
+            "2025-01-05T12:05:00Z",
+            "named profile thread",
+            Some("mock_provider"),
+            /*git_info*/ None,
+        )?;
+        let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
+        let rollout_file_path = rollout_path(harness._codex_home.path(), filename_ts, &thread_id);
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: parsed_thread_id,
+                    timestamp: "2025-01-05T12:05:01Z".to_string(),
+                    cwd: harness.workspace.path().to_path_buf(),
+                    originator: "codex".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    model_provider: Some("mock_provider".to_string()),
+                    auth_profile: Some(Some("account002".to_string())),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        )
+        .await?;
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::TurnContext(TurnContextItem {
+                thread_id: Some(parsed_thread_id),
+                turn_id: Some("turn-root".to_string()),
+                cwd: harness.workspace.path().to_path_buf(),
+                workspace_roots: None,
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::DangerFullAccess,
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "gpt-5.5".to_string(),
+                model_provider_id: Some("mock_provider".to_string()),
+                personality: None,
+                collaboration_mode: None,
+                session_prompt: None,
+                multi_agent_version: None,
+                auth_profile: Some(None),
+                realtime_active: None,
+                effort: None,
+                summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            }),
+        )
+        .await?;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "check the deploy".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+
+        let stored = harness
+            .state_db
+            .thread_schedules()
+            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
+            .await?
+            .expect("created schedule should be persisted");
+        assert_eq!(parsed_thread_id, stored.thread_id);
+        assert_eq!(Some(None), stored.auth_profile);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn unloaded_thread_schedule_create_records_latest_root_session_auth() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let filename_ts = "2025-01-05T12-10-00";
+        let thread_id = create_fake_rollout(
+            harness._codex_home.path(),
+            filename_ts,
+            "2025-01-05T12:10:00Z",
+            "root profile switch thread",
+            Some("mock_provider"),
+            /*git_info*/ None,
+        )?;
+        let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
+        let rollout_file_path = rollout_path(harness._codex_home.path(), filename_ts, &thread_id);
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: parsed_thread_id,
+                    timestamp: "2025-01-05T12:10:01Z".to_string(),
+                    cwd: harness.workspace.path().to_path_buf(),
+                    originator: "codex".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    model_provider: Some("mock_provider".to_string()),
+                    auth_profile: Some(Some("account002".to_string())),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        )
+        .await?;
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: parsed_thread_id,
+                    timestamp: "2025-01-05T12:10:02Z".to_string(),
+                    cwd: harness.workspace.path().to_path_buf(),
+                    originator: "codex".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    model_provider: Some("mock_provider".to_string()),
+                    auth_profile: Some(None),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        )
+        .await?;
+        append_rollout_item_to_path(
+            &rollout_file_path,
+            &RolloutItem::TurnContext(TurnContextItem {
+                thread_id: Some(parsed_thread_id),
+                turn_id: Some("turn-root".to_string()),
+                cwd: harness.workspace.path().to_path_buf(),
+                workspace_roots: None,
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::DangerFullAccess,
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "gpt-5.5".to_string(),
+                model_provider_id: Some("mock_provider".to_string()),
+                personality: None,
+                collaboration_mode: None,
+                session_prompt: None,
+                multi_agent_version: None,
+                auth_profile: Some(None),
+                realtime_active: None,
+                effort: None,
+                summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            }),
+        )
+        .await?;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "check the deploy".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+
+        let stored = harness
+            .state_db
+            .thread_schedules()
+            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
+            .await?
+            .expect("created schedule should be persisted");
+        assert_eq!(parsed_thread_id, stored.thread_id);
+        assert_eq!(Some(None), stored.auth_profile);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_default_prompt_reloads_from_project_file_on_execution() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;

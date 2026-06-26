@@ -1061,6 +1061,12 @@ mod tests {
                 schedule_id: Some("0f4a4ce9-66ac-478c-8897-43c2fe8c31df".to_string()),
             }))
         );
+        assert_eq!(
+            parse_loop_slash_args("resume 0f4a4ce9-66ac-478c-\n  8897-43c2fe8c31df"),
+            Ok(LoopSlashCommand::Manage(LoopManageCommand::Resume {
+                schedule_id: Some("0f4a4ce9-66ac-478c-8897-43c2fe8c31df".to_string()),
+            }))
+        );
     }
 
     #[test]
