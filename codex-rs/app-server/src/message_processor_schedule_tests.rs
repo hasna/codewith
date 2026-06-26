@@ -1518,6 +1518,110 @@ fn due_thread_schedule_executes_visible_interactive_turn() -> Result<()> {
 }
 
 #[test]
+fn due_interval_schedule_executes_multiple_visible_interactive_turns() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check repeated loop visibility".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp()),
+                    expires_at: Some(Utc::now().timestamp() + 86_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+
+        let (first_running, _, _, _, first_completed_turn) = harness
+            .read_scheduled_run_lifecycle_for_schedule(&thread_id, &schedule.schedule_id)
+            .await;
+        let first_turn_id = first_running
+            .run
+            .turn_id
+            .clone()
+            .expect("first due scheduled run should expose a turn id");
+        assert_eq!(first_turn_id, first_completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, first_completed_turn.turn.status);
+
+        let request_id = harness.request_id();
+        let updated: ThreadScheduleUpdateResponse = harness
+            .request(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                    prompt: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: Some(Some(Utc::now().timestamp())),
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(ThreadScheduleStatus::Active, updated.schedule.status);
+        harness.read_schedule_updated(&thread_id).await;
+
+        let (second_running, _, _, _, second_completed_turn) = harness
+            .read_scheduled_run_lifecycle_for_schedule(&thread_id, &schedule.schedule_id)
+            .await;
+        let second_turn_id = second_running
+            .run
+            .turn_id
+            .clone()
+            .expect("second due scheduled run should expose a turn id");
+        assert_ne!(
+            first_turn_id, second_turn_id,
+            "each recurring loop firing must create a fresh visible turn"
+        );
+        assert_eq!(second_turn_id, second_completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, second_completed_turn.turn.status);
+
+        let turns = harness.list_turns(&thread_id).await;
+        let scheduled_turns = turns
+            .data
+            .iter()
+            .filter(|turn| {
+                turn_contains_user_text(turn, "check repeated loop visibility")
+                    && turn_contains_agent_text(turn, "Scheduled done")
+            })
+            .count();
+        assert_eq!(
+            2, scheduled_turns,
+            "each due interval run should be visible in persisted turn history: {turns:#?}"
+        );
+
+        let response_request_bodies = harness.response_request_bodies().await;
+        let scheduled_requests = response_request_bodies
+            .iter()
+            .filter(|body| {
+                body.contains("You are running one new scheduled Codewith prompt")
+                    && body.contains("check repeated loop visibility")
+            })
+            .count();
+        assert_eq!(
+            2, scheduled_requests,
+            "each repeated due run should be submitted to the model as a normal visible turn: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn completed_unsubscribed_scheduled_run_is_recoverable_from_turn_history() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
