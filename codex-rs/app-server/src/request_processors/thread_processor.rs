@@ -1,5 +1,6 @@
 use super::*;
 use crate::error_code::method_not_found;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
@@ -4232,6 +4233,11 @@ pub(crate) fn thread_from_stored_thread(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let (auth_profile_kind, auth_profile) = match thread.auth_profile {
+        None => (AuthProfileKind::Unknown, None),
+        Some(None) => (AuthProfileKind::Default, None),
+        Some(Some(profile)) => (AuthProfileKind::Named, Some(profile)),
+    };
     let thread = Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -4255,6 +4261,8 @@ pub(crate) fn thread_from_stored_thread(
         source: source.into(),
         thread_source: thread.thread_source.map(Into::into),
         git_info,
+        auth_profile,
+        auth_profile_kind,
         name: thread.name,
         turns: Vec::new(),
     };
@@ -4524,6 +4532,12 @@ fn build_thread_from_snapshot(
         source: config_snapshot.session_source.clone().into(),
         thread_source: config_snapshot.thread_source.map(Into::into),
         git_info: None,
+        auth_profile: config_snapshot.selected_auth_profile.clone(),
+        auth_profile_kind: if config_snapshot.selected_auth_profile.is_some() {
+            AuthProfileKind::Named
+        } else {
+            AuthProfileKind::Default
+        },
         name: None,
         turns: Vec::new(),
     }

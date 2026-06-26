@@ -53,6 +53,19 @@ pub(super) const fn default_enabled() -> bool {
     true
 }
 
+#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum AuthProfileKind {
+    /// The source did not record auth profile selection.
+    #[default]
+    Unknown,
+    /// The default root auth profile was selected explicitly or by runtime default.
+    Default,
+    /// A named auth profile was selected.
+    Named,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

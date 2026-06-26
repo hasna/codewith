@@ -74,6 +74,7 @@ use crate::reducer::normalize_path_for_skill_id;
 use crate::reducer::skill_id_for_local_skill;
 use codex_app_server_protocol::ApprovalsReviewer as AppServerApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval as AppServerAskForApproval;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ClientResponsePayload;
@@ -185,6 +186,8 @@ fn sample_thread_with_metadata(
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: None,
         turns: Vec::new(),
     }

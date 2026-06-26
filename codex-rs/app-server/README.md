@@ -10,6 +10,7 @@
 - [Lifecycle Overview](#lifecycle-overview)
 - [Initialization](#initialization)
 - [API Overview](#api-overview)
+- [Bridge Adapter Contract](#bridge-adapter-contract)
 - [Events](#events)
 - [Approvals](#approvals)
 - [Skills](#skills)
@@ -253,6 +254,29 @@ Example with notification opt-out:
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk, with optional `reloadUserConfig: true` to hot-reload loaded threads, including multiple `desktop.*` edits.
 - `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`, `allowedPermissions`), lifecycle hook lockdown (`allowManagedHooksOnly`), computer use policy (`computerUse`), pinned feature values (`featureRequirements`), managed lifecycle hooks (`hooks`), `enforceResidency`, and `network` constraints such as canonical domain/socket permissions plus `managedAllowedDomainsOnly` and `dangerFullAccessDenylistOnly`.
 
+## Bridge Adapter Contract
+
+The OSS package `@hasna/bridge` should treat Codewith as a local control plane and call only machine-readable surfaces. Do not parse human CLI output except where no JSON mode exists.
+
+Stable adapter entry points:
+
+- Auth profile inventory: call `codewith profile list --json` to enumerate named profiles and the runtime `currentProfile`. `currentProfile.profileKind` is `default` when Codewith will use the root login and `named` when `--auth-profile`, `CODEWITH_AUTH_PROFILE`, or `CODEX_AUTH_PROFILE` selected a named profile for this process. Each named profile includes `profileKind: "named"`, `selected`, `usable`, `unusableReason`, `authMode`, `subscriptionProvider`, and `accountLabel`. `usable: true` means the profile is launch-compatible with Codewith model auth; metadata-only profiles for non-ChatGPT providers are listed but return `usable: false`. Create or refresh a named login with `codewith login --auth-profile <name> ...`. Do not call `codewith profile switch` for bridge-launched work; that mutates the user's global active login.
+- Profile-aware launch: pass the root CLI option `--auth-profile <name>` when launching Codewith commands, including TUI, `exec`, `app-server`, and background-agent flows. In app-server v2, use `thread/start.authProfile`, `thread/resume.authProfile`, `thread/fork.authProfile`, `thread/settings/update.authProfile`, and `agent/start.authProfileRef`. Passing JSON `null` selects the default root auth profile; omitting the field preserves the server or thread default.
+- App-server transport: start the local control endpoint with `codewith remote-control start --json` and read the returned daemon/socket endpoint. Use JSON-RPC over that endpoint; initialize once per connection with `clientInfo.name: "hasna_bridge"` or another bridge-specific client id.
+- Session state: use `localSession/list` for durable local inventory and `activeSession/list` for currently loaded message-capable peers. Bridge-facing state fields are `threadId`, `runtimeSessionId`/`sessionId`, `peerId`, `cwd`, `authProfile`, `authProfileKind`, `accountLabel`, `status`, `activeFlags`, `capabilities`, `lastSeenAt`/`updatedAt`, and nullable routing details such as `peer`. `authProfileKind` is `unknown`, `default`, or `named`; use it instead of inferring root/default semantics from nullable `authProfile`.
+- Daemon and agent state: use `codewith agent list --json`, `codewith agent read --json`, `codewith agent logs --json`, `codewith agent attach --json`, and app-server `agent/*` methods for background agents. Agent JSON includes ids, cwd, auth profile ref, status, last event sequence, timestamps, pending interactions, and event logs.
+- Prompt/control: for loaded sessions, send live messages with `activeSession/send` and treat `status: "delivered"` as live in-memory enqueue only. For durable/offline intent, use `missionControl/enqueueInstruction` or `thread/mailbox/enqueue`, then read receipts with `missionControl/mailboxReceipts` or `thread/mailbox/receipts/list`. Use `turn/start` for app-server-owned threads when bridge is directly driving a turn; it supports text plus `image` and `localImage` inputs.
+- Attachments: use `turn/start` user inputs for images. Durable mailbox and mission-control instruction APIs currently carry text instructions only; if bridge needs non-image file context, pass explicit paths in the instruction after ensuring the file is readable by the local Codewith process, or use app-server filesystem APIs only under the caller's existing local trust boundary.
+- Approval and user-input waits: surface `thread/pendingInteraction/list`, `thread/pendingInteraction/read`, `thread/pendingInteraction/respond`, `missionControl/overview.pendingInteractions`, `missionControl/respondInteraction`, and `agent/pendingInteraction/respond`. Bridge must not special-case Telegram or any other chat transport; blocked approval and user-input states are Codewith pending interactions.
+- Event updates: keep reading JSON-RPC notifications such as `thread/status/changed`, `thread/settings/updated`, `turn/*`, `item/*`, `thread/goal/*`, `thread/schedule/*`, and pending-interaction notifications. For background agents, use event sequence cursors from the `agent/*` APIs or CLI JSON logs.
+
+Compatibility rules for bridge:
+
+- Treat nullable fields as absent values, not as errors. For auth profile state, prefer `authProfileKind` over interpreting `authProfile: null`.
+- Prefer app-server JSON and CLI `--json` output over rollout-file parsing.
+- Keep live delivery (`activeSession/send`) separate from durable mailbox delivery and receipts.
+- Do not call shell/process/filesystem/config/auth/plugin APIs unless the user explicitly grants that bridge workflow local authority.
+
 ### Example: List gateways, providers, and provider-scoped models
 
 Use `modelGateway/list` and `modelProvider/list` to build a gateway/provider picker without exposing secrets or low-level provider configuration. Provider summaries are sorted with the current provider first. Omit `modelGateway` for the provider-native view, pass `"hasna"` for the default direct gateway view, or pass `"openrouter"` for the OpenRouter gateway view.
@@ -482,6 +506,9 @@ When `nextCursor` is `null`, you’ve reached the final page.
         "status": "idle",
         "activeFlags": [],
         "cwd": "/Users/me/project",
+        "authProfile": "work",
+        "authProfileKind": "named",
+        "accountLabel": "me@example.com",
         "displayName": null,
         "agentPath": null,
         "modelProvider": "openai",
@@ -603,6 +630,8 @@ Non-goals for this phase:
         "cwd": "/Users/me/project",
         "displayName": null,
         "agentPath": null,
+        "authProfile": "work",
+        "authProfileKind": "named",
         "capabilities": ["receiveMessage", "queueMessage", "triggerTurn"],
         "lastSeenAt": 1781510000
     }],
