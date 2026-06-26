@@ -38,6 +38,22 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.51] - 2026-06-26
+
+Tag: `rust-v0.1.51`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.51>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.50...rust-v0.1.51>
+
+### Fixed
+
+- Added a SQLite-level guard so already-running stale Codewith scheduler
+  processes cannot claim a `/loop` that belongs to a fresh live interactive
+  session, preventing background execution from stealing turns that should be
+  visible in the TUI.
+- Hardened manual `/loop` run-now claims with the same live-owner protection,
+  including regression coverage for legacy claim suppression, foreign live-owner
+  rejection, and owner-scoped successful claims.
+
 ## [0.1.50] - 2026-06-26
 
 Tag: `rust-v0.1.50`
