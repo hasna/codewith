@@ -1,0 +1,4 @@
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained and pulled in via dylint_linting v5.0.0; no safe paste upgrade is available. Remove this when Dylint drops or replaces paste." },
+]
