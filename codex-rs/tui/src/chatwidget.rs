@@ -444,6 +444,7 @@ mod status_panel;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
+mod teaching_mode;
 mod tool_lifecycle;
 mod tool_requests;
 mod transcript;
@@ -585,6 +586,8 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    teaching_mode_enabled: bool,
+    teaching_mode_by_thread: HashMap<ThreadId, bool>,
     has_chatgpt_account: bool,
     model_catalog: Arc<ModelCatalog>,
     session_telemetry: SessionTelemetry,

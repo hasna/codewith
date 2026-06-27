@@ -16,6 +16,7 @@ use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
 use super::queued_messages::LocalQueuedMessageMoveDirection;
+use super::teaching_mode::TeachingModeCommand;
 use super::workflow_slash::WORKFLOW_USAGE;
 use super::workflow_slash::WORKFLOW_USAGE_HINT;
 use super::workflow_slash::WorkflowSlashCommand;
@@ -1084,6 +1085,9 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Teach => {
+                self.apply_teaching_mode_command(TeachingModeCommand::Toggle);
+            }
             SlashCommand::MissionControl => {
                 self.app_event_tx.send(AppEvent::OpenMissionControlOverview);
                 self.append_message_history_entry("/mission-control".to_string());
@@ -1576,6 +1580,10 @@ impl ChatWidget {
                     self.emit_raw_output_mode_changed(/*enabled*/ false);
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
+            },
+            SlashCommand::Teach => match TeachingModeCommand::parse(trimmed) {
+                Ok(command) => self.apply_teaching_mode_command(command),
+                Err(usage) => self.add_error_message(usage.to_string()),
             },
             SlashCommand::ExternalAgent => {
                 self.handle_external_agent_command_args(trimmed);
@@ -2551,6 +2559,7 @@ impl ChatWidget {
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Teach
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::Recap

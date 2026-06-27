@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::FileChangeApprovalDecision;
@@ -57,6 +59,7 @@ pub(crate) enum AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     },
@@ -188,6 +191,7 @@ impl AppCommand {
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     ) -> Self {
@@ -203,6 +207,7 @@ impl AppCommand {
             summary,
             service_tier,
             final_output_json_schema,
+            additional_context,
             collaboration_mode,
             personality,
         }

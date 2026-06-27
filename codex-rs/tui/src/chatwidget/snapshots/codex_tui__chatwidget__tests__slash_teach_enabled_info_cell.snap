@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: drain_history_text(&mut rx)
+---
+• Teaching mode enabled. Future replies may include compact Teaching note callouts when they help.

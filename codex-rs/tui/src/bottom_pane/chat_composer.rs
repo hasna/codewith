@@ -8078,6 +8078,32 @@ mod tests {
     }
 
     #[test]
+    fn slash_popup_teach_for_tea_ui() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        type_chars_humanlike(&mut composer, &['/', 't', 'e', 'a']);
+
+        let mut terminal = Terminal::new(TestBackend::new(68, 5)).expect("terminal");
+        terminal
+            .draw(|f| composer.render(f.area(), f.buffer_mut()))
+            .expect("draw composer");
+
+        insta::assert_snapshot!("slash_popup_tea", terminal.backend());
+    }
+
+    #[test]
     fn slash_popup_resume_for_res_ui() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
