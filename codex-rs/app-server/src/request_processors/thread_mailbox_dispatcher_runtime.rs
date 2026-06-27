@@ -15,6 +15,8 @@ use crate::request_processors::thread_lifecycle::ListenerTaskContext;
 const MAILBOX_DISPATCH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
+const MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS: usize = 10;
+const MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(5);
 const MAILBOX_LOCAL_ACTIVE_SESSION_RETENTION: Duration = Duration::from_secs(300);
 const MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK: usize = 16;
@@ -200,68 +202,28 @@ impl ThreadMailboxDispatcherRuntime {
         let message_id = claim.message.message_id.clone();
         let lease_id = claim.attempt.lease_id.clone();
         let result = self.deliver_claim(&claim).await;
-        match result {
+        let durable_transition_ok = match result {
             MailboxDispatchResult::Delivered { receipt } => {
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .ack_message(codex_state::MailboxAckParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        receipt_payload_json: Some(receipt),
-                        now: Utc::now(),
-                    })
-                    .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to ack delivered mailbox message: {err}"
-                    );
-                }
+                self.ack_dispatch_claim(state_db, &claim, receipt).await
             }
             MailboxDispatchResult::Retry { error, retry_at } => {
                 let retry_at = retry_at.unwrap_or_else(|| {
                     Utc::now() + ChronoDuration::seconds(MAILBOX_DISPATCH_RETRY_DELAY_SECONDS)
                 });
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .fail_message(codex_state::MailboxFailParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        error,
-                        disposition: codex_state::MailboxFailDisposition::Retry {
-                            next_attempt_at: retry_at,
-                        },
-                        now: Utc::now(),
-                    })
+                self.fail_dispatch_claim_for_retry(state_db, &claim, error, retry_at)
                     .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to requeue mailbox message after dispatch miss: {err}"
-                    );
-                }
             }
             MailboxDispatchResult::Terminal { error } => {
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .fail_message(codex_state::MailboxFailParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        error,
-                        disposition: codex_state::MailboxFailDisposition::Terminal,
-                        now: Utc::now(),
-                    })
+                self.fail_dispatch_claim_terminal(state_db, &claim, error)
                     .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to mark mailbox message terminal after dispatch miss: {err}"
-                    );
-                }
             }
+        };
+        if !durable_transition_ok {
+            warn!(
+                message_id = %message_id,
+                "leaving mailbox target dispatch lease to expire because durable transition did not complete"
+            );
+            return;
         }
         match self
             .refresh_local_active_sessions(state_db, Utc::now())
@@ -290,6 +252,133 @@ impl ThreadMailboxDispatcherRuntime {
                 );
             }
         }
+    }
+
+    async fn ack_dispatch_claim(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        receipt: serde_json::Value,
+    ) -> bool {
+        let mut last_error = None;
+        for attempt in 1..=MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+            match state_db
+                .mailbox_messages()
+                .ack_message(codex_state::MailboxAckParams {
+                    message_id: claim.message.message_id.clone(),
+                    attempt_id: claim.attempt.attempt_id.clone(),
+                    lease_id: claim.attempt.lease_id.clone(),
+                    receipt_payload_json: Some(receipt.clone()),
+                    now: Utc::now(),
+                })
+                .await
+            {
+                Ok(Some(_)) => return true,
+                Ok(None) => {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "failed to ack delivered mailbox message: lease no longer matches"
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    if attempt < MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+                        tokio::time::sleep(MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        warn!(
+            message_id = %claim.message.message_id,
+            attempts = MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS,
+            "failed to ack delivered mailbox message after retries: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        );
+        false
+    }
+
+    async fn fail_dispatch_claim_for_retry(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+        retry_at: DateTime<Utc>,
+    ) -> bool {
+        self.fail_dispatch_claim(
+            state_db,
+            claim,
+            error,
+            |next_attempt_at| codex_state::MailboxFailDisposition::Retry { next_attempt_at },
+            Some(retry_at),
+            "failed to requeue mailbox message after dispatch miss",
+        )
+        .await
+    }
+
+    async fn fail_dispatch_claim_terminal(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+    ) -> bool {
+        self.fail_dispatch_claim(
+            state_db,
+            claim,
+            error,
+            |_| codex_state::MailboxFailDisposition::Terminal,
+            None,
+            "failed to mark mailbox message terminal after dispatch miss",
+        )
+        .await
+    }
+
+    async fn fail_dispatch_claim(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+        disposition: impl Fn(DateTime<Utc>) -> codex_state::MailboxFailDisposition,
+        retry_at: Option<DateTime<Utc>>,
+        context: &'static str,
+    ) -> bool {
+        let mut last_error = None;
+        for attempt in 1..=MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+            match state_db
+                .mailbox_messages()
+                .fail_message(codex_state::MailboxFailParams {
+                    message_id: claim.message.message_id.clone(),
+                    attempt_id: claim.attempt.attempt_id.clone(),
+                    lease_id: claim.attempt.lease_id.clone(),
+                    error: error.clone(),
+                    disposition: disposition(retry_at.unwrap_or_else(Utc::now)),
+                    now: Utc::now(),
+                })
+                .await
+            {
+                Ok(Some(_)) => return true,
+                Ok(None) => {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "{context}: lease no longer matches"
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    if attempt < MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+                        tokio::time::sleep(MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        warn!(
+            message_id = %claim.message.message_id,
+            attempts = MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS,
+            "{context} after retries: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        );
+        false
     }
 
     async fn deliver_claim(&self, claim: &codex_state::MailboxClaim) -> MailboxDispatchResult {
