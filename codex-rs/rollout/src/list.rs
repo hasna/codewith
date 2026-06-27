@@ -71,6 +71,11 @@ pub struct ThreadItem {
     pub agent_role: Option<String>,
     /// Model provider from session metadata.
     pub model_provider: Option<String>,
+    /// Auth profile selected for model requests in the thread.
+    ///
+    /// `None` means unknown, `Some(None)` means root/default auth, and
+    /// `Some(Some(_))` means a named auth profile.
+    pub auth_profile: Option<Option<String>>,
     /// CLI version from session metadata.
     pub cli_version: Option<String>,
     /// RFC3339 timestamp string for when the session was created, if available.
@@ -102,6 +107,7 @@ struct HeadTailSummary {
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     model_provider: Option<String>,
+    auth_profile: Option<Option<String>>,
     cli_version: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
@@ -786,6 +792,7 @@ async fn build_thread_item(
             agent_nickname,
             agent_role,
             model_provider,
+            auth_profile,
             cli_version,
             created_at,
             updated_at: mut summary_updated_at,
@@ -808,6 +815,7 @@ async fn build_thread_item(
             agent_nickname,
             agent_role,
             model_provider,
+            auth_profile,
             cli_version,
             created_at,
             updated_at: summary_updated_at,
@@ -1102,6 +1110,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
                     summary.agent_nickname = session_meta_line.meta.agent_nickname.clone();
                     summary.agent_role = session_meta_line.meta.agent_role.clone();
                     summary.model_provider = session_meta_line.meta.model_provider.clone();
+                    summary.auth_profile = session_meta_line.meta.auth_profile.clone();
                     summary.thread_id = Some(session_meta_line.meta.id);
                     summary.cwd = Some(session_meta_line.meta.cwd.clone());
                     summary.git_branch = session_meta_line

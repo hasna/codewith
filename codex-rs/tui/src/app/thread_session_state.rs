@@ -430,6 +430,8 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: codex_app_server_protocol::AuthProfileKind::Unknown,
             name: Some("read thread".to_string()),
             turns: Vec::new(),
         };

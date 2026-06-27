@@ -2906,6 +2906,7 @@ mod tests {
             agent_role: None,
             agent_path: None,
             git_info: None,
+            auth_profile: None,
             approval_mode: AskForApproval::OnRequest,
             permission_profile: PermissionProfile::read_only(),
             token_usage: None,

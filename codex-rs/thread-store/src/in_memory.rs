@@ -408,6 +408,9 @@ fn stored_thread_from_state(
         agent_role: metadata.and_then(|metadata| metadata.agent_role.clone().flatten()),
         agent_path: metadata.and_then(|metadata| metadata.agent_path.clone().flatten()),
         git_info: metadata.and_then(git_info_from_patch),
+        auth_profile: metadata
+            .and_then(|metadata| metadata.auth_profile.clone())
+            .or_else(|| created.metadata.auth_profile.clone()),
         approval_mode: metadata
             .and_then(|metadata| metadata.approval_mode)
             .unwrap_or(AskForApproval::Never),

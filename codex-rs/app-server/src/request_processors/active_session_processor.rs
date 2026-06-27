@@ -14,6 +14,7 @@ use crate::active_session_registry::ActivePeerKind as RegistryPeerKind;
 use crate::active_session_registry::ActivePeerLookupError;
 use crate::active_session_registry::ActivePeerRegistry;
 use crate::active_session_registry::LastSeenAt;
+use codex_app_server_protocol::AuthProfileKind;
 use std::time::Duration;
 
 const TARGET_NOT_LOADED_REASON: &str =
@@ -255,6 +256,11 @@ fn freshness_now() -> ActivePeerFreshness {
 }
 
 pub(super) fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
+    let auth_profile_kind = if peer.auth_profile.is_some() {
+        AuthProfileKind::Named
+    } else {
+        AuthProfileKind::Default
+    };
     ActiveSessionPeer {
         peer_id: peer.peer_id,
         kind: api_peer_kind(peer.kind),
@@ -263,6 +269,8 @@ pub(super) fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
         cwd: peer.cwd,
         display_name: peer.display_name,
         agent_path: peer.agent_path,
+        auth_profile: peer.auth_profile,
+        auth_profile_kind,
         capabilities: api_capabilities(peer.capabilities),
         last_seen_at: peer.last_seen_at.unix_seconds(),
     }
@@ -556,6 +564,20 @@ mod tests {
     }
 
     #[test]
+    fn api_active_session_peer_sets_auth_profile_kind() {
+        let named_api_peer =
+            api_active_session_peer(test_active_peer(ThreadId::new(), Some("work".to_string())));
+
+        assert_eq!(named_api_peer.auth_profile.as_deref(), Some("work"));
+        assert_eq!(named_api_peer.auth_profile_kind, AuthProfileKind::Named);
+
+        let default_api_peer = api_active_session_peer(test_active_peer(ThreadId::new(), None));
+
+        assert_eq!(default_api_peer.auth_profile, None);
+        assert_eq!(default_api_peer.auth_profile_kind, AuthProfileKind::Default);
+    }
+
+    #[test]
     fn untrusted_sender_descriptor_bounds_peer_display_name() {
         let thread_id = ThreadId::new();
         let peer = ActivePeer {
@@ -568,6 +590,7 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("x".repeat(MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES + 100)),
             agent_path: None,
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
             last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
@@ -599,6 +622,7 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("Sender".to_string()),
             agent_path: Some("/claimed".to_string()),
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
             last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
@@ -615,6 +639,7 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("Target".to_string()),
             agent_path: Some("/target".to_string()),
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
             last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
@@ -641,5 +666,23 @@ mod tests {
         );
         assert_eq!(communication.author, AgentPath::root());
         assert!(envelope.content.contains("claiming Sender"));
+    }
+
+    fn test_active_peer(thread_id: ThreadId, auth_profile: Option<String>) -> ActivePeer {
+        ActivePeer {
+            peer_id: thread_id.to_string(),
+            kind: ActivePeerKind::CodewithSession,
+            owner: ActivePeerOwner::LocalThread { thread_id },
+            thread_id,
+            session_id: "session".to_string(),
+            cwd: AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+                .expect("temp dir is absolute"),
+            display_name: None,
+            agent_path: None,
+            auth_profile,
+            process: None,
+            capabilities: ActivePeerCapabilities::codewith_session(),
+            last_seen_at: LastSeenAt::from_unix_seconds(100),
+        }
     }
 }

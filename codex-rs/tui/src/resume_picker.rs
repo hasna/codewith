@@ -33,6 +33,8 @@ use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 use chrono::DateTime;
 use chrono::Utc;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListCwdFilter;
@@ -5736,6 +5738,8 @@ session_picker_view = "dense"
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: Some(String::from("Named thread")),
             turns: Vec::new(),
         };
@@ -5771,6 +5775,8 @@ session_picker_view = "dense"
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
@@ -5840,6 +5846,8 @@ session_picker_view = "dense"
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
@@ -5898,6 +5906,8 @@ session_picker_view = "dense"
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
