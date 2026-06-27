@@ -854,6 +854,12 @@ pub(crate) enum AppEvent {
         is_enabled: bool,
     },
 
+    /// Open a drill-down app details view in the bottom pane, pushed on top of
+    /// the apps list so Esc returns to the list.
+    OpenAppDetails {
+        app_id: String,
+    },
+
     /// Open the provided URL in the user's browser.
     OpenUrlInBrowser {
         url: String,

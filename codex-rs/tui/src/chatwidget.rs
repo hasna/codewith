@@ -222,6 +222,7 @@ const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
 const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
+const APP_DETAILS_SELECTION_VIEW_ID: &str = "app-details-selection";
 const PET_SELECTION_LOADING_VIEW_ID: &str = "pet-selection-loading";
 const AMBIENT_PET_WRAP_GAP_COLUMNS: u16 = 2;
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
@@ -1047,6 +1048,29 @@ impl ChatWidget {
             self.bottom_pane.list_keymap(),
         );
         self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
+    /// Open a drill-down details view for a single app, pushed on top of the
+    /// apps list so Esc returns to the list. Builds the view from the cached
+    /// connectors snapshot.
+    pub(crate) fn open_app_details_view(&mut self, app_id: &str) {
+        let Some(connectors) = self.connectors_for_details() else {
+            self.add_info_message(
+                "Apps list is not loaded yet.".to_string(),
+                Some("Try /apps again to load the list.".to_string()),
+            );
+            return;
+        };
+        let Some(connector) = connectors.iter().find(|c| c.id == app_id).cloned() else {
+            self.add_info_message(
+                format!("App '{app_id}' was not found in the current list."),
+                None,
+            );
+            return;
+        };
+        self.bottom_pane
+            .show_selection_view(self.app_details_popup_params(&connector));
         self.request_redraw();
     }
 

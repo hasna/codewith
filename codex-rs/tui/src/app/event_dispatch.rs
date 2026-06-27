@@ -529,6 +529,9 @@ impl App {
                         elicitation_target: None,
                     });
             }
+            AppEvent::OpenAppDetails { app_id } => {
+                self.chat_widget.open_app_details_view(&app_id);
+            }
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
             }

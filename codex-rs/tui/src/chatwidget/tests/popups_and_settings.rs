@@ -2420,7 +2420,7 @@ async fn apps_refresh_failure_without_full_snapshot_falls_back_to_installed_apps
         "expected /apps to fall back to the installed apps snapshot, got:\n{popup}"
     );
     assert!(
-        popup.contains("Installed. Press Enter to open the app page"),
+        popup.contains("Installed. Press Enter to open details"),
         "expected the fallback popup to behave like the installed apps view, got:\n{popup}"
     );
 }
@@ -2459,11 +2459,11 @@ async fn apps_popup_shows_disabled_status_for_installed_but_disabled_apps() {
     chat.add_connectors_output();
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
-        popup.contains("Installed · Disabled. Press Enter to open the app page"),
+        popup.contains("Installed · Disabled. Press Enter to open details"),
         "expected selected app description to include disabled status, got:\n{popup}"
     );
     assert!(
-        popup.contains("enable/disable this app."),
+        popup.contains("enable/disable)."),
         "expected selected app description to mention enable/disable action, got:\n{popup}"
     );
 }
@@ -2534,7 +2534,7 @@ async fn apps_refresh_preserves_toggled_enabled_state() {
     chat.add_connectors_output();
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
-        popup.contains("Installed · Disabled. Press Enter to open the app page"),
+        popup.contains("Installed · Disabled. Press Enter to open details"),
         "expected disabled status to persist after reload, got:\n{popup}"
     );
 }
@@ -2573,12 +2573,70 @@ async fn apps_popup_for_not_installed_app_uses_install_only_selected_description
     chat.add_connectors_output();
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
-        popup.contains("Can be installed. Press Enter to open the app page to install"),
+        popup.contains("Can be installed. Press Enter to open details and install"),
         "expected selected app description to be install-only for not-installed apps, got:\n{popup}"
     );
     assert!(
-        !popup.contains("enable/disable this app."),
+        !popup.contains("enable/disable)."),
         "did not expect enable/disable text for not-installed apps, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn apps_details_drill_down_shows_metadata_and_install_action() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.config
+        .features
+        .enable(Feature::Apps)
+        .expect("test config should allow feature update");
+    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
+
+    chat.on_connectors_loaded(
+        Ok(ConnectorsSnapshot {
+            connectors: vec![AppInfo {
+                id: "connector_details".to_string(),
+                name: "Notion".to_string(),
+                description: Some("Workspace docs".to_string()),
+                logo_url: None,
+                logo_url_dark: None,
+                distribution_channel: None,
+                branding: None,
+                app_metadata: None,
+                labels: None,
+                install_url: Some("https://example.test/notion".to_string()),
+                is_accessible: true,
+                is_enabled: true,
+                plugin_display_names: vec!["notion-mcp".to_string()],
+            }],
+        }),
+        /*is_final*/ true,
+    );
+
+    // Open the list, then drill down into the single app's details view.
+    chat.add_connectors_output();
+    chat.open_app_details_view("connector_details");
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Apps · Notion"),
+        "expected drill-down header to name the app, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Press Esc to return to the apps list"),
+        "expected drill-down hint to mention returning to the list, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Description") && popup.contains("Workspace docs"),
+        "expected details view to surface the app description, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Plugins") && popup.contains("notion-mcp"),
+        "expected details view to surface plugin display names, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Open manage link"),
+        "expected installed app to offer a manage link row, got:\n{popup}"
     );
 }
 

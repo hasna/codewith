@@ -73,6 +73,20 @@ impl ChatWidget {
         }
     }
 
+    /// Snapshot of connectors used to build the app details drill-down view.
+    /// Unlike `connectors_for_mentions`, this does not require the apps feature
+    /// to be enabled because the details view is opened from an already-loaded
+    /// list.
+    pub(super) fn connectors_for_details(&self) -> Option<Vec<AppInfo>> {
+        if let Some(snapshot) = &self.connectors.partial_snapshot {
+            return Some(snapshot.connectors.clone());
+        }
+        match &self.connectors.cache {
+            ConnectorsCacheState::Ready(snapshot) => Some(snapshot.connectors.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn add_connectors_output(&mut self) {
         if !self.connectors_enabled() {
             self.add_info_message(
@@ -176,52 +190,31 @@ impl ChatWidget {
                 search_value: Some(search_value),
                 ..Default::default()
             };
-            let is_installed = connector.is_accessible;
-            let selected_label = if is_installed {
+            let selected_label = if connector.is_accessible {
                 format!(
-                    "{status_label}. Press Enter to open the app page to install, manage, or enable/disable this app."
+                    "{status_label}. Press Enter to open details (install, manage, or enable/disable)."
                 )
             } else {
-                format!("{status_label}. Press Enter to open the app page to install this app.")
+                format!("{status_label}. Press Enter to open details and install this app.")
             };
             let missing_label = format!("{status_label}. App link unavailable.");
-            let instructions = if connector.is_accessible {
-                "Manage this app in your browser."
-            } else {
-                "Install this app in your browser, then reload Codewith."
-            };
-            if let Some(install_url) = connector.install_url.clone() {
-                let app_id = connector.id.clone();
-                let is_enabled = connector.is_enabled;
-                let title = connector_title.clone();
-                let instructions = instructions.to_string();
-                let description = link_description.clone();
-                item.actions = vec![Box::new(move |tx| {
-                    tx.send(AppEvent::OpenAppLink {
-                        app_id: app_id.clone(),
-                        title: title.clone(),
-                        description: description.clone(),
-                        instructions: instructions.clone(),
-                        url: install_url.clone(),
-                        is_installed,
-                        is_enabled,
-                    });
-                })];
-                item.dismiss_on_select = true;
-                item.selected_description = Some(selected_label);
-            } else {
-                let missing_label_for_action = missing_label.clone();
-                item.actions = vec![Box::new(move |tx| {
-                    tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_info_event(
-                            missing_label_for_action.clone(),
-                            /*hint*/ None,
-                        ),
-                    )));
-                })];
-                item.dismiss_on_select = true;
-                item.selected_description = Some(missing_label);
-            }
+            // The list row always drills down into the app details view. The
+            // install/manage browser link lives one level deeper, inside the
+            // details view.
+            let app_id = connector.id.clone();
+            item.actions = vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenAppDetails {
+                    app_id: app_id.clone(),
+                });
+            })];
+            item.dismiss_on_select = false;
+            item.selected_description = Some(selected_label);
+            // Keep `missing_label` referenced for clarity in non-installed
+            // connectors without an install URL; the details view surfaces the
+            // same message.
+            let _ = &link_description;
+            let _ = &connector_title;
+            let _ = &missing_label;
             items.push(item);
         }
 
@@ -234,6 +227,155 @@ impl ChatWidget {
             search_placeholder: Some("Type to search apps".to_string()),
             col_width_mode: ColumnWidthMode::AutoAllRows,
             initial_selected_idx,
+            ..Default::default()
+        }
+    }
+
+    /// Build a drill-down details view for a single connector. The view is
+    /// pushed on top of the apps list, so Esc returns to the list. Each row is
+    /// a piece of app metadata; the install/manage row opens the app link view
+    /// for browser-based install or management.
+    pub(super) fn app_details_popup_params(&self, connector: &AppInfo) -> SelectionViewParams {
+        let connector_label = codex_connectors::metadata::connector_display_label(connector);
+        let status_label = Self::connector_status_label(connector);
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from(format!("Apps · {connector_label}").bold()));
+        header.push(Line::from(
+            "Drill-down view. Press Esc to return to the apps list.".dim(),
+        ));
+        header.push(Line::from(
+            format!("{status_label} · id: {}", connector.id).dim(),
+        ));
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        if let Some(description) = Self::connector_description(connector) {
+            items.push(SelectionItem {
+                name: "Description".to_string(),
+                description: Some(description),
+                is_disabled: true,
+                ..Default::default()
+            });
+        }
+
+        if let Some(metadata) = &connector.app_metadata {
+            if let Some(categories) = &metadata.categories
+                && !categories.is_empty()
+            {
+                items.push(SelectionItem {
+                    name: "Categories".to_string(),
+                    description: Some(categories.join(", ")),
+                    is_disabled: true,
+                    ..Default::default()
+                });
+            }
+            if let Some(developer) = &metadata.developer {
+                let value = developer.trim();
+                if !value.is_empty() {
+                    items.push(SelectionItem {
+                        name: "Developer".to_string(),
+                        description: Some(value.to_string()),
+                        is_disabled: true,
+                        ..Default::default()
+                    });
+                }
+            }
+            if let Some(version) = &metadata.version {
+                let value = version.trim();
+                if !value.is_empty() {
+                    items.push(SelectionItem {
+                        name: "Version".to_string(),
+                        description: Some(value.to_string()),
+                        is_disabled: true,
+                        ..Default::default()
+                    });
+                }
+            }
+            if let Some(notes) = &metadata.version_notes {
+                let value = notes.trim();
+                if !value.is_empty() {
+                    items.push(SelectionItem {
+                        name: "Version notes".to_string(),
+                        description: Some(value.to_string()),
+                        is_disabled: true,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        if !connector.plugin_display_names.is_empty() {
+            items.push(SelectionItem {
+                name: "Plugins".to_string(),
+                description: Some(connector.plugin_display_names.join(", ")),
+                is_disabled: true,
+                ..Default::default()
+            });
+        }
+
+        items.push(SelectionItem {
+            name: "Status".to_string(),
+            description: Some(status_label.to_string()),
+            is_disabled: true,
+            ..Default::default()
+        });
+
+        // Install / manage action row. Opens the existing app link view (a
+        // further drill-down level) for browser-based install or management.
+        let install_instructions = if connector.is_accessible {
+            "Manage this app in your browser."
+        } else {
+            "Install this app in your browser, then reload Codewith."
+        };
+        if let Some(install_url) = connector.install_url.clone() {
+            let app_id = connector.id.clone();
+            let title = connector_label;
+            let link_description = Self::connector_description(connector);
+            let is_installed = connector.is_accessible;
+            let is_enabled = connector.is_enabled;
+            let instructions = install_instructions.to_string();
+            let mut install_item = SelectionItem {
+                name: if connector.is_accessible {
+                    "Open manage link".to_string()
+                } else {
+                    "Open install link".to_string()
+                },
+                description: Some(install_instructions.to_string()),
+                dismiss_on_select: true,
+                ..Default::default()
+            };
+            install_item.actions = vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenAppLink {
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                    description: link_description.clone(),
+                    instructions: instructions.clone(),
+                    url: install_url.clone(),
+                    is_installed,
+                    is_enabled,
+                });
+            })];
+            install_item.selected_description = Some(
+                "Press Enter to open the app page to install, manage, or enable/disable this app."
+                    .to_string(),
+            );
+            items.push(install_item);
+        } else {
+            items.push(SelectionItem {
+                name: "Install link".to_string(),
+                description: Some("App link unavailable.".to_string()),
+                is_disabled: true,
+                ..Default::default()
+            });
+        }
+
+        SelectionViewParams {
+            view_id: Some(APP_DETAILS_SELECTION_VIEW_ID),
+            header: Box::new(header),
+            footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Type to filter details".to_string()),
+            col_width_mode: ColumnWidthMode::AutoAllRows,
             ..Default::default()
         }
     }
