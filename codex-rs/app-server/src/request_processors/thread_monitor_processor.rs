@@ -95,12 +95,13 @@ impl ThreadMonitorRequestProcessor {
         let name = validate_monitor_name(params.name.as_str())?;
         let prompt = validate_monitor_prompt(params.prompt.as_str())?;
         let command = validate_monitor_command(params.command.as_str())?;
-        let cwd = validate_optional_monitor_path("monitor cwd", params.cwd)?;
+        let cwd = validate_optional_monitor_relative_path("monitor cwd", params.cwd)?;
         let routing = params
             .routing
             .map(api_thread_monitor_routing_to_state)
             .unwrap_or(codex_state::ThreadMonitorRouting::Stream);
-        let output_file = validate_optional_monitor_path("monitor outputFile", params.output_file)?;
+        let output_file =
+            validate_optional_monitor_relative_path("monitor outputFile", params.output_file)?;
         let output_file = validate_monitor_output_file_for_routing(routing, output_file)?;
         let state_db = self.prepare_monitor_mutation(thread_id).await?;
         self.ensure_thread_monitor_capacity(&state_db, thread_id)

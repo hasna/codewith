@@ -169,6 +169,9 @@ Example with notification opt-out:
 - `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
 - `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
+- `thread/monitor/create` — create a thread-scoped monitor command for a materialized thread; optional `cwd` and `outputFile` paths must be relative paths inside the thread cwd.
+- `thread/monitor/list`, `thread/monitor/read`, `thread/monitor/stop`, `thread/monitor/restart`, and `thread/monitor/delete` — manage stored monitors for a materialized thread.
+- `thread/monitor/updated`, `thread/monitor/deleted`, and `thread/monitor/event` — notifications emitted as monitor state and output events change.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
