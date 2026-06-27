@@ -36,12 +36,32 @@ pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
 
 pub(super) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     let mut text = text.into();
+    let replace_platform_path = |text: String, platform_path: &str, unix_path: &str| -> String {
+        if platform_path == unix_path {
+            return text;
+        }
+
+        let extra_padding = platform_path
+            .chars()
+            .count()
+            .saturating_sub(unix_path.chars().count());
+        let mut normalized = String::with_capacity(text.len());
+        let mut remaining = text.as_str();
+        while let Some(index) = remaining.find(platform_path) {
+            normalized.push_str(&remaining[..index]);
+            normalized.push_str(unix_path);
+            remaining = &remaining[index + platform_path.len()..];
+            if extra_padding > 0 && remaining.starts_with(' ') {
+                normalized.extend(std::iter::repeat_n(' ', extra_padding));
+            }
+        }
+        normalized.push_str(remaining);
+        normalized
+    };
 
     for unix_path in ["/tmp/project", "/tmp/hooks.json"] {
         let platform_path = test_path_display(unix_path);
-        if platform_path != unix_path {
-            text = text.replace(&platform_path, unix_path);
-        }
+        text = replace_platform_path(text, &platform_path, unix_path);
     }
 
     let platform_test_cwd = test_path_display("/tmp/project");

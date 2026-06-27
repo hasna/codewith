@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WebhookEventStatus": {
+      "enum": [
+        "unread",
+        "processed",
+        "archived",
+        "injected",
+        "queued"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sourceAppId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "statuses": {
+      "items": {
+        "$ref": "#/definitions/WebhookEventStatus"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "targetThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "WebhookEventListParams",
+  "type": "object"
+}

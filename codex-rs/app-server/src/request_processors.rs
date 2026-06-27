@@ -661,6 +661,7 @@ mod thread_workflow_processor;
 mod token_usage_replay;
 mod turn_processor;
 mod usage_profile_broker;
+mod webhook_processor;
 mod windows_sandbox_processor;
 mod worktree_paths;
 
@@ -693,6 +694,7 @@ pub(crate) use thread_schedule_processor::ThreadScheduleRequestProcessor;
 pub(crate) use thread_schedule_runtime::ThreadScheduleRuntime;
 pub(crate) use thread_workflow_processor::ThreadWorkflowRequestProcessor;
 pub(crate) use turn_processor::TurnRequestProcessor;
+pub(crate) use webhook_processor::WebhookRequestProcessor;
 pub(crate) use windows_sandbox_processor::WindowsSandboxRequestProcessor;
 
 use crate::error_code::internal_error;

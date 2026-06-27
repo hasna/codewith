@@ -237,6 +237,7 @@ mod thread_workflow_actions;
 mod tmux_handoff;
 mod ui_dynamic_tools;
 mod ui_management_tools;
+mod webhook_actions;
 mod worktree_actions;
 
 use self::agent_navigation::AgentNavigationDirection;
