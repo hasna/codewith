@@ -45,10 +45,61 @@ pub struct MailboxMessageStore {
     pool: Arc<SqlitePool>,
 }
 
+enum MailboxClaimScope {
+    Target(ThreadId),
+    Dispatch {
+        local_active_owner_id: String,
+        local_active_fresh_after: DateTime<Utc>,
+    },
+}
+
 impl MailboxMessageStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self { pool }
     }
+}
+
+async fn reserve_mailbox_target_lease_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_thread_id: ThreadId,
+    owner_id: &str,
+    lease_id: &str,
+    lease_expires_at_ms: i64,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let result = sqlx::query(
+        r#"
+INSERT INTO thread_mailbox_target_leases (
+    target_thread_id,
+    owner_id,
+    lease_id,
+    lease_expires_at_ms,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(target_thread_id) DO UPDATE SET
+    owner_id = excluded.owner_id,
+    lease_id = excluded.lease_id,
+    lease_expires_at_ms = excluded.lease_expires_at_ms,
+    updated_at_ms = excluded.updated_at_ms
+WHERE thread_mailbox_target_leases.owner_id = excluded.owner_id
+   OR thread_mailbox_target_leases.lease_expires_at_ms <= ?
+        "#,
+    )
+    .bind(target_thread_id.to_string())
+    .bind(owner_id)
+    .bind(lease_id)
+    .bind(lease_expires_at_ms)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut **tx)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "mailbox target lease conflict for target thread {target_thread_id}"
+    );
+    Ok(())
 }
 
 impl MailboxMessageStore {
@@ -164,7 +215,7 @@ RETURNING
         params: MailboxClaimParams,
     ) -> anyhow::Result<Option<MailboxClaim>> {
         self.claim_next_message_inner(
-            Some(params.target_thread_id),
+            MailboxClaimScope::Target(params.target_thread_id),
             params.lease_owner,
             params.lease_duration,
             params.now,
@@ -177,7 +228,10 @@ RETURNING
         params: MailboxDispatchClaimParams,
     ) -> anyhow::Result<Option<MailboxClaim>> {
         self.claim_next_message_inner(
-            /*target_thread_id*/ None,
+            MailboxClaimScope::Dispatch {
+                local_active_owner_id: params.local_active_owner_id,
+                local_active_fresh_after: params.local_active_fresh_after,
+            },
             params.lease_owner,
             params.lease_duration,
             params.now,
@@ -185,9 +239,29 @@ RETURNING
         .await
     }
 
+    pub async fn release_dispatch_target_lease(
+        &self,
+        target_thread_id: ThreadId,
+        owner_id: &str,
+        lease_id: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+DELETE FROM thread_mailbox_target_leases
+WHERE target_thread_id = ? AND owner_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(target_thread_id.to_string())
+        .bind(owner_id)
+        .bind(lease_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn claim_next_message_inner(
         &self,
-        target_thread_id: Option<ThreadId>,
+        scope: MailboxClaimScope,
         lease_owner: String,
         lease_duration: std::time::Duration,
         now: DateTime<Utc>,
@@ -200,9 +274,15 @@ RETURNING
         let mut tx = self.pool.begin().await?;
         expire_stale_mailbox_leases_in_tx(&mut tx, now_ms).await?;
         expire_due_messages_in_tx(&mut tx, now_ms).await?;
+        if matches!(scope, MailboxClaimScope::Dispatch { .. }) {
+            sqlx::query("DELETE FROM thread_mailbox_target_leases WHERE lease_expires_at_ms <= ?")
+                .bind(now_ms)
+                .execute(&mut *tx)
+                .await?;
+        }
 
-        let sql = mailbox_message_returning(match target_thread_id {
-            Some(_) => {
+        let sql = mailbox_message_returning(match &scope {
+            MailboxClaimScope::Target(_) => {
                 r#"
 UPDATE thread_mailbox_messages
 SET
@@ -227,7 +307,7 @@ WHERE message_id = (
 RETURNING
 "#
             }
-            None => {
+            MailboxClaimScope::Dispatch { .. } => {
                 r#"
 UPDATE thread_mailbox_messages
 SET
@@ -245,6 +325,20 @@ WHERE message_id = (
       AND next_attempt_at_ms <= ?
       AND (expires_at_ms IS NULL OR expires_at_ms > ?)
       AND attempt_count < max_attempts
+      AND NOT EXISTS (
+          SELECT 1
+          FROM local_active_sessions AS active
+          WHERE active.thread_id = thread_mailbox_messages.target_thread_id
+            AND active.owner_id != ?
+            AND active.last_seen_at_ms >= ?
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM thread_mailbox_target_leases AS target_lease
+          WHERE target_lease.target_thread_id = thread_mailbox_messages.target_thread_id
+            AND target_lease.owner_id != ?
+            AND target_lease.lease_expires_at_ms > ?
+      )
     ORDER BY priority DESC, next_attempt_at_ms ASC, created_at_ms ASC, message_id ASC
     LIMIT 1
 )
@@ -259,19 +353,47 @@ RETURNING
             .bind(lease_expires_at_ms)
             .bind(attempt_id.as_str())
             .bind(now_ms);
-        if let Some(target_thread_id) = target_thread_id {
-            query = query.bind(target_thread_id.to_string());
+        match &scope {
+            MailboxClaimScope::Target(target_thread_id) => {
+                query = query
+                    .bind(target_thread_id.to_string())
+                    .bind(now_ms)
+                    .bind(now_ms);
+            }
+            MailboxClaimScope::Dispatch {
+                local_active_owner_id,
+                local_active_fresh_after,
+            } => {
+                query = query
+                    .bind(now_ms)
+                    .bind(now_ms)
+                    .bind(local_active_owner_id.as_str())
+                    .bind(datetime_to_epoch_millis(*local_active_fresh_after))
+                    .bind(local_active_owner_id.as_str())
+                    .bind(now_ms);
+            }
         }
-        let message_row = query
-            .bind(now_ms)
-            .bind(now_ms)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let message_row = query.fetch_optional(&mut *tx).await?;
         let Some(message_row) = message_row else {
             tx.commit().await?;
             return Ok(None);
         };
         let message = mailbox_message_from_row(&message_row)?;
+        if let MailboxClaimScope::Dispatch {
+            local_active_owner_id,
+            ..
+        } = &scope
+        {
+            reserve_mailbox_target_lease_in_tx(
+                &mut tx,
+                message.target_thread_id,
+                local_active_owner_id,
+                lease_id.as_str(),
+                lease_expires_at_ms,
+                now_ms,
+            )
+            .await?;
+        }
         let attempt = insert_mailbox_delivery_attempt(
             &mut tx,
             &attempt_id,

@@ -45,6 +45,8 @@ pub struct MailboxDispatchClaimParams {
     pub lease_owner: String,
     pub lease_duration: std::time::Duration,
     pub now: DateTime<Utc>,
+    pub local_active_owner_id: String,
+    pub local_active_fresh_after: DateTime<Utc>,
 }
 
 pub struct MailboxClaim {

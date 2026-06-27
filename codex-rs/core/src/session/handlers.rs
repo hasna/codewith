@@ -367,6 +367,22 @@ pub async fn inter_agent_communication(
     }
 }
 
+/// Records an inter-agent assistant envelope without synchronously waking pending work.
+pub async fn enqueue_inter_agent_communication(
+    sess: &Arc<Session>,
+    sub_id: String,
+    communication: InterAgentCommunication,
+) {
+    if communication.trigger_turn {
+        sess.input_queue
+            .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
+            .await;
+    }
+    sess.input_queue
+        .enqueue_mailbox_communication_with_id(sub_id, communication)
+        .await;
+}
+
 pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command: String) {
     if let Some((turn_context, cancellation_token)) =
         sess.active_turn_context_and_cancellation_token().await
