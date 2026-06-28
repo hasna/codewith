@@ -213,7 +213,10 @@ impl ThreadRequestProcessor {
             });
         }
         let payload = match delivery_policy {
-            MissionControlDeliveryPolicy::LiveOnly => json!({ "text": text }),
+            MissionControlDeliveryPolicy::LiveOnly => json!({
+                "text": text,
+                "delivery": "liveOnly",
+            }),
             MissionControlDeliveryPolicy::ResumeAndTrigger => {
                 json!({ "text": text, "delivery": "resumeAndTrigger" })
             }
