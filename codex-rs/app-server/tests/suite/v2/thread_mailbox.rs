@@ -42,6 +42,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
@@ -454,6 +455,66 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
             .and_then(|payload| payload.get("triggerTurn")),
         Some(&json!(true))
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_dispatcher_resume_preserves_persisted_permissions() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_body = responses::sse(vec![
+        responses::ev_response_created("resp-permission-resume"),
+        responses::ev_assistant_message("msg-permission-resume", "Done"),
+        responses::ev_completed("resp-permission-resume"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, response_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_mailbox_dispatcher_and_sandbox(
+        codex_home.path(),
+        &server.uri(),
+        /*enabled*/ true,
+        "danger-full-access",
+    )?;
+
+    let persisted_permission_profile = PermissionProfile::read_only();
+    let persisted_sandbox_policy = serde_json::to_string(&persisted_permission_profile)?;
+    let thread_id = seed_unloaded_thread_with_persisted_sandbox_policy(
+        codex_home.path(),
+        Some(persisted_sandbox_policy),
+    )
+    .await?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let enqueued = enqueue_message_with_payload_and_max_attempts(
+        &mut mcp,
+        &thread_id,
+        "dispatcher-resume-permissions",
+        json!({
+            "text": "decompose this",
+            "delivery": "resumeAndTrigger",
+        }),
+        /*max_attempts*/ 3,
+    )
+    .await?;
+
+    let acknowledged = wait_for_message_matching(
+        &mut mcp,
+        &thread_id,
+        &enqueued.message.message_id,
+        |message| message.status == ThreadMailboxMessageStatus::Acknowledged,
+    )
+    .await?;
+    assert_eq!(acknowledged.attempt_count, 1);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_metadata = state_db
+        .get_thread(ThreadId::from_string(&thread_id)?)
+        .await?
+        .expect("thread metadata should persist");
+    let resumed_permission_profile: PermissionProfile =
+        serde_json::from_str(&thread_metadata.sandbox_policy)?;
+    assert_eq!(persisted_permission_profile, resumed_permission_profile);
 
     Ok(())
 }
@@ -1021,6 +1082,13 @@ fn create_request_user_input_body(call_id: &str) -> Result<String> {
 }
 
 async fn seed_unloaded_thread(codex_home: &Path) -> Result<String> {
+    seed_unloaded_thread_with_persisted_sandbox_policy(codex_home, /*sandbox_policy*/ None).await
+}
+
+async fn seed_unloaded_thread_with_persisted_sandbox_policy(
+    codex_home: &Path,
+    sandbox_policy: Option<String>,
+) -> Result<String> {
     const FILENAME_TS: &str = "2025-02-03T10-00-00";
     const META_RFC3339: &str = "2025-02-03T10:00:00Z";
     let thread_id = create_fake_rollout(
@@ -1045,7 +1113,10 @@ async fn seed_unloaded_thread(codex_home: &Path) -> Result<String> {
     builder.model_provider = Some("mock_provider".to_string());
     builder.cwd = codex_home.to_path_buf();
     builder.cli_version = Some("0.0.0".to_string());
-    let metadata = builder.build("mock_provider");
+    let mut metadata = builder.build("mock_provider");
+    if let Some(sandbox_policy) = sandbox_policy {
+        metadata.sandbox_policy = sandbox_policy;
+    }
     state_db.upsert_thread(&metadata).await?;
     Ok(thread_id)
 }
@@ -1059,7 +1130,10 @@ fn create_config_toml_with_default_features(
     server_uri: &str,
 ) -> std::io::Result<()> {
     write_config_toml(
-        codex_home, server_uri, /*mailbox_dispatcher_enabled*/ None,
+        codex_home,
+        server_uri,
+        /*mailbox_dispatcher_enabled*/ None,
+        "read-only",
     )
 }
 
@@ -1068,13 +1142,33 @@ fn create_config_toml_with_mailbox_dispatcher(
     server_uri: &str,
     mailbox_dispatcher_enabled: bool,
 ) -> std::io::Result<()> {
-    write_config_toml(codex_home, server_uri, Some(mailbox_dispatcher_enabled))
+    create_config_toml_with_mailbox_dispatcher_and_sandbox(
+        codex_home,
+        server_uri,
+        mailbox_dispatcher_enabled,
+        "read-only",
+    )
+}
+
+fn create_config_toml_with_mailbox_dispatcher_and_sandbox(
+    codex_home: &Path,
+    server_uri: &str,
+    mailbox_dispatcher_enabled: bool,
+    sandbox_mode: &str,
+) -> std::io::Result<()> {
+    write_config_toml(
+        codex_home,
+        server_uri,
+        Some(mailbox_dispatcher_enabled),
+        sandbox_mode,
+    )
 }
 
 fn write_config_toml(
     codex_home: &Path,
     server_uri: &str,
     mailbox_dispatcher_enabled: Option<bool>,
+    sandbox_mode: &str,
 ) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
     let feature_config = mailbox_dispatcher_enabled
@@ -1086,7 +1180,7 @@ fn write_config_toml(
             r#"
 model = "mock-model"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "{sandbox_mode}"
 
 model_provider = "mock_provider"
 

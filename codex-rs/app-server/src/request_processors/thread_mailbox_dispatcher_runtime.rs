@@ -758,6 +758,7 @@ async fn apply_persisted_mailbox_resume_metadata(
             return;
         }
     };
+    let permission_cwd = persisted_permission_profile_cwd(&persisted_metadata, initial_history);
     typesafe_overrides.model = persisted_metadata.model;
     typesafe_overrides.model_provider = Some(persisted_metadata.model_provider);
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
@@ -766,10 +767,81 @@ async fn apply_persisted_mailbox_resume_metadata(
             serde_json::Value::String(reasoning_effort.to_string()),
         );
     }
+    if let Some(permission_profile) =
+        parse_persisted_permission_profile(&persisted_metadata.sandbox_policy, &permission_cwd)
+    {
+        typesafe_overrides.permission_profile = Some(permission_profile);
+    }
     if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
     {
         typesafe_overrides.approval_policy = Some(approval_policy);
     }
+}
+
+fn persisted_permission_profile_cwd(
+    metadata: &codex_state::ThreadMetadata,
+    initial_history: &InitialHistory,
+) -> PathBuf {
+    initial_history.session_cwd().unwrap_or_else(|| {
+        if metadata.cwd.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            metadata.cwd.clone()
+        }
+    })
+}
+
+fn parse_persisted_permission_profile(
+    stored: &str,
+    cwd: &Path,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(permission_profile) =
+        serde_json::from_str::<codex_protocol::models::PermissionProfile>(trimmed)
+    {
+        return Some(permission_profile);
+    }
+    if let Ok(sandbox_policy) =
+        serde_json::from_str::<codex_protocol::protocol::SandboxPolicy>(trimmed)
+    {
+        return Some(
+            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd,
+            ),
+        );
+    }
+    let owned_bare;
+    let bare = match serde_json::from_str::<String>(trimmed) {
+        Ok(value) => {
+            owned_bare = value;
+            owned_bare.as_str()
+        }
+        Err(_) => trimmed,
+    };
+    let sandbox_policy = match bare {
+        "danger-full-access" => Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess),
+        "external-sandbox" => Some(codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
+            network_access: codex_protocol::protocol::NetworkAccess::Restricted,
+        }),
+        "read-only" => Some(codex_protocol::protocol::SandboxPolicy::new_read_only_policy()),
+        "workspace-write" => Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }),
+        _ => None,
+    }?;
+    Some(
+        codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+            &sandbox_policy,
+            cwd,
+        ),
+    )
 }
 
 fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protocol::AskForApproval> {
@@ -783,7 +855,10 @@ fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protoco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
 
     #[test]
     fn usage_profile_wait_resume_error_preserves_retry_at_for_dispatch() {
@@ -804,5 +879,138 @@ mod tests {
             }
             _ => panic!("expected retry with retry_at"),
         }
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_current_metadata_format() {
+        let profile = PermissionProfile::Disabled;
+        let stored = serde_json::to_string(&profile).expect("serialize permission profile");
+
+        assert_eq!(
+            Some(profile),
+            parse_persisted_permission_profile(&stored, Path::new("/workspace"))
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_sandbox_policy_metadata() {
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let cwd = Path::new("/workspace");
+        let stored = serde_json::to_string(&sandbox_policy).expect("serialize sandbox policy");
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd
+            )),
+            parse_persisted_permission_profile(&stored, cwd)
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_bare_sandbox_policy_metadata() {
+        let cwd = Path::new("/workspace");
+        let workspace_write = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+
+        for (stored, expected) in [
+            ("danger-full-access", SandboxPolicy::DangerFullAccess),
+            ("read-only", SandboxPolicy::new_read_only_policy()),
+            ("workspace-write", workspace_write),
+        ] {
+            assert_eq!(
+                Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                    &expected, cwd
+                )),
+                parse_persisted_permission_profile(stored, cwd)
+            );
+        }
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &SandboxPolicy::new_read_only_policy(),
+                cwd
+            )),
+            parse_persisted_permission_profile("\"read-only\"", cwd)
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_resume_metadata_restores_persisted_permission_profile() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            DateTime::<Utc>::from_timestamp(1_700_000_000, /*nsecs*/ 0).expect("valid timestamp"),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        builder.model_provider = Some("openai".to_string());
+        builder.approval_mode = codex_protocol::protocol::AskForApproval::Never;
+        let mut metadata = builder.build("fallback-provider");
+        metadata.model = Some("gpt-5.5".to_string());
+        metadata.sandbox_policy =
+            serde_json::to_string(&PermissionProfile::read_only()).expect("serialize permissions");
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread metadata should persist");
+
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    cwd: temp_dir.path().join("latest-workspace"),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            })],
+            rollout_path: None,
+        });
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides {
+            permission_profile: Some(PermissionProfile::Disabled),
+            ..ConfigOverrides::default()
+        };
+
+        apply_persisted_mailbox_resume_metadata(
+            &state_db,
+            thread_id,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(PermissionProfile::read_only()),
+            typesafe_overrides.permission_profile
+        );
+        assert_eq!(Some("gpt-5.5".to_string()), typesafe_overrides.model);
+        assert_eq!(
+            Some("openai".to_string()),
+            typesafe_overrides.model_provider
+        );
+        assert_eq!(
+            Some(codex_protocol::protocol::AskForApproval::Never),
+            typesafe_overrides.approval_policy
+        );
     }
 }
