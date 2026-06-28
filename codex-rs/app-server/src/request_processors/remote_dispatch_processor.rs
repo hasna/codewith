@@ -737,7 +737,11 @@ fn remote_instruction_payload(
     });
     match delivery_policy {
         MissionControlDeliveryPolicy::LiveOnly => {
-            json!({ "text": text, "remoteDispatch": remote_dispatch })
+            json!({
+                "text": text,
+                "delivery": "liveOnly",
+                "remoteDispatch": remote_dispatch,
+            })
         }
         MissionControlDeliveryPolicy::ResumeAndTrigger => {
             json!({
@@ -1174,6 +1178,10 @@ mod tests {
         assert_eq!(
             Some("remote hello"),
             page.data[0].payload_json["text"].as_str()
+        );
+        assert_eq!(
+            Some("liveOnly"),
+            page.data[0].payload_json["delivery"].as_str()
         );
         assert_eq!(
             Some("trusted"),
