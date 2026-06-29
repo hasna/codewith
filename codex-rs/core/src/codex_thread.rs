@@ -231,7 +231,7 @@ impl CodexThread {
             uuid::Uuid::now_v7().to_string(),
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -253,7 +253,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 

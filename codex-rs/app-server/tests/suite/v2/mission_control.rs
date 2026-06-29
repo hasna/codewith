@@ -4,6 +4,7 @@ use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::to_response;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LocalSessionStatus;
 use codex_app_server_protocol::MissionControlDeliveryPolicy;
@@ -18,6 +19,8 @@ use codex_app_server_protocol::MissionControlRespondInteractionResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
+use codex_app_server_protocol::ThreadMailboxListParams;
+use codex_app_server_protocol::ThreadMailboxListResponse;
 use codex_app_server_protocol::ThreadMailboxMessageStatus;
 use codex_app_server_protocol::ThreadPendingInteractionKind;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
@@ -28,6 +31,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
+use codex_core::context::MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES;
 use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
@@ -250,6 +254,42 @@ async fn mission_control_enqueue_instruction_supports_dry_run_idempotency_and_re
         receipts.data[0].kind,
         codex_app_server_protocol::ThreadMailboxReceiptKind::Enqueued
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mission_control_enqueue_instruction_rejects_oversized_context_payload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let err = mission_control_enqueue_instruction_error(
+        &mut mcp,
+        MissionControlEnqueueInstructionParams {
+            target_thread_id: thread_id.clone(),
+            message: "x".repeat(MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES + 1),
+            sender_thread_id: None,
+            sender_label: Some("coordinator".to_string()),
+            idempotency_key: Some("mission-control-oversized-context-payload".to_string()),
+            priority: Some(5),
+            max_attempts: Some(3),
+            expires_at: None,
+            resume: true,
+            dry_run: false,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!(
+            "mailbox message rendered for model context must not exceed {MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES} bytes"
+        )
+    );
+    assert_eq!(list_messages(&mut mcp, &thread_id).await?.data, Vec::new());
+
     Ok(())
 }
 
@@ -535,6 +575,41 @@ async fn mission_control_enqueue_instruction(
     )
     .await??;
     to_response::<MissionControlEnqueueInstructionResponse>(resp)
+}
+
+async fn mission_control_enqueue_instruction_error(
+    mcp: &mut TestAppServer,
+    params: MissionControlEnqueueInstructionParams,
+) -> Result<JSONRPCError> {
+    let request_id = mcp
+        .send_mission_control_enqueue_instruction_request(params)
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(err)
+}
+
+async fn list_messages(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+) -> Result<ThreadMailboxListResponse> {
+    let request_id = mcp
+        .send_thread_mailbox_list_request(ThreadMailboxListParams {
+            target_thread_id: thread_id.to_string(),
+            statuses: None,
+            cursor: None,
+            limit: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    to_response::<ThreadMailboxListResponse>(resp)
 }
 
 async fn mission_control_mailbox_receipts(

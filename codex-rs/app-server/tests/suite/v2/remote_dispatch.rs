@@ -1,6 +1,7 @@
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RemoteDispatchCapability;
 use codex_app_server_protocol::RemoteDispatchDenialReason;
@@ -8,6 +9,7 @@ use codex_app_server_protocol::RemoteDispatchNegotiateResponse;
 use codex_app_server_protocol::RemoteDispatchRequestStatus;
 use codex_app_server_protocol::RemoteDispatchSubmitResponse;
 use codex_app_server_protocol::RequestId;
+use codex_core::context::MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES;
 use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
@@ -95,6 +97,47 @@ async fn remote_dispatch_jsonrpc_enforces_trust_capabilities_and_expiry() -> Res
     Ok(())
 }
 
+#[tokio::test]
+async fn remote_dispatch_submit_rejects_oversized_context_payload() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    upsert_machine(
+        &state_db,
+        "local",
+        codex_state::MachineTrustState::Local,
+        codex_state::MachineEnrollmentState::Local,
+    )
+    .await?;
+    upsert_machine(
+        &state_db,
+        "trusted",
+        codex_state::MachineTrustState::Trusted,
+        codex_state::MachineEnrollmentState::Manual,
+    )
+    .await?;
+
+    let err = remote_submit_error(
+        &mut mcp,
+        "trusted",
+        "local",
+        "x".repeat(MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES + 1),
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!(
+            "mailbox message rendered for model context must not exceed {MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES} bytes"
+        )
+    );
+
+    Ok(())
+}
+
 async fn remote_submit(
     mcp: &mut TestAppServer,
     source_machine_id: &str,
@@ -102,34 +145,98 @@ async fn remote_submit(
     capability_version: Option<&str>,
     expires_at: Option<i64>,
 ) -> Result<RemoteDispatchSubmitResponse> {
+    remote_submit_with_message(
+        mcp,
+        source_machine_id,
+        target_machine_id,
+        capability_version,
+        expires_at,
+        "remote hello",
+    )
+    .await
+}
+
+async fn remote_submit_with_message(
+    mcp: &mut TestAppServer,
+    source_machine_id: &str,
+    target_machine_id: &str,
+    capability_version: Option<&str>,
+    expires_at: Option<i64>,
+    message: impl Into<String>,
+) -> Result<RemoteDispatchSubmitResponse> {
     send_and_read(
         mcp,
         "remoteDispatch/submit",
-        json!({
-            "requestId": format!("request-{source_machine_id}-{target_machine_id}"),
-            "sourceMachineId": source_machine_id,
-            "targetMachineId": target_machine_id,
-            "idempotencyKey": format!("idem-{source_machine_id}-{target_machine_id}"),
-            "operation": {
-                "type": "enqueueInstruction",
-                "params": {
-                    "targetThreadId": "00000000-0000-4000-8000-000000000201",
-                    "message": "remote hello",
-                    "senderThreadId": null,
-                    "senderLabel": null,
-                    "priority": null,
-                    "maxAttempts": null,
-                    "expiresAt": null,
-                    "resume": false,
-                },
-            },
-            "requestedAt": null,
-            "expiresAt": expires_at,
-            "capabilityVersion": capability_version,
-            "dryRun": false,
-        }),
+        remote_submit_params(
+            source_machine_id,
+            target_machine_id,
+            capability_version,
+            expires_at,
+            message,
+        ),
     )
     .await
+}
+
+async fn remote_submit_error(
+    mcp: &mut TestAppServer,
+    source_machine_id: &str,
+    target_machine_id: &str,
+    message: impl Into<String>,
+) -> Result<JSONRPCError> {
+    let request_id = mcp
+        .send_raw_request(
+            "remoteDispatch/submit",
+            Some(remote_submit_params(
+                source_machine_id,
+                target_machine_id,
+                None,
+                None,
+                message,
+            )),
+        )
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(err)
+}
+
+fn remote_submit_params(
+    source_machine_id: &str,
+    target_machine_id: &str,
+    capability_version: Option<&str>,
+    expires_at: Option<i64>,
+    message: impl Into<String>,
+) -> serde_json::Value {
+    let message = message.into();
+    let request_id = format!("request-{source_machine_id}-{target_machine_id}");
+    let idempotency_key = format!("idem-{source_machine_id}-{target_machine_id}");
+    json!({
+        "requestId": request_id,
+        "sourceMachineId": source_machine_id,
+        "targetMachineId": target_machine_id,
+        "idempotencyKey": idempotency_key,
+        "operation": {
+            "type": "enqueueInstruction",
+            "params": {
+                "targetThreadId": "00000000-0000-4000-8000-000000000201",
+                "message": message,
+                "senderThreadId": null,
+                "senderLabel": null,
+                "priority": null,
+                "maxAttempts": null,
+                "expiresAt": null,
+                "resume": false,
+            },
+        },
+        "requestedAt": null,
+        "expiresAt": expires_at,
+        "capabilityVersion": capability_version,
+        "dryRun": false,
+    })
 }
 
 async fn upsert_machine(

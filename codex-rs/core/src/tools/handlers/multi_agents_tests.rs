@@ -3041,7 +3041,8 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
             "hello from worker".to_string(),
             /*trigger_turn*/ false,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let output = wait_task
         .await
@@ -3525,7 +3526,8 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             "completed".to_string(),
             /*trigger_turn*/ false,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let wait_output = wait_task
         .await
@@ -3598,7 +3600,8 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             "already queued".to_string(),
             /*trigger_turn*/ false,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let output = timeout(
         Duration::from_millis(500),
@@ -3697,7 +3700,8 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
             "from worker b".to_string(),
             /*trigger_turn*/ false,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let output = wait_task
         .await
@@ -3785,7 +3789,8 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             "sensitive child output".to_string(),
             /*trigger_turn*/ false,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let output = wait_task
         .await

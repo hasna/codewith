@@ -9602,7 +9602,8 @@ async fn task_finish_starts_pending_trigger_turn_mailbox_work() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     release_tx
         .send(())
@@ -9641,7 +9642,8 @@ async fn pending_trigger_turn_mailbox_work_takes_over_empty_active_turn() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(session.maybe_start_turn_for_pending_work().await);
     timeout(StdDuration::from_secs(2), async {
@@ -9687,7 +9689,8 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     session.emit_thread_idle_lifecycle_if_idle().await;
 
@@ -9925,7 +9928,8 @@ async fn try_start_turn_if_idle_rejects_pending_trigger_turn_without_injecting()
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let item = user_message("synthetic idle input");
     let err = sess
@@ -10192,7 +10196,8 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(
         !sess.input_queue.has_pending_input(&sess.active_turn).await,
@@ -10208,7 +10213,7 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
+            crate::context::MailboxContextFragment::new(communication).into_response_input_item()
         ))],
     );
 }
@@ -10237,7 +10242,8 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
             "late trigger update".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(
         !sess.input_queue.has_pending_input(&sess.active_turn).await,
@@ -10274,7 +10280,8 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10298,7 +10305,10 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::ResponseItem(ResponseItem::from(
+                crate::context::MailboxContextFragment::new(communication)
+                    .into_response_input_item()
+            )),
         ],
     );
 }
@@ -10327,7 +10337,8 @@ async fn steered_input_keeps_trigger_turn_mailbox_delivery_queued() {
             /*trigger_turn*/ true,
         ),
     )
-    .await;
+    .await
+    .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10381,7 +10392,8 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10409,7 +10421,10 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::ResponseItem(ResponseItem::from(
+                crate::context::MailboxContextFragment::new(communication)
+                    .into_response_input_item()
+            )),
         ],
     );
 }
@@ -10439,7 +10454,8 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let item = ResponseItem::FunctionCall {
         id: None,
@@ -10465,7 +10481,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
+            crate::context::MailboxContextFragment::new(communication).into_response_input_item()
         ))],
     );
 }

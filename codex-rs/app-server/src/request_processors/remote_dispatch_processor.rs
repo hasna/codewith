@@ -34,6 +34,7 @@ use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
 use serde_json::json;
 
+use super::thread_mailbox_context::validate_mailbox_payload_context_size;
 use super::thread_mailbox_processor::mapping::api_mailbox_receipt;
 use super::thread_mailbox_processor::mapping::api_mailbox_summary;
 use super::thread_pending_interaction_processor::api_pending_interaction;
@@ -245,6 +246,8 @@ impl RemoteDispatchRequestProcessor {
         } else {
             MissionControlDeliveryPolicy::LiveOnly
         };
+        validate_mailbox_payload_context_size(&json!({ "text": text.as_str() }))
+            .map_err(invalid_request)?;
         let preview = truncate_preview(text.as_str());
         if submit_params.dry_run {
             return Ok(Some(
