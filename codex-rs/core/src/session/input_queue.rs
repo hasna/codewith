@@ -1,3 +1,6 @@
+use crate::context::ContextualUserFragment;
+use crate::context::MAX_MAILBOX_CONTEXT_QUEUE_ITEMS;
+use crate::context::MailboxContextFragment;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
@@ -5,6 +8,8 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -47,6 +52,29 @@ pub enum QueuedMailboxMoveDirection {
     Down,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MailboxQueueFull {
+    limit: usize,
+}
+
+impl MailboxQueueFull {
+    fn new(limit: usize) -> Self {
+        Self { limit }
+    }
+}
+
+impl fmt::Display for MailboxQueueFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let limit = self.limit;
+        write!(
+            f,
+            "mailbox context queue is full; limit is {limit} messages"
+        )
+    }
+}
+
+impl Error for MailboxQueueFull {}
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
@@ -74,21 +102,24 @@ impl InputQueue {
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: InterAgentCommunication,
-    ) {
+    ) -> Result<(), MailboxQueueFull> {
         self.enqueue_mailbox_communication_with_id(uuid::Uuid::now_v7().to_string(), communication)
-            .await;
+            .await
     }
 
     pub(crate) async fn enqueue_mailbox_communication_with_id(
         &self,
         id: String,
         communication: InterAgentCommunication,
-    ) {
-        self.mailbox_pending_mails
-            .lock()
-            .await
-            .push_back(QueuedMailboxMessage { id, communication });
+    ) -> Result<(), MailboxQueueFull> {
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        if mails.len() >= MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+            return Err(MailboxQueueFull::new(MAX_MAILBOX_CONTEXT_QUEUE_ITEMS));
+        }
+        mails.push_back(QueuedMailboxMessage { id, communication });
+        drop(mails);
         self.mailbox_tx.send_replace(());
+        Ok(())
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -145,12 +176,22 @@ impl InputQueue {
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<ResponseItem> {
-        self.mailbox_pending_mails
-            .lock()
-            .await
-            .drain(..)
-            .map(|mail| ResponseItem::from(mail.communication.to_response_input_item()))
-            .collect()
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        let drain_count = mails.len().min(MAX_MAILBOX_CONTEXT_QUEUE_ITEMS);
+        let items = mails
+            .drain(..drain_count)
+            .map(|mail| {
+                ResponseItem::from(
+                    MailboxContextFragment::new(mail.communication).into_response_input_item(),
+                )
+            })
+            .collect();
+        let has_more = !mails.is_empty();
+        drop(mails);
+        if has_more {
+            self.mailbox_tx.send_replace(());
+        }
+        items
     }
 
     pub(crate) async fn turn_state_for_sub_id(
@@ -348,6 +389,10 @@ mod tests {
         )
     }
 
+    fn mailbox_response_item(communication: InterAgentCommunication) -> ResponseItem {
+        ResponseItem::from(MailboxContextFragment::new(communication).into_response_input_item())
+    }
+
     #[tokio::test]
     async fn input_queue_notifies_mailbox_subscribers() {
         let input_queue = InputQueue::new();
@@ -360,7 +405,8 @@ mod tests {
                 "one",
                 /*trigger_turn*/ false,
             ))
-            .await;
+            .await
+            .expect("mailbox queue has room");
         input_queue
             .enqueue_mailbox_communication(make_mail(
                 AgentPath::root(),
@@ -368,7 +414,8 @@ mod tests {
                 "two",
                 /*trigger_turn*/ false,
             ))
-            .await;
+            .await
+            .expect("mailbox queue has room");
 
         mailbox_rx.changed().await.expect("mailbox update");
     }
@@ -391,19 +438,60 @@ mod tests {
 
         input_queue
             .enqueue_mailbox_communication(mail_one.clone())
-            .await;
+            .await
+            .expect("mailbox queue has room");
         input_queue
             .enqueue_mailbox_communication(mail_two.clone())
-            .await;
+            .await
+            .expect("mailbox queue has room");
 
         assert_eq!(
             input_queue.drain_mailbox_input_items().await,
             vec![
-                ResponseItem::from(mail_one.to_response_input_item()),
-                ResponseItem::from(mail_two.to_response_input_item())
+                mailbox_response_item(mail_one),
+                mailbox_response_item(mail_two)
             ]
         );
         assert!(!input_queue.has_pending_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_rejects_mailbox_when_context_queue_is_full() {
+        let input_queue = InputQueue::new();
+
+        for index in 0..MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+            input_queue
+                .enqueue_mailbox_communication(make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    &format!("message {index}"),
+                    /*trigger_turn*/ false,
+                ))
+                .await
+                .expect("mailbox queue should accept messages under the limit");
+        }
+
+        let err = input_queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "one too many",
+                /*trigger_turn*/ false,
+            ))
+            .await
+            .expect_err("mailbox queue should reject messages above the limit");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "mailbox context queue is full; limit is {} messages",
+                MAX_MAILBOX_CONTEXT_QUEUE_ITEMS
+            )
+        );
+        assert_eq!(
+            input_queue.list_mailbox_messages().await.len(),
+            MAX_MAILBOX_CONTEXT_QUEUE_ITEMS
+        );
     }
 
     #[tokio::test]
@@ -417,7 +505,8 @@ mod tests {
                 "queued",
                 /*trigger_turn*/ false,
             ))
-            .await;
+            .await
+            .expect("mailbox queue has room");
         assert!(!input_queue.has_trigger_turn_mailbox_items().await);
 
         input_queue
@@ -427,7 +516,8 @@ mod tests {
                 "wake",
                 /*trigger_turn*/ true,
             ))
-            .await;
+            .await
+            .expect("mailbox queue has room");
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
     }
 
@@ -444,7 +534,8 @@ mod tests {
                     /*trigger_turn*/ false,
                 ),
             )
-            .await;
+            .await
+            .expect("mailbox queue has room");
         input_queue
             .enqueue_mailbox_communication_with_id(
                 "two".to_string(),
@@ -455,7 +546,8 @@ mod tests {
                     /*trigger_turn*/ false,
                 ),
             )
-            .await;
+            .await
+            .expect("mailbox queue has room");
 
         let updated = input_queue
             .update_mailbox_message("two", "updated".to_string())

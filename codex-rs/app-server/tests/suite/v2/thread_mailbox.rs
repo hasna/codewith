@@ -10,6 +10,7 @@ use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
@@ -38,6 +39,8 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
+use codex_core::context::MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES;
+use codex_core::context::MAX_MAILBOX_STORED_PAYLOAD_BYTES;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -115,6 +118,59 @@ async fn thread_mailbox_enqueue_list_read_claim_ack_and_receipts() -> Result<()>
             codex_app_server_protocol::ThreadMailboxReceiptKind::Acknowledged,
         ]
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_enqueue_rejects_oversized_context_payload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let err = enqueue_message_with_payload_error(
+        &mut mcp,
+        &thread_id,
+        json!({ "text": "x".repeat(MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES + 1) }),
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!(
+            "mailbox message rendered for model context must not exceed {MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES} bytes"
+        )
+    );
+    assert_eq!(list_messages(&mut mcp, &thread_id).await?.data, Vec::new());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_enqueue_rejects_oversized_stored_payload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let err = enqueue_message_with_payload_error(
+        &mut mcp,
+        &thread_id,
+        json!({
+            "text": "small",
+            "metadata": "x".repeat(MAX_MAILBOX_STORED_PAYLOAD_BYTES + 1),
+        }),
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!("mailbox message payload must not exceed {MAX_MAILBOX_STORED_PAYLOAD_BYTES} bytes")
+    );
+    assert_eq!(list_messages(&mut mcp, &thread_id).await?.data, Vec::new());
 
     Ok(())
 }
@@ -763,6 +819,34 @@ async fn enqueue_message_with_sender_and_payload_and_max_attempts(
     )
     .await??;
     to_response::<ThreadMailboxEnqueueResponse>(resp)
+}
+
+async fn enqueue_message_with_payload_error(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    payload: Value,
+) -> Result<JSONRPCError> {
+    let request_id = mcp
+        .send_thread_mailbox_enqueue_request(ThreadMailboxEnqueueParams {
+            target_thread_id: thread_id.to_string(),
+            sender_thread_id: None,
+            sender_label: Some("coordinator".to_string()),
+            idempotency_key: Some("oversized-context-payload".to_string()),
+            kind: ThreadMailboxMessageKind::UserInstruction,
+            message: payload,
+            preview: Some("oversized".to_string()),
+            priority: Some(5),
+            max_attempts: Some(3),
+            next_attempt_at: None,
+            expires_at: None,
+        })
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(err)
 }
 
 async fn wait_for_message_matching(

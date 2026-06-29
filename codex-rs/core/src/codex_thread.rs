@@ -244,7 +244,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -266,7 +266,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 

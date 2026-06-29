@@ -12,6 +12,9 @@ use crate::active_session_registry::ActivePeerLookupError;
 use crate::active_session_registry::LastSeenAt;
 use crate::request_processors::thread_lifecycle::ListenerTaskContext;
 
+use super::thread_mailbox_context::mailbox_context_descriptor_component;
+use super::thread_mailbox_context::mailbox_payload_context_text;
+
 const MAILBOX_DISPATCH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
@@ -773,7 +776,7 @@ fn mailbox_active_channel_envelope(
             "Durable mailbox message {} from {}:\n\n{}",
             message.message_id,
             mailbox_sender_descriptor(message),
-            mailbox_message_text(&message.payload_json)
+            mailbox_payload_context_text(&message.payload_json)
         ),
         delivery,
     )
@@ -791,22 +794,16 @@ fn durable_mailbox_sender_endpoint() -> ActiveChannelEndpoint {
 fn mailbox_sender_descriptor(message: &codex_state::MailboxMessage) -> String {
     match (&message.sender_thread_id, &message.sender_label) {
         (Some(sender_thread_id), Some(sender_label)) => {
+            let sender_label = mailbox_context_descriptor_component(sender_label);
             format!("unverified sender thread {sender_thread_id} with label {sender_label:?}")
         }
         (Some(sender_thread_id), None) => format!("unverified sender thread {sender_thread_id}"),
-        (None, Some(sender_label)) => format!("external sender {sender_label:?}"),
+        (None, Some(sender_label)) => {
+            let sender_label = mailbox_context_descriptor_component(sender_label);
+            format!("external sender {sender_label:?}")
+        }
         (None, None) => "external sender".to_string(),
     }
-}
-
-fn mailbox_message_text(payload: &serde_json::Value) -> String {
-    if let Some(text) = payload.as_str() {
-        return text.to_string();
-    }
-    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
-        return text.to_string();
-    }
-    serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string())
 }
 
 fn truncate_mailbox_dispatch_error(error: String) -> String {

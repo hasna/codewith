@@ -4,6 +4,8 @@ use crate::realtime_conversation::handle_start as handle_realtime_conversation_s
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use async_channel::Receiver;
 use codex_otel::set_parent_from_w3c_trace_context;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Submission;
 use tracing::Instrument;
 use tracing::debug_span;
@@ -354,7 +356,7 @@ pub async fn inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
     communication: InterAgentCommunication,
-) {
+) -> CodexResult<()> {
     let trigger_turn = communication.trigger_turn;
     if trigger_turn {
         sess.input_queue
@@ -363,11 +365,13 @@ pub async fn inter_agent_communication(
     }
     sess.input_queue
         .enqueue_mailbox_communication_with_id(sub_id.clone(), communication)
-        .await;
+        .await
+        .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
     if trigger_turn {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }
+    Ok(())
 }
 
 /// Records an inter-agent assistant envelope without synchronously waking pending work.
@@ -375,7 +379,7 @@ pub async fn enqueue_inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
     communication: InterAgentCommunication,
-) {
+) -> CodexResult<()> {
     if communication.trigger_turn {
         sess.input_queue
             .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
@@ -383,7 +387,9 @@ pub async fn enqueue_inter_agent_communication(
     }
     sess.input_queue
         .enqueue_mailbox_communication_with_id(sub_id, communication)
-        .await;
+        .await
+        .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
+    Ok(())
 }
 
 pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command: String) {
@@ -859,7 +865,18 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::InterAgentCommunication { communication } => {
-                    inter_agent_communication(&sess, sub.id.clone(), communication).await;
+                    if let Err(err) =
+                        inter_agent_communication(&sess, sub.id.clone(), communication).await
+                    {
+                        sess.send_event_raw(Event {
+                            id: sub.id.clone(),
+                            msg: EventMsg::Error(ErrorEvent {
+                                message: err.to_string(),
+                                codex_error_info: Some(CodexErrorInfo::BadRequest),
+                            }),
+                        })
+                        .await;
+                    }
                     false
                 }
                 Op::ExecApproval {
