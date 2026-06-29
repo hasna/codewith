@@ -10,6 +10,8 @@ use crate::chatwidget::usage_profile_broker::fallback_limit_label as broker_fall
 use crate::chatwidget::usage_profile_broker::get_limits_duration as broker_get_limits_duration;
 use crate::chatwidget::usage_profile_broker::limit_label_for_window as broker_limit_label_for_window;
 use crate::chatwidget::user_messages::QueueInsertionPosition;
+use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
+use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_login::list_auth_profiles;
 use tokio::time::MissedTickBehavior;
@@ -417,6 +419,10 @@ impl ChatWidget {
         if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
             return None;
         }
+        let cooldown_key = self.auth_profile_auto_switch_cooldown_key(limit_id, window);
+        if self.auth_profile_auto_switch_cooldown_active(&cooldown_key) {
+            return None;
+        }
 
         let profiles = match list_auth_profiles(
             &self.config.codex_home,
@@ -436,6 +442,7 @@ impl ChatWidget {
             limit_id,
             window,
         ) {
+            self.mark_auth_profile_auto_switch_cooldown(cooldown_key);
             return Some((target.profile, target.trigger_key));
         }
 
@@ -445,6 +452,43 @@ impl ChatWidget {
             /*hint*/ None,
         );
         None
+    }
+
+    fn auth_profile_auto_switch_cooldown_key(
+        &self,
+        limit_id: &str,
+        window: &UsageProfileAutoSwitchWindow,
+    ) -> UsageProfileCooldownKey {
+        UsageProfileCooldownKey {
+            profile: self.config.selected_auth_profile.clone(),
+            limit_id: limit_id.to_string(),
+            window_label: window.label.clone(),
+            resets_at: window.resets_at,
+        }
+    }
+
+    fn auth_profile_auto_switch_cooldown_active(&mut self, key: &UsageProfileCooldownKey) -> bool {
+        let now = Instant::now();
+        self.auth_profile_auto_switch_cooldowns
+            .retain(|_, expires_at| *expires_at > now);
+        self.auth_profile_auto_switch_cooldowns.contains_key(key)
+    }
+
+    fn mark_auth_profile_auto_switch_cooldown(&mut self, key: UsageProfileCooldownKey) {
+        let fallback = Duration::from_secs(
+            self.config
+                .auth_profile_auto_switch
+                .heartbeat_interval_secs
+                .max(60),
+        );
+        let cooldown = cooldown_duration_for_reset(
+            key.resets_at,
+            chrono::Utc::now().timestamp(),
+            self.config.usage_self_heal.reset_retry_buffer_secs,
+            fallback,
+        );
+        self.auth_profile_auto_switch_cooldowns
+            .insert(key, Instant::now() + cooldown);
     }
 
     fn send_auth_profile_auto_switch(

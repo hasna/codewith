@@ -727,7 +727,7 @@ fn auth_profile_popup_action_hint() -> Line<'static> {
 fn compact_usage_hint_for_snapshots(
     snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
 ) -> String {
-    let Some(snapshot) = snapshots.get("codex").or_else(|| snapshots.values().next()) else {
+    let Some(snapshot) = usage_snapshot_with_windows(snapshots) else {
         return "usage unknown".to_string();
     };
 
@@ -767,13 +767,106 @@ fn auth_profile_usage_snapshots_are_fresh(
 ) -> bool {
     let freshness =
         chrono::Duration::seconds(i64::try_from(freshness.as_secs()).unwrap_or(i64::MAX));
+    usage_snapshot_with_windows(snapshots).is_some_and(|snapshot| {
+        Local::now().signed_duration_since(snapshot.captured_at) <= freshness
+    })
+}
+
+fn usage_snapshot_with_windows(
+    snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
+) -> Option<&RateLimitSnapshotDisplay> {
     snapshots
-        .values()
-        .any(|snapshot| Local::now().signed_duration_since(snapshot.captured_at) <= freshness)
+        .get("codex")
+        .filter(|snapshot| usage_snapshot_has_windows(snapshot))
+        .or_else(|| {
+            snapshots
+                .values()
+                .find(|snapshot| usage_snapshot_has_windows(snapshot))
+        })
+}
+
+fn usage_snapshot_has_windows(snapshot: &RateLimitSnapshotDisplay) -> bool {
+    snapshot.primary.is_some() || snapshot.secondary.is_some()
 }
 
 fn compact_usage_hint_for_window(window: &RateLimitWindowDisplay, is_secondary: bool) -> String {
     let label = limit_label_for_window(window.window_minutes, is_secondary);
     let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
     format!("{label} {}", format_status_limit_summary(remaining))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration as ChronoDuration;
+    use pretty_assertions::assert_eq;
+
+    fn snapshot(
+        captured_at: chrono::DateTime<Local>,
+        primary: Option<RateLimitWindowDisplay>,
+        secondary: Option<RateLimitWindowDisplay>,
+    ) -> RateLimitSnapshotDisplay {
+        RateLimitSnapshotDisplay {
+            limit_name: "test".to_string(),
+            captured_at,
+            primary,
+            secondary,
+            credits: None,
+            individual_limit: None,
+        }
+    }
+
+    fn window(used_percent: f64, window_minutes: i64) -> RateLimitWindowDisplay {
+        RateLimitWindowDisplay {
+            used_percent,
+            resets_at: None,
+            window_minutes: Some(window_minutes),
+        }
+    }
+
+    #[test]
+    fn compact_usage_hint_skips_empty_codex_snapshot() {
+        let now = Local::now();
+        let snapshots = BTreeMap::from([
+            ("codex".to_string(), snapshot(now, None, None)),
+            (
+                "codex_model".to_string(),
+                snapshot(now, Some(window(42.0, 5 * 60)), None),
+            ),
+        ]);
+
+        assert_eq!("5h 58% left", compact_usage_hint_for_snapshots(&snapshots));
+    }
+
+    #[test]
+    fn auth_profile_usage_freshness_requires_displayable_usage() {
+        let now = Local::now();
+        let snapshots = BTreeMap::from([("codex".to_string(), snapshot(now, None, None))]);
+
+        assert!(!auth_profile_usage_snapshots_are_fresh(
+            &snapshots,
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn auth_profile_usage_freshness_uses_displayable_snapshot() {
+        let now = Local::now();
+        let snapshots = BTreeMap::from([
+            ("codex".to_string(), snapshot(now, None, None)),
+            (
+                "codex_model".to_string(),
+                snapshot(
+                    now - ChronoDuration::seconds(30),
+                    Some(window(42.0, 5 * 60)),
+                    None,
+                ),
+            ),
+        ]);
+
+        assert!(auth_profile_usage_snapshots_are_fresh(
+            &snapshots,
+            Duration::from_secs(60)
+        ));
+    }
 }
