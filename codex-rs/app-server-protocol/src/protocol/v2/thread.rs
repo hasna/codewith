@@ -1276,6 +1276,10 @@ pub enum ThreadSchedulePromptSource {
 pub struct ThreadSchedule {
     pub thread_id: String,
     pub schedule_id: String,
+    #[ts(type = "string | null")]
+    pub parent_schedule_id: Option<String>,
+    #[ts(type = "number")]
+    pub nesting_depth: i64,
     pub prompt: String,
     pub prompt_source: ThreadSchedulePromptSource,
     pub schedule: ThreadScheduleSpec,
@@ -1355,6 +1359,8 @@ pub struct ThreadScheduleStats {
 #[ts(export_to = "v2/")]
 pub struct ThreadScheduleCreateParams {
     pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub parent_schedule_id: Option<String>,
     pub prompt: String,
     #[ts(optional = nullable)]
     pub prompt_source: Option<ThreadSchedulePromptSource>,

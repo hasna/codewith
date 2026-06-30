@@ -129,6 +129,7 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let parent_schedule_id = normalize_parent_schedule_id(params.parent_schedule_id)?;
         let prompt_source = params
             .prompt_source
             .unwrap_or(ThreadSchedulePromptSource::Inline);
@@ -195,6 +196,7 @@ impl ThreadScheduleRequestProcessor {
         };
         let create_params = codex_state::ThreadScheduleCreateParams {
             thread_id,
+            parent_schedule_id,
             prompt,
             prompt_source: state_prompt_source,
             schedule,
@@ -207,7 +209,7 @@ impl ThreadScheduleRequestProcessor {
             .thread_schedules()
             .create_thread_schedule_for_auth_profile(create_params, auth_profile)
             .await
-            .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
+            .map_err(|err| schedule_mutation_error("create", err))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -456,7 +458,7 @@ impl ThreadScheduleRequestProcessor {
                 },
             )
             .await
-            .map_err(|err| internal_error(format!("failed to update thread schedule: {err}")))?
+            .map_err(|err| schedule_mutation_error("update", err))?
             .ok_or_else(|| invalid_request(format!("schedule not found: {schedule_id}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
@@ -568,18 +570,25 @@ impl ThreadScheduleRequestProcessor {
                 .await;
             return Ok(());
         };
-        let deleted = state_db
+        let deleted_schedule_ids = state_db
             .thread_schedules()
-            .delete_thread_schedule(schedule_id.as_str())
+            .delete_thread_schedule_tree(schedule_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to delete thread schedule: {err}")))?;
+        let deleted = !deleted_schedule_ids.is_empty();
 
         self.outgoing
             .send_response(request_id.clone(), ThreadScheduleDeleteResponse { deleted })
             .await;
         if deleted {
-            self.emit_thread_schedule_deleted_ordered(thread_id, schedule_id, listener_command_tx)
+            for deleted_schedule_id in deleted_schedule_ids {
+                self.emit_thread_schedule_deleted_ordered(
+                    thread_id,
+                    deleted_schedule_id,
+                    listener_command_tx.clone(),
+                )
                 .await;
+            }
         }
         Ok(())
     }
@@ -943,5 +952,14 @@ impl ScheduleStatusResponseKind {
             Self::Pause => ThreadSchedulePauseResponse { schedule }.into(),
             Self::Resume => ThreadScheduleResumeResponse { schedule }.into(),
         }
+    }
+}
+
+fn schedule_mutation_error(action: &str, err: anyhow::Error) -> JSONRPCErrorError {
+    let message = err.to_string();
+    if message.contains("invalid nested loop:") || message.contains("parentScheduleId") {
+        invalid_request(message)
+    } else {
+        internal_error(format!("failed to {action} thread schedule: {message}"))
     }
 }

@@ -215,9 +215,15 @@ impl ThreadScheduleRuntime {
                 objective,
                 claim.run.run_id.as_str(),
                 claim.run.scheduled_for,
+                &claim.schedule,
             )
         } else {
-            scheduled_thread_prompt(&prompt, claim.run.run_id.as_str(), claim.run.scheduled_for)
+            scheduled_thread_prompt(
+                &prompt,
+                claim.run.run_id.as_str(),
+                claim.run.scheduled_for,
+                &claim.schedule,
+            )
         };
         let thread_settings = scheduled_thread_settings_from_snapshot(
             thread.config_snapshot().await,
@@ -634,18 +640,21 @@ fn scheduled_thread_prompt(
     prompt: &str,
     run_id: &str,
     scheduled_for: Option<DateTime<Utc>>,
+    schedule: &codex_state::ThreadSchedule,
 ) -> String {
     let scheduled_for = scheduled_for
         .map(|scheduled_for| scheduled_for.to_rfc3339())
         .unwrap_or_else(|| "immediate".to_string());
+    let nesting_guidance = scheduled_loop_nesting_guidance(schedule);
     format!(
         "\
 You are running one new scheduled Codewith prompt.
 
 Run id: {run_id}
 Scheduled for: {scheduled_for}
+{nesting_guidance}
 
-This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or create goals, schedules, monitors, timers, or follow-up runs unless this scheduled prompt explicitly asks for a native child loop; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 {prompt}"
@@ -665,22 +674,41 @@ fn scheduled_goal_thread_prompt(
     objective: &str,
     run_id: &str,
     scheduled_for: Option<DateTime<Utc>>,
+    schedule: &codex_state::ThreadSchedule,
 ) -> String {
     let scheduled_for = scheduled_for
         .map(|scheduled_for| scheduled_for.to_rfc3339())
         .unwrap_or_else(|| "immediate".to_string());
+    let nesting_guidance = scheduled_loop_nesting_guidance(schedule);
     format!(
         "\
 You are running one new scheduled Codewith goal objective.
 
 Run id: {run_id}
 Scheduled for: {scheduled_for}
+{nesting_guidance}
 
-The active thread goal has already been persisted for this scheduled run. Work on only the goal objective below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not create new goals, loops, schedules, monitors, timers, or follow-up runs; Codewith manages scheduling. If the objective mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+The active thread goal has already been persisted for this scheduled run. Work on only the goal objective below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not create new goals, schedules, monitors, timers, or follow-up runs unless this objective explicitly asks for a native child loop; Codewith manages scheduling. If the objective mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Goal objective:
 {objective}"
     )
+}
+
+fn scheduled_loop_nesting_guidance(schedule: &codex_state::ThreadSchedule) -> String {
+    let depth = schedule.nesting_depth;
+    let schedule_id = schedule.schedule_id.as_str();
+    if depth >= codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH {
+        format!(
+            "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. This is the maximum nesting level; do not create nested child loops from this run.",
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    } else {
+        format!(
+            "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. Create a child loop only if this scheduled prompt explicitly asks for one; pass {schedule_id} as parent_schedule_id and use a slower child cadence.",
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    }
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
@@ -1302,6 +1330,34 @@ mod tests {
         DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp")
     }
 
+    fn prompt_test_schedule(nesting_depth: i64) -> codex_state::ThreadSchedule {
+        codex_state::ThreadSchedule {
+            thread_id: ThreadId::new(),
+            schedule_id: "schedule-parent".to_string(),
+            parent_schedule_id: (nesting_depth > 1).then(|| "schedule-root".to_string()),
+            nesting_depth,
+            auth_profile: None,
+            prompt: "check status".to_string(),
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            schedule: codex_state::ThreadScheduleSpec::Interval(
+                codex_state::ThreadScheduleInterval {
+                    amount: 5,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                },
+            ),
+            timezone: "UTC".to_string(),
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at: Some(at(/*seconds*/ 1_700_000_000)),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_id: None,
+            lease_expires_at: None,
+            created_at: at(/*seconds*/ 1_700_000_000),
+            updated_at: at(/*seconds*/ 1_700_000_000),
+        }
+    }
+
     fn resumed_history_with_auth_profile(
         thread_id: ThreadId,
         auth_profile: Option<Option<&str>>,
@@ -1864,14 +1920,21 @@ mod tests {
             "ask me a funny question every minute",
             "run-123",
             Some(at(/*seconds*/ 1_700_000_000)),
+            &prompt_test_schedule(/*nesting_depth*/ 2),
         );
 
         assert!(prompt.contains("one new scheduled Codewith prompt"));
         assert!(prompt.contains("Run id: run-123"));
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
+        assert!(prompt.contains("Loop schedule id: schedule-parent"));
+        assert!(prompt.contains("Loop nesting: level 2/5"));
+        assert!(prompt.contains("pass schedule-parent as parent_schedule_id"));
         assert!(prompt.contains("This is a distinct run"));
         assert!(prompt.contains("Produce exactly one visible final response"));
         assert!(prompt.contains("Do not wait, sleep, start a timer"));
+        assert!(
+            prompt.contains("unless this scheduled prompt explicitly asks for a native child loop")
+        );
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
     }
@@ -1901,14 +1964,18 @@ mod tests {
             "finish release readiness checks every hour",
             "run-123",
             Some(at(/*seconds*/ 1_700_000_000)),
+            &prompt_test_schedule(/*nesting_depth*/ 5),
         );
 
         assert!(prompt.contains("one new scheduled Codewith goal objective"));
         assert!(prompt.contains("Run id: run-123"));
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
+        assert!(prompt.contains("Loop schedule id: schedule-parent"));
+        assert!(prompt.contains("Loop nesting: level 5/5"));
+        assert!(prompt.contains("do not create nested child loops"));
         assert!(prompt.contains("active thread goal has already been persisted"));
         assert!(prompt.contains("Produce exactly one visible final response"));
-        assert!(prompt.contains("Do not create new goals, loops, schedules"));
+        assert!(prompt.contains("unless this objective explicitly asks for a native child loop"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("finish release readiness checks every hour"));
         assert!(!prompt.contains("/goal finish release readiness checks"));

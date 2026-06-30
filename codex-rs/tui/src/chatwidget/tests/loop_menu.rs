@@ -11,6 +11,8 @@ fn test_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> ThreadSched
     ThreadSchedule {
         thread_id: "thread-1".to_string(),
         schedule_id: schedule_id.to_string(),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: "check whether CI is green and write the next action".to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule: ThreadScheduleSpec::Interval {
@@ -38,6 +40,22 @@ fn test_once_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> Thread
         schedule: ThreadScheduleSpec::Once,
         next_run_at: Some(1_700_000_300),
         ..test_schedule(schedule_id, status)
+    }
+}
+
+fn test_nested_schedule(
+    schedule_id: &str,
+    parent_schedule_id: &str,
+    nesting_depth: i64,
+) -> ThreadSchedule {
+    ThreadSchedule {
+        parent_schedule_id: Some(parent_schedule_id.to_string()),
+        nesting_depth,
+        schedule: ThreadScheduleSpec::Interval {
+            amount: 30,
+            unit: ThreadScheduleIntervalUnit::Minutes,
+        },
+        ..test_schedule(schedule_id, ThreadScheduleStatus::Active)
     }
 }
 
@@ -90,6 +108,26 @@ async fn loop_manager_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn loop_manager_nested_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_loop_manager(
+        thread_id,
+        vec![
+            test_schedule("sch_parent", ThreadScheduleStatus::Active),
+            test_nested_schedule("child_one", "sch_parent", 2),
+            test_nested_schedule("child_two", "sch_parent", 2),
+        ],
+    );
+
+    assert_chatwidget_snapshot!(
+        "loop_manager_nested_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
 async fn loop_actions_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
@@ -101,6 +139,22 @@ async fn loop_actions_popup_snapshot() {
 
     assert_chatwidget_snapshot!(
         "loop_actions_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
+async fn loop_nested_actions_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_loop_schedule_actions(
+        thread_id,
+        test_nested_schedule("child_one", "sch_parent", 2),
+    );
+
+    assert_chatwidget_snapshot!(
+        "loop_nested_actions_popup",
         render_bottom_popup(&chat, /*width*/ 100)
     );
 }

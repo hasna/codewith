@@ -4475,6 +4475,8 @@ mod tests {
         v2::ThreadSchedule {
             thread_id: "thr_123".to_string(),
             schedule_id: "sch_123".to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
             prompt: "check the deploy".to_string(),
             prompt_source: v2::ThreadSchedulePromptSource::Inline,
             schedule: v2::ThreadScheduleSpec::Interval {
@@ -4515,6 +4517,7 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: v2::ThreadScheduleCreateParams {
                     thread_id: "thr_123".to_string(),
+                    parent_schedule_id: None,
                     prompt: "check the deploy".to_string(),
                     prompt_source: Some(v2::ThreadSchedulePromptSource::Inline),
                     schedule: v2::ThreadScheduleSpec::Interval {

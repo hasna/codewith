@@ -1415,6 +1415,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.to_string(),
+                    parent_schedule_id: None,
                     prompt,
                     prompt_source: Some(prompt_source),
                     schedule,

@@ -961,6 +961,8 @@ fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
     json!({
         "threadId": schedule.thread_id.to_string(),
         "scheduleId": schedule.schedule_id,
+        "parentScheduleId": schedule.parent_schedule_id,
+        "nestingDepth": schedule.nesting_depth,
         "prompt": schedule.prompt,
         "promptSource": schedule.prompt_source.as_str(),
         "schedule": schedule_spec_json(schedule.schedule),
@@ -1276,6 +1278,7 @@ mod tests {
             .thread_schedules()
             .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
                 thread_id,
+                parent_schedule_id: None,
                 prompt: "Check schedule visibility".to_string(),
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule: codex_state::ThreadScheduleSpec::Once,

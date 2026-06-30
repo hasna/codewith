@@ -27,6 +27,20 @@ pub(super) fn normalize_timezone(timezone: Option<String>) -> Result<String, JSO
     )
 }
 
+pub(super) fn normalize_parent_schedule_id(
+    parent_schedule_id: Option<String>,
+) -> Result<Option<String>, JSONRPCErrorError> {
+    parent_schedule_id
+        .map(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(invalid_request("parentScheduleId must not be empty"));
+            }
+            Ok(value.to_string())
+        })
+        .transpose()
+}
+
 pub(super) fn normalize_timezone_value(timezone: String) -> Result<String, JSONRPCErrorError> {
     let timezone = timezone.trim();
     if timezone.is_empty() {
@@ -242,6 +256,8 @@ pub(super) fn api_thread_schedule_from_state(
     ThreadSchedule {
         thread_id: schedule.thread_id.to_string(),
         schedule_id: schedule.schedule_id,
+        parent_schedule_id: schedule.parent_schedule_id,
+        nesting_depth: schedule.nesting_depth,
         prompt: schedule.prompt,
         prompt_source: thread_schedule_prompt_source_from_state(schedule.prompt_source),
         schedule: thread_schedule_spec_from_state(schedule.schedule),

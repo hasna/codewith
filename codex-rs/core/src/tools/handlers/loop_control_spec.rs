@@ -34,6 +34,13 @@ pub fn create_manage_loop_tool() -> ToolSpec {
             )),
         ),
         (
+            "parent_schedule_id".to_string(),
+            JsonSchema::string(Some(
+                "Optional parent loop schedule id for create. Nested loops are supported up to depth 5; the parent must be a loop in this thread and the child cadence must be slower than the parent."
+                    .to_string(),
+            )),
+        ),
+        (
             "prompt".to_string(),
             JsonSchema::string(Some(
                 "Prompt to run. Required for create.".to_string(),
@@ -67,9 +74,9 @@ pub fn create_manage_loop_tool() -> ToolSpec {
         name: MANAGE_LOOP_TOOL_NAME.to_string(),
         description: r#"Manage recurring `/loop` schedules for the current thread.
 Use `list` before mutating when the user did not name a specific loop, or when exact run counts are needed.
-`create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence.
+`create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence. Pass parent_schedule_id only when creating a child loop; native nested loops are capped at depth 5 and each child cadence must be slower than its parent.
 `stop` pauses future scheduled runs; it does not abort an already running turn.
-`clear` deletes the selected loop schedule.
+`clear` deletes the selected loop schedule and any nested child loop schedules.
 The tool is scoped to the current thread and rejects schedule ids from other threads."#
             .to_string(),
         strict: false,
