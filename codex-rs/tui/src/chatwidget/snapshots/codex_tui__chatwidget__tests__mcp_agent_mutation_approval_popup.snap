@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Approve MCP Config Change
+  An agent requested a persistent MCP server configuration change.
+  Add MCP server `docs`
+
+› 1. Deny                        Do not write this MCP configuration.
+  2. Approve and save            Persist this config.toml change and refresh loaded MCP tools.
+     Server                      docs
+     Transport                   stdio; command: npx
+     Args / cwd                  args: -y, @scope/docs-mcp, --project, docs; cwd: /workspace/docs
+     Env / headers               env vars: DOCS_API_KEY; headers: not applicable
+     Tool config                 default approval: prompt; enabled: none; disabled: none
+     Scope / refresh             user config.toml mcp_servers.<name>; MCP refresh is queued for loaded
+                                 threads; new tools are available before the next turn.
+
+  Press enter to confirm or esc to go back
