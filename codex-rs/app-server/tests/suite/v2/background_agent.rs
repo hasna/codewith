@@ -2231,6 +2231,84 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         "later work\n",
         std::fs::read_to_string(codex_home.path().join("later.txt"))?
     );
+
+    let race_create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "target-race",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let race_created: WorktreeCreateResponse =
+        read_response(&mut mcp, race_create_request_id).await?;
+    let race_worktree_path = std::path::PathBuf::from(race_created.worktree.worktree_path.as_str());
+    std::fs::write(race_worktree_path.join("race.txt"), "race candidate\n")?;
+    git(race_worktree_path.as_path(), &["add", "race.txt"])?;
+    git(
+        race_worktree_path.as_path(),
+        &["commit", "-m", "add race candidate"],
+    )?;
+    let race_refresh_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": race_created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let race_refreshed: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, race_refresh_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        race_refreshed.candidate.status
+    );
+    std::fs::write(
+        codex_home.path().join("main-advanced.txt"),
+        "main advanced\n",
+    )?;
+    git(codex_home.path(), &["add", "main-advanced.txt"])?;
+    git(codex_home.path(), &["commit", "-m", "advance merge target"])?;
+    let target_changed_apply_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": race_refreshed.candidate.candidate_id,
+        }),
+    )
+    .await?;
+    assert_eq!(
+        INVALID_PARAMS_ERROR_CODE,
+        target_changed_apply_error.error.code
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .starts_with("worktree/mergeCandidate/apply target changed from "),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .ends_with("; refresh before applying"),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(!codex_home.path().join("race.txt").exists());
+    assert_eq!(
+        "race candidate\n",
+        std::fs::read_to_string(race_worktree_path.join("race.txt"))?
+    );
+    assert_eq!(
+        "main advanced\n",
+        std::fs::read_to_string(codex_home.path().join("main-advanced.txt"))?
+    );
+
     let dismiss_applied_error = raw_request_error(
         &mut mcp,
         "worktree/mergeCandidate/dismiss",

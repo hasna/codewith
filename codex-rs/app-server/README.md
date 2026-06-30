@@ -162,6 +162,7 @@ Example with notification opt-out:
 - `thread/mailbox/enqueue`, `thread/mailbox/list`, `thread/mailbox/read`, `thread/mailbox/claim`, `thread/mailbox/ack`, `thread/mailbox/fail`, and `thread/mailbox/receipts/list` — experimental; persist local durable mailbox messages for materialized threads with idempotency, leases, attempts, receipts, retry/poison state, and redacted list views. This is separate from `activeSession/send`.
 - `thread/queuedMessage/list`, `thread/queuedMessage/update`, and `thread/queuedMessage/move` — inspect and manage in-memory active-session messages that have been delivered through `activeSession/send` while the target thread is busy and are waiting for the next turn. These calls require the thread to be loaded; they do not resume unloaded threads or mutate durable mailbox rows.
 - `missionControl/overview`, `missionControl/enqueueInstruction`, `missionControl/mailboxReceipts`, and `missionControl/respondInteraction` — experimental; local-first orchestration facade that combines local session inventory, durable mailbox enqueue/receipts, pending interactions, current goals, and goal-plan summaries. It does not mutate workflow definitions or expose shell, filesystem, or remote-machine control.
+- `worktree/list`, `worktree/read`, `worktree/create`, `worktree/reconcile`, `worktree/attach`, `worktree/detach`, `worktree/release`, `worktree/cleanup`, and `worktree/mergeCandidate/*` — experimental; manage Codewith-owned isolated worktrees and merge candidates for local background-agent and workflow orchestration. Worktree list/read/merge-candidate operations are scoped to the current repo unless `baseRepoPath` is accepted by that method.
 - `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
 - `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
 - `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
@@ -548,6 +549,67 @@ Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. T
 ```
 
 Use `missionControl/mailboxReceipts` to read receipts for the created mailbox message, and `missionControl/respondInteraction` to answer pending questions or terminal waits. `missionControl/respondInteraction` supports `dryRun: true`, which validates the response shape and returns the current interaction without mutating it.
+
+### Example: Manage isolated worktrees and merge candidates
+
+The `worktree/*` APIs are the app-server control plane for Codewith-owned Git worktrees. They are intended for local clients and task-triggered orchestration that need workers to keep editing in isolated checkouts while verifier or merge agents inspect and integrate finished work.
+
+Expected non-disruptive worker flow:
+
+- Create or discover an isolated worktree under the configured worktree root with `worktree/create` or `worktree/reconcile`.
+- Start a background agent with `agent/start` using that worktree as `cwd`; the background-agent worktree lease records a managed worktree row and assigns it to the agent run.
+- Keep active workers isolated. `worktree/release`, `worktree/cleanup`, and direct detach paths reject worktrees owned by non-terminal background-agent runs, including running, stopping, and orphaned runs.
+- Run verification in a separate worker or deterministic verifier before merge. The verifier should read the worktree state and record evidence without mutating unrelated checkouts.
+- Refresh a merge candidate with `worktree/mergeCandidate/refresh` only after the source worktree is clean. Apply with `worktree/mergeCandidate/apply` only when the source head still matches the candidate, the target checkout is clean, and the target SHA has not advanced. If another merge agent moves the target first, apply fails with a refresh-before-applying error instead of changing the active worker's worktree.
+- Release or clean up through the background-agent lease path after the worker is terminal. Dirty or untracked work is retained or moved to cleanup-pending state unless force cleanup is explicitly requested.
+
+```json
+{ "method": "worktree/list", "id": 40, "params": { "limit": 20 } }
+{ "id": 40, "result": {
+    "data": [{
+        "worktreeId": "wt_123",
+        "mode": "isolatedWorktree",
+        "lifecycleStatus": "active",
+        "baseRepoPath": "/Users/me/project",
+        "worktreePath": "/Users/me/project/.codewith/worktrees/wt_123",
+        "ownerKind": "backgroundAgent",
+        "ownerAgentRunId": "agent_123",
+        "dirty": false
+    }],
+    "nextCursor": null,
+    "policy": {
+        "enabled": true,
+        "root": null,
+        "cleanupDefault": "deleteIfClean",
+        "mainSessions": "manual",
+        "subSessions": "auto",
+        "currentBaseRepoPath": "/Users/me/project"
+    }
+} }
+```
+
+```json
+{ "method": "worktree/mergeCandidate/refresh", "id": 41, "params": {
+    "worktreeId": "wt_123",
+    "targetRef": "HEAD"
+} }
+{ "id": 41, "result": {
+    "candidate": {
+        "candidateId": "mc_123",
+        "worktreeId": "wt_123",
+        "targetRef": "HEAD",
+        "targetSha": "abc123",
+        "baseSha": "abc123",
+        "headSha": "def456",
+        "status": "open",
+        "conflictSummary": null,
+        "createdAt": 1781790000,
+        "updatedAt": 1781790000,
+        "appliedAt": null,
+        "dismissedAt": null
+    }
+} }
+```
 
 ### Example: List and message active sessions
 
