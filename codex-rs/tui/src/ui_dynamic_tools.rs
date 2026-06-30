@@ -3,6 +3,7 @@ use serde_json::json;
 
 pub(crate) const UI_TOOLS_NAMESPACE: &str = "codewith_ui";
 pub(crate) const STATUSLINE_TOOL: &str = "configure_statusline";
+pub(crate) const STATUSLINE_MESSAGE_TOOL: &str = "update_statusline";
 pub(crate) const TERMINAL_TITLE_TOOL: &str = "configure_terminal_title";
 pub(crate) const CONFIG_TOOL: &str = "configure_config";
 pub(crate) const TMUX_TOOL: &str = "tmux";
@@ -22,6 +23,27 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
             name: STATUSLINE_TOOL.to_string(),
             description: "Inspect or update the Codewith TUI statusline. Use action=list_options before action=set to get valid item IDs without loading them into context upfront.".to_string(),
             input_schema: status_surface_schema("Ordered statusline item IDs for action=set."),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: STATUSLINE_MESSAGE_TOOL.to_string(),
+            description: "Set or clear bounded display-only text for the current statusline status item. This does not change config, prompts, permissions, or session title; use rename_session for the session/thread title.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: set, clear."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Required for action=set. User-readable status text, at most 120 characters after whitespace normalization. Do not pass raw untrusted external text."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
             defer_loading: true,
         },
         DynamicToolSpec {
@@ -285,6 +307,7 @@ pub(crate) fn is_owned_ui_tool(namespace: Option<&str>, tool: &str) -> bool {
         && matches!(
             tool,
             STATUSLINE_TOOL
+                | STATUSLINE_MESSAGE_TOOL
                 | TERMINAL_TITLE_TOOL
                 | CONFIG_TOOL
                 | TMUX_TOOL
@@ -329,7 +352,7 @@ mod tests {
     #[test]
     fn ui_dynamic_tools_are_deferred_without_option_enums() {
         let specs = dynamic_tool_specs();
-        assert_eq!(specs.len(), 12);
+        assert_eq!(specs.len(), 13);
         assert!(specs.iter().all(|tool| tool.defer_loading));
         assert!(
             specs
@@ -370,8 +393,21 @@ mod tests {
             serde_json::json!(true)
         );
 
+        let statusline_message = specs
+            .iter()
+            .find(|tool| tool.name == STATUSLINE_MESSAGE_TOOL)
+            .expect("statusline message tool spec");
+        assert!(statusline_message.description.contains("display-only"));
+        assert!(
+            statusline_message.input_schema["properties"]["message"]["description"]
+                .as_str()
+                .expect("message description")
+                .contains("120 characters")
+        );
+
         for tool in [
             BACKGROUND_TERMINALS_TOOL,
+            STATUSLINE_MESSAGE_TOOL,
             MCP_TOOL,
             BACKGROUND_AGENTS_TOOL,
             ACTIVE_SESSIONS_TOOL,

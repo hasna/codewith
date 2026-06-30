@@ -791,7 +791,7 @@ impl ChatWidget {
                         format!("+{} -{}", stats.additions, stats.deletions)
                     }
                 }),
-            StatusLineItem::Status => Some(self.run_state_status_text()),
+            StatusLineItem::Status => Some(self.status_line_run_state_status_text()),
             StatusLineItem::ScheduleCountdown => {
                 let value = self.status_line_schedule_countdown_text();
                 if value.is_some() {
@@ -888,7 +888,9 @@ impl ChatWidget {
             StatusSurfacePreviewItem::AppName => return Some("codex".to_string()),
             StatusSurfacePreviewItem::ProjectName => return self.terminal_title_project_name(),
             StatusSurfacePreviewItem::ProjectRoot => StatusLineItem::ProjectRoot,
-            StatusSurfacePreviewItem::Status => return Some(self.run_state_status_text()),
+            StatusSurfacePreviewItem::Status => {
+                return Some(self.status_line_run_state_status_text());
+            }
             StatusSurfacePreviewItem::ScheduleCountdown => {
                 return self.status_line_schedule_countdown_text();
             }
@@ -1011,11 +1013,26 @@ impl ChatWidget {
         format!("{} {label}{service_tier_label}", self.model_display_name())
     }
 
-    /// Computes the compact runtime status label used by word-based status items.
+    /// Computes the compact runtime status label used by the status-line
+    /// run-state item.
     ///
     /// Action-required prompts and startup take precedence over normal task
-    /// states, and idle state renders as `Idle` regardless of the last active
-    /// status bucket.
+    /// states. Model-authored text is display-only and only renders while a task
+    /// is running, so it cannot mask human prompts or leave stale idle state.
+    pub(super) fn status_line_run_state_status_text(&self) -> String {
+        let status = self.run_state_status();
+        match status {
+            RunStateStatus::Working | RunStateStatus::Thinking => self
+                .status_state
+                .agent_statusline
+                .clone()
+                .unwrap_or_else(|| status.label().to_string()),
+            status => status.label().to_string(),
+        }
+    }
+
+    /// Computes the built-in compact runtime status label for non-statusline
+    /// surfaces such as the terminal title.
     pub(super) fn run_state_status_text(&self) -> String {
         self.run_state_status().label().to_string()
     }

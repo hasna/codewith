@@ -3060,6 +3060,94 @@ async fn status_line_run_state_maps_deterministic_task_states() {
 }
 
 #[tokio::test]
+async fn status_line_agent_statusline_tool_updates_display_only_while_running() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    handle_turn_started(&mut chat, "turn-agent-status");
+    let updated = chat
+        .set_agent_statusline_from_tool(Some("  Reviewing\npatch  ".to_string()))
+        .expect("safe statusline message should update");
+
+    assert_eq!(updated, Some("Reviewing patch".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+
+    handle_agent_reasoning_delta(&mut chat, "**Thinking**");
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+
+    handle_turn_completed(&mut chat, "turn-agent-status", /*duration_ms*/ None);
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+
+    handle_turn_started(&mut chat, "turn-agent-status-next");
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_tool_does_not_update_terminal_title_run_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["run-state".to_string()]);
+
+    handle_turn_started(&mut chat, "turn-agent-status-title");
+    assert_eq!(chat.last_terminal_title, Some("Working".to_string()));
+
+    chat.set_agent_statusline_from_tool(Some("Reviewing patch".to_string()))
+        .expect("safe statusline message should update");
+
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+    assert_eq!(chat.last_terminal_title, Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-agent-status-snapshot");
+    chat.set_agent_statusline_from_tool(Some("Reviewing patch".to_string()))
+        .expect("safe statusline message should update");
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw agent statusline footer");
+    assert_chatwidget_snapshot!(
+        "status_line_agent_statusline_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_tool_rejects_unsafe_bounds_and_rate() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    let control_err = chat
+        .set_agent_statusline_from_tool(Some("safe \u{1b}]2;bad\u{7}".to_string()))
+        .expect_err("terminal control sequences should fail");
+    assert!(control_err.contains("control"));
+
+    let oversized_err = chat
+        .set_agent_statusline_from_tool(Some("x".repeat(121)))
+        .expect_err("oversized message should fail");
+    assert!(oversized_err.contains("at most 120 characters"));
+
+    for idx in 0..8 {
+        chat.set_agent_statusline_from_tool(Some(format!("step {idx}")))
+            .expect("update under rate limit should pass");
+    }
+    let rate_err = chat
+        .set_agent_statusline_from_tool(Some("one more".to_string()))
+        .expect_err("too many updates should fail");
+    assert!(rate_err.contains("rate limited"));
+}
+
+#[tokio::test]
 async fn status_line_run_state_updates_for_human_feedback() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["run-state".to_string()]);

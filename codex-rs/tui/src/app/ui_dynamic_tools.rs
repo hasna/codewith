@@ -36,6 +36,12 @@ struct StatusSurfaceArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct StatuslineMessageArgs {
+    action: String,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ConfigArgs {
     action: String,
     updates: Option<Vec<ConfigUpdateArg>>,
@@ -119,6 +125,10 @@ impl App {
             crate::ui_dynamic_tools::STATUSLINE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
                 self.handle_statusline_tool(args).await
+            }
+            crate::ui_dynamic_tools::STATUSLINE_MESSAGE_TOOL => {
+                let args: StatuslineMessageArgs = parse_arguments(&params.arguments)?;
+                self.handle_statusline_message_tool(args).await
             }
             crate::ui_dynamic_tools::TERMINAL_TITLE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
@@ -225,6 +235,50 @@ impl App {
                 }))
             }
             action => Err(unknown_action(action)),
+        }
+    }
+
+    async fn handle_statusline_message_tool(
+        &mut self,
+        args: StatuslineMessageArgs,
+    ) -> Result<JsonValue, String> {
+        match args.action.as_str() {
+            "set" => {
+                let message = args
+                    .message
+                    .ok_or_else(|| "action=set requires message".to_string())?;
+                let message = self
+                    .chat_widget
+                    .set_agent_statusline_from_tool(Some(message))?;
+                let message_chars = message
+                    .as_ref()
+                    .map_or(0, |message| message.chars().count());
+                tracing::info!(
+                    message_chars,
+                    "agent updated statusline display text from UI tool"
+                );
+                Ok(json!({
+                    "surface": "statusline",
+                    "updated": {
+                        "message": message,
+                    },
+                    "display_only": true,
+                }))
+            }
+            "clear" => {
+                self.chat_widget.set_agent_statusline_from_tool(None)?;
+                tracing::info!("agent cleared statusline display text from UI tool");
+                Ok(json!({
+                    "surface": "statusline",
+                    "updated": {
+                        "message": null,
+                    },
+                    "display_only": true,
+                }))
+            }
+            action => Err(format!(
+                "unknown action `{action}`; expected `set` or `clear`"
+            )),
         }
     }
 
@@ -631,5 +685,48 @@ mod tests {
         )
         .expect_err("invalid thread should fail");
         assert!(err.contains("invalid thread_id"));
+    }
+
+    #[tokio::test]
+    async fn statusline_message_tool_returns_display_only_output() {
+        let mut app = super::super::test_support::make_test_app().await;
+
+        let output = app
+            .handle_statusline_message_tool(StatuslineMessageArgs {
+                action: "set".to_string(),
+                message: Some("  Checking\nCI  ".to_string()),
+            })
+            .await
+            .expect("statusline message should update");
+
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "surface": "statusline",
+                "updated": {
+                    "message": "Checking CI",
+                },
+                "display_only": true,
+            })
+        );
+
+        let output = app
+            .handle_statusline_message_tool(StatuslineMessageArgs {
+                action: "clear".to_string(),
+                message: None,
+            })
+            .await
+            .expect("statusline message should clear");
+
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "surface": "statusline",
+                "updated": {
+                    "message": null,
+                },
+                "display_only": true,
+            })
+        );
     }
 }
