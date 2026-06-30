@@ -3798,7 +3798,8 @@ async fn session_configured_clears_goal_status_footer() {
     assert_eq!(
         chat.current_goal_status_indicator,
         Some(GoalStatusIndicator::Active {
-            usage: Some("40K / 50K".to_string())
+            usage: Some("40K / 50K".to_string()),
+            elapsed_seconds: 30 * 60,
         })
     );
     chat.turn_lifecycle
@@ -3873,6 +3874,7 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
         )),
         Some(GoalStatusIndicator::Active {
             usage: Some("40K / 50K".to_string()),
+            elapsed_seconds: 30 * 60,
         })
     );
     assert_eq!(
@@ -3882,7 +3884,8 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
             /*tokens_used*/ 0,
         )),
         Some(GoalStatusIndicator::Active {
-            usage: Some("30m".to_string()),
+            usage: None,
+            elapsed_seconds: 30 * 60,
         })
     );
     assert_eq!(
@@ -3945,8 +3948,19 @@ fn goal_status_indicator_line_formats_goal_text() {
         (
             GoalStatusIndicator::Active {
                 usage: Some("4K / 5K".to_string()),
+                elapsed_seconds: 8 * 60,
             },
-            "Pursuing goal (4K / 5K)",
+            "Pursuing goal (8m, 4K / 5K)",
+        ),
+        (
+            GoalStatusIndicator::ActivePlan {
+                usage: None,
+                current_goal: 9,
+                total_goals: 11,
+                current_elapsed_seconds: 8 * 60,
+                total_elapsed_seconds: 42 * 60,
+            },
+            "Pursuing goal 9/11 (8m current, 42m total)",
         ),
         (
             GoalStatusIndicator::BudgetLimited {
