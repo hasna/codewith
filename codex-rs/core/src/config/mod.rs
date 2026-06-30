@@ -55,6 +55,7 @@ use codex_config::types::Notice;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::SessionRecapToml;
+use codex_config::types::SmartSuggestConfigToml;
 use codex_config::types::ToolSuggestConfig;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverable;
@@ -446,6 +447,15 @@ pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
 pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
+const DEFAULT_SMART_SUGGEST_TIMEOUT_MS: u64 = 750;
+const MIN_SMART_SUGGEST_TIMEOUT_MS: u64 = 50;
+const MAX_SMART_SUGGEST_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_SMART_SUGGEST_MAX_INPUT_CHARS: usize = 6_000;
+const MIN_SMART_SUGGEST_MAX_INPUT_CHARS: usize = 512;
+const MAX_SMART_SUGGEST_MAX_INPUT_CHARS: usize = 24_000;
+const DEFAULT_SMART_SUGGEST_MAX_SUGGESTION_CHARS: usize = 1_200;
+const MIN_SMART_SUGGEST_MAX_SUGGESTION_CHARS: usize = 120;
+const MAX_SMART_SUGGEST_MAX_SUGGESTION_CHARS: usize = 4_000;
 const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
@@ -1397,6 +1407,10 @@ pub struct Config {
 
     /// Experimental / do not use. Selects the thread persistence backend.
     pub experimental_thread_store: ThreadStoreConfig,
+
+    /// Experimental / do not use. Advisory model pass before tool execution.
+    pub experimental_smart_suggest: SmartSuggestConfig,
+
     /// When set, restricts ChatGPT login to one or more workspace identifiers.
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
 
@@ -1476,6 +1490,31 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub excluded_tool_namespaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SmartSuggestConfig {
+    pub enabled: bool,
+    pub model_provider: Option<String>,
+    pub model: Option<String>,
+    pub service_tier: Option<String>,
+    pub timeout_ms: u64,
+    pub max_input_chars: usize,
+    pub max_suggestion_chars: usize,
+}
+
+impl Default for SmartSuggestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_provider: None,
+            model: None,
+            service_tier: None,
+            timeout_ms: DEFAULT_SMART_SUGGEST_TIMEOUT_MS,
+            max_input_chars: DEFAULT_SMART_SUGGEST_MAX_INPUT_CHARS,
+            max_suggestion_chars: DEFAULT_SMART_SUGGEST_MAX_SUGGESTION_CHARS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2516,6 +2555,45 @@ fn resolve_tool_suggest_config_from_config(
     ToolSuggestConfig {
         discoverables,
         disabled_tools,
+    }
+}
+
+fn resolve_smart_suggest_config(
+    smart_suggest: Option<SmartSuggestConfigToml>,
+) -> SmartSuggestConfig {
+    let Some(smart_suggest) = smart_suggest else {
+        return SmartSuggestConfig::default();
+    };
+
+    let normalize = |value: Option<String>| {
+        value.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+    };
+    SmartSuggestConfig {
+        enabled: smart_suggest.enabled.unwrap_or(false),
+        model_provider: normalize(smart_suggest.model_provider),
+        model: normalize(smart_suggest.model),
+        service_tier: normalize(smart_suggest.service_tier),
+        timeout_ms: smart_suggest
+            .timeout_ms
+            .unwrap_or(DEFAULT_SMART_SUGGEST_TIMEOUT_MS)
+            .clamp(MIN_SMART_SUGGEST_TIMEOUT_MS, MAX_SMART_SUGGEST_TIMEOUT_MS),
+        max_input_chars: smart_suggest
+            .max_input_chars
+            .unwrap_or(DEFAULT_SMART_SUGGEST_MAX_INPUT_CHARS)
+            .clamp(
+                MIN_SMART_SUGGEST_MAX_INPUT_CHARS,
+                MAX_SMART_SUGGEST_MAX_INPUT_CHARS,
+            ),
+        max_suggestion_chars: smart_suggest
+            .max_suggestion_chars
+            .unwrap_or(DEFAULT_SMART_SUGGEST_MAX_SUGGESTION_CHARS)
+            .clamp(
+                MIN_SMART_SUGGEST_MAX_SUGGESTION_CHARS,
+                MAX_SMART_SUGGEST_MAX_SUGGESTION_CHARS,
+            ),
     }
 }
 
@@ -4084,6 +4162,9 @@ impl Config {
             experimental_realtime_start_instructions: cfg.experimental_realtime_start_instructions,
             experimental_thread_config_endpoint: cfg.experimental_thread_config_endpoint,
             experimental_thread_store: thread_store_config(cfg.experimental_thread_store),
+            experimental_smart_suggest: resolve_smart_suggest_config(
+                cfg.experimental_smart_suggest,
+            ),
             forced_chatgpt_workspace_id,
             forced_login_method,
             web_search_mode: constrained_web_search_mode.value,

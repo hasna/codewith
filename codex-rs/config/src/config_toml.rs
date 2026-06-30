@@ -25,6 +25,7 @@ use crate::types::SandboxWorkspaceWrite;
 use crate::types::SessionRecapToml;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
+use crate::types::SmartSuggestConfigToml;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
@@ -495,6 +496,11 @@ pub struct ConfigToml {
     /// Experimental / do not use. When set, app-server fetches thread-scoped
     /// config from a remote service at this endpoint.
     pub experimental_thread_config_endpoint: Option<String>,
+
+    /// Experimental / do not use. Opt-in advisory model pass before tool
+    /// execution for suggesting better tools or commands.
+    #[serde(default)]
+    pub experimental_smart_suggest: Option<SmartSuggestConfigToml>,
 
     /// Removed. Former remote thread-store endpoint setting kept only so we can
     /// fail fast instead of silently falling back to local persistence.
