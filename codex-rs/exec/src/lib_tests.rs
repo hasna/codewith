@@ -564,6 +564,22 @@ async fn thread_start_params_include_user_thread_source() {
     );
 }
 
+#[tokio::test]
+async fn thread_start_params_are_persistent_for_default_headless_exec() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+
+    let params = thread_start_params_from_config(&config);
+
+    assert_eq!(params.ephemeral, Some(false));
+}
+
 #[test]
 fn active_profile_selection_uses_profile_id_only() {
     let selection = permission_profile_id_from_active_profile(ActivePermissionProfile::new(

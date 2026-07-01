@@ -37,6 +37,27 @@ fn resume_parses_prompt_after_global_flags() {
 }
 
 #[test]
+fn durable_parses_as_explicit_persistent_mode() {
+    let cli = Cli::parse_from(["codex-exec", "--durable", "summarize"]);
+
+    assert!(cli.durable);
+    assert!(!cli.ephemeral);
+
+    let cli = Cli::parse_from(["codex-exec", "--persist", "summarize"]);
+
+    assert!(cli.durable);
+    assert!(!cli.ephemeral);
+}
+
+#[test]
+fn durable_conflicts_with_ephemeral() {
+    let error = Cli::try_parse_from(["codex-exec", "--durable", "--ephemeral", "summarize"])
+        .expect_err("storage modes should be mutually exclusive");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
 fn resume_accepts_output_flags_after_subcommand() {
     const PROMPT: &str = "echo resume-with-output-file";
     let cli = Cli::parse_from([
