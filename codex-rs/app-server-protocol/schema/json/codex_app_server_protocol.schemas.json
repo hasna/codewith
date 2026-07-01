@@ -21528,7 +21528,8 @@
           }
         },
         "required": [
-          "threadId"
+          "threadId",
+          "threadName"
         ],
         "title": "ThreadNameUpdatedNotification",
         "type": "object"

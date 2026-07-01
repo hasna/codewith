@@ -310,6 +310,28 @@ fn thread_turns_items_list_round_trips() {
 }
 
 #[test]
+fn thread_name_updated_notification_serializes_explicit_null_name() {
+    let notification = ThreadNameUpdatedNotification {
+        thread_id: "thread-1".to_string(),
+        thread_name: None,
+    };
+
+    let value =
+        serde_json::to_value(&notification).expect("serialize thread/name/updated notification");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thread-1",
+            "threadName": null,
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadNameUpdatedNotification>(value)
+        .expect("deserialize thread/name/updated notification");
+    assert_eq!(decoded, notification);
+}
+
+#[test]
 fn thread_list_params_accepts_single_cwd() {
     let params = serde_json::from_value::<ThreadListParams>(json!({
         "cwd": "/workspace",
