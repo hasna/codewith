@@ -27,11 +27,16 @@ fn map_additional_context(
         .unwrap_or_default()
         .into_iter()
         .map(|(key, entry)| {
+            let AdditionalContextEntry {
+                value,
+                kind,
+                source: _,
+            } = entry;
             (
                 key,
                 CoreAdditionalContextEntry {
-                    value: entry.value,
-                    kind: match entry.kind {
+                    value,
+                    kind: match kind {
                         AdditionalContextKind::Untrusted => CoreAdditionalContextKind::Untrusted,
                         AdditionalContextKind::Application => {
                             CoreAdditionalContextKind::Application
