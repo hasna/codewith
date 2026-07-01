@@ -59,6 +59,7 @@ use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_compact_user_history_with_summary_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -81,7 +82,6 @@ use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
-use wiremock::matchers::body_string_contains;
 use wiremock::matchers::header;
 use wiremock::matchers::header_regex;
 use wiremock::matchers::method;
@@ -2898,26 +2898,26 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     const EFFECTIVE_CONTEXT_WINDOW: i64 = (272_000 * 95) / 100;
 
-    mount_sse_once_match(
-        &server,
-        body_string_contains("trigger context window"),
+    let context_window_failure = |id: &str| {
         sse_failed(
-            "resp_context_window",
+            id,
             "context_length_exceeded",
             "Your input exceeds the context window of this model. Please adjust your input and try again.",
-        ),
-    )
-    .await;
-
-    mount_sse_once_match(
+        )
+    };
+    mount_sse_sequence(
         &server,
-        body_string_contains("seed turn"),
-        sse(vec![
-            ev_response_created("resp_seed"),
-            ev_completed("resp_seed"),
-        ]),
+        vec![
+            sse(vec![
+                ev_response_created("resp_seed"),
+                ev_completed("resp_seed"),
+            ]),
+            context_window_failure("resp_context_window"),
+            context_window_failure("resp_context_window_retry"),
+        ],
     )
     .await;
+    mount_compact_user_history_with_summary_once(&server, "COMPACTED_HISTORY").await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
