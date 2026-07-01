@@ -638,8 +638,6 @@ mod fs_processor;
 mod git_processor;
 mod initialize_processor;
 mod local_session_directory;
-#[allow(dead_code)]
-mod machine_registry_discovery;
 mod machine_registry_processor;
 mod marketplace_processor;
 mod mcp_processor;
