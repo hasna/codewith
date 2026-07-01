@@ -2819,6 +2819,46 @@
       },
       "type": "object"
     },
+    "SmartSuggestConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enables the experimental pre-tool advisory pass. Defaults to false.",
+          "type": "boolean"
+        },
+        "max_input_chars": {
+          "description": "Maximum serialized tool input characters exposed to the advisory model.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_suggestion_chars": {
+          "description": "Maximum advisory text characters injected back into the main context.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Required model id for the advisory pass when enabled.",
+          "type": "string"
+        },
+        "model_provider": {
+          "description": "Optional configured model provider id used for the advisory pass.",
+          "type": "string"
+        },
+        "service_tier": {
+          "description": "Optional service tier forwarded only to the advisory model request.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Maximum time to wait for advisory output, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -4789,6 +4829,15 @@
     "experimental_realtime_ws_startup_context": {
       "description": "Experimental / do not use. Replaces the synthesized realtime startup context appended to websocket session instructions. An empty string disables startup context injection entirely.",
       "type": "string"
+    },
+    "experimental_smart_suggest": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SmartSuggestConfigToml"
+        }
+      ],
+      "default": null,
+      "description": "Experimental / do not use. Opt-in advisory model pass before tool execution for suggesting better tools or commands."
     },
     "experimental_thread_config_endpoint": {
       "description": "Experimental / do not use. When set, app-server fetches thread-scoped config from a remote service at this endpoint.",

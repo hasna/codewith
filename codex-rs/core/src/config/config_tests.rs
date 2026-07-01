@@ -11325,6 +11325,66 @@ disabled_tools = [
 }
 
 #[tokio::test]
+async fn experimental_smart_suggest_defaults_disabled() -> std::io::Result<()> {
+    let cfg: ConfigToml = toml::from_str("").expect("TOML deserialization should succeed");
+
+    assert_eq!(cfg.experimental_smart_suggest, None);
+
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.experimental_smart_suggest,
+        SmartSuggestConfig::default()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn experimental_smart_suggest_loads_trimmed_bounded_config() -> std::io::Result<()> {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[experimental_smart_suggest]
+enabled = true
+model_provider = " cerebras "
+model = " llama-3.3-70b "
+service_tier = " fast "
+timeout_ms = 1
+max_input_chars = 10
+max_suggestion_chars = 100000
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.experimental_smart_suggest,
+        SmartSuggestConfig {
+            enabled: true,
+            model_provider: Some("cerebras".to_string()),
+            model: Some("llama-3.3-70b".to_string()),
+            service_tier: Some("fast".to_string()),
+            timeout_ms: 50,
+            max_input_chars: 512,
+            max_suggestion_chars: 4000,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn experimental_realtime_start_instructions_load_from_config_toml() -> std::io::Result<()> {
     let cfg: ConfigToml = toml::from_str(
         r#"
