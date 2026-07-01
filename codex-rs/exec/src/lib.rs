@@ -136,6 +136,7 @@ pub use exec_events::TurnStartedEvent;
 pub use exec_events::Usage;
 pub use exec_events::WebSearchItem;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::io::Read;
@@ -211,9 +212,22 @@ struct ExecRunArgs {
     oss: bool,
     output_schema_path: Option<PathBuf>,
     prompt: Option<String>,
+    request_config_overrides: Option<HashMap<String, serde_json::Value>>,
+    resume_overrides: ResumeOverrideSelection,
     skill_inputs: Vec<UserInput>,
     skip_git_repo_check: bool,
     stderr_with_ansi: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ResumeOverrideSelection {
+    model: bool,
+    model_provider: bool,
+    auth_profile: bool,
+    cwd: bool,
+    runtime_workspace_roots: bool,
+    permissions: bool,
+    reasoning_effort: bool,
 }
 
 fn exec_root_span() -> tracing::Span {
@@ -275,7 +289,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cwd,
         add_dir,
     } = shared;
-
     let (_stdout_with_ansi, stderr_with_ansi) = match color {
         cli::Color::Always => (true, true),
         cli::Color::Never => (false, false),
@@ -305,6 +318,27 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             eprintln!("Error parsing -c overrides: {e}");
             std::process::exit(1);
         }
+    };
+    let request_config_overrides = request_config_overrides_from_cli(&cli_kv_overrides)?;
+    let resume_overrides = ResumeOverrideSelection {
+        model: model_cli_arg.is_some()
+            || cli_config_override_contains(&cli_kv_overrides, &["model"]),
+        model_provider: oss
+            || oss_provider.is_some()
+            || cli_config_override_contains(&cli_kv_overrides, &["model_provider"]),
+        auth_profile: auth_profile.is_some()
+            || cli_config_override_contains(&cli_kv_overrides, &["auth_profile"]),
+        cwd: cwd.is_some() || cli_config_override_contains(&cli_kv_overrides, &["cwd"]),
+        runtime_workspace_roots: cwd.is_some()
+            || !add_dir.is_empty()
+            || cli_config_override_contains(&cli_kv_overrides, &["workspace_roots"]),
+        permissions: removed_full_auto
+            || dangerously_bypass_approvals_and_sandbox
+            || sandbox_mode_cli_arg.is_some(),
+        reasoning_effort: cli_config_override_contains(
+            &cli_kv_overrides,
+            &["model_reasoning_effort"],
+        ),
     };
 
     let resolved_cwd = cwd.clone();
@@ -579,6 +613,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         oss,
         output_schema_path,
         prompt,
+        request_config_overrides,
+        resume_overrides,
         skill_inputs,
         skip_git_repo_check,
         stderr_with_ansi,
@@ -677,6 +713,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         oss,
         output_schema_path,
         prompt,
+        request_config_overrides,
+        resume_overrides,
         skill_inputs,
         skip_git_repo_check,
         stderr_with_ansi,
@@ -708,8 +746,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     }
 
     let default_cwd = config.cwd.to_path_buf();
-    let default_approval_policy = config.permissions.approval_policy.value();
-    let default_effort = config.model_reasoning_effort.clone();
 
     let (initial_operation, prompt_summary) = match (command.as_ref(), prompt, images) {
         (Some(ExecCommand::Review(review_cli)), _, _) => {
@@ -792,26 +828,54 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     // Handle resume subcommand through existing `thread/list` + `thread/resume`
     // APIs so exec no longer reaches into rollout storage directly.
-    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
-        command.as_ref()
-    {
-        if let Some(thread_id) =
-            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
-        {
-            let response: ThreadResumeResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadResume {
-                    request_id: request_ids.next(),
-                    params: thread_resume_params_from_config(&config, thread_id),
-                },
-                "thread/resume",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_resume_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.thread_id, session_configured)
+    let (primary_thread_id, fallback_session_configured, resumed_existing_thread) =
+        if let Some(ExecCommand::Resume(args)) = command.as_ref() {
+            if let Some(thread_id) =
+                resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
+            {
+                let response: ThreadResumeResponse = send_request_with_response(
+                    &client,
+                    ClientRequest::ThreadResume {
+                        request_id: request_ids.next(),
+                        params: thread_resume_params_from_config(
+                            &config,
+                            thread_id,
+                            &resume_overrides,
+                            request_config_overrides.clone(),
+                        ),
+                    },
+                    "thread/resume",
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+                let session_configured =
+                    session_configured_from_thread_resume_response(&response, &config)
+                        .map_err(anyhow::Error::msg)?;
+                (
+                    session_configured.thread_id,
+                    session_configured,
+                    /*resumed_existing_thread*/ true,
+                )
+            } else {
+                let response: ThreadStartResponse = send_request_with_response(
+                    &client,
+                    ClientRequest::ThreadStart {
+                        request_id: request_ids.next(),
+                        params: thread_start_params_from_config(&config),
+                    },
+                    "thread/start",
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+                let session_configured =
+                    session_configured_from_thread_start_response(&response, &config)
+                        .map_err(anyhow::Error::msg)?;
+                (
+                    session_configured.thread_id,
+                    session_configured,
+                    /*resumed_existing_thread*/ false,
+                )
+            }
         } else {
             let response: ThreadStartResponse = send_request_with_response(
                 &client,
@@ -826,23 +890,12 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_start_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.thread_id, session_configured)
-        }
-    } else {
-        let response: ThreadStartResponse = send_request_with_response(
-            &client,
-            ClientRequest::ThreadStart {
-                request_id: request_ids.next(),
-                params: thread_start_params_from_config(&config),
-            },
-            "thread/start",
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        let session_configured = session_configured_from_thread_start_response(&response, &config)
-            .map_err(anyhow::Error::msg)?;
-        (session_configured.thread_id, session_configured)
-    };
+            (
+                session_configured.thread_id,
+                session_configured,
+                /*resumed_existing_thread*/ false,
+            )
+        };
 
     let primary_thread_id_for_span = primary_thread_id.to_string();
     // Use the start/resume response as the authoritative bootstrap payload.
@@ -857,7 +910,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     event_processor.print_config_summary(&config, &prompt_summary, &session_configured);
     if !json_mode
         && let Some(message) =
-            codex_core::config::system_bwrap_warning(config.permissions.permission_profile())
+            codex_core::config::system_bwrap_warning(&session_configured.permission_profile)
     {
         event_processor.process_warning(message);
     }
@@ -881,28 +934,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 &client,
                 ClientRequest::TurnStart {
                     request_id: request_ids.next(),
-                    params: TurnStartParams {
-                        thread_id: primary_thread_id_for_span.clone(),
-                        client_user_message_id: None,
-                        input: items.into_iter().map(Into::into).collect(),
-                        responsesapi_client_metadata: None,
-                        additional_context: None,
-                        environments: None,
-                        cwd: Some(default_cwd),
-                        runtime_workspace_roots: None,
-                        approval_policy: Some(default_approval_policy.into()),
-                        approvals_reviewer: None,
-                        sandbox_policy: None,
-                        permissions: None,
-                        model_provider: Some(config.model_provider_id.clone()),
-                        model: config.model.clone(),
-                        service_tier: None,
-                        effort: default_effort,
-                        summary: None,
-                        personality: None,
+                    params: turn_start_params_from_config(
+                        &config,
+                        primary_thread_id_for_span.clone(),
+                        items.into_iter().map(Into::into).collect(),
                         output_schema,
-                        collaboration_mode: None,
-                    },
+                        resumed_existing_thread,
+                        &resume_overrides,
+                    ),
                 },
                 "turn/start",
             )
@@ -1075,28 +1114,129 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
     }
 }
 
-fn thread_resume_params_from_config(config: &Config, thread_id: String) -> ThreadResumeParams {
-    let permissions = permissions_selection_from_config(config);
-    let sandbox = permissions.is_none().then(|| {
-        sandbox_mode_from_permission_profile(
-            &config.permissions.effective_permission_profile(),
-            config.cwd.as_path(),
-        )
+fn turn_start_params_from_config(
+    config: &Config,
+    thread_id: String,
+    input: Vec<codex_app_server_protocol::UserInput>,
+    output_schema: Option<Value>,
+    resumed_existing_thread: bool,
+    resume_overrides: &ResumeOverrideSelection,
+) -> TurnStartParams {
+    let explicit_permissions = resumed_existing_thread && resume_overrides.permissions;
+    let permissions = explicit_permissions
+        .then(|| permissions_selection_from_config(config))
+        .flatten();
+    let sandbox_policy = explicit_permissions
+        .then(|| {
+            permissions.is_none().then(|| {
+                config
+                    .permissions
+                    .legacy_sandbox_policy(config.cwd.as_path())
+                    .into()
+            })
+        })
+        .flatten();
+    TurnStartParams {
+        thread_id,
+        client_user_message_id: None,
+        input,
+        responsesapi_client_metadata: None,
+        additional_context: None,
+        environments: None,
+        cwd: (!resumed_existing_thread || resume_overrides.cwd).then_some(config.cwd.to_path_buf()),
+        runtime_workspace_roots: (resumed_existing_thread
+            && resume_overrides.runtime_workspace_roots)
+            .then_some(config.workspace_roots.clone()),
+        approval_policy: (!resumed_existing_thread || resume_overrides.permissions)
+            .then_some(config.permissions.approval_policy.value().into()),
+        approvals_reviewer: (resumed_existing_thread && resume_overrides.permissions)
+            .then(|| config.approvals_reviewer.into()),
+        sandbox_policy,
+        permissions,
+        model_provider: (!resumed_existing_thread || resume_overrides.model_provider)
+            .then(|| config.model_provider_id.clone()),
+        model: (!resumed_existing_thread || resume_overrides.model)
+            .then(|| config.model.clone())
+            .flatten(),
+        service_tier: None,
+        effort: (!resumed_existing_thread
+            || resume_overrides.model
+            || resume_overrides.reasoning_effort)
+            .then_some(config.model_reasoning_effort.clone())
+            .flatten(),
+        summary: None,
+        personality: None,
+        output_schema,
+        collaboration_mode: None,
+    }
+}
+
+fn thread_resume_params_from_config(
+    config: &Config,
+    thread_id: String,
+    overrides: &ResumeOverrideSelection,
+    config_overrides: Option<HashMap<String, serde_json::Value>>,
+) -> ThreadResumeParams {
+    let permissions = overrides
+        .permissions
+        .then(|| permissions_selection_from_config(config))
+        .flatten();
+    let sandbox = overrides.permissions.then(|| {
+        permissions.is_none().then(|| {
+            sandbox_mode_from_permission_profile(
+                &config.permissions.effective_permission_profile(),
+                config.cwd.as_path(),
+            )
+        })
     });
     ThreadResumeParams {
         thread_id,
-        model: config.model.clone(),
-        model_provider: Some(config.model_provider_id.clone()),
-        auth_profile: Some(config.selected_auth_profile.clone()),
-        cwd: Some(config.cwd.to_string_lossy().to_string()),
-        runtime_workspace_roots: Some(config.workspace_roots.clone()),
-        approval_policy: Some(config.permissions.approval_policy.value().into()),
-        approvals_reviewer: approvals_reviewer_override_from_config(config),
-        sandbox: sandbox.flatten(),
+        model: overrides.model.then(|| config.model.clone()).flatten(),
+        model_provider: overrides
+            .model_provider
+            .then(|| config.model_provider_id.clone()),
+        auth_profile: overrides
+            .auth_profile
+            .then(|| config.selected_auth_profile.clone()),
+        cwd: overrides
+            .cwd
+            .then(|| config.cwd.to_string_lossy().to_string()),
+        runtime_workspace_roots: overrides
+            .runtime_workspace_roots
+            .then(|| config.workspace_roots.clone()),
+        approval_policy: overrides
+            .permissions
+            .then_some(config.permissions.approval_policy.value().into()),
+        approvals_reviewer: overrides
+            .permissions
+            .then(|| config.approvals_reviewer.into()),
+        sandbox: sandbox.flatten().flatten(),
         permissions,
-        config: None,
+        config: config_overrides,
         ..ThreadResumeParams::default()
     }
+}
+
+fn request_config_overrides_from_cli(
+    cli_kv_overrides: &[(String, codex_config::TomlValue)],
+) -> anyhow::Result<Option<HashMap<String, serde_json::Value>>> {
+    let mut config_overrides = HashMap::new();
+    for (key, value) in cli_kv_overrides {
+        let value = serde_json::to_value(value).map_err(|err| {
+            anyhow::anyhow!("failed to serialize -c override `{key}` for thread/resume: {err}")
+        })?;
+        config_overrides.insert(key.clone(), value);
+    }
+    Ok((!config_overrides.is_empty()).then_some(config_overrides))
+}
+
+fn cli_config_override_contains(
+    cli_kv_overrides: &[(String, codex_config::TomlValue)],
+    keys: &[&str],
+) -> bool {
+    cli_kv_overrides
+        .iter()
+        .any(|(key, _)| keys.iter().any(|candidate| key == candidate))
 }
 
 fn permissions_selection_from_config(config: &Config) -> Option<String> {
@@ -1177,14 +1317,20 @@ fn session_configured_from_thread_start_response(
         config.permissions.effective_permission_profile(),
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
+        Some(response.runtime_workspace_roots.clone()),
         response.reasoning_effort.clone(),
     )
 }
 
 fn session_configured_from_thread_resume_response(
     response: &ThreadResumeResponse,
-    config: &Config,
+    _config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
+    let response_sandbox = response.sandbox.to_core();
+    let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+        &response_sandbox,
+        response.cwd.as_path(),
+    );
     session_configured_from_thread_response(
         &response.thread.session_id,
         &response.thread.id,
@@ -1197,9 +1343,10 @@ fn session_configured_from_thread_resume_response(
         response.service_tier.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
-        config.permissions.effective_permission_profile(),
+        permission_profile,
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
+        Some(response.runtime_workspace_roots.clone()),
         response.reasoning_effort.clone(),
     )
 }
@@ -1232,6 +1379,7 @@ fn session_configured_from_thread_response(
     permission_profile: PermissionProfile,
     active_permission_profile: Option<codex_protocol::models::ActivePermissionProfile>,
     cwd: AbsolutePathBuf,
+    workspace_roots: Option<Vec<AbsolutePathBuf>>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> Result<SessionConfiguredEvent, String> {
     let session_id = SessionId::from_string(session_id)
@@ -1258,6 +1406,7 @@ fn session_configured_from_thread_response(
         permission_profile,
         active_permission_profile,
         cwd,
+        workspace_roots,
         reasoning_effort,
         initial_messages: None,
         network_proxy: None,

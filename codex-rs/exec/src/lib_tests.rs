@@ -606,7 +606,21 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
         .expect("build config with legacy sandbox override");
 
     let start_params = thread_start_params_from_config(&config);
-    let resume_params = thread_resume_params_from_config(&config, "thread-id".to_string());
+    let resume_params = thread_resume_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        &ResumeOverrideSelection::default(),
+        None,
+    );
+    let explicit_resume_params = thread_resume_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        &ResumeOverrideSelection {
+            permissions: true,
+            ..Default::default()
+        },
+        None,
+    );
 
     assert_eq!(config.permissions.active_permission_profile(), None);
     assert_eq!(
@@ -615,10 +629,178 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
     );
     assert_eq!(start_params.permissions, None);
     assert_eq!(
-        resume_params.sandbox,
+        explicit_resume_params.sandbox,
         Some(codex_app_server_protocol::SandboxMode::DangerFullAccess)
     );
+    assert_eq!(explicit_resume_params.permissions, None);
+    assert_eq!(
+        explicit_resume_params.approval_policy,
+        Some(config.permissions.approval_policy.value().into())
+    );
+    assert_eq!(
+        explicit_resume_params.approvals_reviewer,
+        Some(config.approvals_reviewer.into())
+    );
+    assert_eq!(resume_params.sandbox, None);
     assert_eq!(resume_params.permissions, None);
+    assert_eq!(resume_params.approval_policy, None);
+    assert_eq!(resume_params.approvals_reviewer, None);
+}
+
+#[test]
+fn request_config_overrides_from_cli_preserves_reasoning_effort_override() {
+    let cli_kv_overrides = vec![(
+        "model_reasoning_effort".to_string(),
+        codex_config::TomlValue::String("low".to_string()),
+    )];
+
+    let request_config = request_config_overrides_from_cli(&cli_kv_overrides)
+        .expect("serialize cli overrides")
+        .expect("request config should be present");
+
+    assert_eq!(
+        request_config.get("model_reasoning_effort"),
+        Some(&serde_json::Value::String("low".to_string()))
+    );
+    assert!(cli_config_override_contains(
+        &cli_kv_overrides,
+        &["model_reasoning_effort"]
+    ));
+}
+
+#[tokio::test]
+async fn resumed_turn_start_params_omit_ambient_sticky_overrides() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            model: Some("gpt-5.5".to_string()),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+
+    let fresh_turn = turn_start_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        Vec::new(),
+        None,
+        false,
+        &ResumeOverrideSelection::default(),
+    );
+    assert_eq!(fresh_turn.cwd, Some(config.cwd.to_path_buf()));
+    assert_eq!(fresh_turn.runtime_workspace_roots, None);
+    assert_eq!(fresh_turn.model, config.model);
+    assert_eq!(
+        fresh_turn.model_provider,
+        Some(config.model_provider_id.clone())
+    );
+    assert_eq!(
+        fresh_turn.approval_policy,
+        Some(config.permissions.approval_policy.value().into())
+    );
+
+    let resumed_turn = turn_start_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        Vec::new(),
+        None,
+        true,
+        &ResumeOverrideSelection::default(),
+    );
+    assert_eq!(resumed_turn.cwd, None);
+    assert_eq!(resumed_turn.runtime_workspace_roots, None);
+    assert_eq!(resumed_turn.model, None);
+    assert_eq!(resumed_turn.model_provider, None);
+    assert_eq!(resumed_turn.approval_policy, None);
+    assert_eq!(resumed_turn.approvals_reviewer, None);
+
+    let explicit_resumed_turn = turn_start_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        Vec::new(),
+        None,
+        true,
+        &ResumeOverrideSelection {
+            cwd: true,
+            runtime_workspace_roots: true,
+            model: true,
+            model_provider: true,
+            permissions: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(explicit_resumed_turn.cwd, Some(config.cwd.to_path_buf()));
+    assert_eq!(
+        explicit_resumed_turn.runtime_workspace_roots,
+        Some(config.workspace_roots.clone())
+    );
+    assert_eq!(explicit_resumed_turn.model, config.model);
+    assert_eq!(
+        explicit_resumed_turn.model_provider,
+        Some(config.model_provider_id.clone())
+    );
+    assert_eq!(
+        explicit_resumed_turn.approval_policy,
+        Some(config.permissions.approval_policy.value().into())
+    );
+    assert_eq!(
+        explicit_resumed_turn.approvals_reviewer,
+        Some(config.approvals_reviewer.into())
+    );
+    if permissions_selection_from_config(&config).is_some() {
+        assert_eq!(
+            explicit_resumed_turn.permissions,
+            permissions_selection_from_config(&config)
+        );
+        assert_eq!(explicit_resumed_turn.sandbox_policy, None);
+    } else {
+        assert_eq!(explicit_resumed_turn.permissions, None);
+        assert_eq!(
+            explicit_resumed_turn.sandbox_policy,
+            Some(
+                config
+                    .permissions
+                    .legacy_sandbox_policy(config.cwd.as_path())
+                    .into()
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn resumed_turn_start_params_forward_explicit_reasoning_effort_override() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let mut config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+    config.model_reasoning_effort = Some(codex_protocol::openai_models::ReasoningEffort::Low);
+
+    let resumed_turn = turn_start_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        Vec::new(),
+        None,
+        true,
+        &ResumeOverrideSelection {
+            reasoning_effort: true,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        resumed_turn.effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::Low)
+    );
 }
 
 #[tokio::test]

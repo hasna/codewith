@@ -420,9 +420,16 @@ fn config_summary_entries(
     config: &Config,
     session_configured_event: &SessionConfiguredEvent,
 ) -> Vec<(&'static str, String)> {
-    let permission_profile = config.permissions.effective_permission_profile();
+    let session_cwd = &session_configured_event.cwd;
+    let mut workspace_roots = session_configured_event
+        .workspace_roots
+        .clone()
+        .unwrap_or_else(|| config.effective_workspace_roots());
+    if !workspace_roots.iter().any(|root| root == session_cwd) {
+        workspace_roots = vec![session_cwd.clone()];
+    }
     let mut entries = vec![
-        ("workdir", config.cwd.display().to_string()),
+        ("workdir", session_cwd.display().to_string()),
         ("model", session_configured_event.model.clone()),
         (
             "provider",
@@ -430,22 +437,24 @@ fn config_summary_entries(
         ),
         (
             "approval",
-            config.permissions.approval_policy.value().to_string(),
+            session_configured_event.approval_policy.to_string(),
         ),
         (
             "sandbox",
             summarize_permission_profile(
-                &permission_profile,
-                &config.cwd,
-                config.effective_workspace_roots().as_slice(),
+                &session_configured_event.permission_profile,
+                session_cwd,
+                workspace_roots.as_slice(),
             ),
         ),
     ];
-    if config.model_provider.wire_api == WireApi::Responses {
+    if config.model_provider.wire_api == WireApi::Responses
+        || session_configured_event.reasoning_effort.is_some()
+    {
         entries.push((
             "reasoning effort",
-            config
-                .model_reasoning_effort
+            session_configured_event
+                .reasoning_effort
                 .as_ref()
                 .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "none".to_string()),

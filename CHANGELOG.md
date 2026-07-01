@@ -38,6 +38,24 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.53] - 2026-07-01
+
+Tag: `rust-v0.1.53`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.53>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.52...rust-v0.1.53>
+
+### Fixed
+
+- Preserved durable resumed thread cwd, workspace roots, permission profile,
+  auth profile, model settings, approval policy, and reasoning effort unless a
+  `codewith exec resume` caller explicitly overrides them.
+- Restored permission profiles from persisted rollout history when resuming
+  headless threads, preventing ambient caller sandbox defaults from replacing
+  the original agentic work sandbox.
+- Fixed the human startup summary for resumed `codewith exec` sessions so it
+  reports the effective resumed session configuration instead of the local
+  caller process defaults.
+
 ## [0.1.52] - 2026-07-01
 
 Tag: `rust-v0.1.52`
