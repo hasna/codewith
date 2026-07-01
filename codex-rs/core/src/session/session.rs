@@ -1221,6 +1221,7 @@ impl Session {
                     permission_profile: session_configuration.permission_profile(),
                     active_permission_profile: session_configuration.active_permission_profile(),
                     cwd: session_configuration.cwd.clone(),
+                    workspace_roots: Some(session_configuration.workspace_roots.clone()),
                     reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
                     initial_messages,
                     network_proxy: session_network_proxy.filter(|_| {

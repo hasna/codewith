@@ -967,6 +967,7 @@ mod thread_processor_behavior_tests {
                 permission_profile: PermissionProfile::read_only(),
                 active_permission_profile: None,
                 cwd: test_path_buf("/tmp").abs(),
+                workspace_roots: None,
                 reasoning_effort: None,
                 initial_messages: None,
                 network_proxy: None,

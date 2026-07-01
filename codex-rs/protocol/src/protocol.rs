@@ -5508,6 +5508,7 @@ mod tests {
                 permission_profile: permission_profile.clone(),
                 active_permission_profile: None,
                 cwd: test_path_buf("/home/user/project").abs(),
+                workspace_roots: None,
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 initial_messages: None,
                 network_proxy: None,
