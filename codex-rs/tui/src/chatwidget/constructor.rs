@@ -141,6 +141,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             last_auth_profile_auto_switch_trigger: None,
             pending_auth_profile_auto_switch_trigger: None,
+            auth_profile_auto_switch_cooldowns: BTreeMap::new(),
             usage_self_heal: UsageSelfHealState::default(),
             add_credits_nudge_email_in_flight: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),

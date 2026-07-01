@@ -2,6 +2,9 @@ use super::*;
 use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
+const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
+const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+
 fn assert_effort_estimate_guidance(text: &str, label: &str) {
     for expected in [
         "## Effort estimates",
@@ -303,7 +306,7 @@ fn bundled_catalog_instructions_include_effort_estimate_guidance() {
 }
 
 #[test]
-fn bundled_openai_gpt_5_5_uses_endpoint_context_window() {
+fn bundled_openai_gpt_5_5_uses_upstream_context_window() {
     let response = crate::bundled_models_response().expect("bundled catalog should parse");
     let model = response
         .models
@@ -311,11 +314,8 @@ fn bundled_openai_gpt_5_5_uses_endpoint_context_window() {
         .find(|model| model.slug == GPT_5_5_MODEL_ID)
         .expect("bundled catalog should include GPT-5.5");
 
-    assert_eq!(model.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
-    assert_eq!(
-        model.max_context_window,
-        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
-    );
+    assert_eq!(model.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    assert_eq!(model.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
 }
 
 #[test]
@@ -363,34 +363,47 @@ fn model_context_window_override_clamps_to_max_context_window() {
 }
 
 #[test]
-fn openai_gpt_5_5_context_window_is_capped_after_overrides() {
+fn openai_gpt_5_5_context_window_uses_catalog_value_without_override() {
     let mut model = model_info_from_slug("unknown-model");
     model.slug = GPT_5_5_MODEL_ID.to_string();
-    model.context_window = Some(272_000);
-    model.max_context_window = Some(272_000);
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
     let config = ModelsManagerConfig {
-        model_provider_id: Some(OPENAI_MODEL_PROVIDER_ID.to_string()),
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model.clone(), &config);
+
+    assert_eq!(updated, model);
+}
+
+#[test]
+fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
         model_context_window: Some(500_000),
         ..Default::default()
     };
 
     let updated = with_config_overrides(model, &config);
 
-    assert_eq!(updated.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
-    assert_eq!(
-        updated.max_context_window,
-        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
-    );
+    assert_eq!(updated.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    assert_eq!(updated.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
 }
 
 #[test]
-fn gpt_5_5_context_cap_does_not_apply_to_other_providers() {
+fn gpt_5_5_context_window_is_not_provider_specific_endpoint_capped() {
     let mut model = model_info_from_slug("unknown-model");
     model.slug = GPT_5_5_MODEL_ID.to_string();
-    model.context_window = Some(272_000);
-    model.max_context_window = Some(272_000);
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
     let config = ModelsManagerConfig {
-        model_provider_id: Some("openrouter".to_string()),
+        model_provider_id: Some("amazon-bedrock".to_string()),
         ..Default::default()
     };
 

@@ -1,6 +1,13 @@
 use super::*;
 use codex_core::config::AuthProfileAutoSwitchConfig;
-use codex_core::config::AuthProfileAutoSwitchStrategy;
+use codex_core::usage_profile_health::UsageProfileCooldownKey;
+use codex_core::usage_profile_health::UsageProfileHealth;
+use codex_core::usage_profile_health::UsageProfileRateLimitSnapshot;
+use codex_core::usage_profile_health::UsageProfileRateLimitWindow;
+use codex_core::usage_profile_health::choose_profile_for_auto_switch;
+use codex_core::usage_profile_health::cooldown_duration_for_reset;
+use codex_core::usage_profile_health::exhausted_auto_switch_window;
+use codex_core::usage_profile_health::usage_health_for_snapshots;
 use codex_login::AuthProfile;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -12,13 +19,12 @@ use tokio::time::timeout;
 
 const PROFILE_BROKER_RATE_LIMIT_FETCH_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 const PROFILE_BROKER_PROFILE_LEASE_DURATION: Duration = Duration::from_secs(60);
-const PRIMARY_LIMIT_FALLBACK_LABEL: &str = "usage";
-const SECONDARY_LIMIT_FALLBACK_LABEL: &str = "secondary usage";
-const FIVE_HOUR_LIMIT_LABEL: &str = "5h";
-const WEEKLY_LIMIT_LABEL: &str = "weekly";
 
 static PROFILE_BROKER_PROFILE_LEASES: LazyLock<StdMutex<BTreeMap<String, Instant>>> =
     LazyLock::new(|| StdMutex::new(BTreeMap::new()));
+static PROFILE_BROKER_EXHAUSTED_PROFILE_COOLDOWNS: LazyLock<
+    StdMutex<BTreeMap<UsageProfileCooldownKey, Instant>>,
+> = LazyLock::new(|| StdMutex::new(BTreeMap::new()));
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct UsageProfileBrokerDecision {
@@ -57,11 +63,10 @@ pub(super) enum UsageProfileBrokerDecisionReason {
     NoAvailableProfiles,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum UsageProfileHealth {
-    Healthy { remaining_percent: f64 },
-    Exhausted { retry_at: Option<i64> },
-    Unknown,
+#[derive(Clone, Debug, PartialEq)]
+struct FetchedProfileHealth {
+    health: UsageProfileHealth,
+    exhausted_cooldown: Option<UsageProfileCooldownKey>,
 }
 
 pub(super) async fn resolve_dispatch_auth_profile(
@@ -78,8 +83,8 @@ pub(super) async fn resolve_dispatch_auth_profile(
 
     let current_profile = effective_current_profile(config, requested_auth_profile.as_ref());
     let current_health = fetch_profile_health(auth_manager, config, current_profile).await;
-    match current_health {
-        UsageProfileHealth::Healthy { .. } => {
+    match current_health.health {
+        UsageProfileHealth::Healthy(_) => {
             return UsageProfileBrokerDecision::no_switch(
                 UsageProfileBrokerDecisionReason::CurrentProfileAvailable,
             );
@@ -105,7 +110,7 @@ pub(super) async fn resolve_dispatch_auth_profile(
         }
     };
 
-    let locked_profiles = active_profile_leases(Instant::now());
+    let locked_profiles = active_profile_locks(Instant::now());
     let candidates = auth_profile_auto_switch_candidates(
         current_profile,
         auto_switch,
@@ -120,10 +125,11 @@ pub(super) async fn resolve_dispatch_auth_profile(
 
     let mut health_by_profile = BTreeMap::new();
     for profile in &candidates {
-        health_by_profile.insert(
-            profile.clone(),
-            fetch_profile_health(auth_manager, config, Some(profile.as_str())).await,
-        );
+        let fetched = fetch_profile_health(auth_manager, config, Some(profile.as_str())).await;
+        if let Some(cooldown_key) = fetched.exhausted_cooldown {
+            lease_exhausted_profile(cooldown_key, config, Instant::now());
+        }
+        health_by_profile.insert(profile.clone(), fetched.health);
     }
 
     let decision = choose_dispatch_auth_profile(auto_switch, &candidates, &health_by_profile);
@@ -148,33 +154,51 @@ async fn fetch_profile_health(
     auth_manager: &Arc<AuthManager>,
     config: &Config,
     profile: Option<&str>,
-) -> UsageProfileHealth {
+) -> FetchedProfileHealth {
     let profile = profile.map(str::to_string);
-    let scoped_auth_manager = auth_manager.shared_scoped_auth_profile(profile).await;
+    let scoped_auth_manager = auth_manager
+        .shared_scoped_auth_profile(profile.clone())
+        .await;
     let health = async {
         let Some(auth) = scoped_auth_manager.auth().await else {
-            return UsageProfileHealth::Unknown;
+            return FetchedProfileHealth::unknown();
         };
         if !auth.uses_codex_backend() {
-            return UsageProfileHealth::Unknown;
+            return FetchedProfileHealth::unknown();
         }
         let Ok(client) = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth) else {
-            return UsageProfileHealth::Unknown;
+            return FetchedProfileHealth::unknown();
         };
         match client.get_rate_limits_many().await {
             Ok(snapshots) => {
-                usage_health_for_snapshots(&snapshots, &config.auth_profile_auto_switch)
+                let shared_snapshots = snapshots
+                    .iter()
+                    .map(core_rate_limit_snapshot)
+                    .collect::<Vec<_>>();
+                FetchedProfileHealth {
+                    health: usage_health_for_snapshots(
+                        &shared_snapshots,
+                        &config.auth_profile_auto_switch,
+                        None,
+                        /*is_fresh*/ true,
+                    ),
+                    exhausted_cooldown: exhausted_profile_cooldown_key(
+                        profile.as_deref(),
+                        &shared_snapshots,
+                        &config.auth_profile_auto_switch,
+                    ),
+                }
             }
             Err(_err) => {
                 tracing::debug!("usage profile broker could not fetch rate limits");
-                UsageProfileHealth::Unknown
+                FetchedProfileHealth::unknown()
             }
         }
     };
 
     match timeout(PROFILE_BROKER_RATE_LIMIT_FETCH_TIMEOUT, health).await {
         Ok(health) => health,
-        Err(_) => UsageProfileHealth::Unknown,
+        Err(_) => FetchedProfileHealth::unknown(),
     }
 }
 
@@ -183,85 +207,40 @@ fn choose_dispatch_auth_profile(
     candidates: &[String],
     health_by_profile: &BTreeMap<String, UsageProfileHealth>,
 ) -> UsageProfileBrokerDecision {
-    if candidates.is_empty() {
-        return UsageProfileBrokerDecision::no_switch(
-            UsageProfileBrokerDecisionReason::NoCandidateProfiles,
+    let selection = choose_profile_for_auto_switch(config, candidates, health_by_profile);
+    if let Some(profile) = selection.selected_profile {
+        return UsageProfileBrokerDecision::selected(
+            profile,
+            match selection.reason {
+                codex_core::usage_profile_health::UsageProfileSelectionReason::SelectedHealthyProfile => {
+                    UsageProfileBrokerDecisionReason::SelectedHealthyProfile
+                }
+                codex_core::usage_profile_health::UsageProfileSelectionReason::SelectedUnknownProfile => {
+                    UsageProfileBrokerDecisionReason::SelectedUnknownProfile
+                }
+                codex_core::usage_profile_health::UsageProfileSelectionReason::NoCandidateProfiles
+                | codex_core::usage_profile_health::UsageProfileSelectionReason::NoAvailableProfiles => {
+                    UsageProfileBrokerDecisionReason::NoAvailableProfiles
+                }
+            },
         );
     }
 
-    let mut retry_at = None;
-    match config.strategy {
-        AuthProfileAutoSwitchStrategy::Ordered => {
-            for candidate in candidates {
-                match health_by_profile
-                    .get(candidate)
-                    .copied()
-                    .unwrap_or(UsageProfileHealth::Unknown)
-                {
-                    UsageProfileHealth::Healthy { .. } => {
-                        return UsageProfileBrokerDecision::selected(
-                            candidate.clone(),
-                            UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
-                        );
-                    }
-                    UsageProfileHealth::Unknown => {
-                        return UsageProfileBrokerDecision::selected(
-                            candidate.clone(),
-                            UsageProfileBrokerDecisionReason::SelectedUnknownProfile,
-                        );
-                    }
-                    UsageProfileHealth::Exhausted {
-                        retry_at: profile_retry_at,
-                    } => merge_retry_at(&mut retry_at, profile_retry_at),
-                }
+    match selection.reason {
+        codex_core::usage_profile_health::UsageProfileSelectionReason::NoCandidateProfiles => {
+            UsageProfileBrokerDecision::no_switch(
+                UsageProfileBrokerDecisionReason::NoCandidateProfiles,
+            )
+        }
+        codex_core::usage_profile_health::UsageProfileSelectionReason::NoAvailableProfiles
+        | codex_core::usage_profile_health::UsageProfileSelectionReason::SelectedHealthyProfile
+        | codex_core::usage_profile_health::UsageProfileSelectionReason::SelectedUnknownProfile => {
+            UsageProfileBrokerDecision {
+                selected_profile: None,
+                retry_at: selection.retry_at,
+                reason: UsageProfileBrokerDecisionReason::NoAvailableProfiles,
             }
         }
-        AuthProfileAutoSwitchStrategy::HighestAvailable => {
-            let mut best: Option<(&str, f64)> = None;
-            let mut first_unknown = None;
-            for candidate in candidates {
-                match health_by_profile
-                    .get(candidate)
-                    .copied()
-                    .unwrap_or(UsageProfileHealth::Unknown)
-                {
-                    UsageProfileHealth::Healthy { remaining_percent } => {
-                        if best
-                            .as_ref()
-                            .is_none_or(|(_, best_remaining)| remaining_percent > *best_remaining)
-                        {
-                            best = Some((candidate.as_str(), remaining_percent));
-                        }
-                    }
-                    UsageProfileHealth::Unknown => {
-                        if first_unknown.is_none() {
-                            first_unknown = Some(candidate.as_str());
-                        }
-                    }
-                    UsageProfileHealth::Exhausted {
-                        retry_at: profile_retry_at,
-                    } => merge_retry_at(&mut retry_at, profile_retry_at),
-                }
-            }
-            if let Some((profile, _remaining_percent)) = best {
-                return UsageProfileBrokerDecision::selected(
-                    profile.to_string(),
-                    UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
-                );
-            }
-            if let Some(profile) = first_unknown {
-                return UsageProfileBrokerDecision::selected(
-                    profile.to_string(),
-                    UsageProfileBrokerDecisionReason::SelectedUnknownProfile,
-                );
-            }
-        }
-    }
-
-    UsageProfileBrokerDecision {
-        selected_profile: None,
-        retry_at,
-        reason: UsageProfileBrokerDecisionReason::NoAvailableProfiles,
     }
 }
 
@@ -321,106 +300,48 @@ fn ordered_auth_profiles_for_auto_switch(
     dedupe_profile_names(ordered)
 }
 
-fn usage_health_for_snapshots(
-    snapshots: &[RateLimitSnapshot],
-    config: &AuthProfileAutoSwitchConfig,
-) -> UsageProfileHealth {
-    let Some(snapshot) = snapshots
-        .iter()
-        .find(|snapshot| snapshot.limit_id.as_deref() == Some("codex"))
-        .or_else(|| snapshots.first())
-    else {
-        return UsageProfileHealth::Unknown;
-    };
-
-    let mut has_enabled_window = false;
-    let mut limiting_remaining_percent = 100.0;
-    let mut retry_at = None;
-    for (window, is_secondary) in [
-        snapshot.secondary.as_ref().map(|window| (window, true)),
-        snapshot.primary.as_ref().map(|window| (window, false)),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let label = limit_label_for_window(window.window_minutes, is_secondary);
-        if !auth_profile_auto_switch_label_enabled(label.as_str(), config) {
-            continue;
-        }
-
-        has_enabled_window = true;
-        let remaining_percent = (100.0 - window.used_percent).clamp(0.0, 100.0);
-        limiting_remaining_percent = f64::min(limiting_remaining_percent, remaining_percent);
-        if window.used_percent >= 100.0 {
-            merge_retry_at(&mut retry_at, window.resets_at);
+impl FetchedProfileHealth {
+    fn unknown() -> Self {
+        Self {
+            health: UsageProfileHealth::Unknown,
+            exhausted_cooldown: None,
         }
     }
+}
 
-    if !has_enabled_window {
-        return UsageProfileHealth::Unknown;
-    }
-    if limiting_remaining_percent <= 0.0 || retry_at.is_some() {
-        return UsageProfileHealth::Exhausted { retry_at };
-    }
-    UsageProfileHealth::Healthy {
-        remaining_percent: limiting_remaining_percent,
+fn core_rate_limit_snapshot(snapshot: &RateLimitSnapshot) -> UsageProfileRateLimitSnapshot<'_> {
+    UsageProfileRateLimitSnapshot {
+        limit_id: snapshot.limit_id.as_deref(),
+        limit_name: snapshot.limit_name.as_deref(),
+        primary: snapshot.primary.as_ref().map(core_rate_limit_window),
+        secondary: snapshot.secondary.as_ref().map(core_rate_limit_window),
     }
 }
 
-fn auth_profile_auto_switch_label_enabled(
-    label: &str,
+fn core_rate_limit_window(
+    window: &codex_protocol::protocol::RateLimitWindow,
+) -> UsageProfileRateLimitWindow {
+    UsageProfileRateLimitWindow {
+        used_percent: window.used_percent,
+        window_minutes: window.window_minutes,
+        resets_at: window.resets_at,
+    }
+}
+
+fn exhausted_profile_cooldown_key(
+    profile: Option<&str>,
+    snapshots: &[UsageProfileRateLimitSnapshot<'_>],
     config: &AuthProfileAutoSwitchConfig,
-) -> bool {
-    match label {
-        FIVE_HOUR_LIMIT_LABEL => config.on_5h_limit,
-        WEEKLY_LIMIT_LABEL => config.on_weekly_limit,
-        _ => false,
-    }
-}
-
-fn limit_label_for_window(window_minutes: Option<i64>, is_secondary: bool) -> String {
-    window_minutes
-        .and_then(get_limits_duration)
-        .unwrap_or_else(|| fallback_limit_label(is_secondary).to_string())
-}
-
-fn get_limits_duration(windows_minutes: i64) -> Option<String> {
-    const MINUTES_PER_HOUR: i64 = 60;
-    const MINUTES_PER_5_HOURS: i64 = 5 * MINUTES_PER_HOUR;
-    const MINUTES_PER_DAY: i64 = 24 * MINUTES_PER_HOUR;
-    const MINUTES_PER_WEEK: i64 = 7 * MINUTES_PER_DAY;
-    const MINUTES_PER_MONTH: i64 = 30 * MINUTES_PER_DAY;
-    const MINUTES_PER_YEAR: i64 = 365 * MINUTES_PER_DAY;
-
-    let windows_minutes = windows_minutes.max(0);
-
-    if is_approximate_window(windows_minutes, MINUTES_PER_5_HOURS) {
-        Some("5h".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_DAY) {
-        Some("daily".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_WEEK) {
-        Some("weekly".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_MONTH) {
-        Some("monthly".to_string())
-    } else if is_approximate_window(windows_minutes, MINUTES_PER_YEAR) {
-        Some("annual".to_string())
-    } else {
-        None
-    }
-}
-
-fn fallback_limit_label(is_secondary: bool) -> &'static str {
-    if is_secondary {
-        SECONDARY_LIMIT_FALLBACK_LABEL
-    } else {
-        PRIMARY_LIMIT_FALLBACK_LABEL
-    }
-}
-
-fn is_approximate_window(minutes: i64, expected_minutes: i64) -> bool {
-    let minutes = minutes as f64;
-    let expected_minutes = expected_minutes as f64;
-    minutes >= expected_minutes * 0.95 && minutes <= expected_minutes * 1.05
+) -> Option<UsageProfileCooldownKey> {
+    snapshots.iter().find_map(|snapshot| {
+        exhausted_auto_switch_window(snapshot, config).map(|window| {
+            UsageProfileCooldownKey::new(
+                profile.map(str::to_string),
+                snapshot.limit_id.unwrap_or("codex"),
+                window,
+            )
+        })
+    })
 }
 
 fn dedupe_profile_names(profiles: Vec<String>) -> Vec<String> {
@@ -431,13 +352,10 @@ fn dedupe_profile_names(profiles: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn merge_retry_at(current: &mut Option<i64>, candidate: Option<i64>) {
-    let Some(candidate) = candidate else {
-        return;
-    };
-    if current.is_none_or(|current| candidate < current) {
-        *current = Some(candidate);
-    }
+fn active_profile_locks(now: Instant) -> HashSet<String> {
+    let mut locked_profiles = active_profile_leases(now);
+    locked_profiles.extend(active_exhausted_profile_cooldowns(now));
+    locked_profiles
 }
 
 fn active_profile_leases(now: Instant) -> HashSet<String> {
@@ -458,10 +376,36 @@ fn lease_profile(profile: &str, now: Instant) {
     );
 }
 
+fn active_exhausted_profile_cooldowns(now: Instant) -> HashSet<String> {
+    let Ok(mut cooldowns) = PROFILE_BROKER_EXHAUSTED_PROFILE_COOLDOWNS.lock() else {
+        return HashSet::new();
+    };
+    cooldowns.retain(|_, expires_at| *expires_at > now);
+    cooldowns
+        .keys()
+        .filter_map(|key| key.profile.clone())
+        .collect()
+}
+
+fn lease_exhausted_profile(key: UsageProfileCooldownKey, config: &Config, now: Instant) {
+    let Ok(mut cooldowns) = PROFILE_BROKER_EXHAUSTED_PROFILE_COOLDOWNS.lock() else {
+        return;
+    };
+    let cooldown = cooldown_duration_for_reset(
+        key.resets_at,
+        Utc::now().timestamp(),
+        config.usage_self_heal.reset_retry_buffer_secs,
+        PROFILE_BROKER_PROFILE_LEASE_DURATION,
+    );
+    cooldowns.insert(key, now + cooldown);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use codex_app_server_protocol::AuthMode;
+    use codex_core::config::AuthProfileAutoSwitchStrategy;
+    use codex_core::usage_profile_health::UsageProfileScore;
     use codex_protocol::protocol::RateLimitWindow;
 
     fn chatgpt_profile(name: &str) -> AuthProfile {
@@ -490,6 +434,13 @@ mod tests {
             heartbeat_interval_secs: 60,
             heartbeat_freshness_secs: 120,
         }
+    }
+
+    fn health(remaining_percent: f64) -> UsageProfileHealth {
+        UsageProfileHealth::Healthy(UsageProfileScore {
+            trigger_remaining_percent: remaining_percent,
+            limiting_remaining_percent: remaining_percent,
+        })
     }
 
     #[test]
@@ -546,18 +497,8 @@ mod tests {
             chatgpt_profile("third"),
         ];
         let health_by_profile = BTreeMap::from([
-            (
-                "second".to_string(),
-                UsageProfileHealth::Healthy {
-                    remaining_percent: 20.0,
-                },
-            ),
-            (
-                "third".to_string(),
-                UsageProfileHealth::Healthy {
-                    remaining_percent: 80.0,
-                },
-            ),
+            ("second".to_string(), health(20.0)),
+            ("third".to_string(), health(80.0)),
         ]);
         let now = Instant::now();
 
@@ -648,18 +589,8 @@ mod tests {
     #[test]
     fn highest_available_dispatch_selects_healthiest_non_exhausted_profile() {
         let health_by_profile = BTreeMap::from([
-            (
-                "second".to_string(),
-                UsageProfileHealth::Healthy {
-                    remaining_percent: 20.0,
-                },
-            ),
-            (
-                "third".to_string(),
-                UsageProfileHealth::Healthy {
-                    remaining_percent: 80.0,
-                },
-            ),
+            ("second".to_string(), health(20.0)),
+            ("third".to_string(), health(80.0)),
         ]);
 
         assert_eq!(
@@ -735,7 +666,7 @@ mod tests {
         let mut config = config();
         config.on_5h_limit = false;
         config.on_weekly_limit = true;
-        let snapshots = vec![RateLimitSnapshot {
+        let snapshots = [RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
             primary: Some(RateLimitWindow {
@@ -753,12 +684,19 @@ mod tests {
             plan_type: None,
             rate_limit_reached_type: None,
         }];
+        let shared_snapshots = snapshots
+            .iter()
+            .map(core_rate_limit_snapshot)
+            .collect::<Vec<_>>();
 
         assert_eq!(
-            usage_health_for_snapshots(&snapshots, &config),
-            UsageProfileHealth::Healthy {
-                remaining_percent: 60.0,
-            }
+            usage_health_for_snapshots(
+                &shared_snapshots,
+                &config,
+                /*trigger_window_label*/ None,
+                /*is_fresh*/ true,
+            ),
+            health(60.0)
         );
     }
 }

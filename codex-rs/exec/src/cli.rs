@@ -32,6 +32,16 @@ pub struct Cli {
     #[arg(long = "ephemeral", global = true, default_value_t = false)]
     pub ephemeral: bool,
 
+    /// Persist session files to disk so the run can be resumed later.
+    #[arg(
+        long = "durable",
+        alias = "persist",
+        global = true,
+        default_value_t = false,
+        conflicts_with = "ephemeral"
+    )]
+    pub durable: bool,
+
     /// Do not load `/config.toml`; auth still uses the Codewith home.
     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
     pub ignore_user_config: bool,

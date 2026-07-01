@@ -601,6 +601,8 @@ pub(crate) struct ChatWidget {
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
+    auth_profile_auto_switch_cooldowns:
+        BTreeMap<crate::legacy_core::usage_profile_health::UsageProfileCooldownKey, Instant>,
     usage_self_heal: UsageSelfHealState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,
