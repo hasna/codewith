@@ -38,6 +38,21 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.52] - 2026-07-01
+
+Tag: `rust-v0.1.52`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.52>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.51...rust-v0.1.52>
+
+### Fixed
+
+- Added explicit durable headless execution flags for `codewith exec`
+  (`--durable` and `--persist`) while keeping persistent execution as the
+  default and rejecting conflicting `--ephemeral` usage.
+- Preserved GPT-5.5 model metadata at the full 272k context window and added
+  focused regression coverage for GPT-5.5 context-window handling and
+  auto-compact behavior.
+
 ## [0.1.51] - 2026-06-26
 
 Tag: `rust-v0.1.51`
