@@ -891,6 +891,29 @@ async fn session_configured_from_thread_response_preserves_parent_thread_id() {
     assert_eq!(event.parent_thread_id, Some(parent_thread_id));
 }
 
+#[tokio::test]
+async fn session_configured_from_thread_response_includes_profile_workspace_roots() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+    let cwd = cwd.path().to_path_buf().abs();
+    let profile_root = test_path_buf("/tmp/profile-root").abs();
+    let mut response = sample_thread_start_response();
+    response.cwd = cwd.clone();
+    response.runtime_workspace_roots = vec![cwd.clone()];
+    response.profile_workspace_roots = vec![profile_root.clone()];
+
+    let event = session_configured_from_thread_start_response(&response, &config)
+        .expect("build bootstrap session configured event");
+
+    assert_eq!(event.workspace_roots, Some(vec![cwd, profile_root]));
+}
+
 fn sample_thread_start_response() -> ThreadStartResponse {
     ThreadStartResponse {
         thread: codex_app_server_protocol::Thread {
@@ -920,6 +943,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
         approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
@@ -933,4 +957,18 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         auth_profile: None,
         reasoning_effort: None,
     }
+}
+
+#[test]
+fn effective_workspace_roots_from_parts_preserves_profile_roots() {
+    let cwd = test_path_buf("/tmp/project").abs();
+    let runtime_extra_root = test_path_buf("/tmp/runtime-extra").abs();
+    let profile_extra_root = test_path_buf("/tmp/profile-extra").abs();
+
+    let roots = effective_workspace_roots_from_parts(
+        &[cwd.clone(), runtime_extra_root.clone()],
+        &[profile_extra_root.clone(), runtime_extra_root.clone()],
+    );
+
+    assert_eq!(roots, vec![cwd, runtime_extra_root, profile_extra_root]);
 }

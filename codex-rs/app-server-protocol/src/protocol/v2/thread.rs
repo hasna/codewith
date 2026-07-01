@@ -206,6 +206,11 @@ pub struct ThreadStartResponse {
     #[experimental("thread/start.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/start.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -447,6 +452,11 @@ pub struct ThreadResumeResponse {
     #[experimental("thread/resume.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/resume.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -608,6 +618,11 @@ pub struct ThreadForkResponse {
     #[experimental("thread/fork.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/fork.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,

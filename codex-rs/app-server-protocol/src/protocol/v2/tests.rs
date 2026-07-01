@@ -165,6 +165,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         service_tier: None,
         cwd: absolute_path("tmp"),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AskForApproval::OnFailure,
         approvals_reviewer: ApprovalsReviewer::User,

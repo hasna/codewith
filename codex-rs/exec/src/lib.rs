@@ -1302,6 +1302,10 @@ fn session_configured_from_thread_start_response(
     response: &ThreadStartResponse,
     config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
+    let workspace_roots = effective_workspace_roots_from_parts(
+        &response.runtime_workspace_roots,
+        &response.profile_workspace_roots,
+    );
     session_configured_from_thread_response(
         &response.thread.session_id,
         &response.thread.id,
@@ -1317,7 +1321,7 @@ fn session_configured_from_thread_start_response(
         config.permissions.effective_permission_profile(),
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
-        Some(response.runtime_workspace_roots.clone()),
+        Some(workspace_roots),
         response.reasoning_effort.clone(),
     )
 }
@@ -1326,6 +1330,10 @@ fn session_configured_from_thread_resume_response(
     response: &ThreadResumeResponse,
     _config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
+    let workspace_roots = effective_workspace_roots_from_parts(
+        &response.runtime_workspace_roots,
+        &response.profile_workspace_roots,
+    );
     let response_sandbox = response.sandbox.to_core();
     let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
         &response_sandbox,
@@ -1346,9 +1354,22 @@ fn session_configured_from_thread_resume_response(
         permission_profile,
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
-        Some(response.runtime_workspace_roots.clone()),
+        Some(workspace_roots),
         response.reasoning_effort.clone(),
     )
+}
+
+fn effective_workspace_roots_from_parts(
+    runtime_workspace_roots: &[AbsolutePathBuf],
+    profile_workspace_roots: &[AbsolutePathBuf],
+) -> Vec<AbsolutePathBuf> {
+    let mut workspace_roots = runtime_workspace_roots.to_vec();
+    for root in profile_workspace_roots {
+        if !workspace_roots.iter().any(|existing| existing == root) {
+            workspace_roots.push(root.clone());
+        }
+    }
+    workspace_roots
 }
 
 fn review_target_to_api(target: ReviewTarget) -> ApiReviewTarget {

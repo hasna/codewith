@@ -424,9 +424,9 @@ fn config_summary_entries(
     let mut workspace_roots = session_configured_event
         .workspace_roots
         .clone()
-        .unwrap_or_else(|| config.effective_workspace_roots());
+        .unwrap_or_else(|| vec![session_cwd.clone()]);
     if !workspace_roots.iter().any(|root| root == session_cwd) {
-        workspace_roots = vec![session_cwd.clone()];
+        workspace_roots.insert(0, session_cwd.clone());
     }
     let mut entries = vec![
         ("workdir", session_cwd.display().to_string()),

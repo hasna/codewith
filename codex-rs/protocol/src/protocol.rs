@@ -3625,8 +3625,10 @@ pub struct SessionConfiguredEvent {
     /// session.
     pub cwd: AbsolutePathBuf,
 
-    /// Runtime workspace roots used to materialize symbolic filesystem
-    /// permissions for this session.
+    /// Effective user-visible workspace roots for this session, including
+    /// runtime roots and profile-defined roots. Older rollouts may omit this,
+    /// in which case clients should avoid borrowing roots from the ambient
+    /// process config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub workspace_roots: Option<Vec<AbsolutePathBuf>>,

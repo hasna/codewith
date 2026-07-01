@@ -728,6 +728,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         auth_profile,
         cwd,
         workspace_roots,
+        profile_workspace_roots,
         reasoning_effort,
         ..
     } = pending.config_snapshot;
@@ -745,6 +746,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         service_tier,
         cwd,
         runtime_workspace_roots: workspace_roots,
+        profile_workspace_roots,
         instruction_sources,
         approval_policy: approval_policy.into(),
         approvals_reviewer: approvals_reviewer.into(),

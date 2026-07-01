@@ -370,6 +370,67 @@ async fn config_summary_entries_use_session_workspace_roots_when_cwd_matches_amb
     );
 }
 
+#[tokio::test]
+async fn config_summary_entries_do_not_use_ambient_workspace_roots_for_old_events() {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let cwd = tempfile::tempdir().expect("create cwd");
+    let ambient_extra_root = tempfile::tempdir().expect("create ambient extra root");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build default config");
+    let cwd = cwd.path().to_path_buf().abs();
+    let ambient_extra_root = ambient_extra_root.path().to_path_buf().abs();
+    let ambient_extra_root_name = ambient_extra_root
+        .file_name()
+        .expect("ambient extra root should have file name")
+        .to_string_lossy()
+        .to_string();
+    config.cwd = cwd.clone();
+    config.workspace_roots = vec![cwd.clone(), ambient_extra_root];
+
+    let session_configured_event = SessionConfiguredEvent {
+        session_id: SessionId::new(),
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        thread_source: None,
+        thread_name: None,
+        model: "gpt-5.5".to_string(),
+        model_provider_id: config.model_provider_id.clone(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: config.approvals_reviewer,
+        permission_profile: PermissionProfile::workspace_write_with(
+            &[],
+            NetworkSandboxPolicy::Restricted,
+            /*exclude_tmpdir_env_var*/ true,
+            /*exclude_slash_tmp*/ true,
+        ),
+        active_permission_profile: None,
+        cwd,
+        workspace_roots: None,
+        reasoning_effort: None,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    let summary_entries = config_summary_entries(&config, &session_configured_event);
+    let sandbox_summary = summary_entries
+        .iter()
+        .find_map(|(key, value)| (*key == "sandbox").then_some(value))
+        .expect("sandbox summary entry");
+
+    assert_eq!(sandbox_summary, "workspace-write [workdir]");
+    assert!(
+        !sandbox_summary.contains(&ambient_extra_root_name),
+        "ambient workspace root leaked into old rollout summary: {summary_entries:?}"
+    );
+}
+
 #[test]
 fn final_message_from_turn_items_uses_latest_agent_message() {
     let message = final_message_from_turn_items(&[
