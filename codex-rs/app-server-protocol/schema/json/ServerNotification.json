@@ -5032,7 +5032,8 @@
         }
       },
       "required": [
-        "threadId"
+        "threadId",
+        "threadName"
       ],
       "type": "object"
     },

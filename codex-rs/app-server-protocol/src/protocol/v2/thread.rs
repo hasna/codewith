@@ -28,6 +28,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use ts_rs::TS;
 
+// Schemars' `required` attribute otherwise emits the inner string schema for
+// `Option<String>`, so keep the required field nullable in generated fixtures.
+fn required_nullable_string_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    schemars::schema::SchemaObject {
+        instance_type: Some(schemars::schema::SingleOrVec::Vec(vec![
+            schemars::schema::InstanceType::String,
+            schemars::schema::InstanceType::Null,
+        ])),
+        ..Default::default()
+    }
+    .into()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
@@ -2258,8 +2273,7 @@ pub struct ThreadClosedNotification {
 #[ts(export_to = "v2/")]
 pub struct ThreadNameUpdatedNotification {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[schemars(required, schema_with = "required_nullable_string_schema")]
     pub thread_name: Option<String>,
 }
 
