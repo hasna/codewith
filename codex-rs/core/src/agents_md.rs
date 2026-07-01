@@ -24,6 +24,9 @@ use codex_config::merge_toml_values;
 use codex_config::project_root_markers_from_config;
 use codex_exec_server::Environment;
 use codex_exec_server::ExecutorFileSystem;
+use codex_exec_server::FILE_CHANGED_DURING_OPEN_ERROR;
+use codex_exec_server::SYMLINK_SAFE_READ_UNSUPPORTED_ERROR;
+use codex_exec_server::SYMLINKED_FILE_ERROR;
 use codex_features::Feature;
 use codex_prompts::HIERARCHICAL_AGENTS_MESSAGE;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -78,10 +81,43 @@ impl<'a> AgentsMdManager<'a> {
             LEGACY_DEFAULT_AGENTS_MD_FILENAME,
         ] {
             let path = base.join(candidate);
-            let data = match fs.read_file(&path, /*sandbox*/ None).await {
+            match fs.get_metadata(&path, /*sandbox*/ None).await {
+                Ok(metadata) if metadata.is_symlink => {
+                    warn_skipped_symlink(&path, "Global", startup_warnings);
+                    continue;
+                }
+                Ok(metadata) if !metadata.is_file => continue,
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) if err.kind() == io::ErrorKind::IsADirectory => continue,
+                Err(err) => {
+                    startup_warnings.push(format!(
+                        "Failed to read global project instructions from `{}`: {err}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            }
+
+            let data = match fs
+                .read_file_without_following_symlinks(&path, /*sandbox*/ None)
+                .await
+            {
                 Ok(data) => data,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) if err.kind() == io::ErrorKind::IsADirectory => continue,
+                Err(err) if is_symlink_rejection(&err) => {
+                    warn_skipped_symlink(&path, "Global", startup_warnings);
+                    continue;
+                }
+                Err(err) if is_file_changed_during_open(&err) => {
+                    warn_file_changed_during_open(&path, "Global", startup_warnings);
+                    continue;
+                }
+                Err(err) if is_symlink_safe_read_unsupported(&err) => {
+                    warn_symlink_safe_read_unsupported(&path, "Global", startup_warnings);
+                    continue;
+                }
                 Err(err) => {
                     startup_warnings.push(format!(
                         "Failed to read global project instructions from `{}`: {err}",
@@ -156,7 +192,9 @@ impl<'a> AgentsMdManager<'a> {
             return Ok(None);
         }
 
-        let paths = self.agents_md_paths(fs).await?;
+        let paths = self
+            .agents_md_paths_with_warnings(fs, startup_warnings)
+            .await?;
         if paths.is_empty() {
             return Ok(None);
         }
@@ -170,15 +208,34 @@ impl<'a> AgentsMdManager<'a> {
             }
 
             match fs.get_metadata(&p, /*sandbox*/ None).await {
+                Ok(metadata) if metadata.is_symlink => {
+                    warn_skipped_symlink(&p, "Project", startup_warnings);
+                    continue;
+                }
                 Ok(metadata) if !metadata.is_file => continue,
                 Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => return Err(err),
             }
 
-            let mut data = match fs.read_file(&p, /*sandbox*/ None).await {
+            let mut data = match fs
+                .read_file_without_following_symlinks(&p, /*sandbox*/ None)
+                .await
+            {
                 Ok(data) => data,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) if is_symlink_rejection(&err) => {
+                    warn_skipped_symlink(&p, "Project", startup_warnings);
+                    continue;
+                }
+                Err(err) if is_file_changed_during_open(&err) => {
+                    warn_file_changed_during_open(&p, "Project", startup_warnings);
+                    continue;
+                }
+                Err(err) if is_symlink_safe_read_unsupported(&err) => {
+                    warn_symlink_safe_read_unsupported(&p, "Project", startup_warnings);
+                    continue;
+                }
                 Err(err) => return Err(err),
             };
             warn_invalid_utf8(&p, &data, "Project", startup_warnings);
@@ -216,11 +273,22 @@ impl<'a> AgentsMdManager<'a> {
     /// Discover the list of project instruction files using the same search rules as
     /// `read_agents_md`, but return the file paths instead of concatenated
     /// contents. The list is ordered from project root to the current working
-    /// directory (inclusive). Symlinks are allowed. When `project_doc_max_bytes`
-    /// is zero, returns an empty list.
+    /// directory (inclusive). Symlinked instruction files are skipped. When
+    /// `project_doc_max_bytes` is zero, returns an empty list.
+    #[cfg(test)]
     async fn agents_md_paths(
         &self,
         fs: &dyn ExecutorFileSystem,
+    ) -> io::Result<Vec<AbsolutePathBuf>> {
+        let mut startup_warnings = Vec::new();
+        self.agents_md_paths_with_warnings(fs, &mut startup_warnings)
+            .await
+    }
+
+    async fn agents_md_paths_with_warnings(
+        &self,
+        fs: &dyn ExecutorFileSystem,
+        startup_warnings: &mut Vec<String>,
     ) -> io::Result<Vec<AbsolutePathBuf>> {
         if self.config.project_doc_max_bytes == 0 {
             return Ok(Vec::new());
@@ -293,6 +361,10 @@ impl<'a> AgentsMdManager<'a> {
             for name in &candidate_filenames {
                 let candidate = d.join(name);
                 match fs.get_metadata(&candidate, /*sandbox*/ None).await {
+                    Ok(md) if md.is_symlink => {
+                        warn_skipped_symlink(&candidate, "Project", startup_warnings);
+                        continue;
+                    }
                     Ok(md) if md.is_file => {
                         found.push(candidate);
                         break;
@@ -522,6 +594,48 @@ fn warn_invalid_utf8(
             path.display()
         ));
     }
+}
+
+fn warn_skipped_symlink(path: &AbsolutePathBuf, source: &str, startup_warnings: &mut Vec<String>) {
+    startup_warnings.push(format!(
+        "{source} project instructions from `{}` were skipped because symlinked instruction files are not allowed.",
+        path.display()
+    ));
+}
+
+fn warn_file_changed_during_open(
+    path: &AbsolutePathBuf,
+    source: &str,
+    startup_warnings: &mut Vec<String>,
+) {
+    startup_warnings.push(format!(
+        "{source} project instructions from `{}` were skipped because the file changed while opening.",
+        path.display()
+    ));
+}
+
+fn warn_symlink_safe_read_unsupported(
+    path: &AbsolutePathBuf,
+    source: &str,
+    startup_warnings: &mut Vec<String>,
+) {
+    startup_warnings.push(format!(
+        "{source} project instructions from `{}` were skipped because this filesystem does not support symlink-safe instruction reads.",
+        path.display()
+    ));
+}
+
+fn is_symlink_rejection(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::InvalidInput && err.to_string() == SYMLINKED_FILE_ERROR
+}
+
+fn is_file_changed_during_open(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::InvalidInput && err.to_string() == FILE_CHANGED_DURING_OPEN_ERROR
+}
+
+fn is_symlink_safe_read_unsupported(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Unsupported
+        && err.to_string() == SYMLINK_SAFE_READ_UNSUPPORTED_ERROR
 }
 
 #[cfg(test)]

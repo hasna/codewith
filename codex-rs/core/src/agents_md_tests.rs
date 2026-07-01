@@ -1,6 +1,14 @@
 use super::*;
 use crate::config::ConfigBuilder;
+use async_trait::async_trait;
+use codex_exec_server::CopyOptions;
+use codex_exec_server::CreateDirectoryOptions;
+use codex_exec_server::FileMetadata;
+use codex_exec_server::FileSystemResult;
+use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::LOCAL_FS;
+use codex_exec_server::ReadDirectoryEntry;
+use codex_exec_server::RemoveOptions;
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::PathBufExt;
@@ -45,6 +53,62 @@ fn assert_invalid_utf8_warning(warnings: &[String], source: &str, path: &Path) {
             && warning.contains("Invalid byte sequences were replaced."),
         "unexpected invalid UTF-8 warning: {warning:?}"
     );
+}
+
+fn assert_symlink_warning(
+    warnings: &[String],
+    source: &str,
+    path: &Path,
+    target: &Path,
+    secret_contents: &str,
+) {
+    let path_display = path.display().to_string();
+    let target_display = target.display().to_string();
+    assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+    let warning = &warnings[0];
+    assert!(
+        warning.contains(&format!("{source} project instructions"))
+            && warning.contains(&path_display)
+            && warning.contains("symlinked instruction files are not allowed"),
+        "unexpected symlink warning: {warning:?}"
+    );
+    assert!(
+        !warning.contains(&target_display) && !warning.contains(secret_contents),
+        "symlink warning should not expose target path or contents: {warning:?}"
+    );
+}
+
+fn assert_symlink_safe_read_unsupported_warning(
+    warnings: &[String],
+    source: &str,
+    path: &Path,
+    secret_contents: &str,
+) {
+    let path_display = path.display().to_string();
+    assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+    let warning = &warnings[0];
+    assert!(
+        warning.contains(&format!("{source} project instructions"))
+            && warning.contains(&path_display)
+            && warning.contains("does not support symlink-safe instruction reads"),
+        "unexpected symlink-safe read unsupported warning: {warning:?}"
+    );
+    assert!(
+        !warning.contains(secret_contents),
+        "warning should not expose file contents: {warning:?}"
+    );
+}
+
+#[cfg(unix)]
+fn create_file_symlink(source: &Path, link: &Path) {
+    std::os::unix::fs::symlink(source, link).expect("create file symlink");
+}
+
+#[cfg(windows)]
+fn create_file_symlink(source: &Path, link: &Path) {
+    // Running this test locally may require Windows Developer Mode or an elevated process.
+    std::os::windows::fs::symlink_file(source, link)
+        .expect("create file symlink; enable Developer Mode or run the test elevated");
 }
 
 /// Helper that returns a `Config` pointing at `root` and using `limit` as
@@ -233,6 +297,157 @@ async fn project_doc_invalid_utf8_warns_and_uses_lossy_text() {
 
     assert_eq!(res, "project\u{FFFD} doc");
     assert_invalid_utf8_warning(&warnings, "Project", config.cwd.join("AGENTS.md").as_path());
+}
+
+#[tokio::test]
+async fn global_doc_symlink_is_skipped_with_redacted_warning() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let codex_home_abs = codex_home.abs();
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    let secret_path = outside.path().join("private-instructions.txt");
+    let secret_contents = "external secret instructions";
+    fs::write(&secret_path, secret_contents).unwrap();
+    let link_path = codex_home.path().join(DEFAULT_AGENTS_MD_FILENAME);
+    create_file_symlink(&secret_path, &link_path);
+
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::load_global_instructions(
+        LOCAL_FS.as_ref(),
+        Some(&codex_home_abs),
+        &mut warnings,
+    )
+    .await;
+
+    assert_eq!(loaded, None);
+    assert_symlink_warning(
+        &warnings,
+        "Global",
+        codex_home_abs.join(DEFAULT_AGENTS_MD_FILENAME).as_path(),
+        &secret_path,
+        secret_contents,
+    );
+}
+
+#[tokio::test]
+async fn project_doc_symlink_is_skipped_with_redacted_warning() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    let secret_path = outside.path().join("private-instructions.txt");
+    let secret_contents = "external project secret";
+    fs::write(&secret_path, secret_contents).unwrap();
+    let link_path = tmp.path().join("AGENTS.md");
+    create_file_symlink(&secret_path, &link_path);
+
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut warnings)
+        .await;
+
+    assert_eq!(loaded, None);
+    assert_eq!(
+        agents_md_paths(&config).await.expect("discover paths"),
+        Vec::<AbsolutePathBuf>::new()
+    );
+    assert_symlink_warning(
+        &warnings,
+        "Project",
+        config.cwd.join("AGENTS.md").as_path(),
+        &secret_path,
+        secret_contents,
+    );
+}
+
+#[tokio::test]
+async fn symlinked_project_doc_candidate_falls_back_to_regular_candidate() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    let secret_path = outside.path().join("private-instructions.txt");
+    let secret_contents = "external preferred secret";
+    fs::write(&secret_path, secret_contents).unwrap();
+    let link_path = tmp.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH);
+    fs::create_dir_all(link_path.parent().expect("link parent")).unwrap();
+    create_file_symlink(&secret_path, &link_path);
+    write_doc(
+        tmp.path(),
+        DEFAULT_AGENTS_MD_FILENAME,
+        "regular project doc",
+    );
+
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut warnings)
+        .await
+        .expect("fallback doc expected");
+    let fallback_path = config.cwd.join(DEFAULT_AGENTS_MD_FILENAME);
+
+    assert_eq!(loaded.text(), "regular project doc");
+    assert_eq!(loaded.sources().collect::<Vec<_>>(), vec![&fallback_path]);
+    assert_eq!(
+        agents_md_paths(&config).await.expect("discover paths"),
+        vec![fallback_path]
+    );
+    assert_symlink_warning(
+        &warnings,
+        "Project",
+        config.cwd.join(DEFAULT_PROJECT_AGENTS_MD_PATH).as_path(),
+        &secret_path,
+        secret_contents,
+    );
+}
+
+#[tokio::test]
+async fn project_doc_read_uses_no_following_symlink_guard() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let instruction_path = config.cwd.join("AGENTS.md");
+    let secret_contents = "external race secret";
+    let fs = GuardedInstructionFileSystem {
+        instruction_path: instruction_path.clone(),
+        secret_contents: secret_contents.as_bytes().to_vec(),
+        guarded_read_failure: GuardedReadFailure::Symlink,
+    };
+
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(&fs, &mut warnings)
+        .await;
+
+    assert_eq!(loaded, None);
+    assert_symlink_warning(
+        &warnings,
+        "Project",
+        instruction_path.as_path(),
+        tmp.path().join("external-target").as_path(),
+        secret_contents,
+    );
+}
+
+#[tokio::test]
+async fn project_doc_read_skips_unsupported_no_following_filesystem() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let instruction_path = config.cwd.join("AGENTS.md");
+    let secret_contents = "external unsupported secret";
+    let fs = GuardedInstructionFileSystem {
+        instruction_path: instruction_path.clone(),
+        secret_contents: secret_contents.as_bytes().to_vec(),
+        guarded_read_failure: GuardedReadFailure::Unsupported,
+    };
+
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(&fs, &mut warnings)
+        .await;
+
+    assert_eq!(loaded, None);
+    assert_symlink_safe_read_unsupported_warning(
+        &warnings,
+        "Project",
+        instruction_path.as_path(),
+        secret_contents,
+    );
 }
 
 /// Oversize file is truncated to `project_doc_max_bytes`.
@@ -732,6 +947,42 @@ async fn uses_configured_fallback_when_agents_missing() {
     assert_eq!(res, "example instructions");
 }
 
+#[tokio::test]
+async fn configured_fallback_symlink_is_skipped_with_redacted_warning() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    let secret_path = outside.path().join("fallback-secret.txt");
+    let secret_contents = "external fallback secret";
+    fs::write(&secret_path, secret_contents).unwrap();
+    let link_path = tmp.path().join("EXAMPLE.md");
+    create_file_symlink(&secret_path, &link_path);
+
+    let config = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["EXAMPLE.md"],
+    )
+    .await;
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut warnings)
+        .await;
+
+    assert_eq!(loaded, None);
+    assert_eq!(
+        agents_md_paths(&config).await.expect("discover paths"),
+        Vec::<AbsolutePathBuf>::new()
+    );
+    assert_symlink_warning(
+        &warnings,
+        "Project",
+        config.cwd.join("EXAMPLE.md").as_path(),
+        &secret_path,
+        secret_contents,
+    );
+}
+
 /// Legacy AGENTS.md remains preferred over configured fallback filenames.
 #[tokio::test]
 async fn agents_md_preferred_over_fallbacks() {
@@ -876,4 +1127,131 @@ fn create_skill(codex_home: PathBuf, name: &str, description: &str) {
     fs::create_dir_all(&skill_dir).unwrap();
     let content = format!("---\nname: {name}\ndescription: {description}\n---\n\n# Body\n");
     fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+}
+
+enum GuardedReadFailure {
+    Symlink,
+    Unsupported,
+}
+
+struct GuardedInstructionFileSystem {
+    instruction_path: AbsolutePathBuf,
+    secret_contents: Vec<u8>,
+    guarded_read_failure: GuardedReadFailure,
+}
+
+#[async_trait]
+impl ExecutorFileSystem for GuardedInstructionFileSystem {
+    async fn canonicalize(
+        &self,
+        path: &AbsolutePathBuf,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<AbsolutePathBuf> {
+        Ok(path.clone())
+    }
+
+    async fn join(
+        &self,
+        base_path: &AbsolutePathBuf,
+        path: &Path,
+    ) -> FileSystemResult<AbsolutePathBuf> {
+        Ok(base_path.join(path))
+    }
+
+    async fn parent(&self, path: &AbsolutePathBuf) -> FileSystemResult<Option<AbsolutePathBuf>> {
+        Ok(path.parent())
+    }
+
+    async fn read_file(
+        &self,
+        path: &AbsolutePathBuf,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        if path == &self.instruction_path {
+            return Ok(self.secret_contents.clone());
+        }
+        Err(io::ErrorKind::NotFound.into())
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        if path == &self.instruction_path {
+            return match self.guarded_read_failure {
+                GuardedReadFailure::Symlink => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    SYMLINKED_FILE_ERROR,
+                )),
+                GuardedReadFailure::Unsupported => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    SYMLINK_SAFE_READ_UNSUPPORTED_ERROR,
+                )),
+            };
+        }
+        Err(io::ErrorKind::NotFound.into())
+    }
+
+    async fn write_file(
+        &self,
+        _path: &AbsolutePathBuf,
+        _contents: Vec<u8>,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        unimplemented!("test filesystem only supports instruction reads")
+    }
+
+    async fn create_directory(
+        &self,
+        _path: &AbsolutePathBuf,
+        _create_directory_options: CreateDirectoryOptions,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        unimplemented!("test filesystem only supports instruction reads")
+    }
+
+    async fn get_metadata(
+        &self,
+        path: &AbsolutePathBuf,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<FileMetadata> {
+        if path == &self.instruction_path {
+            return Ok(FileMetadata {
+                is_directory: false,
+                is_file: true,
+                is_symlink: false,
+                created_at_ms: 0,
+                modified_at_ms: 0,
+            });
+        }
+        Err(io::ErrorKind::NotFound.into())
+    }
+
+    async fn read_directory(
+        &self,
+        _path: &AbsolutePathBuf,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<ReadDirectoryEntry>> {
+        unimplemented!("test filesystem only supports instruction reads")
+    }
+
+    async fn remove(
+        &self,
+        _path: &AbsolutePathBuf,
+        _remove_options: RemoveOptions,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        unimplemented!("test filesystem only supports instruction reads")
+    }
+
+    async fn copy(
+        &self,
+        _source_path: &AbsolutePathBuf,
+        _destination_path: &AbsolutePathBuf,
+        _copy_options: CopyOptions,
+        _sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        unimplemented!("test filesystem only supports instruction reads")
+    }
 }
