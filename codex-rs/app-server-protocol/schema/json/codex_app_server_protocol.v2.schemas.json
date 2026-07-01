@@ -6527,6 +6527,8 @@
         }
       },
       "required": [
+        "path",
+        "range",
         "summary"
       ],
       "title": "ConfigWarningNotification",

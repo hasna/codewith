@@ -996,6 +996,8 @@
         }
       },
       "required": [
+        "path",
+        "range",
         "summary"
       ],
       "type": "object"
