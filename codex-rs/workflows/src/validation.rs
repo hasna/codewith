@@ -8,6 +8,14 @@ use crate::WorkflowCompletion;
 use crate::WorkflowLimits;
 use crate::WorkflowLoopSchedule;
 use crate::WorkflowModelRoute;
+use crate::WorkflowModelRoutingConstraints;
+use crate::WorkflowModelRoutingContext;
+use crate::WorkflowModelRoutingContract;
+use crate::WorkflowModelRoutingDecision;
+use crate::WorkflowModelRoutingDecisionStatus;
+use crate::WorkflowModelRoutingError;
+use crate::WorkflowModelRoutingFallback;
+use crate::WorkflowModelRoutingRequest;
 use crate::WorkflowMonitorLink;
 use crate::WorkflowSpec;
 use crate::WorkflowSpecError;
@@ -115,7 +123,196 @@ impl WorkflowModelRoute {
         if let Some(permission_profile) = &self.permission_profile {
             validate_non_empty(&format!("{path}.permission_profile"), permission_profile)?;
         }
+        if let Some(routing) = &self.routing {
+            routing.validate(&format!("{path}.routing"))?;
+        }
         Ok(())
+    }
+}
+
+impl WorkflowModelRoutingContract {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        validate_non_empty(&format!("{path}.contract_version"), &self.contract_version)?;
+        self.request.validate(&format!("{path}.request"))?;
+        if let Some(decision) = &self.decision {
+            decision.validate(&format!("{path}.decision"))?;
+        }
+        Ok(())
+    }
+}
+
+impl WorkflowModelRoutingRequest {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        self.context.validate(&format!("{path}.context"))?;
+        self.constraints.validate(&format!("{path}.constraints"))
+    }
+}
+
+impl WorkflowModelRoutingContext {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        if let Some(task_id) = &self.task_id {
+            validate_identifier(&format!("{path}.task_id"), task_id)?;
+        }
+        if let Some(task_title) = &self.task_title {
+            validate_prompt_field(&format!("{path}.task_title"), task_title)?;
+        }
+        for (field, value) in [
+            ("project_path", self.project_path.as_deref()),
+            ("auth_profile", self.auth_profile.as_deref()),
+            ("approval_policy", self.approval_policy.as_deref()),
+            ("permission_profile", self.permission_profile.as_deref()),
+            ("worktree_mode", self.worktree_mode.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_non_empty(&format!("{path}.{field}"), value)?;
+            }
+        }
+        validate_string_list(&format!("{path}.tags"), &self.tags)
+    }
+}
+
+impl WorkflowModelRoutingConstraints {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        for (field, values) in [
+            (
+                "allowed_model_gateways",
+                self.allowed_model_gateways.as_slice(),
+            ),
+            (
+                "preferred_model_gateways",
+                self.preferred_model_gateways.as_slice(),
+            ),
+            ("allowed_providers", self.allowed_providers.as_slice()),
+            ("preferred_providers", self.preferred_providers.as_slice()),
+            ("allowed_models", self.allowed_models.as_slice()),
+            ("preferred_models", self.preferred_models.as_slice()),
+            ("allowed_reasoning", self.allowed_reasoning.as_slice()),
+            ("preferred_reasoning", self.preferred_reasoning.as_slice()),
+            (
+                "allowed_service_tiers",
+                self.allowed_service_tiers.as_slice(),
+            ),
+            (
+                "preferred_service_tiers",
+                self.preferred_service_tiers.as_slice(),
+            ),
+        ] {
+            validate_route_value_list(path, field, values)?;
+        }
+        for (field, values) in [
+            (
+                "allowed_auth_profiles",
+                self.allowed_auth_profiles.as_slice(),
+            ),
+            (
+                "allowed_approval_policies",
+                self.allowed_approval_policies.as_slice(),
+            ),
+            (
+                "allowed_permission_profiles",
+                self.allowed_permission_profiles.as_slice(),
+            ),
+            (
+                "allowed_worktree_modes",
+                self.allowed_worktree_modes.as_slice(),
+            ),
+        ] {
+            validate_string_list(&format!("{path}.{field}"), values)?;
+        }
+        if let Some(max_context_tokens) = self.max_context_tokens
+            && max_context_tokens == 0
+        {
+            return Err(WorkflowSpecError::invalid(format!(
+                "{path}.max_context_tokens must be positive"
+            )));
+        }
+        if let Some(budget_usd) = &self.budget_usd {
+            validate_non_empty(&format!("{path}.budget_usd"), budget_usd)?;
+            let amount = budget_usd.parse::<f64>().map_err(|_| {
+                WorkflowSpecError::invalid(format!(
+                    "{path}.budget_usd must be a positive decimal string"
+                ))
+            })?;
+            if !amount.is_finite() || amount <= 0.0 {
+                return Err(WorkflowSpecError::invalid(format!(
+                    "{path}.budget_usd must be positive"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl WorkflowModelRoutingDecision {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        validate_string_list(&format!("{path}.warnings"), &self.warnings)?;
+        if let Some(fallback) = &self.fallback {
+            fallback.validate(&format!("{path}.fallback"))?;
+        }
+        match self.status {
+            WorkflowModelRoutingDecisionStatus::Selected
+            | WorkflowModelRoutingDecisionStatus::Fallback => {
+                validate_required_decision_route_field(path, "model_gateway", &self.model_gateway)?;
+                validate_required_decision_route_field(path, "provider", &self.provider)?;
+                validate_required_decision_route_field(path, "model", &self.model)?;
+                validate_required_decision_route_field(path, "reasoning", &self.reasoning)?;
+                if let Some(service_tier) = &self.service_tier {
+                    validate_route_field(path, "service_tier", service_tier)?;
+                }
+                if let Some(auth_profile) = &self.auth_profile {
+                    validate_non_empty(&format!("{path}.auth_profile"), auth_profile)?;
+                }
+                validate_non_empty(
+                    &format!("{path}.explanation"),
+                    self.explanation.as_deref().unwrap_or_default(),
+                )?;
+                if self.status == WorkflowModelRoutingDecisionStatus::Fallback {
+                    let Some(fallback) = &self.fallback else {
+                        return Err(WorkflowSpecError::invalid(format!(
+                            "{path}.fallback must describe why fallback routing was used"
+                        )));
+                    };
+                    if !fallback.used {
+                        return Err(WorkflowSpecError::invalid(format!(
+                            "{path}.fallback.used must be true for fallback decisions"
+                        )));
+                    }
+                }
+                validate_routing_errors(path, &self.errors)
+            }
+            WorkflowModelRoutingDecisionStatus::Error => {
+                if let Some(explanation) = &self.explanation {
+                    validate_non_empty(&format!("{path}.explanation"), explanation)?;
+                }
+                if self.errors.is_empty() {
+                    return Err(WorkflowSpecError::invalid(format!(
+                        "{path}.errors must describe why routing failed"
+                    )));
+                }
+                validate_routing_errors(path, &self.errors)
+            }
+        }
+    }
+}
+
+impl WorkflowModelRoutingFallback {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        if self.used {
+            validate_non_empty(
+                &format!("{path}.reason"),
+                self.reason.as_deref().unwrap_or_default(),
+            )?;
+        } else if let Some(reason) = &self.reason {
+            validate_non_empty(&format!("{path}.reason"), reason)?;
+        }
+        Ok(())
+    }
+}
+
+impl WorkflowModelRoutingError {
+    fn validate(&self, path: &str) -> WorkflowSpecResult<()> {
+        validate_identifier(&format!("{path}.code"), &self.code)?;
+        validate_non_empty(&format!("{path}.message"), &self.message)
     }
 }
 
@@ -602,6 +799,31 @@ fn validate_route_field(path: &str, field: &str, value: &str) -> WorkflowSpecRes
         return Err(WorkflowSpecError::invalid(format!(
             "{path}.{field} must be exact and cannot use placeholder `{value}`"
         )));
+    }
+    Ok(())
+}
+
+fn validate_route_value_list(path: &str, field: &str, values: &[String]) -> WorkflowSpecResult<()> {
+    for (index, value) in values.iter().enumerate() {
+        validate_route_field(&format!("{path}.{field}[{index}]"), "value", value)?;
+    }
+    Ok(())
+}
+
+fn validate_required_decision_route_field(
+    path: &str,
+    field: &str,
+    value: &Option<String>,
+) -> WorkflowSpecResult<()> {
+    validate_route_field(path, field, value.as_deref().unwrap_or_default())
+}
+
+fn validate_routing_errors(
+    path: &str,
+    errors: &[WorkflowModelRoutingError],
+) -> WorkflowSpecResult<()> {
+    for (index, error) in errors.iter().enumerate() {
+        error.validate(&format!("{path}.errors[{index}]"))?;
     }
     Ok(())
 }
