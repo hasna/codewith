@@ -249,6 +249,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         shared,
         skip_git_repo_check,
         ephemeral,
+        durable,
         ignore_user_config,
         ignore_rules,
         removed_full_auto,
@@ -406,6 +407,14 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         None // No model specified, will use the default.
     };
 
+    let ephemeral_override = if ephemeral {
+        Some(true)
+    } else if durable {
+        Some(false)
+    } else {
+        None
+    };
+
     let overrides = ConfigOverrides {
         model,
         review_model: None,
@@ -430,7 +439,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         compact_prompt: None,
         show_raw_agent_reasoning: oss.then_some(true),
         tools_web_search_request: None,
-        ephemeral: ephemeral.then_some(true),
+        ephemeral: ephemeral_override,
         bypass_hook_trust: bypass_hook_trust.then_some(true),
         auth_profile: auth_profile.map(Some),
         additional_writable_roots: add_dir,
