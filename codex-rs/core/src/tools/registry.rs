@@ -22,6 +22,7 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
+use crate::tools::smart_suggest::maybe_record_pre_tool_guidance;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
@@ -537,6 +538,16 @@ impl ToolRegistry {
                     updated_input: None,
                 } => {}
             }
+        }
+
+        if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
+            maybe_record_pre_tool_guidance(
+                &invocation.session,
+                &invocation.turn,
+                &invocation.call_id,
+                &pre_tool_use_payload,
+            )
+            .await;
         }
 
         let response_cell = tokio::sync::Mutex::new(None);
