@@ -747,19 +747,31 @@ fn mailbox_local_delivery_policy(
 fn mailbox_local_delivery_policy_from_payload(
     payload: &serde_json::Value,
 ) -> MailboxLocalDeliveryPolicy {
-    let mode = payload
-        .get("delivery")
-        .or_else(|| payload.get("deliveryMode"))
-        .or_else(|| payload.get("localDelivery"))
-        .or_else(|| payload.pointer("/dispatch/mode"))
-        .and_then(serde_json::Value::as_str);
-    match mode {
-        Some("resumeAndTrigger" | "resume_and_trigger") => {
-            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+    // Mirror the SQL claim filter's OR-any-recognized acceptance (see the
+    // Dispatch-scope claim query in codex-state's mailbox runtime): take the
+    // first RECOGNIZED marker across the four locations instead of
+    // short-circuiting on the first present key. Otherwise a message the
+    // dispatcher claimed via a secondary marker (e.g. an unrecognized
+    // "delivery" value plus a resumeAndTrigger "dispatch.mode") would be
+    // misparsed as LiveOnly and burn its delivery attempts.
+    [
+        payload.get("delivery"),
+        payload.get("deliveryMode"),
+        payload.get("localDelivery"),
+        payload.pointer("/dispatch/mode"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(serde_json::Value::as_str)
+    .find_map(|mode| match mode {
+        "resumeAndTrigger" | "resume_and_trigger" => {
+            Some(MailboxLocalDeliveryPolicy::ResumeAndTrigger)
         }
-        Some("queueOnly" | "queue_only") => MailboxLocalDeliveryPolicy::QueueOnly,
-        _ => MailboxLocalDeliveryPolicy::LiveOnly,
-    }
+        "queueOnly" | "queue_only" => Some(MailboxLocalDeliveryPolicy::QueueOnly),
+        "liveOnly" | "live_only" => Some(MailboxLocalDeliveryPolicy::LiveOnly),
+        _ => None,
+    })
+    .unwrap_or(MailboxLocalDeliveryPolicy::LiveOnly)
 }
 
 fn mailbox_delivery_mode_name(mode: ActiveChannelDeliveryMode) -> &'static str {
@@ -1119,6 +1131,45 @@ mod tests {
         assert_eq!(
             mailbox_delivery_mode(codex_state::MailboxMessageKind::UserInstruction, policy),
             ActiveChannelDeliveryMode::QueueOnly
+        );
+    }
+
+    #[test]
+    fn delivery_policy_uses_first_recognized_marker_across_locations() {
+        // An unrecognized primary key must not shadow a recognized secondary
+        // marker that the SQL claim filter honors.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "expedited",
+                "dispatch": { "mode": "resumeAndTrigger" },
+            })),
+            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+        );
+
+        // A non-string primary key is skipped, not treated as LiveOnly.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": { "mode": "resumeAndTrigger" },
+                "deliveryMode": "resume_and_trigger",
+            })),
+            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+        );
+
+        // Key order still decides between conflicting recognized markers.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "liveOnly",
+                "deliveryMode": "resumeAndTrigger",
+            })),
+            MailboxLocalDeliveryPolicy::LiveOnly
+        );
+
+        // No recognized marker anywhere falls back to LiveOnly.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "expedited",
+            })),
+            MailboxLocalDeliveryPolicy::LiveOnly
         );
     }
 }
