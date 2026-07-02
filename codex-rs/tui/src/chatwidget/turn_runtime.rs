@@ -47,29 +47,6 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn final_message_separator(
-        &self,
-        elapsed_seconds: Option<u64>,
-        runtime_metrics: Option<RuntimeMetricsSummary>,
-    ) -> Option<history_cell::FinalMessageSeparator> {
-        if self.config.tui_message_summary.is_none() {
-            return Some(history_cell::FinalMessageSeparator::new(
-                elapsed_seconds,
-                runtime_metrics,
-            ));
-        }
-
-        let summary_items = self.message_summary_items();
-        if summary_items.is_empty() {
-            return None;
-        }
-        Some(history_cell::FinalMessageSeparator::new_with_items(
-            elapsed_seconds,
-            runtime_metrics,
-            summary_items,
-        ))
-    }
-
     pub(super) fn apply_runtime_metrics_delta(&mut self, delta: RuntimeMetricsSummary) {
         let should_log_timing = has_websocket_timing_metrics(delta);
         self.turn_runtime_metrics.merge(delta);

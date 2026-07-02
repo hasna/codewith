@@ -2038,66 +2038,6 @@ fn paths_match(left: &Path, right: &Path) -> bool {
     paths_equivalent(left, right)
 }
 
-fn worktree_matches_base_repo(
-    worktree: &codex_state::ManagedWorktree,
-    base_repo_path: &Path,
-) -> bool {
-    worktree.base_repo_path.as_path() == base_repo_path
-}
-
-fn status_snapshot_has_tracked_changes(status_snapshot: &GitWorktreeStatusSnapshot) -> bool {
-    status_snapshot.records.iter().any(|record| {
-        record
-            .chars()
-            .next()
-            .is_some_and(|prefix| matches!(prefix, '1' | '2' | 'u'))
-    })
-}
-
-fn stored_status_snapshot_for_cleanup(
-    worktree: &codex_state::ManagedWorktree,
-) -> GitWorktreeStatusSnapshot {
-    let records = worktree
-        .status_snapshot_json
-        .get("records")
-        .and_then(Value::as_array)
-        .map(|records| {
-            records
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|records| !records.is_empty())
-        .unwrap_or_else(|| {
-            vec![format!(
-                "cleanup blocked for owner background agent {:?}",
-                worktree.owner_agent_run_id
-            )]
-        });
-    GitWorktreeStatusSnapshot {
-        dirty: worktree
-            .status_snapshot_json
-            .get("dirty")
-            .and_then(Value::as_bool)
-            .unwrap_or(worktree.dirty),
-        branch: worktree
-            .status_snapshot_json
-            .get("branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| worktree.branch.clone()),
-        head_sha: worktree
-            .status_snapshot_json
-            .get("headSha")
-            .or_else(|| worktree.status_snapshot_json.get("head_sha"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| worktree.head_sha.clone()),
-        records,
-    }
-}
-
 fn ensure_worktree_policy_enabled(policy: &WorktreePolicy) -> Result<(), JSONRPCErrorError> {
     if policy.enabled {
         Ok(())

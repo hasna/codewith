@@ -1065,15 +1065,6 @@ fn create_config_toml_with_default_features(
     )
 }
 
-fn create_config_toml_with_default_features(
-    codex_home: &Path,
-    server_uri: &str,
-) -> std::io::Result<()> {
-    write_config_toml(
-        codex_home, server_uri, /*mailbox_dispatcher_enabled*/ None,
-    )
-}
-
 fn create_config_toml_with_mailbox_dispatcher(
     codex_home: &Path,
     server_uri: &str,

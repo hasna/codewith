@@ -366,14 +366,6 @@ RETURNING
     }
 
     pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM thread_schedules WHERE schedule_id = ?")
-            .bind(schedule_id)
-            .fetch_optional(self.pool.as_ref())
-            .await?;
-        row.map(|row| thread_schedule_from_row(&row)).transpose()
-    }
-
-    pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
         let result = sqlx::query(
             r#"
 WITH RECURSIVE schedule_tree(schedule_id) AS (

@@ -522,6 +522,7 @@ mod tests {
                     usage_limited_node_count: 0,
                     budget_limited_node_count: 0,
                     cancelled_node_count: 0,
+                    deferred_node_count: 0,
                     created_at: 1,
                     updated_at: 1,
                     nodes: Vec::new(),

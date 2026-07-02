@@ -847,28 +847,6 @@ fn parse_terminal_status(
     Ok(status)
 }
 
-fn terminal_status_to_state(
-    status: ThreadPendingInteractionTerminalStatus,
-) -> codex_state::PendingInteractionStatus {
-    match status {
-        ThreadPendingInteractionTerminalStatus::Responded => {
-            codex_state::PendingInteractionStatus::Responded
-        }
-        ThreadPendingInteractionTerminalStatus::Expired => {
-            codex_state::PendingInteractionStatus::Expired
-        }
-        ThreadPendingInteractionTerminalStatus::Cancelled => {
-            codex_state::PendingInteractionStatus::Cancelled
-        }
-        ThreadPendingInteractionTerminalStatus::Denied => {
-            codex_state::PendingInteractionStatus::Denied
-        }
-        ThreadPendingInteractionTerminalStatus::NoLongerWaiting => {
-            codex_state::PendingInteractionStatus::NoLongerWaiting
-        }
-    }
-}
-
 fn normalize_optional_label(value: Option<String>) -> Result<Option<String>, FunctionCallError> {
     value
         .map(|value| {

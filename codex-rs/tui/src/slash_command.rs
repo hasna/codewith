@@ -568,24 +568,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn summary_command_configures_final_message_summary() {
-        assert_eq!(SlashCommand::Summary.command(), "summary");
-        assert_eq!(
-            SlashCommand::Summary.description(),
-            "configure what appears after final messages"
-        );
-        assert!(!SlashCommand::Summary.supports_inline_args());
-        assert!(SlashCommand::Summary.available_during_task());
-        assert!(!SlashCommand::Summary.available_in_side_conversation());
-        assert!(
-            super::built_in_slash_commands()
-                .iter()
-                .any(|(name, command)| *name == "summary" && *command == SlashCommand::Summary)
-        );
-    }
-
-    #[test]
+        #[test]
     fn mission_control_command_uses_kebab_case_and_aliases() {
         assert_eq!(SlashCommand::MissionControl.command(), "mission-control");
         assert_eq!(

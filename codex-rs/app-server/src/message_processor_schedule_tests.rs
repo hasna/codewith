@@ -832,6 +832,7 @@ fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Resu
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "materialize schedule metadata".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -877,6 +878,7 @@ fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Resu
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "refresh live permission metadata".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -2073,6 +2075,7 @@ fn schedule_create_materializes_fresh_thread_rollout_before_first_user_turn() ->
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "future loop should be resumable".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -2197,6 +2200,7 @@ fn due_interval_schedule_executes_multiple_visible_interactive_turns() -> Result
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: "check repeated loop visibility".to_string(),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {
@@ -2380,6 +2384,7 @@ fn thread_schedule_run_now_executes_goal_command_as_scheduled_goal_turn() -> Res
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
                     prompt: format!("/goal {objective}"),
                     prompt_source: Some(ThreadSchedulePromptSource::Inline),
                     schedule: ThreadScheduleSpec::Interval {

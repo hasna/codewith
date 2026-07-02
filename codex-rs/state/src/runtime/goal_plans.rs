@@ -851,6 +851,8 @@ async fn append_thread_goal_plan_nodes_in_tx(
         .map(|node| ThreadGoalPlanNodeCreateParams {
             key: node.key.clone(),
             objective: node.objective.clone(),
+            assigned_thread_id: None,
+            title: None,
             priority: node.priority,
             token_budget: node.token_budget,
             depends_on: node.depends_on.clone(),
@@ -1587,23 +1589,6 @@ fn status_after_budget_limit(
     }
 }
 
-fn plan_status_after_goal_status(
-    status: crate::ThreadGoalStatus,
-) -> Option<crate::ThreadGoalPlanStatus> {
-    match status {
-        crate::ThreadGoalStatus::Active | crate::ThreadGoalStatus::Deferred => {
-            Some(crate::ThreadGoalPlanStatus::Active)
-        }
-        crate::ThreadGoalStatus::Complete => None,
-        crate::ThreadGoalStatus::Paused => Some(crate::ThreadGoalPlanStatus::Paused),
-        crate::ThreadGoalStatus::Blocked | crate::ThreadGoalStatus::UsageLimited => {
-            Some(crate::ThreadGoalPlanStatus::Blocked)
-        }
-        crate::ThreadGoalStatus::BudgetLimited => Some(crate::ThreadGoalPlanStatus::BudgetLimited),
-        crate::ThreadGoalStatus::Cancelled => Some(crate::ThreadGoalPlanStatus::Cancelled),
-    }
-}
-
 fn validate_plan_create_params(params: &ThreadGoalPlanCreateParams) -> anyhow::Result<()> {
     if params.nodes.is_empty() {
         anyhow::bail!("goal plan must contain at least one goal");
@@ -1783,6 +1768,8 @@ mod tests {
         ThreadGoalPlanNodeCreateParams {
             key: key.to_string(),
             objective: objective.to_string(),
+            assigned_thread_id: None,
+            title: None,
             priority: 0,
             token_budget: None,
             depends_on: depends_on
@@ -1902,6 +1889,8 @@ mod tests {
                 nodes: vec![ThreadGoalPlanNodeCreateParams {
                     key: "first".to_string(),
                     objective: "Run the first goal.".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -1922,6 +1911,8 @@ mod tests {
                 nodes: vec![ThreadGoalPlanNodeCreateParams {
                     key: "second".to_string(),
                     objective: "Run the appended follow-up goal.".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: Some(2_000),
                     depends_on: vec!["first".to_string()],
@@ -1956,6 +1947,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Complete),
                     token_budget: None,
                     expected_goal_id: Some(first_goal.goal_id),
@@ -2008,6 +2000,8 @@ mod tests {
                     ThreadGoalPlanNodeCreateParams {
                         key: "one".to_string(),
                         objective: "Do one goal.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2015,6 +2009,8 @@ mod tests {
                     ThreadGoalPlanNodeCreateParams {
                         key: "two".to_string(),
                         objective: "Do two goal.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2033,6 +2029,8 @@ mod tests {
                 nodes: vec![ThreadGoalPlanNodeCreateParams {
                     key: "three".to_string(),
                     objective: "Do three goal.".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2189,6 +2187,8 @@ mod tests {
                     ThreadGoalPlanNodeCreateParams {
                         key: "investigate".to_string(),
                         objective: "Investigate the goal.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
                         priority: 10,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2196,6 +2196,8 @@ mod tests {
                     ThreadGoalPlanNodeCreateParams {
                         key: "implement".to_string(),
                         objective: "Implement the dependent goal.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
                         priority: 5,
                         token_budget: None,
                         depends_on: vec!["investigate".to_string()],
@@ -2203,6 +2205,8 @@ mod tests {
                     ThreadGoalPlanNodeCreateParams {
                         key: "cleanup".to_string(),
                         objective: "Run independent cleanup.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
                         priority: 0,
                         token_budget: None,
                         depends_on: Vec::new(),
@@ -2223,6 +2227,7 @@ mod tests {
                 thread_id,
                 GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(crate::ThreadGoalStatus::Deferred),
                     token_budget: None,
                     expected_goal_id: Some(first_goal.goal_id),

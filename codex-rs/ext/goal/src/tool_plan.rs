@@ -200,6 +200,8 @@ impl GoalToolExecutor {
                 .map(|node| codex_state::ThreadGoalPlanNodeCreateParams {
                     key: node.key,
                     objective: node.objective,
+                    assigned_thread_id: None,
+                    title: None,
                     priority: node.priority.unwrap_or(0),
                     token_budget: node.token_budget,
                     depends_on: node.depends_on,
@@ -239,7 +241,10 @@ impl GoalToolExecutor {
             return goal_response_with_plan(
                 goal,
                 /*activated_goal*/ None,
-                vec![GoalPlanResponse::from(snapshot)],
+                vec![GoalPlanResponse::from_snapshot_for_thread(
+                    snapshot,
+                    self.thread_id,
+                )],
                 CompletionBudgetReport::Omit,
             );
         }
