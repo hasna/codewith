@@ -83,11 +83,6 @@ pub(crate) enum ShellRuntimeBackend {
     /// adapter, with fallback to the standard shell runtime flow if
     /// prerequisites are not met.
     ShellCommandZshFork,
-    /// Direct argv execution for deterministic workflow verifiers.
-    ///
-    /// Verifier commands still use the normal approval and sandbox orchestration,
-    /// but do not execute through a shell and do not stream raw stdout/stderr.
-    WorkflowVerifierDirect,
 }
 
 pub struct ShellRuntime {
@@ -274,27 +269,21 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         };
         #[cfg(not(unix))]
         let runtime_path_prepends = RuntimePathPrepends::default();
-        let command = if self.backend == ShellRuntimeBackend::WorkflowVerifierDirect {
-            req.command.clone()
-        } else {
-            maybe_wrap_shell_lc_with_snapshot(
-                &req.command,
-                session_shell.as_ref(),
-                &req.cwd,
-                &explicit_env_overrides,
-                &env,
-                &runtime_path_prepends,
-            )
-        };
+        let command = maybe_wrap_shell_lc_with_snapshot(
+            &req.command,
+            session_shell.as_ref(),
+            &req.cwd,
+            &explicit_env_overrides,
+            &env,
+            &runtime_path_prepends,
+        );
         let command = disable_powershell_profile_for_elevated_windows_sandbox(
             &command,
             req.shell_type.as_ref(),
             attempt.sandbox,
             attempt.windows_sandbox_level,
         );
-        let command = if self.backend != ShellRuntimeBackend::WorkflowVerifierDirect
-            && matches!(session_shell.shell_type, ShellType::PowerShell)
-        {
+        let command = if matches!(session_shell.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)
         } else {
             command
@@ -325,11 +314,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         let env = attempt
             .env_for(command, options, managed_network)
             .map_err(|err| ToolError::Codex(err.into()))?;
-        let stdout_stream = if self.backend == ShellRuntimeBackend::WorkflowVerifierDirect {
-            None
-        } else {
-            Self::stdout_stream(ctx)
-        };
+        let stdout_stream = Self::stdout_stream(ctx);
         let out = execute_env(env, stdout_stream)
             .await
             .map_err(ToolError::Codex)?;
