@@ -54,6 +54,7 @@ Versions 0.1.52-0.1.54 were tagged but never reached npm due to release-pipeline
 failures fixed here.
 
 ### Fixed
+
 - Release pipeline: libcap-2.75 musl download now falls back across verified
   mirrors (kernel.org -> OSUOSL -> Debian) with mandatory checksum; macOS
   builds use CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 and the aarch64 primary
@@ -77,6 +78,7 @@ failures fixed here.
   real CLI binary with CLI-derived bundle version.
 
 ### Added
+
 - /teach, /variant, /usage, /pair TUI commands; slash-command alias dedupe.
 - Webhook event inbox; session PR worktree mode; nested loops to depth five;
   goal plan appends; approval-gated agent MCP management; compact CLI output;
@@ -94,11 +96,13 @@ failures fixed here.
   builds from 0.1.56 onward.
 
 ### Security
+
 - Node supply-chain advisories patched; anyhow 1.0.103 (RUSTSEC-2026-0190);
   quick-xml advisories documented as compile-time-only exposure; gitleaks
   config with tightly-scoped test-canary allowlist.
 
 ### Known issues
+
 - Windows argument-comment-lint CI job fails on aws-lc-sys feature probes
   under clang-cl (pre-existing; release builds unaffected).
 - sccache resolves its latest release at install time (fail-open; pin planned).
