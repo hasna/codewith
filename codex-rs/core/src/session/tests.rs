@@ -10436,6 +10436,68 @@ async fn steered_input_keeps_trigger_turn_mailbox_delivery_queued() {
 }
 
 #[tokio::test]
+async fn rejected_trigger_mailbox_send_keeps_current_turn_delivery_open() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    // Fill the mailbox to capacity with non-trigger mail while the turn
+    // still accepts current-turn delivery.
+    for index in 0..crate::context::MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+        sess.input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("worker path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                format!("queued update {index}"),
+                /*trigger_turn*/ false,
+            ))
+            .await
+            .expect("mailbox queue has room");
+    }
+
+    inter_agent_communication(
+        &sess,
+        "mailbox-full".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "rejected trigger update".to_string(),
+            /*trigger_turn*/ true,
+        ),
+    )
+    .await
+    .expect_err("full mailbox must reject the trigger send");
+
+    // The rejected send must not leave the active turn's delivery deferred:
+    // the already-queued mail should still drain into the current turn.
+    let turn_state = {
+        let active = sess.active_turn.lock().await;
+        active
+            .as_ref()
+            .map(|active_turn| Arc::clone(&active_turn.turn_state))
+            .expect("task should hold an active turn")
+    };
+    assert!(
+        turn_state
+            .lock()
+            .await
+            .accepts_mailbox_delivery_for_current_turn(),
+        "rejected trigger send must not defer current-turn mailbox delivery"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let communication = InterAgentCommunication::new(

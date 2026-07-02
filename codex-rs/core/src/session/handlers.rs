@@ -361,15 +361,29 @@ pub async fn inter_agent_communication(
     communication: InterAgentCommunication,
 ) -> CodexResult<()> {
     let trigger_turn = communication.trigger_turn;
-    if trigger_turn {
+    // Defer before enqueueing so the running turn cannot drain the trigger
+    // message into the current turn between the two steps.
+    let deferred_delivery = if trigger_turn {
         sess.input_queue
             .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
-            .await;
-    }
-    sess.input_queue
+            .await
+    } else {
+        None
+    };
+    if let Err(err) = sess
+        .input_queue
         .enqueue_mailbox_communication_with_id(sub_id.clone(), communication)
         .await
-        .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
+    {
+        // Nothing was enqueued; undo the defer so the rejected send does not
+        // postpone already-queued mail to the next turn.
+        if let Some((turn_state, previous_phase)) = deferred_delivery {
+            sess.input_queue
+                .restore_mailbox_delivery_phase(turn_state.as_ref(), previous_phase)
+                .await;
+        }
+        return Err(CodexErr::InvalidRequest(err.to_string()));
+    }
     if trigger_turn {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
@@ -383,15 +397,27 @@ pub async fn enqueue_inter_agent_communication(
     sub_id: String,
     communication: InterAgentCommunication,
 ) -> CodexResult<()> {
-    if communication.trigger_turn {
+    let deferred_delivery = if communication.trigger_turn {
         sess.input_queue
             .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
-            .await;
-    }
-    sess.input_queue
+            .await
+    } else {
+        None
+    };
+    if let Err(err) = sess
+        .input_queue
         .enqueue_mailbox_communication_with_id(sub_id, communication)
         .await
-        .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
+    {
+        // Nothing was enqueued; undo the defer so the rejected send does not
+        // postpone already-queued mail to the next turn.
+        if let Some((turn_state, previous_phase)) = deferred_delivery {
+            sess.input_queue
+                .restore_mailbox_delivery_phase(turn_state.as_ref(), previous_phase)
+                .await;
+        }
+        return Err(CodexErr::InvalidRequest(err.to_string()));
+    }
     Ok(())
 }
 

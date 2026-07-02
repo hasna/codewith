@@ -232,23 +232,39 @@ impl InputQueue {
         turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
     }
 
+    /// Defers mailbox delivery for the active turn, returning the touched
+    /// turn state together with its previous phase so callers whose follow-up
+    /// operation fails can undo the side effect with
+    /// [`Self::restore_mailbox_delivery_phase`].
     pub(crate) async fn defer_mailbox_delivery_for_active_turn(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
-    ) {
+    ) -> Option<(Arc<Mutex<TurnState>>, MailboxDeliveryPhase)> {
         let turn_state = {
             let active = active_turn.lock().await;
             active
                 .as_ref()
                 .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        }?;
+        let previous_phase = {
+            let mut turn_state = turn_state.lock().await;
+            let previous_phase = turn_state.mailbox_delivery_phase();
+            turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
+            previous_phase
         };
-        let Some(turn_state) = turn_state else {
-            return;
-        };
-        turn_state
-            .lock()
-            .await
-            .set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
+        Some((turn_state, previous_phase))
+    }
+
+    /// Restores a mailbox delivery phase captured by
+    /// [`Self::defer_mailbox_delivery_for_active_turn`]. Intended to run
+    /// promptly after a failed enqueue so a rejected send does not keep
+    /// already-queued mail deferred for the rest of the turn.
+    pub(crate) async fn restore_mailbox_delivery_phase(
+        &self,
+        turn_state: &Mutex<TurnState>,
+        phase: MailboxDeliveryPhase,
+    ) {
+        turn_state.lock().await.set_mailbox_delivery_phase(phase);
     }
 
     pub(crate) async fn accept_mailbox_delivery_for_current_turn(
