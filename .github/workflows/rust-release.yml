@@ -162,7 +162,10 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'thin' }}
       # Compiler caching. SCCACHE_IGNORE_SERVER_IO_ERROR keeps builds fail-open:
       # a broken or unreachable cache backend must never fail a release build.
-      RUSTC_WRAPPER: sccache
+      # RUSTC_WRAPPER is set by the "Enable sccache" step only when the
+      # (continue-on-error) install actually produced a runnable sccache, so
+      # an install failure degrades to an uncached build instead of aborting
+      # the release.
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SIGN_MACOS: ${{ github.event_name != 'workflow_dispatch' }}
@@ -267,7 +270,19 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install sccache
+        # Fail-open: a GitHub API outage or a bad latest sccache release must
+        # not block the release; the build then runs without the cache.
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable sccache if available
+        shell: bash
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache unavailable; building without compiler cache"
+          fi
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
