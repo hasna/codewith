@@ -503,7 +503,11 @@ When `nextCursor` is `null`, you’ve reached the final page.
 
 `thread/mailbox/*` is an experimental local durable mailbox for materialized threads. It stores queued instructions separately from active-session delivery, records attempts and receipts, and uses summaries with `redactions: ["messageBody", "idempotencyKey"]` for list/enqueue responses. `thread/mailbox/read` and `thread/mailbox/claim` are the explicit payload-bearing APIs.
 
-Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. This first implementation does not authorize remote callers, discover remote machines, resume unloaded sessions, or deliver into a live runtime automatically; dispatcher behavior builds on these stored primitives separately.
+Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. The built-in local dispatcher is controlled by `[features] mailbox_dispatcher = true` and is enabled by default. To preserve compatibility with integrations that use mailbox rows as a manual work queue, the dispatcher only auto-claims messages whose JSON payload explicitly requests local dispatch with `delivery`, `deliveryMode`, `localDelivery`, or `dispatch.mode` set to `liveOnly`, `live_only`, `resumeAndTrigger`, or `resume_and_trigger`.
+
+Plain payloads such as `{ "text": "..." }` remain queued for explicit `thread/mailbox/claim` callers even when the dispatcher is enabled. Set `[features] mailbox_dispatcher = false` to disable all automatic local claim/delivery/resume behavior for the app-server process.
+
+When an eligible message is due, the dispatcher may claim it in the background, deliver it to a compatible local live thread, acknowledge it with a receipt, retry it, poison it after attempts are exhausted, or resume the target thread when the payload requests `resumeAndTrigger`. Manual-claim clients that opt a message into local dispatch must treat dispatcher receipts and lease owner `app-server-local-mailbox-dispatcher` as part of the same queue contract.
 
 ```json
 { "method": "thread/mailbox/enqueue", "id": 23, "params": {

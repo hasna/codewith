@@ -267,7 +267,7 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let thread_id = start_thread(&mut mcp).await?;
-    let enqueued = enqueue_message_with_sender(
+    let enqueued = enqueue_auto_dispatch_message_with_sender(
         &mut mcp,
         &thread_id,
         "dispatcher-live",
@@ -333,7 +333,9 @@ async fn thread_mailbox_dispatcher_delivers_to_live_thread_in_separate_app_serve
     wait_for_fresh_local_active_session(codex_home.path(), &thread_id).await?;
 
     let mut sender_mcp = init_mcp(codex_home.path()).await?;
-    let enqueued = enqueue_message(&mut sender_mcp, &thread_id, "dispatcher-cross-process").await?;
+    let enqueued =
+        enqueue_auto_dispatch_message(&mut sender_mcp, &thread_id, "dispatcher-cross-process")
+            .await?;
     let acknowledged = wait_for_message_matching(
         &mut sender_mcp,
         &thread_id,
@@ -412,7 +414,7 @@ async fn thread_mailbox_dispatcher_does_not_steal_live_target_from_dispatch_disa
         /*mailbox_dispatcher_enabled*/ true,
     )?;
     let mut sender_mcp = init_mcp(codex_home.path()).await?;
-    let enqueued = enqueue_message_with_max_attempts(
+    let enqueued = enqueue_auto_dispatch_message_with_max_attempts(
         &mut sender_mcp,
         &thread_id,
         "dispatcher-disabled-foreign-owner",
@@ -554,6 +556,43 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_by_default() -> Resul
 }
 
 #[tokio::test]
+async fn thread_mailbox_dispatcher_leaves_plain_rows_for_manual_claim_by_default() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let seed_body = responses::sse(vec![
+        responses::ev_response_created("resp-manual-seed"),
+        responses::ev_assistant_message("msg-manual-seed", "Seed done"),
+        responses::ev_completed("resp-manual-seed"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, seed_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_default_features(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let enqueued = enqueue_message(&mut mcp, &thread_id, "manual-default").await?;
+    sleep(std::time::Duration::from_secs(2)).await;
+
+    let read = read_message(&mut mcp, &thread_id, &enqueued.message.message_id).await?;
+    assert_eq!(
+        read.message.summary.status,
+        ThreadMailboxMessageStatus::Queued
+    );
+    assert_eq!(read.message.summary.attempt_count, 0);
+
+    let claim = claim_message(&mut mcp, &thread_id)
+        .await?
+        .claim
+        .expect("plain mailbox row should remain manually claimable");
+    assert_eq!(
+        claim.message.summary.message_id,
+        enqueued.message.message_id
+    );
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Result<()> {
     let server = responses::start_mock_server().await;
     let first_body = create_request_user_input_body("call-busy")?;
@@ -613,7 +652,7 @@ async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Re
         anyhow::bail!("expected ToolRequestUserInput request, got: {server_req:?}");
     };
 
-    let enqueued = enqueue_message(&mut mcp, &thread_id, "dispatcher-busy").await?;
+    let enqueued = enqueue_auto_dispatch_message(&mut mcp, &thread_id, "dispatcher-busy").await?;
     let acknowledged = wait_for_message_matching(
         &mut mcp,
         &thread_id,
@@ -684,14 +723,14 @@ async fn thread_mailbox_dispatcher_retries_and_poisons_offline_targets() -> Resu
     };
 
     let mut mcp = init_mcp(codex_home.path()).await?;
-    let retry = enqueue_message_with_max_attempts(
+    let retry = enqueue_auto_dispatch_message_with_max_attempts(
         &mut mcp,
         &retry_thread_id,
         "dispatcher-retry",
         /*max_attempts*/ 2,
     )
     .await?;
-    let poison = enqueue_message_with_max_attempts(
+    let poison = enqueue_auto_dispatch_message_with_max_attempts(
         &mut mcp,
         &poison_thread_id,
         "dispatcher-poison",
@@ -755,19 +794,66 @@ async fn enqueue_message_with_max_attempts(
     .await
 }
 
-async fn enqueue_message_with_sender(
+async fn enqueue_auto_dispatch_message(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        /*max_attempts*/ 3,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_max_attempts(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    max_attempts: u32,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        /*sender_thread_id*/ None,
+        max_attempts,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_sender(
     mcp: &mut TestAppServer,
     thread_id: &str,
     idempotency_key: &str,
     sender_thread_id: Option<String>,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        sender_thread_id,
+        /*max_attempts*/ 3,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    sender_thread_id: Option<String>,
+    max_attempts: u32,
 ) -> Result<ThreadMailboxEnqueueResponse> {
     enqueue_message_with_sender_and_payload_and_max_attempts(
         mcp,
         thread_id,
         idempotency_key,
         sender_thread_id,
-        json!({ "text": "decompose this" }),
-        /*max_attempts*/ 3,
+        json!({ "text": "decompose this", "delivery": "liveOnly" }),
+        max_attempts,
     )
     .await
 }

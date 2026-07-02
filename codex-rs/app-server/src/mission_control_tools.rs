@@ -560,7 +560,7 @@ impl MissionControlRuntime {
         let payload = if args.resume.unwrap_or(false) {
             json!({ "text": text, "delivery": "resumeAndTrigger" })
         } else {
-            json!({ "text": text })
+            json!({ "text": text, "delivery": "liveOnly" })
         };
         let outcome = self
             .state_db
@@ -1247,6 +1247,40 @@ mod tests {
         .await;
         assert_eq!(receipts["data"].as_array().expect("receipts").len(), 1);
         assert_eq!(receipts["data"][0]["kind"], "enqueued");
+
+        let live_only = output_json(
+            runtime
+                .handle_enqueue_instruction(EnqueueInstructionArgs {
+                    target_thread_id: target_thread_id.to_string(),
+                    message: "Plan the live rollout".to_string(),
+                    sender_thread_id: None,
+                    sender_label: None,
+                    idempotency_key: Some("daily-live-rollout".to_string()),
+                    resume: Some(false),
+                    dry_run: None,
+                })
+                .await
+                .expect("live-only enqueue should return output"),
+        )
+        .await;
+        assert_eq!(live_only["deliveryPolicy"], "liveOnly");
+        let live_only_message_id = live_only["message"]["messageId"]
+            .as_str()
+            .expect("live-only message id");
+        let live_only_message = runtime
+            .state_db
+            .mailbox_messages()
+            .get_message(live_only_message_id)
+            .await
+            .expect("mailbox message lookup should succeed")
+            .expect("live-only message should exist");
+        assert_eq!(
+            live_only_message.payload_json,
+            json!({
+                "text": "Plan the live rollout",
+                "delivery": "liveOnly",
+            })
+        );
     }
 
     #[tokio::test]
