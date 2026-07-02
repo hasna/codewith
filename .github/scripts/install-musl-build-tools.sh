@@ -35,7 +35,14 @@ esac
 libcap_version="2.75"
 libcap_sha256="de4e7e064c9ba451d5234dd46e897d7c71c96a9ebf9a0c445bc04f4742d83632"
 libcap_tarball_name="libcap-${libcap_version}.tar.xz"
-libcap_download_url="https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/${libcap_tarball_name}"
+# Ordered candidate mirrors. kernel.org is canonical but has dropped this path
+# before; every download is checksum-verified before use, so trying it first is
+# safe even while it 404s.
+libcap_download_urls=(
+  "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/${libcap_tarball_name}"
+  "https://ftp.osuosl.org/pub/blfs/conglomeration/libcap/${libcap_tarball_name}"
+  "https://deb.debian.org/debian/pool/main/libc/libcap2/libcap2_${libcap_version}.orig.tar.xz"
+)
 
 # Use the musl toolchain as the Rust linker to avoid Zig injecting its own CRT.
 if command -v "${arch}-linux-musl-gcc" >/dev/null; then
@@ -61,8 +68,27 @@ if [[ ! -f "${libcap_prefix}/lib/libcap.a" ]]; then
   mkdir -p "${libcap_src_root}" "${libcap_prefix}/lib" "${libcap_prefix}/include/sys" "${libcap_prefix}/include/linux" "${libcap_pkgconfig_dir}"
   libcap_tarball="${libcap_root}/${libcap_tarball_name}"
 
-  curl -fsSL "${libcap_download_url}" -o "${libcap_tarball}"
-  echo "${libcap_sha256}  ${libcap_tarball}" | sha256sum -c -
+  libcap_downloaded=0
+  for libcap_download_url in "${libcap_download_urls[@]}"; do
+    echo "Downloading libcap ${libcap_version} from ${libcap_download_url}"
+    if ! curl -fsSL --retry 2 --connect-timeout 15 "${libcap_download_url}" -o "${libcap_tarball}"; then
+      echo "Download failed: ${libcap_download_url}" >&2
+      rm -f "${libcap_tarball}"
+      continue
+    fi
+    if ! echo "${libcap_sha256}  ${libcap_tarball}" | sha256sum -c -; then
+      echo "Checksum mismatch: ${libcap_download_url}" >&2
+      rm -f "${libcap_tarball}"
+      continue
+    fi
+    libcap_downloaded=1
+    break
+  done
+  if [[ "${libcap_downloaded}" -ne 1 ]]; then
+    echo "Failed to download libcap ${libcap_version} (sha256 ${libcap_sha256}) from any mirror:" >&2
+    printf '  %s\n' "${libcap_download_urls[@]}" >&2
+    exit 1
+  fi
 
   tar -xJf "${libcap_tarball}" -C "${libcap_src_root}"
   libcap_source_dir="${libcap_src_root}/libcap-${libcap_version}"
