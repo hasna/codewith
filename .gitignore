@@ -71,6 +71,7 @@ coverage/
 
 # personal files
 personal/
+.takumi/
 
 # os
 .DS_Store
