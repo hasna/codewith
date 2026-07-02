@@ -369,19 +369,40 @@ fn redact_remote_control_response_body(body: &str) -> String {
     let Ok(mut body_json) = serde_json::from_str::<serde_json::Value>(body) else {
         return body.to_string();
     };
-    let Some(body_object) = body_json.as_object_mut() else {
-        return body.to_string();
-    };
-    for sensitive_field in [
-        "remote_control_token",
-        "pairing_code",
-        "manual_pairing_code",
-    ] {
-        if let Some(value) = body_object.get_mut(sensitive_field) {
-            *value = serde_json::Value::String("<redacted>".to_string());
-        }
-    }
+    redact_remote_control_json_value(&mut body_json);
     body_json.to_string()
+}
+
+fn redact_remote_control_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, nested) in object {
+                if matches!(
+                    key.as_str(),
+                    "remote_control_token"
+                        | "pairing_code"
+                        | "manual_pairing_code"
+                        | "access_token"
+                        | "refresh_token"
+                        | "id_token"
+                        | "authorization"
+                ) {
+                    *nested = serde_json::Value::String("<redacted>".to_string());
+                } else {
+                    redact_remote_control_json_value(nested);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_remote_control_json_value(item);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 pub(crate) fn format_headers(headers: &HeaderMap) -> String {
@@ -602,7 +623,7 @@ mod tests {
     fn preview_remote_control_response_body_redacts_server_token() {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&preview_remote_control_response_body(
-                br#"{"server_id":"srv_e_test","remote_control_token":"secret","pairing_code":"pairing-code","manual_pairing_code":"ABCD-EFGH"}"#
+                br#"{"server_id":"srv_e_test","remote_control_token":"secret","pairing_code":"pairing-code","manual_pairing_code":"ABCD-EFGH","nested":{"remote_control_token":"nested-secret","authorization":"Bearer secret"},"items":[{"access_token":"access-secret"},{"refresh_token":"refresh-secret"},{"id_token":"id-secret"}]}"#
             ))
             .expect("redacted response preview should stay valid json"),
             json!({
@@ -610,6 +631,21 @@ mod tests {
                 "remote_control_token": "<redacted>",
                 "pairing_code": "<redacted>",
                 "manual_pairing_code": "<redacted>",
+                "nested": {
+                    "remote_control_token": "<redacted>",
+                    "authorization": "<redacted>",
+                },
+                "items": [
+                    {
+                        "access_token": "<redacted>",
+                    },
+                    {
+                        "refresh_token": "<redacted>",
+                    },
+                    {
+                        "id_token": "<redacted>",
+                    },
+                ],
             })
         );
     }
