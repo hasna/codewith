@@ -918,7 +918,7 @@ async fn goal_slash_command_emits_set_goal_event() {
     };
     assert_eq!(actual_thread_id, thread_id);
     assert_eq!(objective, "--tokens 98.5K improve benchmark coverage");
-    assert_eq!(mode, crate::app_event::ThreadGoalSetMode::ConfirmIfExists);
+    assert_eq!(mode, crate::app_event::ThreadGoalSetMode::QueueIfExists);
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }

@@ -228,6 +228,8 @@ use codex_app_server_protocol::ThreadGoalListResponse;
 use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeParams;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeResponse;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalParams;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalResponse;
 use codex_app_server_protocol::ThreadGoalPlanAutoExecute;
 use codex_app_server_protocol::ThreadGoalPlanNode;
 use codex_app_server_protocol::ThreadGoalPlanNodeStatus;

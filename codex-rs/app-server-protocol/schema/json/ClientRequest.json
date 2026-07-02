@@ -4298,6 +4298,21 @@
       ],
       "type": "object"
     },
+    "ThreadGoalPlanAddGoalParams": {
+      "properties": {
+        "objective": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadGoalSetParams": {
       "properties": {
         "objective": {
@@ -6748,6 +6763,30 @@
         "params"
       ],
       "title": "Thread/goalPlan/activateNodeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/goalPlan/addGoal"
+          ],
+          "title": "Thread/goalPlan/addGoalRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadGoalPlanAddGoalParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/goalPlan/addGoalRequest",
       "type": "object"
     },
     {
