@@ -76,7 +76,7 @@ fn remote_control_auth_manager() -> Arc<AuthManager> {
 fn remote_control_auth_manager_with_home(codex_home: &TempDir) -> Arc<AuthManager> {
     auth_manager_from_auth_with_home(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        codex_home.path().to_path_buf(),
+        codex_home.path(),
     )
 }
 

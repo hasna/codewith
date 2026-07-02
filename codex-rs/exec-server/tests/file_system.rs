@@ -349,19 +349,25 @@ async fn file_system_read_file_without_following_symlinks_guards_symlinks(
 
     let symlink_path = tmp.path().join("note-link.txt");
     symlink(&file_path, &symlink_path)?;
-    let symlink_error = file_system
+    let symlink_error = match file_system
         .read_file_without_following_symlinks(&absolute_path(symlink_path), /*sandbox*/ None)
         .await
-        .expect_err("symlinked file must be rejected");
+    {
+        Ok(_) => anyhow::bail!("symlinked file must be rejected"),
+        Err(error) => error,
+    };
     assert_eq!(symlink_error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(symlink_error.to_string(), SYMLINKED_FILE_ERROR);
 
     let dir_path = tmp.path().join("notes");
     std::fs::create_dir(&dir_path)?;
-    let dir_error = file_system
+    let dir_error = match file_system
         .read_file_without_following_symlinks(&absolute_path(dir_path), /*sandbox*/ None)
         .await
-        .expect_err("directory must be rejected");
+    {
+        Ok(_) => anyhow::bail!("directory must be rejected"),
+        Err(error) => error,
+    };
     assert_eq!(dir_error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(dir_error.to_string(), "not a regular file");
 

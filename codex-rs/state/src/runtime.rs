@@ -694,7 +694,7 @@ const GOALS_DEFERRED_MIGRATION_VERSION: i64 = 8;
 
 fn decode_hex_checksum(hex: &str) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
-        hex.len() % 2 == 0,
+        hex.len().is_multiple_of(2),
         "hex checksum must have an even number of digits"
     );
     (0..hex.len())
