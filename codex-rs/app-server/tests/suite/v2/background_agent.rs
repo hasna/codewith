@@ -3025,7 +3025,7 @@ async fn create_background_agent_git_worktree_lease(
 }
 
 async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String> {
-    start_thread_for_worktree_attach_with_source(mcp, None).await
+    start_thread_for_worktree_attach_with_source(mcp, /*thread_source*/ None).await
 }
 
 async fn start_thread_for_worktree_attach_with_source(
