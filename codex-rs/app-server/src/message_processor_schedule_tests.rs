@@ -31,6 +31,7 @@ use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleCreateParams;
 use codex_app_server_protocol::ThreadScheduleCreateResponse;
 use codex_app_server_protocol::ThreadScheduleDeleteParams;
@@ -387,6 +388,39 @@ impl ScheduleHarness {
                 return notification;
             }
         }
+    }
+
+    async fn create_interval_thread_schedule(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        amount_minutes: i64,
+        parent_schedule_id: Option<String>,
+    ) -> ThreadSchedule {
+        let request_id = self.request_id();
+        let response: ThreadScheduleCreateResponse = self
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.to_string(),
+                    parent_schedule_id,
+                    prompt: prompt.to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: amount_minutes,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            response.schedule,
+            self.read_schedule_updated(thread_id).await.schedule
+        );
+        response.schedule
     }
 
     async fn read_schedule_deleted(&mut self, thread_id: &str, schedule_id: &str) {
@@ -1740,6 +1774,173 @@ fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
             })
             .await;
         assert!(after_delete.data.is_empty());
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let level_2 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 2 loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let branch = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "branch level 2 loop",
+                3,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let level_3 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 3 loop",
+                3,
+                Some(level_2.schedule_id.clone()),
+            )
+            .await;
+        let level_4 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 4 loop",
+                4,
+                Some(level_3.schedule_id.clone()),
+            )
+            .await;
+        let level_5 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 5 loop",
+                5,
+                Some(level_4.schedule_id.clone()),
+            )
+            .await;
+
+        assert_eq!(None, root.parent_schedule_id);
+        assert_eq!(1, root.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), level_2.parent_schedule_id);
+        assert_eq!(2, level_2.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), branch.parent_schedule_id);
+        assert_eq!(2, branch.nesting_depth);
+        assert_eq!(
+            Some(level_2.schedule_id.clone()),
+            level_3.parent_schedule_id
+        );
+        assert_eq!(3, level_3.nesting_depth);
+        assert_eq!(
+            Some(level_3.schedule_id.clone()),
+            level_4.parent_schedule_id
+        );
+        assert_eq!(4, level_4.nesting_depth);
+        assert_eq!(
+            Some(level_4.schedule_id.clone()),
+            level_5.parent_schedule_id
+        );
+        assert_eq!(5, level_5.nesting_depth);
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id,
+                    parent_schedule_id: Some(level_5.schedule_id),
+                    prompt: "level 6 loop".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 6,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert!(
+            error.message.contains("maximum nesting depth is 5"),
+            "unexpected error: {error:?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let child = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "child loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let grandchild = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "grandchild loop",
+                3,
+                Some(child.schedule_id.clone()),
+            )
+            .await;
+
+        let request_id = harness.request_id();
+        let delete_response: ThreadScheduleDeleteResponse = harness
+            .request(ClientRequest::ThreadScheduleDelete {
+                request_id,
+                params: ThreadScheduleDeleteParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: root.schedule_id.clone(),
+                },
+            })
+            .await;
+        assert!(delete_response.deleted);
+        harness
+            .read_schedule_deleted(&thread_id, grandchild.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, root.schedule_id.as_str())
+            .await;
+
+        let request_id = harness.request_id();
+        let list_response: ThreadScheduleListResponse = harness
+            .request(ClientRequest::ThreadScheduleList {
+                request_id,
+                params: ThreadScheduleListParams {
+                    thread_id,
+                    cursor: None,
+                    limit: Some(10),
+                },
+            })
+            .await;
+        assert_eq!(Vec::<ThreadSchedule>::new(), list_response.data);
 
         harness.shutdown().await;
         Ok(())

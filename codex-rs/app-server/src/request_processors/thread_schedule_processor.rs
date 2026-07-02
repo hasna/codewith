@@ -594,25 +594,21 @@ impl ThreadScheduleRequestProcessor {
                 .await;
             return Ok(());
         };
-        let affected_schedule_ids = state_db
+        let deleted_schedule_ids = state_db
             .thread_schedules()
-            .list_thread_schedule_tree_ids(schedule_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to list nested schedules: {err}")))?;
-        let deleted = state_db
-            .thread_schedules()
-            .delete_thread_schedule(schedule_id.as_str())
+            .delete_thread_schedule_tree(schedule_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to delete thread schedule: {err}")))?;
+        let deleted = !deleted_schedule_ids.is_empty();
 
         self.outgoing
             .send_response(request_id.clone(), ThreadScheduleDeleteResponse { deleted })
             .await;
         if deleted {
-            for affected_schedule_id in affected_schedule_ids {
+            for deleted_schedule_id in deleted_schedule_ids {
                 self.emit_thread_schedule_deleted_ordered(
                     thread_id,
-                    affected_schedule_id,
+                    deleted_schedule_id,
                     listener_command_tx.clone(),
                 )
                 .await;
@@ -1011,3 +1007,4 @@ impl ScheduleStatusResponseKind {
         }
     }
 }
+

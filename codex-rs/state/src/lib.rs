@@ -17,7 +17,6 @@ pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2JobClaimOutcome;
-pub use runtime::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use runtime::StateRuntimeStartupLock;
@@ -160,6 +159,7 @@ pub use runtime::MAX_MAILBOX_MESSAGE_LIST_LIMIT;
 pub use runtime::MAX_MANAGED_WORKTREE_LIST_LIMIT;
 pub use runtime::MAX_PENDING_INTERACTION_LIST_LIMIT;
 pub use runtime::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
+pub use runtime::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use runtime::MAX_THREAD_WORKFLOW_LIST_LIMIT;
 pub use runtime::MAX_THREAD_WORKFLOW_RUN_LIST_LIMIT;
 pub use runtime::MachineEndpointUpsertParams;

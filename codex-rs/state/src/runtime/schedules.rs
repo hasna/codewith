@@ -3,7 +3,7 @@ use crate::model::ThreadScheduleRow;
 use crate::model::ThreadScheduleRunRow;
 use uuid::Uuid;
 
-pub const MAX_THREAD_SCHEDULE_NESTING_DEPTH: i64 = 3;
+pub const MAX_THREAD_SCHEDULE_NESTING_DEPTH: i64 = 5;
 const DYNAMIC_LOOP_CADENCE_SECONDS: i64 = 60;
 
 #[derive(Clone)]
@@ -366,25 +366,62 @@ RETURNING
     }
 
     pub async fn delete_thread_schedule(&self, schedule_id: &str) -> anyhow::Result<bool> {
+        Ok(!self
+            .delete_thread_schedule_tree(schedule_id)
+            .await?
+            .is_empty())
+    }
+
+    pub async fn delete_thread_schedule_tree(
+        &self,
+        schedule_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut tx = self.pool.begin().await?;
+        let deleted_schedule_ids = sqlx::query_scalar::<_, String>(
+            r#"
+WITH RECURSIVE subtree(schedule_id, nesting_depth) AS (
+    SELECT schedule_id, nesting_depth
+    FROM thread_schedules
+    WHERE schedule_id = ?
+    UNION ALL
+    SELECT child.schedule_id, child.nesting_depth
+    FROM thread_schedules child
+    INNER JOIN subtree parent ON child.parent_schedule_id = parent.schedule_id
+)
+SELECT schedule_id
+FROM subtree
+ORDER BY nesting_depth DESC, schedule_id
+            "#,
+        )
+        .bind(schedule_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if deleted_schedule_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let result = sqlx::query(
             r#"
-WITH RECURSIVE schedule_tree(schedule_id) AS (
+WITH RECURSIVE subtree(schedule_id) AS (
     SELECT schedule_id
     FROM thread_schedules
     WHERE schedule_id = ?
     UNION ALL
     SELECT child.schedule_id
-    FROM thread_schedules AS child
-    JOIN schedule_tree AS parent ON child.parent_schedule_id = parent.schedule_id
+    FROM thread_schedules child
+    INNER JOIN subtree parent ON child.parent_schedule_id = parent.schedule_id
 )
 DELETE FROM thread_schedules
-WHERE schedule_id IN (SELECT schedule_id FROM schedule_tree)
+WHERE schedule_id IN (SELECT schedule_id FROM subtree)
             "#,
         )
         .bind(schedule_id)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() == 0 {
+            return Ok(Vec::new());
+        }
+        tx.commit().await?;
+        Ok(deleted_schedule_ids)
     }
 
     pub async fn list_thread_schedule_tree_ids(
@@ -1520,12 +1557,12 @@ mod tests {
         );
         assert_eq!(3, grandchild.nesting_depth);
 
-        let err = runtime
+        let level_4 = runtime
             .thread_schedules()
             .create_nested_thread_schedule(
                 ThreadScheduleCreateParams {
                     thread_id,
-                    prompt: "too deep".to_string(),
+                    prompt: "level 4 loop".to_string(),
                     prompt_source: crate::ThreadSchedulePromptSource::Inline,
                     schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
                         amount: 4,
@@ -1539,9 +1576,58 @@ mod tests {
                 grandchild.schedule_id.clone(),
             )
             .await
-            .expect_err("fourth-level nested schedule should be rejected");
+            .expect("fourth-level schedule should be created");
+        assert_eq!(
+            Some(grandchild.schedule_id.clone()),
+            level_4.parent_schedule_id
+        );
+        assert_eq!(4, level_4.nesting_depth);
+
+        let level_5 = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "level 5 loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 5,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(5)),
+                    expires_at: None,
+                },
+                level_4.schedule_id.clone(),
+            )
+            .await
+            .expect("fifth-level schedule should be created");
+        assert_eq!(Some(level_4.schedule_id.clone()), level_5.parent_schedule_id);
+        assert_eq!(5, level_5.nesting_depth);
+
+        let err = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "too deep".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 6,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(6)),
+                    expires_at: None,
+                },
+                level_5.schedule_id.clone(),
+            )
+            .await
+            .expect_err("sixth-level nested schedule should be rejected");
         assert!(
-            err.to_string().contains("maximum nesting depth is 3"),
+            err.to_string().contains("maximum nesting depth is 5"),
             "unexpected error: {err}"
         );
 
@@ -1567,6 +1653,77 @@ mod tests {
                 .get_thread_schedule(&grandchild.schedule_id)
                 .await
                 .expect("grandchild lookup should succeed")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_schedule_tree_cascades_descendants() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 24);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let root =
+            create_interval_schedule_minutes(&runtime, thread_id, "root loop", 1, Some(now)).await;
+        let child = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "child loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 2,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(2)),
+                    expires_at: None,
+                },
+                root.schedule_id.clone(),
+            )
+            .await
+            .expect("child schedule should be created");
+        let grandchild = runtime
+            .thread_schedules()
+            .create_nested_thread_schedule(
+                ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "grandchild loop".to_string(),
+                    prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                    schedule: crate::ThreadScheduleSpec::Interval(crate::ThreadScheduleInterval {
+                        amount: 3,
+                        unit: crate::ThreadScheduleIntervalUnit::Minutes,
+                    }),
+                    timezone: "UTC".to_string(),
+                    status: crate::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now + chrono::Duration::minutes(3)),
+                    expires_at: None,
+                },
+                child.schedule_id.clone(),
+            )
+            .await
+            .expect("grandchild schedule should be created");
+
+        assert_eq!(
+            vec![
+                grandchild.schedule_id.clone(),
+                child.schedule_id.clone(),
+                root.schedule_id.clone(),
+            ],
+            runtime
+                .thread_schedules()
+                .delete_thread_schedule_tree(&root.schedule_id)
+                .await
+                .expect("schedule tree should delete")
+        );
+        assert_eq!(
+            Vec::<crate::ThreadSchedule>::new(),
+            runtime
+                .thread_schedules()
+                .list_thread_schedules(thread_id)
+                .await
+                .expect("schedules should list")
         );
     }
 

@@ -309,11 +309,13 @@ async fn manage_loop(
             let schedule =
                 ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
             let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
-            let deleted = state_db
+            let deleted_schedule_ids = state_db
                 .thread_schedules()
-                .delete_thread_schedule(schedule_id.as_str())
+                .delete_thread_schedule_tree(schedule_id.as_str())
                 .await
                 .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+            let deleted = !deleted_schedule_ids.is_empty();
+            let deleted_count = deleted_schedule_ids.len();
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             Ok(ManageLoopResponse {
                 action: LoopAction::Clear,
@@ -322,7 +324,17 @@ async fn manage_loop(
                 schedules,
                 deleted: Some(deleted),
                 message: if deleted {
-                    format!("Loop {schedule_id} cleared.")
+                    if deleted_count > 1 {
+                        let child_count = deleted_count - 1;
+                        let child_label = if child_count == 1 {
+                            "nested child loop"
+                        } else {
+                            "nested child loops"
+                        };
+                        format!("Loop {schedule_id} and {child_count} {child_label} cleared.")
+                    } else {
+                        format!("Loop {schedule_id} cleared.")
+                    }
                 } else {
                     format!("Loop {schedule_id} was already absent.")
                 },
@@ -1009,6 +1021,126 @@ mod tests {
             ),
             other => panic!("expected model error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn create_loop_nests_loops_to_depth_five() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 18);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let mut parent_schedule_id = None;
+        for level in 1..=5 {
+            let response = manage_loop(
+                runtime.clone(),
+                thread_id,
+                /*auth_profile*/ None,
+                ManageLoopArgs {
+                    parent_schedule_id: parent_schedule_id.clone(),
+                    prompt: Some(format!("level {level} loop")),
+                    schedule: Some(LoopScheduleSpecArg::Interval {
+                        amount: level,
+                        unit: LoopScheduleIntervalUnitArg::Minutes,
+                    }),
+                    timezone: Some("UTC".to_string()),
+                    ..loop_args(LoopAction::Create)
+                },
+            )
+            .await
+            .expect("nested loop should be created");
+            let affected_schedule = response
+                .affected_schedule
+                .clone()
+                .expect("affected schedule should be returned");
+            assert_eq!(parent_schedule_id, affected_schedule.parent_schedule_id);
+            assert_eq!(level, affected_schedule.nesting_depth);
+            parent_schedule_id = response.schedule_id;
+        }
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id,
+                prompt: Some("level 6 loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 6,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("sixth nesting level should be rejected");
+
+        match err {
+            FunctionCallError::RespondToModel(message) => {
+                assert!(message.contains("maximum nesting depth is 5"))
+            }
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn clear_parent_loop_removes_nested_child_loops() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 19);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let root = manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                prompt: Some("root loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("root loop should be created");
+        let root_schedule_id = root
+            .schedule_id
+            .expect("root schedule id should be returned");
+        manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(root_schedule_id.clone()),
+                prompt: Some("child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+
+        let response = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                schedule_id: Some(root_schedule_id),
+                ..loop_args(LoopAction::Clear)
+            },
+        )
+        .await
+        .expect("root loop should clear");
+
+        assert_eq!(Some(true), response.deleted);
+        assert!(response.message.contains("and 1 nested child loop cleared"));
+        assert_eq!(Vec::<LoopScheduleSnapshot>::new(), response.schedules);
     }
 
     #[tokio::test]
