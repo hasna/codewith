@@ -21,7 +21,7 @@ pub(crate) const DELAYED_OUTPUT_AFTER_EXIT_PARENT_ARG: &str =
 
 const DELAYED_OUTPUT_AFTER_EXIT_CHILD_ARG: &str = "--codex-test-delayed-output-after-exit-child";
 
-#[ctor]
+#[ctor(unsafe)]
 pub static TEST_BINARY_DISPATCH_GUARD: Option<TestBinaryDispatchGuard> = {
     let guard = configure_test_binary_dispatch("codex-exec-server-tests", |exe_name, argv1| {
         if argv1 == Some(CODEX_FS_HELPER_ARG1) {
