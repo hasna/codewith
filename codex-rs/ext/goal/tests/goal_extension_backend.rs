@@ -287,6 +287,84 @@ async fn create_goal_tools_persist_context_lifecycle_actions() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn create_goal_plan_appends_followup_nodes_to_active_plan() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "first",
+                    "objective": "Run the first goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("plan id should be returned"))?
+        .to_string();
+
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-append-goal-plan",
+        json!({
+            "append_to_plan_id": plan_id,
+            "goals": [
+                {
+                    "key": "second",
+                    "objective": "Run the appended follow-up goal",
+                    "depends_on": ["first"],
+                    "token_budget": 1000
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["objective"], "Run the first goal");
+    assert_eq!(result["activatedGoal"], serde_json::Value::Null);
+    assert_eq!(result["goalPlans"][0]["nodeCount"], 2);
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "active");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "pending");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["dependsOn"][0], "first");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["tokenBudget"], 1000);
+
+    let plan_events = harness.sink.goal_plan_events();
+    assert_eq!(2, plan_events.len());
+    assert_eq!(2, plan_events[1].node_count);
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-first-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Run the appended follow-up goal"
+    );
+    assert_eq!(result["activatedGoal"]["tokenBudget"], 1000);
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "complete");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "active");
+    Ok(())
+}
+
+#[tokio::test]
 async fn update_goal_does_not_schedule_context_lifecycle_for_blocked_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -1006,6 +1084,78 @@ async fn create_goal_plan_rejects_invalid_title_before_clearing_existing_goal() 
     assert_eq!(
         Some(original_goal),
         runtime.thread_goals().get_thread_goal(thread_id).await?
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_append_rejects_replacement_and_budget_options() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+
+    let clear_err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-append-with-clear",
+            json!({
+                "append_to_plan_id": "plan-123",
+                "clear_existing_goal": true,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Append with an invalid clear request"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("append with clear_existing_goal should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        clear_err,
+        FunctionCallError::RespondToModel(
+            "append_to_plan_id cannot be combined with clear_existing_goal".to_string()
+        )
+    );
+
+    let budget_err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-append-with-plan-budget",
+            json!({
+                "append_to_plan_id": "plan-123",
+                "max_tokens_per_goal_plan": 1000,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Append with an invalid plan budget request"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("append with max_tokens_per_goal_plan should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        budget_err,
+        FunctionCallError::RespondToModel(
+            "append_to_plan_id cannot be combined with max_tokens_per_goal_plan; appending does not change an existing plan budget"
+                .to_string()
+        )
     );
     assert_eq!(
         Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),

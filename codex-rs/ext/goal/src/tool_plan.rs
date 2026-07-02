@@ -36,6 +36,7 @@ struct CreateGoalPlanRequest {
     max_tokens_per_goal_plan: Option<i64>,
     post_goal_context: Option<PostGoalContextActionArg>,
     post_goal_plan_context: Option<PostGoalContextActionArg>,
+    append_to_plan_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +80,7 @@ pub(crate) struct GoalPlanResponse {
     blocked_node_count: i64,
     usage_limited_node_count: i64,
     budget_limited_node_count: i64,
+    deferred_node_count: i64,
     cancelled_node_count: i64,
     created_at: i64,
     updated_at: i64,
@@ -105,6 +107,7 @@ pub(crate) struct GoalPlanCompletionReport {
     blocked_node_count: i64,
     usage_limited_node_count: i64,
     budget_limited_node_count: i64,
+    deferred_node_count: i64,
     cancelled_node_count: i64,
     #[serde(skip_serializing_if = "is_zero")]
     nodes_omitted_count: i64,
@@ -190,6 +193,56 @@ impl GoalToolExecutor {
             })?
             .current();
         validate_goal_plan_request(&mut request, plan_config)?;
+        if let Some(plan_id) = request.append_to_plan_id.take() {
+            let nodes = request
+                .goals
+                .into_iter()
+                .map(|node| codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: node.key,
+                    objective: node.objective,
+                    priority: node.priority.unwrap_or(0),
+                    token_budget: node.token_budget,
+                    depends_on: node.depends_on,
+                })
+                .collect();
+            let snapshot = self
+                .state_db
+                .thread_goals()
+                .append_thread_goal_plan_nodes(codex_state::ThreadGoalPlanAppendParams {
+                    thread_id: self.thread_id,
+                    plan_id,
+                    max_total_nodes: Some(
+                        plan_config.max_auto_goals_per_plan.min(MAX_GOAL_PLAN_NODES),
+                    ),
+                    nodes,
+                })
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to append goals to goal plan: {err}"
+                    ))
+                })?;
+            self.event_emitter.thread_goal_plan_updated(
+                format!("{}-goal-plan", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                snapshot.clone(),
+            );
+            let goal = self
+                .state_db
+                .thread_goals()
+                .get_thread_goal(self.thread_id)
+                .await
+                .map(|goal| goal.map(protocol_goal_from_state))
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
+                })?;
+            return goal_response_with_plan(
+                goal,
+                /*activated_goal*/ None,
+                vec![GoalPlanResponse::from(snapshot)],
+                CompletionBudgetReport::Omit,
+            );
+        }
         let nodes = request
             .goals
             .into_iter()
@@ -319,6 +372,7 @@ impl GoalToolExecutor {
                 goal.status,
                 codex_state::ThreadGoalStatus::Complete
                     | codex_state::ThreadGoalStatus::BudgetLimited
+                    | codex_state::ThreadGoalStatus::Deferred
                     | codex_state::ThreadGoalStatus::Cancelled
             )
         }) {
@@ -397,7 +451,9 @@ impl GoalToolExecutor {
         };
         if matches!(
             existing_goal.status,
-            codex_state::ThreadGoalStatus::Complete | codex_state::ThreadGoalStatus::Cancelled
+            codex_state::ThreadGoalStatus::Deferred
+                | codex_state::ThreadGoalStatus::Complete
+                | codex_state::ThreadGoalStatus::Cancelled
         ) {
             return Ok(());
         }
@@ -483,6 +539,25 @@ fn validate_goal_plan_request(
     }
     validate_goal_budget(request.max_tokens_per_goal_plan)
         .map_err(FunctionCallError::RespondToModel)?;
+    if let Some(plan_id) = &mut request.append_to_plan_id {
+        *plan_id = plan_id.trim().to_string();
+        if plan_id.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "append_to_plan_id must not be empty".to_string(),
+            ));
+        }
+        if request.clear_existing_goal {
+            return Err(FunctionCallError::RespondToModel(
+                "append_to_plan_id cannot be combined with clear_existing_goal".to_string(),
+            ));
+        }
+        if request.max_tokens_per_goal_plan.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "append_to_plan_id cannot be combined with max_tokens_per_goal_plan; appending does not change an existing plan budget"
+                    .to_string(),
+            ));
+        }
+    }
     let mut keys = HashSet::new();
     for node in &mut request.goals {
         node.key = node.key.trim().to_string();
@@ -519,6 +594,7 @@ fn validate_goal_plan_request(
             .map_err(FunctionCallError::RespondToModel)?;
         validate_goal_budget(node.token_budget).map_err(FunctionCallError::RespondToModel)?;
     }
+    let appending_to_existing_plan = request.append_to_plan_id.is_some();
     for node in &request.goals {
         for dependency in &node.depends_on {
             if dependency.is_empty() {
@@ -533,7 +609,7 @@ fn validate_goal_plan_request(
                     node.key
                 )));
             }
-            if !keys.contains(dependency) {
+            if !appending_to_existing_plan && !keys.contains(dependency) {
                 return Err(FunctionCallError::RespondToModel(format!(
                     "goal plan node `{}` depends on unknown node `{dependency}`",
                     node.key
@@ -582,6 +658,7 @@ impl GoalPlanResponse {
             blocked_node_count: summary.blocked_node_count,
             usage_limited_node_count: summary.usage_limited_node_count,
             budget_limited_node_count: summary.budget_limited_node_count,
+            deferred_node_count: summary.deferred_node_count,
             cancelled_node_count: summary.cancelled_node_count,
             created_at: snapshot.plan.created_at.timestamp(),
             updated_at: snapshot.plan.updated_at.timestamp(),
@@ -636,6 +713,7 @@ impl GoalPlanCompletionReport {
             blocked_node_count: summary.blocked_node_count,
             usage_limited_node_count: summary.usage_limited_node_count,
             budget_limited_node_count: summary.budget_limited_node_count,
+            deferred_node_count: summary.deferred_node_count,
             cancelled_node_count: summary.cancelled_node_count,
             nodes_omitted_count: nodes_omitted_count as i64,
             nodes: visible_nodes

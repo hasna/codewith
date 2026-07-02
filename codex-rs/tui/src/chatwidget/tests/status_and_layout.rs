@@ -75,6 +75,8 @@ fn status_line_test_schedule(
     ThreadSchedule {
         thread_id: thread_id.to_string(),
         schedule_id: schedule_id.to_string(),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: "check whether CI is green and write the next action".to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule,
@@ -3901,6 +3903,14 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
     );
     assert_eq!(
         goal_status_indicator_from_app_goal(&test_thread_goal(
+            codex_app_server_protocol::ThreadGoalStatus::Deferred,
+            /*token_budget*/ None,
+            /*tokens_used*/ 0,
+        )),
+        Some(GoalStatusIndicator::Deferred)
+    );
+    assert_eq!(
+        goal_status_indicator_from_app_goal(&test_thread_goal(
             codex_app_server_protocol::ThreadGoalStatus::BudgetLimited,
             /*token_budget*/ Some(50_000),
             /*tokens_used*/ 51_000,
@@ -3946,6 +3956,10 @@ fn goal_status_indicator_line_formats_goal_text() {
         ),
         (GoalStatusIndicator::Paused, "Goal paused (/goal resume)"),
         (GoalStatusIndicator::Blocked, "Goal blocked (/goal resume)"),
+        (
+            GoalStatusIndicator::Deferred,
+            "Goal deferred (/goal resume)",
+        ),
         (
             GoalStatusIndicator::UsageLimited,
             "Goal hit usage limits (/goal resume)",

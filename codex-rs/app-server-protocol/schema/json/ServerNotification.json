@@ -3900,6 +3900,10 @@
           "format": "int64",
           "type": "integer"
         },
+        "deferredNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
         "maxTokens": {
           "format": "int64",
           "type": [
@@ -3970,6 +3974,7 @@
         "cancelledNodeCount",
         "completedNodeCount",
         "createdAt",
+        "deferredNodeCount",
         "nodeCount",
         "nodes",
         "pausedNodeCount",
@@ -4096,6 +4101,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],
@@ -4140,6 +4146,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],
@@ -5258,10 +5265,20 @@
             "null"
           ]
         },
+        "nestingDepth": {
+          "format": "int64",
+          "type": "integer"
+        },
         "nextRunAt": {
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "parentScheduleId": {
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -5294,6 +5311,7 @@
       "required": [
         "createdAt",
         "failureCount",
+        "nestingDepth",
         "prompt",
         "promptSource",
         "schedule",
@@ -5582,6 +5600,12 @@
           "$ref": "#/definitions/SandboxPolicy"
         },
         "serviceTier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionPrompt": {
           "type": [
             "string",
             "null"

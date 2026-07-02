@@ -1415,6 +1415,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.to_string(),
+                    parent_schedule_id: None,
                     prompt,
                     prompt_source: Some(prompt_source),
                     schedule,
@@ -1466,6 +1467,7 @@ impl AppServerSession {
     pub(crate) async fn agent_start(
         &mut self,
         prompt: String,
+        initial_goal_objective: Option<String>,
         cwd: Option<String>,
         workspace_roots: Option<Vec<String>>,
         parent_thread_id: Option<ThreadId>,
@@ -1477,6 +1479,7 @@ impl AppServerSession {
                 request_id,
                 params: AgentStartParams {
                     prompt,
+                    initial_goal_objective,
                     cwd,
                     idempotency_key: None,
                     request_id: None,

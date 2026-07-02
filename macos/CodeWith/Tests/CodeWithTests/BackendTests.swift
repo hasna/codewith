@@ -125,6 +125,21 @@ final class BinaryResolutionTests: XCTestCase {
     }
 }
 
+final class SettingsConfigurationTests: XCTestCase {
+    func testApprovalPolicyConfirmationOnlyForNever() {
+        XCTAssertTrue(SettingsConfiguration.requiresConfirmation(approval: "never"))
+        XCTAssertFalse(SettingsConfiguration.requiresConfirmation(approval: "on-request"))
+        XCTAssertFalse(SettingsConfiguration.requiresConfirmation(approval: "on-failure"))
+        XCTAssertFalse(SettingsConfiguration.requiresConfirmation(approval: "untrusted"))
+    }
+
+    func testSandboxConfirmationOnlyForFullAccess() {
+        XCTAssertTrue(SettingsConfiguration.requiresConfirmation(sandbox: "danger-full-access"))
+        XCTAssertFalse(SettingsConfiguration.requiresConfirmation(sandbox: "workspace-write"))
+        XCTAssertFalse(SettingsConfiguration.requiresConfirmation(sandbox: "read-only"))
+    }
+}
+
 final class BackendModelsTests: XCTestCase {
     private func obj(_ p: [String: JSONValue]) -> JSONValue { .object(p) }
 
@@ -193,6 +208,19 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(t.gitBranch, "dev"); XCTAssertEqual(t.gitSha, "abc")
         XCTAssertEqual(t.projectKey, "github.com/o/r")
     }
+    func testConfigRequirementsFiltersSupportedOptions() {
+        let requirements = ConfigRequirementsInfo(from: obj([
+            "allowedApprovalPolicies": .array([.string("on-request"), .string("never"), .string("unknown")]),
+            "allowedSandboxModes": .array([.string("read-only")]),
+        ]))
+        XCTAssertEqual(
+            requirements.approvalOptions(defaults: ["untrusted", "on-request", "never"]),
+            ["on-request", "never"])
+        XCTAssertEqual(
+            requirements.sandboxOptions(defaults: ["read-only", "workspace-write", "danger-full-access"]),
+            ["read-only"])
+        XCTAssertFalse(requirements.allowsSandbox("danger-full-access"))
+    }
     func testAgeLabelBuckets() {
         func age(_ secsAgo: TimeInterval) -> String {
             let iso = ISO8601DateFormatter()
@@ -205,6 +233,43 @@ final class BackendModelsTests: XCTestCase {
     }
     func testAgeLabelEmptyWhenNoDate() {
         XCTAssertEqual(ThreadInfo(from: obj([:])).ageLabel, "")
+    }
+    func testLoopCreationDraftValidatesIntervalSchedules() {
+        var draft = LoopCreationDraft()
+        draft.scheduleMode = .interval
+        draft.intervalAmount = "0"
+        XCTAssertFalse(draft.canCreate)
+        XCTAssertEqual(draft.validationMessage, "Enter a positive interval.")
+
+        draft.intervalAmount = "15"
+        XCTAssertTrue(draft.canCreate)
+        XCTAssertEqual(draft.intervalAmountValue, 15)
+    }
+    func testLoopCreationDraftValidatesCronSchedules() {
+        var draft = LoopCreationDraft()
+        draft.scheduleMode = .cron
+        draft.cronExpression = "   "
+        XCTAssertFalse(draft.canCreate)
+        XCTAssertEqual(draft.validationMessage, "Enter a cron expression.")
+
+        draft.cronExpression = "*/15 * * * *"
+        XCTAssertTrue(draft.canCreate)
+        XCTAssertEqual(draft.normalizedCronExpression, "*/15 * * * *")
+    }
+    func testLoopCreationDraftValidatesMonitorRouting() {
+        var draft = LoopCreationDraft()
+        draft.kind = .monitor
+        draft.command = "tail -f app.log"
+        draft.routing = .file
+        XCTAssertFalse(draft.canCreate)
+        XCTAssertEqual(draft.validationMessage, "Enter an output file for file routing.")
+
+        draft.outputFile = "monitor.log"
+        XCTAssertTrue(draft.canCreate)
+
+        draft.routing = .stream
+        XCTAssertFalse(draft.canCreate)
+        XCTAssertEqual(draft.validationMessage, "Output files are only valid for file routing.")
     }
     func testAccountNested() {
         let a = AccountInfo(from: obj(["account": obj(["displayName": .string("Andrei Hasna"),
@@ -221,6 +286,107 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(a.name, "Local provider")
         XCTAssertEqual(a.plan, "No account required")
         XCTAssertFalse(a.requiresOpenAIAuth)
+    }
+    func testMachineInfoKeepsRegistryIdAndDisplayName() {
+        let machine = MachineInfo(registryValue: obj([
+            "machineId": .string("machine-1"),
+            "displayName": .string("Apple 03"),
+            "healthState": .string("degraded"),
+            "trustState": .string("trusted"),
+            "sourceKind": .string("manual"),
+            "capabilities": obj(["os": .string("darwin")]),
+        ]))
+        XCTAssertEqual(machine.id, "machine-1")
+        XCTAssertEqual(machine.machineId, "machine-1")
+        XCTAssertEqual(machine.displayName, "Apple 03")
+        XCTAssertEqual(machine.status, "degraded")
+        XCTAssertEqual(machine.os, "darwin")
+        XCTAssertEqual(machine.role, "manual · trusted")
+    }
+    func testMachinePairingInfoPrefersManualDisplayCode() {
+        let pairing = MachinePairingInfo(from: obj([
+            "pairingCode": .string("pair-code"),
+            "manualPairingCode": .string("ABCD-EFGH"),
+            "environmentId": .string("env-1"),
+            "expiresAt": .number(123),
+        ]))
+        XCTAssertEqual(pairing.pairingCode, "pair-code")
+        XCTAssertEqual(pairing.manualPairingCode, "ABCD-EFGH")
+        XCTAssertEqual(pairing.displayCode, "ABCD-EFGH")
+        XCTAssertEqual(pairing.environmentId, "env-1")
+        XCTAssertEqual(pairing.expiresAt, 123)
+    }
+    func testDesktopSettingsDecodeDefaultsAndConfiguredValues() {
+        XCTAssertEqual(DesktopSettingsInfo(from: .null), DesktopSettingsInfo())
+        XCTAssertEqual(
+            DesktopSettingsInfo(from: obj([
+                "workMode": .string("everyday"),
+                "fileOpenDestination": .string("finder"),
+                "language": .string("en"),
+                "showMenuBar": .bool(false),
+                "bottomPanel": .bool(true),
+                "personality": .string("friendly"),
+                "memoryEnabled": .bool(false),
+                "chronicleResearch": .bool(true),
+                "skipToolAssistedChats": .bool(true),
+            ])),
+            DesktopSettingsInfo(
+                workMode: "everyday",
+                fileOpenDestination: "finder",
+                language: "en",
+                showMenuBar: false,
+                bottomPanel: true,
+                personality: "friendly",
+                memoryEnabled: false,
+                chronicleResearch: true,
+                skipToolAssistedChats: true))
+    }
+    func testDesktopSettingsDecodeRuntimeConfigValues() {
+        XCTAssertEqual(
+            DesktopSettingsInfo(
+                desktop: obj([
+                    "workMode": .string("everyday"),
+                    "fileOpenDestination": .string("finder"),
+                ]),
+                config: obj([
+                    "personality": .string("friendly"),
+                    "features": obj([
+                        "memories": .bool(true),
+                        "chronicle": .bool(true),
+                    ]),
+                    "memories": obj([
+                        "use_memories": .bool(true),
+                        "generate_memories": .bool(true),
+                        "disable_on_external_context": .bool(true),
+                    ]),
+                ])),
+            DesktopSettingsInfo(
+                workMode: "everyday",
+                fileOpenDestination: "finder",
+                personality: "friendly",
+                memoryEnabled: true,
+                chronicleResearch: true,
+                skipToolAssistedChats: true))
+    }
+    func testDesktopSettingsDecodeFileOpenerFromRuntimeConfig() {
+        XCTAssertEqual(
+            DesktopSettingsInfo(
+                desktop: .null,
+                config: obj(["file_opener": .string("none")]))
+            .fileOpenDestination,
+            "system")
+        XCTAssertEqual(
+            DesktopSettingsInfo(
+                desktop: .null,
+                config: obj(["file_opener": .string("cursor")]))
+            .fileOpenDestination,
+            "cursor")
+        XCTAssertEqual(
+            DesktopSettingsInfo(
+                desktop: obj(["fileOpenDestination": .string("finder")]),
+                config: obj(["file_opener": .string("cursor")]))
+            .fileOpenDestination,
+            "finder")
     }
     func testGoalInfoDecodesThreadGoal() {
         let goal = GoalInfo(from: obj([
@@ -240,6 +406,67 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(goal.tokensUsed, 25)
         XCTAssertEqual(goal.timeUsedSeconds, 3)
     }
+    func testGoalPlanInfoDecodesPlanAndNodes() {
+        let plan = GoalPlanInfo(from: obj([
+            "planId": .string("plan-1"),
+            "threadId": .string("thread-1"),
+            "status": .string("active"),
+            "autoExecute": .string("readyOnly"),
+            "nodeCount": .number(2),
+            "completedNodeCount": .number(1),
+            "activeNodeCount": .number(1),
+            "pendingNodeCount": .number(0),
+            "nodes": .array([
+                obj([
+                    "nodeId": .string("node-1"),
+                    "planId": .string("plan-1"),
+                    "threadId": .string("thread-1"),
+                    "key": .string("implement"),
+                    "objective": .string("Fix bugs"),
+                    "status": .string("active"),
+                    "ready": .bool(true),
+                ]),
+            ]),
+        ]))
+        XCTAssertEqual(plan.planId, "plan-1")
+        XCTAssertEqual(plan.threadId, "thread-1")
+        XCTAssertEqual(plan.status, "active")
+        XCTAssertEqual(plan.autoExecute, "readyOnly")
+        XCTAssertEqual(plan.nodeCount, 2)
+        XCTAssertEqual(plan.completedNodeCount, 1)
+        XCTAssertEqual(plan.activeNodeCount, 1)
+        XCTAssertEqual(plan.pendingNodeCount, 0)
+        XCTAssertEqual(plan.nodes.first?.nodeId, "node-1")
+        XCTAssertEqual(plan.nodes.first?.objective, "Fix bugs")
+        XCTAssertTrue(plan.nodes.first?.ready == true)
+        XCTAssertEqual(plan.progressText, "1/2 complete")
+        XCTAssertEqual(plan.nodes.first?.canActivate, false)
+    }
+    func testGoalPlanNodeCanActivateOnlyReadyPendingNodes() {
+        XCTAssertTrue(GoalPlanNodeInfo(from: obj([
+            "nodeId": .string("node-1"),
+            "status": .string("pending"),
+            "ready": .bool(true),
+        ])).canActivate)
+        XCTAssertFalse(GoalPlanNodeInfo(from: obj([
+            "nodeId": .string("node-2"),
+            "status": .string("active"),
+            "ready": .bool(true),
+        ])).canActivate)
+        XCTAssertFalse(GoalPlanNodeInfo(from: obj([
+            "nodeId": .string("node-3"),
+            "status": .string("pending"),
+            "ready": .bool(false),
+        ])).canActivate)
+    }
+    func testThreadGoalPlanActivateNodeParams() {
+        XCTAssertEqual(
+            AppServerClient.threadGoalPlanActivateNodeParams(threadId: "thread-1", nodeId: "node-1"),
+            obj([
+                "threadId": .string("thread-1"),
+                "nodeId": .string("node-1"),
+            ]))
+    }
     func testLoopInfoDecodesScheduleAndMonitor() {
         let schedule = AppServerClient.loopInfo(fromSchedule: obj([
             "threadId": .string("thread-1"),
@@ -253,6 +480,10 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(schedule.subtitle, "every 5 minutes")
         XCTAssertEqual(schedule.kind, .schedule)
         XCTAssertTrue(schedule.active)
+        XCTAssertEqual(schedule.status, "active")
+        XCTAssertTrue(schedule.canToggle)
+        XCTAssertTrue(schedule.canRunNow)
+        XCTAssertEqual(schedule.toggleLabel, "Pause")
         XCTAssertEqual(schedule.threadId, "thread-1")
 
         let monitor = AppServerClient.loopInfo(fromMonitor: obj([
@@ -267,7 +498,114 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(monitor.subtitle, "tail -f app.log")
         XCTAssertEqual(monitor.kind, .monitor)
         XCTAssertFalse(monitor.active)
+        XCTAssertEqual(monitor.status, "stopped")
+        XCTAssertTrue(monitor.canToggle)
+        XCTAssertFalse(monitor.canRunNow)
+        XCTAssertEqual(monitor.toggleLabel, "Restart")
         XCTAssertEqual(monitor.threadId, "thread-2")
+    }
+    func testLoopInfoExpiredScheduleDisablesActions() {
+        let schedule = AppServerClient.loopInfo(fromSchedule: obj([
+            "threadId": .string("thread-1"),
+            "scheduleId": .string("schedule-1"),
+            "prompt": .string("One shot"),
+            "status": .string("expired"),
+            "schedule": obj(["type": .string("once")]),
+        ]), fallbackThreadId: "fallback")
+        XCTAssertFalse(schedule.active)
+        XCTAssertEqual(schedule.status, "expired")
+        XCTAssertFalse(schedule.canToggle)
+        XCTAssertFalse(schedule.canRunNow)
+    }
+    func testIsLoopScheduleExcludesOneTimeSchedules() {
+        XCTAssertFalse(AppServerClient.isLoopSchedule(obj([
+            "schedule": obj(["type": .string("once")]),
+        ])))
+        XCTAssertTrue(AppServerClient.isLoopSchedule(obj([
+            "schedule": obj(["type": .string("dynamic")]),
+        ])))
+        XCTAssertTrue(AppServerClient.isLoopSchedule(obj([
+            "schedule": obj(["type": .string("interval")]),
+        ])))
+    }
+    func testActiveSessionPeerInfoDecodesPeer() {
+        let peer = ActiveSessionPeerInfo(from: obj([
+            "peerId": .string("peer-1"),
+            "threadId": .string("thread-1"),
+            "kind": .string("spawnedAgent"),
+            "cwd": .string("/tmp/project"),
+            "displayName": .string("Reviewer"),
+            "capabilities": .array([.string("receiveMessage"), .string("triggerTurn")]),
+        ]))
+        XCTAssertEqual(peer.peerId, "peer-1")
+        XCTAssertEqual(peer.threadId, "thread-1")
+        XCTAssertEqual(peer.displayName, "Reviewer")
+        XCTAssertEqual(peer.kind, "spawnedAgent")
+        XCTAssertTrue(peer.canReceiveMessage)
+        XCTAssertTrue(peer.canTriggerTurn)
+        XCTAssertEqual(peer.menuSubtitle, "Agent in /tmp/project")
+    }
+    func testActiveSessionPeerInfoCanQueueWithoutTriggering() {
+        let peer = ActiveSessionPeerInfo(from: obj([
+            "peerId": .string("peer-1"),
+            "threadId": .string("thread-1"),
+            "capabilities": .array([.string("queueMessage")]),
+        ]))
+        XCTAssertTrue(peer.canQueueMessage)
+        XCTAssertTrue(peer.canReceiveMessage)
+        XCTAssertFalse(peer.canTriggerTurn)
+    }
+    func testAgentRunInfoDecodesRun() {
+        let agent = AgentRunInfo(from: obj([
+            "agentId": .string("agent-12345678"),
+            "threadId": .string("thread-1"),
+            "status": .string("waitingOnUser"),
+            "desiredState": .string("running"),
+            "retentionState": .string("active"),
+            "source": .string("macos"),
+            "rolloutPath": .string("/tmp/project"),
+        ]))
+        XCTAssertEqual(agent.agentId, "agent-12345678")
+        XCTAssertEqual(agent.threadId, "thread-1")
+        XCTAssertEqual(agent.status, "waitingOnUser")
+        XCTAssertEqual(agent.desiredState, "running")
+        XCTAssertEqual(agent.retentionState, "active")
+        XCTAssertEqual(agent.source, "macos")
+        XCTAssertEqual(agent.rolloutPath, "/tmp/project")
+        XCTAssertEqual(agent.displayName, "Agent agent-12")
+        XCTAssertEqual(agent.menuSubtitle, "waiting on user · project")
+        XCTAssertTrue(agent.canOpenThread)
+        XCTAssertFalse(agent.isDeleted)
+    }
+    func testAgentAttachmentInfoDecodesPendingInteractions() {
+        let attachment = AgentAttachmentInfo(from: obj([
+            "agent": obj([
+                "agentId": .string("agent-12345678"),
+                "threadId": .string("thread-1"),
+                "status": .string("waitingOnUser"),
+            ]),
+            "statusSnapshot": obj([
+                "status": .string("waitingOnUser"),
+                "summary": .string("Needs approval"),
+            ]),
+            "events": .array([obj(["eventId": .string("event-1")])]),
+            "pendingInteractions": .array([
+                obj([
+                    "interactionId": .string("interaction-1"),
+                    "agentId": .string("agent-12345678"),
+                    "kind": .string("approval"),
+                    "status": .string("waiting"),
+                    "requestPayload": obj(["title": .string("Approve command")]),
+                ]),
+            ]),
+        ]), fallbackAgentId: "agent-12345678")
+
+        XCTAssertEqual(attachment.agent?.agentId, "agent-12345678")
+        XCTAssertEqual(attachment.status, "waitingOnUser")
+        XCTAssertEqual(attachment.summary, "Needs approval")
+        XCTAssertEqual(attachment.eventCount, 1)
+        XCTAssertEqual(attachment.pendingCount, 1)
+        XCTAssertEqual(attachment.pendingInteractions.first?.summary, "Approve command")
     }
 }
 
@@ -332,6 +670,27 @@ final class AppServerRequestShapeTests: XCTestCase {
             ]))
     }
 
+    func testThreadGoalSetParamsCanClearTokenBudget() {
+        XCTAssertEqual(
+            AppServerClient.threadGoalSetParams(
+                threadId: "thread-1",
+                tokenBudgetUpdate: .clear),
+            obj([
+                "threadId": .string("thread-1"),
+                "tokenBudget": .null,
+            ]))
+    }
+
+    func testThreadGoalListParams() {
+        XCTAssertEqual(
+            AppServerClient.threadGoalListParams(threadId: "thread-1", cursor: "cursor-1", limit: 20),
+            obj([
+                "threadId": .string("thread-1"),
+                "cursor": .string("cursor-1"),
+                "limit": .number(20),
+            ]))
+    }
+
     func testThreadScheduleCreateParams() {
         XCTAssertEqual(
             AppServerClient.threadScheduleCreateParams(
@@ -375,6 +734,236 @@ final class AppServerRequestShapeTests: XCTestCase {
                 "cwd": .string("/tmp/project"),
                 "routing": .string("both"),
                 "outputFile": .string("monitor.log"),
+            ]))
+    }
+
+    func testActiveSessionSendParams() {
+        XCTAssertEqual(
+            AppServerClient.activeSessionSendParams(
+                targetPeerId: "peer-1",
+                message: "Review this",
+                senderThreadId: "thread-1",
+                senderLabel: "CodeWith.app",
+                delivery: "triggerTurn"),
+            obj([
+                "targetPeerId": .string("peer-1"),
+                "message": .string("Review this"),
+                "senderThreadId": .string("thread-1"),
+                "senderLabel": .string("CodeWith.app"),
+                "delivery": .string("triggerTurn"),
+            ]))
+    }
+
+    func testAgentListParams() {
+        XCTAssertEqual(
+            AppServerClient.agentListParams(cursor: "cursor-1", limit: 25),
+            obj([
+                "cursor": .string("cursor-1"),
+                "limit": .number(25),
+            ]))
+    }
+
+    func testAgentReadAndAttachParams() {
+        XCTAssertEqual(
+            AppServerClient.agentIdParams(agentId: "agent-1"),
+            obj(["agentId": .string("agent-1")]))
+        XCTAssertEqual(
+            AppServerClient.agentAttachParams(agentId: "agent-1", cursor: "cursor-1", limit: 10),
+            obj([
+                "agentId": .string("agent-1"),
+                "cursor": .string("cursor-1"),
+                "limit": .number(10),
+            ]))
+        XCTAssertEqual(
+            AppServerClient.agentEventsListParams(agentId: "agent-1", cursor: "cursor-2", limit: 5),
+            obj([
+                "agentId": .string("agent-1"),
+                "cursor": .string("cursor-2"),
+                "limit": .number(5),
+            ]))
+    }
+
+    func testAgentPendingInteractionRespondParams() {
+        XCTAssertEqual(
+            AppServerClient.agentPendingInteractionRespondParams(
+                agentId: "agent-1",
+                interactionId: "interaction-1",
+                response: obj(["ok": .bool(true)]),
+                terminalStatus: "responded"),
+            obj([
+                "agentId": .string("agent-1"),
+                "interactionId": .string("interaction-1"),
+                "response": obj(["ok": .bool(true)]),
+                "terminalStatus": .string("responded"),
+            ]))
+    }
+
+    func testTurnStartParamsIncludeModelProviderAndEffort() {
+        XCTAssertEqual(
+            AppServerClient.turnStartParams(
+                threadId: "thread-1",
+                input: "hello",
+                model: "gpt-5.5",
+                provider: "openai",
+                effort: "medium"),
+            obj([
+                "threadId": .string("thread-1"),
+                "input": .array([obj(["type": .string("text"), "text": .string("hello")])]),
+                "model": .string("gpt-5.5"),
+                "modelProvider": .string("openai"),
+                "effort": .string("medium"),
+            ]))
+    }
+
+    func testTurnStartParamsIncludePlanCollaborationMode() {
+        XCTAssertEqual(
+            AppServerClient.turnStartParams(
+                threadId: "thread-1",
+                input: "make a plan",
+                model: "gpt-5.5",
+                provider: "openai",
+                effort: "medium",
+                collaborationMode: AppServerClient.planCollaborationMode(model: "gpt-5.5", effort: "medium")),
+            obj([
+                "threadId": .string("thread-1"),
+                "input": .array([obj(["type": .string("text"), "text": .string("make a plan")])]),
+                "model": .string("gpt-5.5"),
+                "modelProvider": .string("openai"),
+                "effort": .string("medium"),
+                "collaborationMode": obj([
+                    "mode": .string("plan"),
+                    "settings": obj([
+                        "model": .string("gpt-5.5"),
+                        "reasoning_effort": .string("medium"),
+                        "developer_instructions": .null,
+                    ]),
+                ]),
+            ]))
+    }
+
+    func testRemoteControlPairingStartParams() {
+        XCTAssertEqual(
+            AppServerClient.remoteControlPairingStartParams(manualCode: true),
+            obj(["manualCode": .bool(true)]))
+    }
+
+    func testRemoteControlPairingStatusParamsPreferManualCode() {
+        let manualPairing = MachinePairingInfo(from: obj([
+            "pairingCode": .string("pair-code"),
+            "manualPairingCode": .string("ABCD-EFGH"),
+        ]))
+        XCTAssertEqual(
+            AppServerClient.remoteControlPairingStatusParams(pairing: manualPairing),
+            obj(["manualPairingCode": .string("ABCD-EFGH")]))
+
+        let pairing = MachinePairingInfo(from: obj(["pairingCode": .string("pair-code")]))
+        XCTAssertEqual(
+            AppServerClient.remoteControlPairingStatusParams(pairing: pairing),
+            obj(["pairingCode": .string("pair-code")]))
+    }
+
+    func testConfigWriteParamsForDesktopSettings() {
+        XCTAssertEqual(
+            AppServerClient.configWriteParams(keyPath: "desktop.showMenuBar", value: .bool(false)),
+            obj([
+                "keyPath": .string("desktop.showMenuBar"),
+                "value": .bool(false),
+                "mergeStrategy": .string("replace"),
+            ]))
+    }
+
+    func testConfigBatchWriteParamsCanReloadUserConfig() {
+        XCTAssertEqual(
+            AppServerClient.configBatchWriteParams(
+                edits: [
+                    (keyPath: "approval_policy", value: .string("on-request")),
+                    (keyPath: "sandbox_mode", value: .string("workspace-write")),
+                ],
+                reloadUserConfig: true),
+            obj([
+                "edits": .array([
+                    obj([
+                        "keyPath": .string("approval_policy"),
+                        "value": .string("on-request"),
+                        "mergeStrategy": .string("replace"),
+                    ]),
+                    obj([
+                        "keyPath": .string("sandbox_mode"),
+                        "value": .string("workspace-write"),
+                        "mergeStrategy": .string("replace"),
+                    ]),
+                ]),
+                "reloadUserConfig": .bool(true),
+            ]))
+    }
+
+    func testConfigWriteParamsForInstructions() {
+        XCTAssertEqual(
+            AppServerClient.configWriteParams(keyPath: "developer_instructions", value: .string("Prefer concise replies.")),
+            obj([
+                "keyPath": .string("developer_instructions"),
+                "value": .string("Prefer concise replies."),
+                "mergeStrategy": .string("replace"),
+            ]))
+    }
+
+    func testConfigWriteParamsCanClearDeveloperInstructions() {
+        XCTAssertEqual(
+            AppServerClient.configWriteParams(keyPath: "developer_instructions", value: .null),
+            obj([
+                "keyPath": .string("developer_instructions"),
+                "value": .null,
+                "mergeStrategy": .string("replace"),
+            ]))
+    }
+
+    func testConfigWriteParamsForMemorySettings() {
+        XCTAssertEqual(
+            AppServerClient.configWriteParams(keyPath: "features.memories", value: .bool(true)),
+            obj([
+                "keyPath": .string("features.memories"),
+                "value": .bool(true),
+                "mergeStrategy": .string("replace"),
+            ]))
+        XCTAssertEqual(
+            AppServerClient.configWriteParams(keyPath: "memories.disable_on_external_context", value: .bool(true)),
+            obj([
+                "keyPath": .string("memories.disable_on_external_context"),
+                "value": .bool(true),
+                "mergeStrategy": .string("replace"),
+            ]))
+    }
+
+    func testThreadSettingsUpdatePersonalityParams() {
+        XCTAssertEqual(
+            AppServerClient.threadSettingsUpdatePersonalityParams(threadId: "thread-1", personality: "friendly"),
+            obj([
+                "threadId": .string("thread-1"),
+                "personality": .string("friendly"),
+            ]))
+    }
+
+    func testThreadSettingsUpdateParamsIncludeSessionModelProviderAndEffort() {
+        XCTAssertEqual(
+            AppServerClient.threadSettingsUpdateParams(
+                threadId: "thread-1",
+                model: "gpt-5.5",
+                provider: "openrouter",
+                effort: "medium"),
+            obj([
+                "threadId": .string("thread-1"),
+                "model": .string("gpt-5.5"),
+                "modelProvider": .string("openrouter"),
+                "effort": .string("medium"),
+            ]))
+    }
+
+    func testThreadMemoryModeSetParams() {
+        XCTAssertEqual(
+            AppServerClient.threadMemoryModeSetParams(threadId: "thread-1", enabled: false),
+            obj([
+                "threadId": .string("thread-1"),
+                "mode": .string("disabled"),
             ]))
     }
 }

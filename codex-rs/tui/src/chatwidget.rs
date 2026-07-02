@@ -427,6 +427,7 @@ use self::realtime::RealtimeConversationUiState;
 mod reasoning_shortcuts;
 mod review;
 mod review_popups;
+mod session_prompt;
 use self::review::ReviewState;
 #[cfg(test)]
 pub(crate) use self::review_popups::show_review_commit_picker_with_entries;
@@ -585,6 +586,8 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    /// Extra developer prompt scoped to the active session/thread only.
+    session_prompt: Option<String>,
     has_chatgpt_account: bool,
     model_catalog: Arc<ModelCatalog>,
     session_telemetry: SessionTelemetry,
@@ -611,6 +614,8 @@ pub(crate) struct ChatWidget {
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
+    auth_profile_auto_switch_cooldowns:
+        BTreeMap<crate::legacy_core::usage_profile_health::UsageProfileCooldownKey, Instant>,
     usage_self_heal: UsageSelfHealState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,

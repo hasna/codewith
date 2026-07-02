@@ -118,6 +118,7 @@ impl ChatWidget {
                 /*summary*/ None,
                 Some(service_tier.clone()),
                 /*collaboration_mode*/ None,
+                /*session_prompt*/ None,
                 /*personality*/ None,
             )));
         self.app_event_tx

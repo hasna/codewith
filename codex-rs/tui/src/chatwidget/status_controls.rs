@@ -39,16 +39,16 @@ impl ChatWidget {
             StatusDetailsCapitalization::Preserve,
             details_max_lines,
         );
-        let title_uses_status = self
-            .config
-            .tui_terminal_title
-            .as_ref()
-            .is_some_and(|items| {
+        let uses_status = |items: Option<&[String]>| {
+            items.is_some_and(|items| {
                 items
                     .iter()
                     .any(|item| item == "run-state" || item == "status")
-            });
-        if title_uses_status {
+            })
+        };
+        if uses_status(self.config.tui_status_line.as_deref())
+            || uses_status(self.config.tui_terminal_title.as_deref())
+        {
             self.refresh_status_surfaces();
         }
     }

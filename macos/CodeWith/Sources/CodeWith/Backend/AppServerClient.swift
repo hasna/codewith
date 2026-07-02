@@ -140,18 +140,29 @@ final class AppServerClient: @unchecked Sendable {
         }
         proc.terminationHandler = { [weak self] p in
             guard let self else { return }
-            self.markStopped()
+            guard self.markStopped(process: p) else { return }
             self.failAllPending(AppServerError.notRunning)
             self.onExit?(p.terminationStatus)
         }
 
         try proc.run()
+        let started = proc.isRunning
         lock.lock()
-        process = proc
-        stdinHandle = inPipe.fileHandleForWriting
-        running = true
+        if started {
+            process = proc
+            stdinHandle = inPipe.fileHandleForWriting
+            running = true
+        } else {
+            process = nil
+            stdinHandle = nil
+            running = false
+        }
         buffer.removeAll(keepingCapacity: false)
         lock.unlock()
+        if !started {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            try? inPipe.fileHandleForWriting.close()
+        }
     }
 
     func stop() {
@@ -167,8 +178,18 @@ final class AppServerClient: @unchecked Sendable {
         failAllPending(AppServerError.notRunning)
     }
 
-    private func markStopped() {
-        lock.lock(); running = false; process = nil; stdinHandle = nil; lock.unlock()
+    @discardableResult
+    private func markStopped(process stoppedProcess: Process? = nil) -> Bool {
+        lock.lock()
+        if let stoppedProcess, let process, process !== stoppedProcess {
+            lock.unlock()
+            return false
+        }
+        running = false
+        process = nil
+        stdinHandle = nil
+        lock.unlock()
+        return true
     }
 
     private func handleEOF() {

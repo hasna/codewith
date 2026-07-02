@@ -4,6 +4,7 @@ import SwiftUI
 /// "+", add-menu, and config pills all work.
 struct HomeView: View {
     @Bindable var model: AppModel
+    var showConfigToggle = true
     var onSubmit: () -> Void = {}
     var onToggleConfig: () -> Void = {}
 
@@ -11,11 +12,13 @@ struct HomeView: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Button(action: onToggleConfig) {
-                    Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
-                        .contentShape(Rectangle())
+                if showConfigToggle {
+                    Button(action: onToggleConfig) {
+                        Image(systemName: "sidebar.right").font(.system(size: 13)).foregroundStyle(Theme.textTertiary)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .frame(height: 40).padding(.horizontal, 16)
 
@@ -49,7 +52,11 @@ struct HomeView: View {
                 ZStack {
                     Color.black.opacity(0.001).contentShape(Rectangle())
                         .onTapGesture { model.showAddMenu = false }
-                    AddMenu(onAction: { model.handleAddAction($0) }).offset(y: 40)
+                    AddMenu(
+                        onAction: { model.handleAddAction($0) },
+                        activePeers: model.activePeers,
+                        agentRuns: model.addMenuAgentRuns
+                    ).offset(y: 40)
                 }
             }
         }

@@ -264,8 +264,9 @@ impl GoalRuntimeHandle {
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
-        let plan_advance = if goal.status == codex_state::ThreadGoalStatus::Complete {
-            self.inner
+        let plan_advance = match goal.status {
+            codex_state::ThreadGoalStatus::Complete => self
+                .inner
                 .state_dbs
                 .thread_goals()
                 .complete_goal_plan_node_and_maybe_advance(
@@ -274,9 +275,25 @@ impl GoalRuntimeHandle {
                     self.plan_config().auto_execute,
                 )
                 .await
-                .map_err(|err| err.to_string())?
-        } else {
-            self.inner
+                .map_err(|err| err.to_string())?,
+            codex_state::ThreadGoalStatus::Deferred => self
+                .inner
+                .state_dbs
+                .thread_goals()
+                .defer_goal_plan_node_and_maybe_advance(
+                    self.thread_id(),
+                    &goal,
+                    self.plan_config().auto_execute,
+                )
+                .await
+                .map_err(|err| err.to_string())?,
+            codex_state::ThreadGoalStatus::Active
+            | codex_state::ThreadGoalStatus::Paused
+            | codex_state::ThreadGoalStatus::Blocked
+            | codex_state::ThreadGoalStatus::UsageLimited
+            | codex_state::ThreadGoalStatus::BudgetLimited
+            | codex_state::ThreadGoalStatus::Cancelled => self
+                .inner
                 .state_dbs
                 .thread_goals()
                 .sync_goal_plan_node_for_goal(self.thread_id(), &goal)
@@ -285,7 +302,7 @@ impl GoalRuntimeHandle {
                 .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
                     snapshot,
                     activated_goal: None,
-                })
+                }),
         };
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
@@ -339,6 +356,7 @@ impl GoalRuntimeHandle {
                         codex_state::ThreadGoalStatus::Active
                         | codex_state::ThreadGoalStatus::Paused
                         | codex_state::ThreadGoalStatus::BudgetLimited
+                        | codex_state::ThreadGoalStatus::Deferred
                         | codex_state::ThreadGoalStatus::Complete
                         | codex_state::ThreadGoalStatus::Cancelled => {
                             unreachable!("status matched above")
@@ -350,6 +368,24 @@ impl GoalRuntimeHandle {
                         &goal,
                         /*turn_id*/ None,
                         reason,
+                    )
+                    .await?;
+                }
+            }
+            codex_state::ThreadGoalStatus::Deferred => {
+                self.inner.accounting_state.clear_active_goal();
+                if matches!(
+                    previous_status,
+                    Some(
+                        codex_state::ThreadGoalStatus::Blocked
+                            | codex_state::ThreadGoalStatus::UsageLimited
+                    )
+                ) {
+                    crate::pending_interaction::clear_goal_status_waits(
+                        self.inner.state_dbs.as_ref(),
+                        self.thread_id(),
+                        goal.goal_id.as_str(),
+                        "goal deferred",
                     )
                     .await?;
                 }

@@ -11,6 +11,8 @@ fn test_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> ThreadSched
     ThreadSchedule {
         thread_id: "thread-1".to_string(),
         schedule_id: schedule_id.to_string(),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: "check whether CI is green and write the next action".to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule: ThreadScheduleSpec::Interval {

@@ -43,6 +43,7 @@ fn resume_history(
         model_provider_id: None,
         personality: None,
         collaboration_mode: None,
+        session_prompt: None,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: None,

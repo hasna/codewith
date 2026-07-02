@@ -16,6 +16,7 @@ pub enum SlashCommand {
     Profile,
     Provider,
     Config,
+    Prompt,
     Ide,
     Permissions,
     Keymap,
@@ -31,6 +32,7 @@ pub enum SlashCommand {
     Skills,
     Hooks,
     Review,
+    Pair,
     #[strum(
         to_string = "pr",
         serialize = "prs",
@@ -122,6 +124,7 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Recap => "show a one-line summary or answer a session recap question",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Pair => "start a paired watcher agent for this session",
             SlashCommand::Pr => "inspect GitHub pull requests",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
@@ -151,6 +154,7 @@ impl SlashCommand {
             SlashCommand::Profile => "choose the auth profile for this session",
             SlashCommand::Provider => "choose the default model provider",
             SlashCommand::Config => "configure config.toml interactively",
+            SlashCommand::Prompt => "set a session-scoped prompt for future turns",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -204,7 +208,9 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Pair
                 | SlashCommand::Rename
+                | SlashCommand::Prompt
                 | SlashCommand::Plan
                 | SlashCommand::Goal
                 | SlashCommand::Workflow
@@ -275,6 +281,7 @@ impl SlashCommand {
             | SlashCommand::Copy
             | SlashCommand::Raw
             | SlashCommand::Profile
+            | SlashCommand::Prompt
             | SlashCommand::Recap
             | SlashCommand::Rename
             | SlashCommand::Mention
@@ -294,6 +301,7 @@ impl SlashCommand {
             | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
+            | SlashCommand::Pair
             | SlashCommand::BackgroundAgent
             | SlashCommand::Worktree
             | SlashCommand::Session
@@ -463,6 +471,36 @@ mod tests {
     }
 
     #[test]
+    fn prompt_command_is_session_scoped_and_inline_capable() {
+        assert_eq!(SlashCommand::Prompt.command(), "prompt");
+        assert_eq!(
+            SlashCommand::Prompt.description(),
+            "set a session-scoped prompt for future turns"
+        );
+        assert!(SlashCommand::Prompt.supports_inline_args());
+        assert!(SlashCommand::Prompt.available_during_task());
+        assert!(!SlashCommand::Prompt.available_in_side_conversation());
+        assert_eq!(SlashCommand::from_str("session"), Ok(SlashCommand::Session));
+    }
+
+    #[test]
+    fn summary_command_configures_final_message_summary() {
+        assert_eq!(SlashCommand::Summary.command(), "summary");
+        assert_eq!(
+            SlashCommand::Summary.description(),
+            "configure what appears after final messages"
+        );
+        assert!(!SlashCommand::Summary.supports_inline_args());
+        assert!(SlashCommand::Summary.available_during_task());
+        assert!(!SlashCommand::Summary.available_in_side_conversation());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "summary" && *command == SlashCommand::Summary)
+        );
+    }
+
+    #[test]
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Workflow.available_during_task());
@@ -561,6 +599,23 @@ mod tests {
         assert_eq!(
             SlashCommand::MissionControl.description(),
             "show orchestration sessions and projects"
+        );
+    }
+
+    #[test]
+    fn pair_command_supports_inline_watcher_prompt() {
+        assert_eq!(SlashCommand::Pair.command(), "pair");
+        assert_eq!(
+            SlashCommand::Pair.description(),
+            "start a paired watcher agent for this session"
+        );
+        assert!(SlashCommand::Pair.supports_inline_args());
+        assert!(SlashCommand::Pair.available_during_task());
+        assert!(!SlashCommand::Pair.available_in_side_conversation());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "pair" && *command == SlashCommand::Pair)
         );
     }
 

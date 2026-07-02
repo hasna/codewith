@@ -253,6 +253,7 @@ fn pending_interaction_kind_for_goal_status(
         codex_state::ThreadGoalStatus::Active
         | codex_state::ThreadGoalStatus::Paused
         | codex_state::ThreadGoalStatus::BudgetLimited
+        | codex_state::ThreadGoalStatus::Deferred
         | codex_state::ThreadGoalStatus::Complete
         | codex_state::ThreadGoalStatus::Cancelled => None,
     }

@@ -88,6 +88,18 @@ impl FinalMessageSeparator {
         elapsed_seconds: Option<u64>,
         runtime_metrics: Option<RuntimeMetricsSummary>,
     ) -> Self {
+        Self::new_with_items(
+            elapsed_seconds,
+            runtime_metrics,
+            DEFAULT_MESSAGE_SUMMARY_ITEMS.iter().copied(),
+        )
+    }
+
+    pub(crate) fn new_with_items(
+        elapsed_seconds: Option<u64>,
+        runtime_metrics: Option<RuntimeMetricsSummary>,
+        summary_items: impl IntoIterator<Item = MessageSummaryItem>,
+    ) -> Self {
         Self {
             elapsed_seconds,
             runtime_metrics,

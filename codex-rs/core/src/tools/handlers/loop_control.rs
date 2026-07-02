@@ -36,6 +36,7 @@ pub struct ManageLoopHandler;
 struct ManageLoopArgs {
     action: LoopAction,
     schedule_id: Option<String>,
+    parent_schedule_id: Option<String>,
     prompt: Option<String>,
     schedule: Option<LoopScheduleSpecArg>,
     timezone: Option<String>,
@@ -94,6 +95,8 @@ struct ManageLoopResponse {
 struct LoopScheduleSnapshot {
     thread_id: String,
     schedule_id: String,
+    parent_schedule_id: Option<String>,
+    nesting_depth: i64,
     prompt: String,
     prompt_source: String,
     schedule: LoopScheduleSpecSnapshot,
@@ -345,6 +348,18 @@ async fn create_loop(
         .schedule
         .ok_or_else(|| model_error("schedule is required when action is create"))
         .and_then(loop_schedule_spec_arg_to_state)?;
+    let parent_schedule_id = args
+        .parent_schedule_id
+        .as_deref()
+        .map(str::trim)
+        .map(|value| {
+            if value.is_empty() {
+                Err(model_error("parent_schedule_id cannot be empty"))
+            } else {
+                Ok(value.to_string())
+            }
+        })
+        .transpose()?;
     let timezone = normalize_timezone(args.timezone)?;
     let now = Utc::now();
     let explicit_next_run_at = args
@@ -366,23 +381,35 @@ async fn create_loop(
         .or_else(|| default_loop_expires_at(now));
     validate_loop_expiry(next_run_at, expires_at)?;
 
-    let schedule = state_db
-        .thread_schedules()
-        .create_thread_schedule_for_auth_profile(
-            codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt,
-                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule,
-                timezone,
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at,
-                expires_at,
-            },
-            auth_profile,
-        )
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    let create_params = codex_state::ThreadScheduleCreateParams {
+        thread_id,
+        prompt,
+        prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+        schedule,
+        timezone,
+        status: codex_state::ThreadScheduleStatus::Active,
+        next_run_at,
+        expires_at,
+    };
+    let schedule = match parent_schedule_id {
+        Some(parent_schedule_id) => {
+            state_db
+                .thread_schedules()
+                .create_nested_thread_schedule_for_auth_profile(
+                    create_params,
+                    parent_schedule_id,
+                    auth_profile,
+                )
+                .await
+        }
+        None => {
+            state_db
+                .thread_schedules()
+                .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                .await
+        }
+    }
+    .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
     let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
     let schedules = list_loop_snapshots(&state_db, thread_id).await?;
     let schedule_id = affected_schedule.schedule_id.clone();
@@ -648,6 +675,8 @@ async fn loop_schedule_snapshot(
     Ok(LoopScheduleSnapshot {
         thread_id: schedule.thread_id.to_string(),
         schedule_id: schedule.schedule_id,
+        parent_schedule_id: schedule.parent_schedule_id,
+        nesting_depth: schedule.nesting_depth,
         prompt: schedule.prompt,
         prompt_source: schedule.prompt_source.as_str().to_string(),
         schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
@@ -756,6 +785,7 @@ mod tests {
         ManageLoopArgs {
             action,
             schedule_id: None,
+            parent_schedule_id: None,
             prompt: None,
             schedule: None,
             timezone: None,
@@ -907,6 +937,78 @@ mod tests {
                 unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn create_loop_accepts_nested_parent_schedule_id() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let parent_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                prompt: Some("Parent loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("parent loop should be created");
+        let parent_schedule_id = parent_response
+            .schedule_id
+            .expect("parent schedule id should be returned");
+
+        let child_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id.clone()),
+                prompt: Some("Child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+        let child = child_response
+            .affected_schedule
+            .expect("child schedule should be returned");
+        assert_eq!(Some(parent_schedule_id.clone()), child.parent_schedule_id);
+        assert_eq!(2, child.nesting_depth);
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id),
+                prompt: Some("Same minute child".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Dynamic),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("same-minute child should be rejected");
+        match err {
+            FunctionCallError::RespondToModel(message) => assert!(
+                message.contains("child cadence must be slower than parent cadence"),
+                "unexpected model error: {message}"
+            ),
+            other => panic!("expected model error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -978,6 +978,8 @@ mod tests {
         ThreadSchedule {
             thread_id: "thread-1".to_string(),
             schedule_id: schedule_id.to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
             prompt: "check CI".to_string(),
             prompt_source: ThreadSchedulePromptSource::Inline,
             schedule: ThreadScheduleSpec::Interval {

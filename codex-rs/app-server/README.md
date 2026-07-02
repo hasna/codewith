@@ -2265,6 +2265,8 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `account/login/start` — begin login (`apiKey`, `chatgpt`, `chatgptDeviceCode`).
 - `account/login/completed` (notify) — emitted when a login attempt finishes (success or error).
 - `account/login/cancel` — cancel a pending managed ChatGPT login by `loginId`.
+- `authProfile/list` — list saved auth profiles, including provider, auth mode, account identity, plan, and active flag.
+- `authProfile/switch` — switch to a saved ChatGPT auth profile by name; triggers `account/updated`.
 - `account/logout` — sign out; triggers `account/updated`.
 - `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
 - `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
@@ -2358,13 +2360,26 @@ Field notes:
 { "method": "account/updated", "params": { "authMode": null, "planType": null } }
 ```
 
-### 7) Rate limits (ChatGPT)
+### 7) Auth profiles
 
 ```json
-{ "method": "account/rateLimits/read", "id": 7 }
-{ "method": "account/rateLimits/read", "id": 8, "params": { "authProfile": "work" } }
-{ "method": "account/rateLimits/read", "id": 9, "params": { "authProfile": null } }
-{ "id": 7, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
+{ "method": "authProfile/list", "id": 7, "params": {} }
+{ "id": 7, "result": { "data": [{ "name": "work", "subscriptionProvider": "ChatGPT", "authMode": "chatgpt", "email": "user@example.com", "accountId": null, "plan": "pro", "active": true }] } }
+```
+
+```json
+{ "method": "authProfile/switch", "id": 8, "params": { "name": "work" } }
+{ "id": 8, "result": { "profile": { "name": "work", "subscriptionProvider": "ChatGPT", "authMode": "chatgpt", "email": "user@example.com", "accountId": null, "plan": "pro", "active": true } } }
+{ "method": "account/updated", "params": { "authMode": "chatgpt", "planType": "pro" } }
+```
+
+### 8) Rate limits (ChatGPT)
+
+```json
+{ "method": "account/rateLimits/read", "id": 9 }
+{ "method": "account/rateLimits/read", "id": 10, "params": { "authProfile": "work" } }
+{ "method": "account/rateLimits/read", "id": 11, "params": { "authProfile": null } }
+{ "id": 9, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 

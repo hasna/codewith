@@ -7,6 +7,7 @@ use crate::context::PersonalitySpecInstructions;
 use crate::context::RealtimeEndInstructions;
 use crate::context::RealtimeStartInstructions;
 use crate::context::RealtimeStartWithInstructions;
+use crate::context::SessionPromptInstructions;
 use crate::session::PreviousTurnSettings;
 use crate::session::turn_context::TurnContext;
 use crate::shell::Shell;
@@ -88,6 +89,22 @@ fn build_collaboration_mode_update_item(
         )
     } else {
         None
+    }
+}
+
+fn build_session_prompt_update_item(
+    previous: Option<&TurnContextItem>,
+    next: &TurnContext,
+) -> Option<String> {
+    let prev = previous?;
+    if prev.session_prompt == next.session_prompt {
+        return None;
+    }
+
+    if let Some(prompt) = next.session_prompt.as_deref() {
+        SessionPromptInstructions::from_prompt(prompt).map(|instructions| instructions.render())
+    } else {
+        Some(SessionPromptInstructions::cleared().render())
     }
 }
 
@@ -225,6 +242,7 @@ pub(crate) fn build_settings_update_items(
         build_model_instructions_update_item(previous_turn_settings, next),
         build_permissions_update_item(previous, next, exec_policy),
         build_collaboration_mode_update_item(previous, next),
+        build_session_prompt_update_item(previous, next),
         build_realtime_update_item(previous, previous_turn_settings, next),
         build_personality_update_item(previous, next, personality_feature_enabled),
     ]

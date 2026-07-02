@@ -48,6 +48,7 @@ struct AppShell: View {
                 switch model.route {
                 case .home:
                     HomeView(model: model,
+                             showConfigToggle: model.desktopSettings.bottomPanel,
                              onSubmit: { Task { await model.submitComposer() } },
                              onToggleConfig: { model.showConfigPanel.toggle() })
                 case .chat(let id):
@@ -55,6 +56,7 @@ struct AppShell: View {
                              onSubmit: { Task { await model.submitComposer() } },
                              onPlus: { model.toggleAddMenu() },
                              onAddAction: { model.handleAddAction($0) },
+                             showConfigToggle: model.desktopSettings.bottomPanel,
                              onToggleConfig: { model.showConfigPanel.toggle() })
                 case .search:   SearchView(model: model,
                                            onThread: { t in Task { await model.openThread(t) } },
@@ -63,15 +65,25 @@ struct AppShell: View {
                 case .loops:
                     LoopsView(
                         loops: model.loops,
+                        error: model.loopsError,
                         onToggle: { l in Task { await model.toggleLoop(l) } },
-                        onCreate: { Task { await model.createDefaultLoop() } })
+                        onCreate: { draft in Task { await model.createLoop(draft) } },
+                        onRunNow: { l in Task { await model.runLoopNow(l) } },
+                        onDelete: { l in Task { await model.deleteLoop(l) } })
                 case .project(let key):
                     ProjectSessionsView(model: model, projectKey: key,
                                         onThread: { t in Task { await model.openThread(t) } })
-                case .machines: MachinesView(machines: model.machines)
+                case .machines:
+                    MachinesView(
+                        machines: model.machines,
+                        error: model.machinesError,
+                        pairing: model.machinePairing,
+                        onStartPairing: { Task { await model.startMachinePairing() } },
+                        onCheckPairing: { Task { await model.refreshMachinePairingStatus() } })
                 case .profiles: ProfilesView(profiles: model.authProfiles,
                                              activeEmail: model.account.email,
                                              onSwitch: { name in Task { await model.switchAuthProfile(name) } })
+                    .task { await model.loadProfiles() }
                 }
             }
             .frame(maxWidth: .infinity)
@@ -101,11 +113,40 @@ struct AppShell: View {
         switch name {
         case "Profile":         SettingsProfile(account: model.account)
         case "Appearance":      SettingsAppearance()
-        case "Configuration":   SettingsConfiguration(version: model.serverVersion, approval: model.configApproval, sandbox: model.configSandbox,
-                                                       onSetApproval: { model.setApproval($0) }, onSetSandbox: { model.setSandbox($0) })
-        case "Personalization": SettingsPersonalization()
-        default:                SettingsGeneral(fullAccess: model.fullAccess, sandbox: model.configSandbox,
-                                                onToggleFullAccess: { model.setFullAccess(!model.fullAccess) })
+        case "Configuration":
+            SettingsConfiguration(
+                version: model.serverVersion,
+                approval: model.configApproval,
+                sandbox: model.configSandbox,
+                error: model.configError,
+                approvalOptions: model.approvalOptions,
+                sandboxOptions: model.sandboxOptions,
+                onSetApproval: { model.setApproval($0) },
+                onSetSandbox: { model.setSandbox($0) },
+                onOpenConfig: { model.openConfigToml() },
+                onDiagnose: { model.openDiagnosticsLog() })
+        case "Personalization":
+            SettingsPersonalization(
+                instructions: model.customInstructions,
+                desktopSettings: model.desktopSettings,
+                onSetPersonality: { model.setPersonality($0) },
+                onSaveInstructions: { model.setCustomInstructions($0) },
+                onSetMemoryEnabled: { model.setMemoryEnabled($0) },
+                onSetChronicleResearch: { model.setChronicleResearch($0) },
+                onSetSkipToolAssistedChats: { model.setSkipToolAssistedChats($0) },
+                onResetMemories: { model.resetMemories() })
+        default:
+            SettingsGeneral(
+                fullAccess: model.fullAccess,
+                sandbox: model.configSandbox,
+                desktopSettings: model.desktopSettings,
+                allowFullAccess: model.canUseFullAccess,
+                onToggleFullAccess: { model.setFullAccess(!model.fullAccess) },
+                onSetWorkMode: { model.setWorkMode($0) },
+                onSetFileOpenDestination: { model.setFileOpenDestination($0) },
+                onSetLanguage: { model.setLanguage($0) },
+                onSetShowMenuBar: { model.setShowMenuBar($0) },
+                onSetBottomPanel: { model.setBottomPanel($0) })
         }
     }
 }

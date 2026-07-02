@@ -59,6 +59,7 @@ struct ThreadSettingsBuildParams {
     summary: Option<ReasoningSummary>,
     collaboration_mode: Option<CollaborationMode>,
     personality: Option<Personality>,
+    session_prompt: Option<Option<String>>,
 }
 
 impl TurnRequestProcessor {
@@ -433,6 +434,7 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    session_prompt: None,
                 },
             )
             .await?;
@@ -509,6 +511,7 @@ impl TurnRequestProcessor {
             summary,
             collaboration_mode,
             personality,
+            session_prompt,
         } = params;
 
         if sandbox_policy.is_some() && permissions.is_some() {
@@ -559,7 +562,8 @@ impl TurnRequestProcessor {
             || effort.is_some()
             || summary.is_some()
             || collaboration_mode.is_some()
-            || personality.is_some();
+            || personality.is_some()
+            || session_prompt.is_some();
 
         let runtime_workspace_roots =
             runtime_workspace_roots_request.map(resolve_runtime_workspace_roots);
@@ -636,6 +640,7 @@ impl TurnRequestProcessor {
                     service_tier: service_tier.clone(),
                     collaboration_mode: collaboration_mode.clone(),
                     personality,
+                    session_prompt: session_prompt.clone(),
                 })
                 .await
                 .map_err(|err| {
@@ -661,6 +666,7 @@ impl TurnRequestProcessor {
             service_tier,
             collaboration_mode,
             personality,
+            session_prompt,
         })
     }
 
@@ -690,6 +696,7 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    session_prompt: params.session_prompt,
                 },
             )
             .await?;

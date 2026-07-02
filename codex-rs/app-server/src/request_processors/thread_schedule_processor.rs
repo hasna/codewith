@@ -129,6 +129,18 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let parent_schedule_id = params
+            .parent_schedule_id
+            .as_deref()
+            .map(str::trim)
+            .map(|value| {
+                if value.is_empty() {
+                    Err(invalid_request("parentScheduleId cannot be empty"))
+                } else {
+                    Ok(value.to_string())
+                }
+            })
+            .transpose()?;
         let prompt_source = params
             .prompt_source
             .unwrap_or(ThreadSchedulePromptSource::Inline);
@@ -203,11 +215,25 @@ impl ThreadScheduleRequestProcessor {
             next_run_at,
             expires_at,
         };
-        let schedule = state_db
-            .thread_schedules()
-            .create_thread_schedule_for_auth_profile(create_params, auth_profile)
-            .await
-            .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
+        let schedule = match parent_schedule_id {
+            Some(parent_schedule_id) => {
+                state_db
+                    .thread_schedules()
+                    .create_nested_thread_schedule_for_auth_profile(
+                        create_params,
+                        parent_schedule_id,
+                        auth_profile,
+                    )
+                    .await
+            }
+            None => {
+                state_db
+                    .thread_schedules()
+                    .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                    .await
+            }
+        }
+        .map_err(|err| schedule_mutation_error("create", err))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -456,7 +482,7 @@ impl ThreadScheduleRequestProcessor {
                 },
             )
             .await
-            .map_err(|err| internal_error(format!("failed to update thread schedule: {err}")))?
+            .map_err(|err| schedule_mutation_error("update", err))?
             .ok_or_else(|| invalid_request(format!("schedule not found: {schedule_id}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
@@ -568,6 +594,11 @@ impl ThreadScheduleRequestProcessor {
                 .await;
             return Ok(());
         };
+        let affected_schedule_ids = state_db
+            .thread_schedules()
+            .list_thread_schedule_tree_ids(schedule_id.as_str())
+            .await
+            .map_err(|err| internal_error(format!("failed to list nested schedules: {err}")))?;
         let deleted = state_db
             .thread_schedules()
             .delete_thread_schedule(schedule_id.as_str())
@@ -578,8 +609,14 @@ impl ThreadScheduleRequestProcessor {
             .send_response(request_id.clone(), ThreadScheduleDeleteResponse { deleted })
             .await;
         if deleted {
-            self.emit_thread_schedule_deleted_ordered(thread_id, schedule_id, listener_command_tx)
+            for affected_schedule_id in affected_schedule_ids {
+                self.emit_thread_schedule_deleted_ordered(
+                    thread_id,
+                    affected_schedule_id,
+                    listener_command_tx.clone(),
+                )
                 .await;
+            }
         }
         Ok(())
     }
@@ -950,6 +987,15 @@ fn next_active_recurring_run_at(
     thread_schedule_runtime::next_thread_schedule_run_at(schedule, timezone, Utc::now())
         .map_err(|err| invalid_request(err.to_string()))?
         .ok_or_else(|| invalid_request("nextRunAt is required for one-time schedules"))
+}
+
+fn schedule_mutation_error(action: &str, err: anyhow::Error) -> JSONRPCErrorError {
+    let message = err.to_string();
+    if message.starts_with("invalid nested loop:") {
+        invalid_request(message)
+    } else {
+        internal_error(format!("failed to {action} thread schedule: {message}"))
+    }
 }
 
 enum ScheduleStatusResponseKind {

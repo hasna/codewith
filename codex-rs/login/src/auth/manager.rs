@@ -840,8 +840,14 @@ async fn load_auth_with_profile(
         }
     }
 
-    // API key via env var takes precedence over any other auth method.
-    if enable_codex_api_key_env && let Some(api_key) = read_codex_api_key_from_env() {
+    let use_global_env_auth = selected_auth_profile.is_none();
+
+    // API key via env var takes precedence over any root auth method, but an
+    // explicitly scoped profile read must use that profile's own credentials.
+    if use_global_env_auth
+        && enable_codex_api_key_env
+        && let Some(api_key) = read_codex_api_key_from_env()
+    {
         return Ok(Some(CodexAuth::from_api_key(api_key.as_str())));
     }
 
@@ -864,7 +870,7 @@ async fn load_auth_with_profile(
         return Ok(Some(auth));
     }
 
-    if let Some(access_token) = read_codex_access_token_from_env() {
+    if use_global_env_auth && let Some(access_token) = read_codex_access_token_from_env() {
         return match classify_codex_access_token(&access_token) {
             CodexAccessToken::PersonalAccessToken(access_token) => {
                 CodexAuth::from_personal_access_token(access_token)
@@ -1625,7 +1631,9 @@ impl AuthManager {
     /// For managed ChatGPT auth that needs a proactive refresh, first performs
     /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
     pub async fn auth(&self) -> Option<CodexAuth> {
-        if let Some(auth) = self.resolve_external_api_key_auth().await {
+        if self.selected_auth_profile().is_none()
+            && let Some(auth) = self.resolve_external_api_key_auth().await
+        {
             return Some(auth);
         }
 

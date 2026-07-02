@@ -9,6 +9,6 @@ expression: terminal.backend()
 "  /profile          choose the auth profile for this session            "
 "  /provider         choose the default model provider                   "
 "  /config           configure config.toml interactively                 "
+"  /prompt           set a session-scoped prompt for future turns        "
 "  /ide              include current selection, open files, and other    "
 "                    context from your IDE                               "
-"  /permissions      choose what Codewith is allowed to do               "

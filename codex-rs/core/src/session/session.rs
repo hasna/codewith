@@ -58,6 +58,9 @@ pub(crate) struct SessionConfiguration {
     /// Developer instructions that supplement the base instructions.
     pub(super) developer_instructions: Option<String>,
 
+    /// Session-scoped extra prompt that supplements developer instructions.
+    pub(super) session_prompt: Option<String>,
+
     /// Model instructions that are appended to the base instructions and the
     /// files that supplied them.
     pub(super) user_instructions: Option<LoadedAgentsMd>,
@@ -203,6 +206,7 @@ impl SessionConfiguration {
             reasoning_summary: self.model_reasoning_summary,
             personality: self.personality,
             collaboration_mode: self.collaboration_mode.clone(),
+            session_prompt: self.session_prompt.clone(),
             selected_auth_profile: self
                 .original_config_do_not_use
                 .selected_auth_profile
@@ -258,6 +262,10 @@ impl SessionConfiguration {
                 ),
                 None => Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
             };
+        }
+        if let Some(session_prompt) = updates.session_prompt.clone() {
+            next_configuration.session_prompt =
+                session_prompt.and_then(|prompt| non_empty_trimmed_string(&prompt));
         }
         let inferred_model_provider_id =
             updates.model_provider_id.as_ref().cloned().or_else(|| {
@@ -527,6 +535,15 @@ fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str
     }
 }
 
+fn non_empty_trimmed_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<AbsolutePathBuf>,
@@ -543,6 +560,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
+    pub(crate) session_prompt: Option<Option<String>>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     /// Turn-local environment override. `None` inherits the sticky thread
     /// environments stored on `SessionConfiguration`; `Some([])` explicitly

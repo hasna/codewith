@@ -1198,10 +1198,16 @@ impl App {
             }
             AppEvent::StartBackgroundAgent {
                 prompt,
+                initial_goal_objective,
                 worktree_id,
             } => {
-                self.start_background_agent(app_server, prompt, worktree_id)
-                    .await;
+                self.start_background_agent(
+                    app_server,
+                    prompt,
+                    initial_goal_objective,
+                    worktree_id,
+                )
+                .await;
             }
             AppEvent::StartExternalAgentChildThread {
                 runtime_id,
@@ -1969,6 +1975,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -1996,6 +2003,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -2028,6 +2036,7 @@ impl App {
                                         /*summary*/ None,
                                         /*service_tier*/ None,
                                         /*collaboration_mode*/ None,
+                                        /*session_prompt*/ None,
                                         /*personality*/ None,
                                     ),
                                 ));
@@ -2535,6 +2544,9 @@ impl App {
             AppEvent::ShowStatusReport => {
                 self.chat_widget.show_status_report();
             }
+            AppEvent::SetSessionPrompt { prompt } => {
+                self.chat_widget.apply_session_prompt(prompt);
+            }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
             }
@@ -2850,6 +2862,7 @@ impl App {
                                 summary: None,
                                 service_tier: None,
                                 collaboration_mode: None,
+                                session_prompt: None,
                                 personality: None,
                             },
                             Err(err) => {

@@ -17,6 +17,7 @@ pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2JobClaimOutcome;
+pub use runtime::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use runtime::StateRuntimeStartupLock;
@@ -197,6 +198,7 @@ pub use runtime::RuntimeDbPath;
 pub use runtime::ScheduleStore;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::ThreadGoalPlanAdvanceOutcome;
+pub use runtime::ThreadGoalPlanAppendParams;
 pub use runtime::ThreadGoalPlanCreateParams;
 pub use runtime::ThreadGoalPlanListPage;
 pub use runtime::ThreadGoalPlanNodeCreateParams;

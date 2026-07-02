@@ -4,11 +4,16 @@ struct SettingsConfiguration: View {
     var version: String? = nil
     var approval: String? = nil
     var sandbox: String? = nil
+    var error: String? = nil
+    var approvalOptions: [String] = ["untrusted", "on-failure", "on-request", "never"]
+    var sandboxOptions: [String] = ["read-only", "workspace-write", "danger-full-access"]
     var onSetApproval: (String) -> Void = { _ in }
     var onSetSandbox: (String) -> Void = { _ in }
     var onOpenConfig: () -> Void = {}
     var onDiagnose: () -> Void = {}
     @Environment(\.snapshotMode) private var snapshot
+    @State private var pendingDangerousApproval: String?
+    @State private var pendingDangerousSandbox: String?
 
     private var approvalLabel: String {
         switch approval {
@@ -37,6 +42,10 @@ struct SettingsConfiguration: View {
                 .padding(.top, -10).padding(.bottom, 22)
 
                 SettingsGroupLabel(text: "Custom config.toml settings")
+                if let error {
+                    warningRow(error)
+                        .padding(.bottom, 8)
+                }
                 HStack {
                     // Borderless dropdown — the reference renders this selector with
                     // no card outline (text + chevron only).
@@ -56,8 +65,8 @@ struct SettingsConfiguration: View {
                         if snapshot { DropdownPill(text: approvalLabel, minWidth: 150) }
                         else {
                             Menu {
-                                ForEach(["untrusted", "on-failure", "on-request", "never"], id: \.self) { v in
-                                    Button(v) { onSetApproval(v) }
+                                ForEach(approvalOptions, id: \.self) { v in
+                                    Button(v) { selectApproval(v) }
                                 }
                             } label: { DropdownPill(text: approvalLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -67,8 +76,8 @@ struct SettingsConfiguration: View {
                         if snapshot { DropdownPill(text: sandboxLabel, minWidth: 150) }
                         else {
                             Menu {
-                                ForEach(["read-only", "workspace-write", "danger-full-access"], id: \.self) { v in
-                                    Button(v) { onSetSandbox(v) }
+                                ForEach(sandboxOptions, id: \.self) { v in
+                                    Button(v) { selectSandbox(v) }
                                 }
                             } label: { DropdownPill(text: sandboxLabel, minWidth: 150) }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -96,6 +105,20 @@ struct SettingsConfiguration: View {
                 }
             }
         }
+        .confirmationDialog("Allow high-risk setting?", isPresented: dangerousConfirmationBinding) {
+            Button("Apply", role: .destructive) {
+                if let approval = pendingDangerousApproval {
+                    onSetApproval(approval)
+                }
+                if let sandbox = pendingDangerousSandbox {
+                    onSetSandbox(sandbox)
+                }
+                clearPendingDangerousSetting()
+            }
+            Button("Cancel", role: .cancel) { clearPendingDangerousSetting() }
+        } message: {
+            Text("This can let CodeWith run with fewer approval prompts or broader filesystem and network access.")
+        }
     }
     /// Groups rows in a subtle bordered card (reference Configuration layout).
     private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
@@ -121,5 +144,61 @@ struct SettingsConfiguration: View {
             pill(t, icon: icon, color: color)
         }
         .buttonStyle(.plain)
+    }
+
+    private var dangerousConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDangerousApproval != nil || pendingDangerousSandbox != nil },
+            set: { isPresented in
+                if !isPresented { clearPendingDangerousSetting() }
+            }
+        )
+    }
+
+    private func selectApproval(_ value: String) {
+        if Self.requiresConfirmation(approval: value) {
+            pendingDangerousApproval = value
+            pendingDangerousSandbox = nil
+        } else {
+            onSetApproval(value)
+        }
+    }
+
+    private func selectSandbox(_ value: String) {
+        if Self.requiresConfirmation(sandbox: value) {
+            pendingDangerousSandbox = value
+            pendingDangerousApproval = nil
+        } else {
+            onSetSandbox(value)
+        }
+    }
+
+    private func clearPendingDangerousSetting() {
+        pendingDangerousApproval = nil
+        pendingDangerousSandbox = nil
+    }
+
+    static func requiresConfirmation(approval: String) -> Bool {
+        approval == "never"
+    }
+
+    static func requiresConfirmation(sandbox: String) -> Bool {
+        sandbox == "danger-full-access"
+    }
+
+    private func warningRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.warning)
+                .padding(.top, 2)
+            Text(text)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.warning.opacity(0.08)))
     }
 }

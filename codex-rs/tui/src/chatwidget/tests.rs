@@ -236,6 +236,7 @@ mod plan_mode;
 mod popups_and_settings;
 mod pull_request_display;
 mod review_mode;
+mod session_prompt;
 mod side;
 mod slash_commands;
 mod status_and_layout;

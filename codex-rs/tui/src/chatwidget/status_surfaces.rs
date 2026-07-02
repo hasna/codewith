@@ -36,6 +36,29 @@ const TERMINAL_TITLE_ACTION_REQUIRED_INTERVAL: Duration = Duration::from_secs(1)
 const TERMINAL_TITLE_ACTION_REQUIRED_PREFIX: &str = "[ ! ] Action Required";
 const TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN: &str = "[ . ] Action Required";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunStateStatus {
+    Starting,
+    WaitingOnHuman,
+    WaitingOnBackground,
+    Idle,
+    Working,
+    Thinking,
+}
+
+impl RunStateStatus {
+    fn label(self) -> &'static str {
+        match self {
+            RunStateStatus::Starting => "Starting",
+            RunStateStatus::WaitingOnHuman => "Waiting on human",
+            RunStateStatus::WaitingOnBackground => "Waiting on background",
+            RunStateStatus::Idle => "Idle",
+            RunStateStatus::Working => "Working",
+            RunStateStatus::Thinking => "Thinking",
+        }
+    }
+}
+
 #[derive(Debug)]
 /// Parsed status-surface configuration for one refresh pass.
 ///
@@ -216,8 +239,7 @@ impl ChatWidget {
     /// When the `activity` item is present in an animated running state, this also
     /// schedules the next frame so the title animation keeps advancing.
     fn refresh_terminal_title_from_selections(&mut self, selections: &StatusSurfaceSelections) {
-        self.last_terminal_title_requires_action =
-            self.terminal_title_shows_action_required_with_selections(selections);
+        self.last_terminal_title_requires_action = self.terminal_title_requires_action();
         if selections.terminal_title_items.is_empty() {
             if let Err(err) = self.clear_managed_terminal_title() {
                 tracing::debug!(error = %err, "failed to clear terminal title");
@@ -991,28 +1013,32 @@ impl ChatWidget {
 
     /// Computes the compact runtime status label used by word-based status items.
     ///
-    /// Startup takes precedence over normal task states, and idle state renders
-    /// as `Ready` regardless of the last active status bucket.
+    /// Action-required prompts and startup take precedence over normal task
+    /// states, and idle state renders as `Idle` regardless of the last active
+    /// status bucket.
     pub(super) fn run_state_status_text(&self) -> String {
+        self.run_state_status().label().to_string()
+    }
+
+    fn run_state_status(&self) -> RunStateStatus {
+        if self.terminal_title_requires_action() {
+            return RunStateStatus::WaitingOnHuman;
+        }
+
         if self.mcp_startup_status.is_some() {
-            return "Starting".to_string();
+            return RunStateStatus::Starting;
+        }
+
+        if !self.bottom_pane.is_task_running() {
+            return RunStateStatus::Idle;
         }
 
         match self.status_state.terminal_title_status_kind {
-            TerminalTitleStatusKind::Working if !self.bottom_pane.is_task_running() => {
-                "Ready".to_string()
+            TerminalTitleStatusKind::Working => RunStateStatus::Working,
+            TerminalTitleStatusKind::WaitingForBackgroundTerminal => {
+                RunStateStatus::WaitingOnBackground
             }
-            TerminalTitleStatusKind::WaitingForBackgroundTerminal
-                if !self.bottom_pane.is_task_running() =>
-            {
-                "Ready".to_string()
-            }
-            TerminalTitleStatusKind::Thinking if !self.bottom_pane.is_task_running() => {
-                "Ready".to_string()
-            }
-            TerminalTitleStatusKind::Working => "Working".to_string(),
-            TerminalTitleStatusKind::WaitingForBackgroundTerminal => "Waiting".to_string(),
-            TerminalTitleStatusKind::Thinking => "Thinking".to_string(),
+            TerminalTitleStatusKind::Thinking => RunStateStatus::Thinking,
         }
     }
 

@@ -335,11 +335,12 @@ final class AppModel {
         async let peers: () = loadActivePeers()
         async let agents: () = loadAgentRuns()
         async let requirements: () = loadConfigRequirements()
+        async let profiles: () = loadProfiles()
         await loadConfig()
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, apps, peers, agents, requirements, catalog)
+        _ = await (acct, apps, peers, agents, requirements, profiles, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { [weak self] in
             guard let self else { return }

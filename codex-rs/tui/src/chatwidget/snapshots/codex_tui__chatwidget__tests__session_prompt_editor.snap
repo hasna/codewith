@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/session_prompt.rs
+assertion_line: 75
+expression: popup
+---
+▌ Session prompt
+▌ Applies only to this session. Use /prompt clear to remove it.
+▌
+▌ Prefer direct answers.
+▌ Call out risky assumptions.
+
+Press enter to confirm or esc to go back

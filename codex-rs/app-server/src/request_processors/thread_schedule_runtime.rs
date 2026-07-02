@@ -258,7 +258,12 @@ impl ThreadScheduleRuntime {
                 claim.run.scheduled_for,
             )
         } else {
-            scheduled_thread_prompt(&prompt, claim.run.run_id.as_str(), claim.run.scheduled_for)
+            scheduled_thread_prompt(
+                &prompt,
+                &claim.schedule,
+                claim.run.run_id.as_str(),
+                claim.run.scheduled_for,
+            )
         };
         let thread_settings = scheduled_thread_settings_from_snapshot(
             thread.config_snapshot().await,
@@ -714,23 +719,48 @@ impl ThreadScheduleRuntime {
 
 fn scheduled_thread_prompt(
     prompt: &str,
+    schedule: &codex_state::ThreadSchedule,
     run_id: &str,
     scheduled_for: Option<DateTime<Utc>>,
 ) -> String {
     let scheduled_for = scheduled_for
         .map(|scheduled_for| scheduled_for.to_rfc3339())
         .unwrap_or_else(|| "immediate".to_string());
+    let parent_schedule_id = schedule.parent_schedule_id.as_deref().unwrap_or("none");
+    let can_be_nested_parent = matches!(
+        schedule.schedule,
+        codex_state::ThreadScheduleSpec::Dynamic | codex_state::ThreadScheduleSpec::Interval(_)
+    );
+    let nesting_guidance = if schedule.nesting_depth
+        >= codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+    {
+        "This loop is already at the maximum nesting depth; do not create nested loops from this run.".to_string()
+    } else if !can_be_nested_parent {
+        "This schedule cannot be used as a nested-loop parent; do not create nested loops from this run.".to_string()
+    } else {
+        format!(
+            "If the scheduled prompt explicitly asks for a nested loop, call manage_loop create with parent_schedule_id set to {}. Nested loops are limited to depth {}, must use dynamic or interval cadences, and the child cadence must be slower than the parent cadence.",
+            schedule.schedule_id,
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    };
     format!(
         "\
 You are running one new scheduled Codewith prompt.
 
+Loop schedule id: {}
+Parent loop schedule id: {parent_schedule_id}
+Loop nesting depth: {}/{}
 Run id: {run_id}
 Scheduled for: {scheduled_for}
 
-This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, or start a timer; Codewith manages scheduling. If the scheduled prompt asks for durable follow-up work, use native create_goal or create_goal_plan goal tools. Do not create follow-up schedules unless the scheduled prompt explicitly asks for scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, or start a timer; Codewith manages scheduling. If the scheduled prompt asks for durable follow-up work, use native create_goal or create_goal_plan goal tools; if it asks to extend an existing goal chain, use create_goal_plan with append_to_plan_id. Do not create follow-up schedules unless the scheduled prompt explicitly asks for nested scheduling. {nesting_guidance} If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
-{prompt}"
+{prompt}",
+        schedule.schedule_id,
+        schedule.nesting_depth,
+        codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
     )
 }
 
@@ -1766,6 +1796,7 @@ mod tests {
                     model_provider_id: None,
                     personality: None,
                     collaboration_mode: None,
+                    session_prompt: None,
                     multi_agent_version: None,
                     auth_profile: turn_auth_profile.map(|profile| profile.map(str::to_string)),
                     realtime_active: None,
@@ -2870,21 +2901,54 @@ mod tests {
         assert!(normalize_schedule_timezone("Nope/Nowhere").is_err());
     }
 
+    fn scheduled_prompt_test_schedule(
+        schedule: codex_state::ThreadScheduleSpec,
+    ) -> codex_state::ThreadSchedule {
+        codex_state::ThreadSchedule {
+            thread_id: ThreadId::new(),
+            schedule_id: "schedule-123".to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
+            auth_profile: None,
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            prompt: "ask me a funny question every minute".to_string(),
+            schedule,
+            timezone: "UTC".to_string(),
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at: Some(at(/*seconds*/ 1_700_000_000)),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_id: None,
+            lease_expires_at: None,
+            created_at: at(/*seconds*/ 1_700_000_000),
+            updated_at: at(/*seconds*/ 1_700_000_000),
+        }
+    }
+
     #[test]
     fn scheduled_thread_prompt_tells_model_not_to_wait() {
+        let schedule = scheduled_prompt_test_schedule(codex_state::ThreadScheduleSpec::Dynamic);
         let prompt = scheduled_thread_prompt(
             "ask me a funny question every minute",
+            &schedule,
             "run-123",
             Some(at(/*seconds*/ 1_700_000_000)),
         );
 
         assert!(prompt.contains("one new scheduled Codewith prompt"));
+        assert!(prompt.contains("Loop schedule id: schedule-123"));
+        assert!(prompt.contains("Parent loop schedule id: none"));
+        assert!(prompt.contains("Loop nesting depth: 1/3"));
         assert!(prompt.contains("Run id: run-123"));
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
         assert!(prompt.contains("This is a distinct run"));
         assert!(prompt.contains("Produce exactly one visible final response"));
         assert!(prompt.contains("Do not wait, sleep, or start a timer"));
         assert!(prompt.contains("use native create_goal or create_goal_plan goal tools"));
+        assert!(prompt.contains("create_goal_plan with append_to_plan_id"));
+        assert!(prompt.contains("parent_schedule_id set to schedule-123"));
+        assert!(prompt.contains("child cadence must be slower than the parent cadence"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
     }
@@ -2925,6 +2989,31 @@ mod tests {
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("finish release readiness checks every hour"));
         assert!(!prompt.contains("/goal finish release readiness checks"));
+    }
+
+    #[test]
+    fn scheduled_thread_prompt_skips_nested_loop_guidance_for_unsupported_parent_cadence() {
+        let cron_schedule = scheduled_prompt_test_schedule(codex_state::ThreadScheduleSpec::Cron {
+            expression: "*/5 * * * *".to_string(),
+        });
+        let cron_prompt = scheduled_thread_prompt(
+            "start nested work every ten minutes",
+            &cron_schedule,
+            "run-123",
+            Some(at(/*seconds*/ 1_700_000_000)),
+        );
+        assert!(cron_prompt.contains("cannot be used as a nested-loop parent"));
+        assert!(!cron_prompt.contains("parent_schedule_id set to schedule-123"));
+
+        let once_schedule = scheduled_prompt_test_schedule(codex_state::ThreadScheduleSpec::Once);
+        let once_prompt = scheduled_thread_prompt(
+            "start nested work every ten minutes",
+            &once_schedule,
+            "run-456",
+            Some(at(/*seconds*/ 1_700_000_000)),
+        );
+        assert!(once_prompt.contains("cannot be used as a nested-loop parent"));
+        assert!(!once_prompt.contains("parent_schedule_id set to schedule-123"));
     }
 
     #[test]

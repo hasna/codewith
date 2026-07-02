@@ -47,6 +47,7 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         prompt: String,
+        initial_goal_objective: Option<String>,
         worktree_id: Option<String>,
     ) {
         let (cwd, workspace_roots, worktree_hint, attach_worktree_id) =
@@ -105,6 +106,7 @@ impl App {
         match app_server
             .agent_start(
                 prompt,
+                initial_goal_objective,
                 cwd,
                 workspace_roots,
                 parent_thread_id,

@@ -85,6 +85,8 @@ mod session_prefix;
 mod session_recap;
 mod session_startup_prewarm;
 pub mod skills;
+#[doc(hidden)]
+pub mod usage_profile_health;
 pub(crate) use skills::SkillInjections;
 pub(crate) use skills::SkillLoadOutcome;
 pub(crate) use skills::SkillMetadata;

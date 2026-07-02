@@ -26,7 +26,6 @@ use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
-use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -2898,26 +2897,28 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     const EFFECTIVE_CONTEXT_WINDOW: i64 = (272_000 * 95) / 100;
 
-    let context_window_failure = |id: &str| {
-        sse_failed(
-            id,
-            "context_length_exceeded",
-            "Your input exceeds the context window of this model. Please adjust your input and try again.",
-        )
-    };
-    mount_sse_sequence(
+    let request_log = mount_sse_sequence(
         &server,
         vec![
             sse(vec![
                 ev_response_created("resp_seed"),
                 ev_completed("resp_seed"),
             ]),
-            context_window_failure("resp_context_window"),
-            context_window_failure("resp_context_window_retry"),
+            sse_failed(
+                "resp_context_window",
+                "context_length_exceeded",
+                "Your input exceeds the context window of this model. Please adjust your input and try again.",
+            ),
+            sse(vec![
+                ev_response_created("resp_retry"),
+                ev_completed("resp_retry"),
+            ]),
         ],
     )
     .await;
-    mount_compact_user_history_with_summary_once(&server, "COMPACTED_HISTORY").await;
+    let compact_mock =
+        mount_compact_user_history_with_summary_once(&server, "CONTEXT_WINDOW_RECOVERY_SUMMARY")
+            .await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
@@ -2983,17 +2984,21 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
         EFFECTIVE_CONTEXT_WINDOW
     );
 
-    let error_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Error(_))).await;
-    let expected_context_window_message = CodexErr::ContextWindowExceeded.to_string();
-    assert!(
-        matches!(
-            error_event,
-            EventMsg::Error(ref err) if err.message == expected_context_window_message
-        ),
-        "expected context window error; got {error_event:?}"
-    );
-
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected seed sampling, failed sampling, and retry sampling"
+    );
+    assert!(
+        compact_mock
+            .single_request()
+            .body_contains_text("trigger context window")
+    );
+    assert!(requests[2].body_contains_text("CONTEXT_WINDOW_RECOVERY_SUMMARY"));
+    assert!(requests[2].body_contains_text("trigger context window"));
 
     Ok(())
 }

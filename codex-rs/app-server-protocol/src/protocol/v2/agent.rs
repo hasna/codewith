@@ -282,6 +282,8 @@ pub struct AgentPendingInteraction {
 pub struct AgentStartParams {
     pub prompt: String,
     #[ts(optional = nullable)]
+    pub initial_goal_objective: Option<String>,
+    #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub idempotency_key: Option<String>,

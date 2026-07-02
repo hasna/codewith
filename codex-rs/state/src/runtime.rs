@@ -129,6 +129,7 @@ const STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL: Duration = Duration::from_millis
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::ThreadGoalPlanAdvanceOutcome;
+pub use goal_plans::ThreadGoalPlanAppendParams;
 pub use goal_plans::ThreadGoalPlanCreateParams;
 pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
@@ -184,6 +185,7 @@ pub use pending_interactions::PendingInteractionListParams;
 pub use pending_interactions::PendingInteractionPage;
 pub use pending_interactions::PendingInteractionRespondForSourceParams;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use schedules::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;

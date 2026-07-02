@@ -1,3 +1,5 @@
+use crate::QueuedMailboxMessage;
+use crate::QueuedMailboxMoveDirection;
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
@@ -71,6 +73,7 @@ pub struct ThreadConfigSnapshot {
     pub reasoning_summary: Option<ReasoningSummary>,
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    pub session_prompt: Option<String>,
     pub selected_auth_profile: Option<String>,
     pub session_source: SessionSource,
     pub forked_from_thread_id: Option<ThreadId>,
@@ -179,6 +182,7 @@ pub struct CodexThreadSettingsOverrides {
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
     pub service_tier: Option<Option<String>>,
+    pub session_prompt: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub personality: Option<Personality>,
 }
@@ -498,6 +502,7 @@ impl CodexThread {
             effort,
             summary,
             service_tier,
+            session_prompt,
             collaboration_mode,
             personality,
         } = overrides;
@@ -526,6 +531,7 @@ impl CodexThread {
             collaboration_mode: Some(collaboration_mode),
             reasoning_summary: summary,
             service_tier,
+            session_prompt,
             personality,
             ..Default::default()
         }

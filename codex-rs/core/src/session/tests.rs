@@ -2764,6 +2764,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         model_provider_id: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        session_prompt: None,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -3414,6 +3415,7 @@ async fn set_rate_limits_retains_previous_credits() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -3522,6 +3524,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -4430,6 +4433,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5350,6 +5354,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5467,6 +5472,7 @@ async fn make_session_and_context_with_events()
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5714,6 +5720,7 @@ async fn make_session_with_config_and_rx(
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5819,6 +5826,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -7557,6 +7565,7 @@ where
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
+        session_prompt: None,
         user_instructions: config.user_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -8073,6 +8082,56 @@ async fn build_settings_update_items_emits_realtime_start_when_session_becomes_l
             .iter()
             .any(|text| text.contains("<realtime_conversation>")),
         "expected a realtime start update, got {developer_texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn build_settings_update_items_emits_session_prompt_set_and_clear() {
+    let (session, previous_context) = make_session_and_context().await;
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.session_prompt = Some("Prefer short diffs.".to_string());
+
+    let update_items = session
+        .build_settings_update_items(
+            Some(&previous_context.to_turn_context_item()),
+            &current_context,
+        )
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        developer_texts.iter().any(|text| {
+            text.contains("<session_prompt>")
+                && text.contains("Prefer short diffs.")
+                && text.contains("</session_prompt>")
+        }),
+        "expected session prompt set update, got {developer_texts:?}"
+    );
+
+    let previous_context_item = current_context.to_turn_context_item();
+    let mut cleared_context = current_context
+        .with_model(
+            current_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    cleared_context.session_prompt = None;
+    let update_items = session
+        .build_settings_update_items(Some(&previous_context_item), &cleared_context)
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        developer_texts.iter().any(|text| {
+            text.contains("<session_prompt>")
+                && text.contains("Ignore any earlier session-scoped extra prompt instructions")
+        }),
+        "expected session prompt clear update, got {developer_texts:?}"
     );
 }
 

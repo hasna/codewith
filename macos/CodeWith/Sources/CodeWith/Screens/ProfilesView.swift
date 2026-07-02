@@ -15,7 +15,6 @@ struct ProfilesView: View {
             HStack {
                 Text("Profiles").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
                 Spacer()
-                newPill
             }
             .padding(.horizontal, 22).frame(height: 40)
             Rectangle().fill(Theme.separator).frame(height: 1)
@@ -54,16 +53,6 @@ struct ProfilesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
-    }
-
-    private var newPill: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
-            Text("New profile").font(.system(size: 11.5, weight: .medium))
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12).frame(height: 26)
-        .background(Capsule().fill(Color(hex: 0x202020)))
     }
 
     private func profileRow(_ p: AuthProfileInfo, color: Color) -> some View {

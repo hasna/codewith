@@ -47,6 +47,7 @@ struct Composer: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(onPlus == nil)
+                .accessibilityLabel("Add")
 
                 // Full access pill — subtle; opens the in-session config panel.
                 Button { onConfigTap?() } label: {
@@ -57,6 +58,7 @@ struct Composer: View {
                     .foregroundStyle(Theme.textSecondary).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(onConfigTap == nil)
+                .accessibilityLabel("Permissions")
 
                 Spacer()
 
@@ -70,13 +72,16 @@ struct Composer: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(onConfigTap == nil)
+                .accessibilityLabel("Model and effort")
 
                 Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    .accessibilityLabel("Voice input")
 
                 if showSend {
                     // Active (black) while typing or running; gray only when empty/idle.
                     let hasText = !(text?.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                     let active = stopMode || hasText
+                    let enabled = stopMode ? onStop != nil : (hasText && onSubmit != nil)
                     Button { stopMode ? onStop?() : onSubmit?() } label: {
                         Circle()
                             .fill(active ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
@@ -86,6 +91,8 @@ struct Composer: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(!enabled)
+                    .accessibilityLabel(stopMode ? "Stop" : "Send")
                 }
             }
             .padding(.horizontal, 12).padding(.bottom, 10)

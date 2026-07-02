@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/status_and_layout.rs
+expression: normalized_backend_snapshot(terminal.backend())
+---
+"                                                                                "
+"• Waiting for background terminal (0s • esc to interrupt) · 1 background termin…"
+"  └ cargo test -p codex-tui                                                     "
+"                                                                                "
+"                                                                                "
+"› Ask Codewith to do anything                                                   "
+"                                                                                "
+"  Waiting on background                                                         "

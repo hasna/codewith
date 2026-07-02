@@ -302,6 +302,16 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the personality for subsequent turns.
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    /// Override the session-scoped extra prompt for subsequent turns. `null`
+    /// clears the current prompt; omission leaves it unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub session_prompt: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -326,6 +336,7 @@ pub struct ThreadSettings {
     pub summary: Option<ReasoningSummary>,
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
+    pub session_prompt: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -834,6 +845,7 @@ v2_enum_from_core! {
         Blocked,
         UsageLimited,
         BudgetLimited,
+        Deferred,
         Complete,
         Cancelled,
     }
@@ -957,6 +969,7 @@ pub enum ThreadGoalPlanNodeStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -1085,6 +1098,8 @@ pub struct ThreadGoalPlan {
     #[ts(type = "number")]
     pub budget_limited_node_count: i64,
     #[ts(type = "number")]
+    pub deferred_node_count: i64,
+    #[ts(type = "number")]
     pub cancelled_node_count: i64,
     #[ts(type = "number")]
     pub created_at: i64,
@@ -1113,6 +1128,7 @@ impl From<codex_protocol::protocol::ThreadGoalPlan> for ThreadGoalPlan {
             blocked_node_count: value.blocked_node_count,
             usage_limited_node_count: value.usage_limited_node_count,
             budget_limited_node_count: value.budget_limited_node_count,
+            deferred_node_count: value.deferred_node_count,
             cancelled_node_count: value.cancelled_node_count,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -1187,6 +1203,7 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNodeStatus> for ThreadGoalPlan
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::BudgetLimited => {
                 Self::BudgetLimited
             }
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Deferred => Self::Deferred,
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::Complete => Self::Complete,
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::Cancelled => Self::Cancelled,
         }
@@ -1291,6 +1308,10 @@ pub enum ThreadSchedulePromptSource {
 pub struct ThreadSchedule {
     pub thread_id: String,
     pub schedule_id: String,
+    #[ts(type = "string | null")]
+    pub parent_schedule_id: Option<String>,
+    #[ts(type = "number")]
+    pub nesting_depth: i64,
     pub prompt: String,
     pub prompt_source: ThreadSchedulePromptSource,
     pub schedule: ThreadScheduleSpec,
@@ -1373,6 +1394,8 @@ pub struct ThreadScheduleStats {
 #[ts(export_to = "v2/")]
 pub struct ThreadScheduleCreateParams {
     pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub parent_schedule_id: Option<String>,
     pub prompt: String,
     #[ts(optional = nullable)]
     pub prompt_source: Option<ThreadSchedulePromptSource>,

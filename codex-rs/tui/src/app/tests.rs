@@ -1849,6 +1849,7 @@ default_permissions = "locked-down"
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         }
     );
@@ -1945,6 +1946,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2042,6 +2044,7 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2125,6 +2128,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2187,6 +2191,7 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -4472,6 +4477,7 @@ async fn auth_profile_switch_includes_saved_profile_permissions() -> Result<()> 
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -4598,6 +4604,7 @@ async fn auth_profile_switch_waits_for_settings_update_before_visible_state_chan
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         }
     );
@@ -6099,6 +6106,7 @@ async fn override_turn_context_sends_thread_settings_update() {
         let thread_id = started.session.thread_id;
         let initial_model = started.session.model.clone();
         let initial_effort = started.session.reasoning_effort.clone();
+        let session_prompt = "Prefer short diffs.".to_string();
         app.enqueue_primary_thread_session(started.session, started.turns)
             .await
             .expect("primary thread should be registered");
@@ -6125,6 +6133,7 @@ async fn override_turn_context_sends_thread_settings_update() {
             /*summary*/ None,
             Some(Some(service_tier.clone())),
             Some(collaboration_mode.clone()),
+            Some(Some(session_prompt.clone())),
             Some(Personality::Pragmatic),
         );
 
@@ -6175,6 +6184,10 @@ async fn override_turn_context_sends_thread_settings_update() {
             notification.thread_settings.personality,
             Some(Personality::Pragmatic)
         );
+        assert_eq!(
+            notification.thread_settings.session_prompt,
+            Some(session_prompt.clone())
+        );
 
         app.handle_app_server_event(
             &mut app_server,
@@ -6217,6 +6230,38 @@ async fn override_turn_context_sends_thread_settings_update() {
                 .id,
             codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE
         );
+
+        let clear_op = AppCommand::override_turn_context(
+            /*cwd*/ None,
+            /*approval_policy*/ None,
+            /*approvals_reviewer*/ None,
+            /*permission_profile*/ None,
+            /*active_permission_profile*/ None,
+            /*windows_sandbox_level*/ None,
+            /*model*/ None,
+            /*effort*/ None,
+            /*summary*/ None,
+            /*service_tier*/ None,
+            /*collaboration_mode*/ None,
+            Some(None),
+            /*personality*/ None,
+        );
+
+        let handled = app
+            .try_submit_active_thread_op_via_app_server(&mut app_server, thread_id, &clear_op)
+            .await
+            .expect("session prompt clear should not fail");
+
+        assert_eq!(handled, true);
+        let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
+        assert_eq!(notification.thread_settings.session_prompt, None);
+        app.handle_app_server_event(
+            &mut app_server,
+            codex_app_server_client::AppServerEvent::ServerNotification(
+                ServerNotification::ThreadSettingsUpdated(notification),
+            ),
+        )
+        .await;
     })
     .await;
 }
@@ -6362,6 +6407,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
+            session_prompt: None,
         },
     };
     app.enqueue_thread_notification(

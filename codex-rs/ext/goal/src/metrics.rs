@@ -43,6 +43,7 @@ impl GoalMetrics {
                 Some(
                     codex_state::ThreadGoalStatus::Paused
                         | codex_state::ThreadGoalStatus::Blocked
+                        | codex_state::ThreadGoalStatus::Deferred
                         | codex_state::ThreadGoalStatus::UsageLimited
                 )
             )
@@ -67,6 +68,7 @@ impl GoalMetrics {
             codex_state::ThreadGoalStatus::Complete => GOAL_COMPLETED_METRIC,
             codex_state::ThreadGoalStatus::Active
             | codex_state::ThreadGoalStatus::Paused
+            | codex_state::ThreadGoalStatus::Deferred
             | codex_state::ThreadGoalStatus::Cancelled => return,
         };
         let Some(metrics_client) = self.metrics_client.as_ref() else {

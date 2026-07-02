@@ -685,6 +685,7 @@ pub(crate) enum AppEvent {
     /// Start a durable background agent.
     StartBackgroundAgent {
         prompt: String,
+        initial_goal_objective: Option<String>,
         worktree_id: Option<String>,
     },
 
@@ -1513,6 +1514,11 @@ pub(crate) enum AppEvent {
     /// Append the detailed, text-based status report to the transcript. Reached
     /// from the `/status` panel's "Full report" row as a drill-down.
     ShowStatusReport,
+
+    /// Set or clear the extra prompt scoped to the current session/thread.
+    SetSessionPrompt {
+        prompt: Option<String>,
+    },
 
     /// Live update for the in-progress voice recording placeholder. Carries
     /// the placeholder `id` and the text to display (e.g., an ASCII meter).

@@ -1466,14 +1466,51 @@ async fn agent_slash_command_emits_active_session_events() {
 }
 
 #[tokio::test]
+async fn pair_slash_command_starts_guarded_background_watcher() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/pair watch for security issues this agent might miss";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected pair watcher event");
+    match event {
+        AppEvent::StartBackgroundAgent {
+            prompt,
+            initial_goal_objective,
+            worktree_id,
+        } => {
+            assert_eq!(initial_goal_objective, None);
+            assert_eq!(worktree_id, None);
+            assert!(prompt.contains(&format!("Codewith thread {thread_id}")));
+            assert!(
+                prompt.contains("watch for security issues this agent might miss"),
+                "expected watcher request in prompt, got {prompt:?}"
+            );
+            assert!(prompt.contains("mission_control_enqueue_instruction"));
+            assert!(prompt.contains(&format!("target_thread_id` = `{thread_id}`")));
+            assert!(prompt.contains("resume=false"));
+            assert!(prompt.contains("does not grant the full raw transcript or secrets"));
+            assert!(prompt.contains("separate thread/session"));
+            assert!(prompt.contains("do not modify workspace files"));
+        }
+        other => panic!("expected StartBackgroundAgent event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
 async fn background_agent_slash_command_emits_manage_events() {
     let cases = [
-        ("/agent list", "list", None, None, None),
+        ("/agent list", "list", None, None, None, None),
         (
             "/agent start fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             None,
         ),
         (
@@ -1481,12 +1518,30 @@ async fn background_agent_slash_command_emits_manage_events() {
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             Some("wt-123"),
         ),
-        ("/background-agent list", "list", None, None, None),
+        (
+            "/agent start --goal=fix-tests fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("fix-tests"),
+            None,
+        ),
+        (
+            "/agent start --worktree wt-123 --goal investigate fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("investigate"),
+            Some("wt-123"),
+        ),
+        ("/background-agent list", "list", None, None, None, None),
         (
             "/background-agent diagnostics",
             "diagnostics",
+            None,
             None,
             None,
             None,
@@ -1497,19 +1552,22 @@ async fn background_agent_slash_command_emits_manage_events() {
             None,
             Some("fix the flaky test"),
             None,
+            None,
         ),
         (
             "/background-agent start --worktree=wt-456 fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             Some("wt-456"),
         ),
-        ("/background-agent read", "read", None, None, None),
+        ("/background-agent read", "read", None, None, None, None),
         (
             "/background-agent read agent-1",
             "read",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1519,11 +1577,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
         (
             "/background-agent attach agent-1",
             "attach",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1533,11 +1593,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
         (
             "/background-agent stop agent-1",
             "stop",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1547,10 +1609,18 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
     ];
 
-    for (command, expected_kind, expected_agent_id, expected_prompt, expected_worktree_id) in cases
+    for (
+        command,
+        expected_kind,
+        expected_agent_id,
+        expected_prompt,
+        expected_goal,
+        expected_worktree_id,
+    ) in cases
     {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1566,10 +1636,12 @@ async fn background_agent_slash_command_emits_manage_events() {
                 "start",
                 AppEvent::StartBackgroundAgent {
                     prompt,
+                    initial_goal_objective,
                     worktree_id,
                 },
             ) => {
                 assert_eq!(Some(prompt.as_str()), expected_prompt);
+                assert_eq!(initial_goal_objective.as_deref(), expected_goal);
                 assert_eq!(worktree_id.as_deref(), expected_worktree_id);
             }
             ("read", AppEvent::ReadBackgroundAgent { agent_id }) => {
@@ -1985,6 +2057,7 @@ async fn goal_control_slash_commands_emit_goal_events() {
         ("/goal clear", None),
         ("/goal pause", Some(AppThreadGoalStatus::Paused)),
         ("/goal resume", Some(AppThreadGoalStatus::Active)),
+        ("/goal defer", Some(AppThreadGoalStatus::Deferred)),
         ("/goal cancel", Some(AppThreadGoalStatus::Cancelled)),
     ];
 
@@ -2034,7 +2107,7 @@ async fn goal_control_slash_command_without_thread_shows_full_usage() {
     assert_eq!(cells.len(), 1, "expected goal usage message");
     insta::assert_snapshot!(
         lines_to_single_string(&cells[0]),
-        @"• Usage: /goal [<objective>|cancel|clear|edit|pause|resume] The session must start before you can change a goal."
+        @"• Usage: /goal [<objective>|cancel|clear|defer|edit|pause|resume] The session must start before you can change a goal."
     );
 }
 
