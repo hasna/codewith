@@ -19,6 +19,7 @@
 - Cancel superseded GitHub Actions runs on `main` after pushing follow-up release commits. Obsolete full-matrix runs consume runner minutes and can hide the signal from the current commit.
 - Prefer branch/PR release work or workflow concurrency that cancels superseded runs over repeatedly pushing tiny fixes directly to `main` and letting every historical full matrix keep running.
 - Bigger runners can help only after the workflow shape is right. Use them for true bottlenecks such as Bazel Linux test/clippy, argument-comment-lint, and Windows build jobs; do not use longer timeouts as the primary speed strategy.
+- The Intel macOS release build in `.github/workflows/rust-release.yml` intentionally uses an xlarge macOS runner. Do not downgrade it unless fresh evidence shows the release binary build finishes reliably on a smaller runner.
 
 In the codex-rs folder where the rust code lives:
 
@@ -83,6 +84,12 @@ In the codex-rs folder where the rust code lives:
 - Use `just check-fast -p <crate>` for compile-only API boundary checks, then run slower integration binaries at behavior checkpoints.
 - If compile/link time dominates test execution, gather evidence with `just build-timings -p <crate>` or `just test-binaries -p <crate>` before adding timeouts or larger runners.
 - Treat machine-level accelerators such as `RUSTC_WRAPPER=sccache` or custom linkers as local setup unless the repo installs and validates them for every developer and CI path.
+
+### Goal, schedule, and status surface changes
+
+- Treat durable goals, workflow/loop/schedule launches, and app-server thread start context as cross-cutting behavior. When changing scheduled goal runs or agent-thread launch controls, keep app-server protocol/schema, app-server runtime, state runtime/migrations, goal extension, workflow extension, and TUI launch/status surfaces aligned.
+- Goal titles are persisted and visible in API responses, mission control, status surfaces, the footer/status line, goal menus, and snapshots. When changing goal creation, update, or plan flows, preserve title propagation or update every affected surface intentionally.
+- Persistent SQLite logs are for actionable diagnostics, not high-volume trace mirrors. Changes to app-server/TUI log setup, OTel mirrors, Responses WebSocket tracing, or `target=log` bridging must preserve the shared `codex-state` filter that drops low-value persistent log targets, with focused `codex-state` tests.
 
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
