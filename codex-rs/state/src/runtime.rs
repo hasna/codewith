@@ -663,7 +663,13 @@ async fn open_sqlite(
     );
     let pool = pool_result?;
     let started = Instant::now();
-    let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
+    let migrate_result = async {
+        if matches!(spec.kind, DbKind::Goals) {
+            repair_legacy_goals_deferred_migration_stamp(&pool, migrator).await?;
+        }
+        migrator.run(&pool).await.map_err(anyhow::Error::from)
+    }
+    .await;
     crate::telemetry::record_init_result(
         telemetry_override,
         spec.kind,
@@ -673,6 +679,91 @@ async fn open_sqlite(
     );
     migrate_result?;
     Ok(pool)
+}
+
+/// SHA-384 checksum of the goals migration file
+/// `0005_thread_goal_deferred.sql` exactly as shipped in published codewith
+/// 0.1.48 builds (tag `rust-v0.1.48`). Validated against sqlx's checksum
+/// algorithm and the archived migration bytes by
+/// `legacy_0148_goals_deferred_checksum_matches_sqlx_checksum`.
+const LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX: &str = "3cfd6e6b956509f5cd9946b7d648daf1773baffa75d5ee6c472aa521987c2cf392dbdf39e6d9d8a8a64586f793331e6c";
+
+/// Version of the "thread goal deferred" migration in the current goals
+/// migration set (`goals_migrations/0008_thread_goal_deferred.sql`).
+const GOALS_DEFERRED_MIGRATION_VERSION: i64 = 8;
+
+fn decode_hex_checksum(hex: &str) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        hex.len() % 2 == 0,
+        "hex checksum must have an even number of digits"
+    );
+    (0..hex.len())
+        .step_by(2)
+        .map(|idx| {
+            u8::from_str_radix(&hex[idx..idx + 2], 16)
+                .map_err(|err| anyhow::anyhow!("invalid hex checksum digit: {err}"))
+        })
+        .collect()
+}
+
+/// Re-stamp goals `_sqlx_migrations` rows written by published codewith
+/// 0.1.48 before running the current migrator.
+///
+/// 0.1.48 shipped the "thread goal deferred" table rebuild as goals migration
+/// version 5, while published 0.1.45 (and the current set) use versions 5-7
+/// for plan-node assignments, goal context lifecycle, and goal titles, and
+/// the current set renumbers the deferred rebuild to version 8. A database
+/// stamped by 0.1.48 therefore fails checksum validation with
+/// `VersionMismatch(5)` against the current migrator, which would disable the
+/// entire sqlite state layer at startup.
+///
+/// Repair: move the 0.1.48 stamp (matched by its exact legacy checksum, so
+/// 0.1.45-lineage databases are untouched) from version 5 to version 8 with
+/// the embedded version-8 checksum. The migrator then applies the missing
+/// versions 5-7 on top of the legacy schema; those migrations are additive
+/// (ALTER TABLE ADD COLUMN / CREATE TABLE / CREATE INDEX on objects absent
+/// from the 0.1.48 schema) and are folded into the current version-8 rebuild,
+/// so the repaired database converges on the same schema as a fresh one.
+///
+/// The state-runtime startup lock is held while this runs, so the repair
+/// cannot race another process's migrator.
+async fn repair_legacy_goals_deferred_migration_stamp(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    let has_migrations_table: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if has_migrations_table.is_none() {
+        // Fresh database: nothing to repair.
+        return Ok(());
+    }
+    let deferred = migrator
+        .iter()
+        .find(|migration| migration.version == GOALS_DEFERRED_MIGRATION_VERSION)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "goals migration set is missing version {GOALS_DEFERRED_MIGRATION_VERSION}"
+            )
+        })?;
+    let legacy_checksum = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)?;
+    let repaired = sqlx::query(
+        "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = 5 AND checksum = ?",
+    )
+    .bind(deferred.version)
+    .bind(deferred.description.as_ref())
+    .bind(deferred.checksum.as_ref())
+    .bind(legacy_checksum)
+    .execute(pool)
+    .await?;
+    if repaired.rows_affected() > 0 {
+        warn!(
+            "re-stamped legacy codewith 0.1.48 goals migration version 5 as version {GOALS_DEFERRED_MIGRATION_VERSION}"
+        );
+    }
+    Ok(())
 }
 
 pub(super) async fn ensure_backfill_state_row_in_pool(
@@ -755,7 +846,10 @@ pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> 
 
 #[cfg(test)]
 mod tests {
+    use super::GOALS_DEFERRED_MIGRATION_VERSION;
+    use super::LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX;
     use super::StateRuntime;
+    use super::decode_hex_checksum;
     use super::goals_db_path;
     use super::open_state_sqlite;
     use super::runtime_goals_migrator;
@@ -770,8 +864,11 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migration;
+    use sqlx::migrate::MigrationType;
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::borrow::Cow;
@@ -1371,6 +1468,236 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
             statuses
         );
         current_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    /// Goals migration `0005_thread_goal_deferred.sql` exactly as shipped in
+    /// published codewith 0.1.48 (tag `rust-v0.1.48`). Kept outside
+    /// `goals_migrations/` so the embedded migrator never picks it up.
+    const LEGACY_0148_GOALS_DEFERRED_V5_SQL: &str =
+        include_str!("runtime/fixtures/goals_0148_0005_thread_goal_deferred.sql");
+
+    fn legacy_0148_goals_deferred_migration() -> Migration {
+        Migration::new(
+            5,
+            Cow::Borrowed("thread goal deferred"),
+            MigrationType::Simple,
+            LEGACY_0148_GOALS_DEFERRED_V5_SQL.into_sql_str(),
+            /*no_tx*/ true,
+        )
+    }
+
+    #[test]
+    fn legacy_0148_goals_deferred_checksum_matches_sqlx_checksum() {
+        let expected = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)
+            .expect("legacy checksum hex should decode");
+        assert_eq!(
+            expected.as_slice(),
+            legacy_0148_goals_deferred_migration().checksum.as_ref(),
+            "hardcoded legacy checksum must match sqlx's checksum of the archived 0.1.48 migration bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn goals_db_stamped_by_codewith_0148_repairs_and_migrates() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let goals_path = goals_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&goals_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open goals db");
+        // Recreate a goals database exactly as published codewith 0.1.48
+        // left it: shared versions 1-4 plus the deferred table rebuild
+        // stamped as version 5.
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 4)
+            .run(&pool)
+            .await
+            .expect("apply goals schema through version 4");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goals (
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('thread-1', 'goal-1', 'Survive the 0.1.48 upgrade.', 'active', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy goal should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('plan-1', 'thread-1', 'active', 'ready_only', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('node-1', 'plan-1', 'thread-1', 'step', 0, 0, 'Do the step.', 'pending', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan node should insert");
+        let legacy_migrator = Migrator {
+            migrations: Cow::Owned(vec![legacy_0148_goals_deferred_migration()]),
+            ignore_missing: true,
+            locking: true,
+            no_tx: false,
+            table_name: GOALS_MIGRATOR.table_name.clone(),
+            create_schemas: GOALS_MIGRATOR.create_schemas.clone(),
+        };
+        legacy_migrator
+            .run(&pool)
+            .await
+            .expect("apply the 0.1.48 deferred migration as version 5");
+        // The legacy rebuild introduced the deferred status.
+        sqlx::query("UPDATE thread_goals SET status = 'deferred' WHERE thread_id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .expect("legacy schema should accept deferred status");
+        let stamped: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .expect("legacy stamps should query");
+        assert_eq!(
+            vec![1, 2, 3, 4, 5],
+            stamped
+                .iter()
+                .map(|(version, _)| *version)
+                .collect::<Vec<_>>()
+        );
+        let legacy_checksum = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)
+            .expect("legacy checksum hex should decode");
+        assert_eq!(
+            legacy_checksum,
+            stamped.last().expect("version 5 stamp").1,
+            "version 5 must be stamped with the published 0.1.48 checksum"
+        );
+        pool.close().await;
+
+        // Without the repair, the current migrator rejects the 0.1.48 stamp.
+        let strict_pool = open_db_pool(goals_path.as_path()).await;
+        let unrepaired_err = runtime_goals_migrator()
+            .run(&strict_pool)
+            .await
+            .expect_err("current migrator must reject the unrepaired 0.1.48 stamp");
+        assert!(matches!(
+            unrepaired_err,
+            MigrateError::VersionMismatch(5)
+        ));
+        strict_pool.close().await;
+
+        // Full runtime init repairs the stamp and applies the missing
+        // versions 5-7 on top of the legacy schema.
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize on a 0.1.48-stamped goals db");
+        runtime.pool.close().await;
+        runtime.logs_pool.close().await;
+        drop(runtime);
+
+        let query_pool = open_db_pool(goals_path.as_path()).await;
+        let stamped: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&query_pool)
+                .await
+                .expect("repaired stamps should query");
+        assert_eq!(
+            (1..=8).collect::<Vec<i64>>(),
+            stamped
+                .iter()
+                .map(|(version, _)| *version)
+                .collect::<Vec<_>>()
+        );
+        let embedded_deferred_checksum = GOALS_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == GOALS_DEFERRED_MIGRATION_VERSION)
+            .expect("embedded deferred migration")
+            .checksum
+            .to_vec();
+        assert_eq!(
+            embedded_deferred_checksum,
+            stamped.last().expect("version 8 stamp").1,
+            "version 8 must carry the embedded deferred checksum after repair"
+        );
+        // The repaired database converges on the fresh schema: assignment
+        // backfill, title columns, lifecycle table, and all four plan-node
+        // indexes.
+        let (status, assigned_thread_id, goal_title): (String, String, Option<String>) =
+            sqlx::query_as(
+                r#"
+SELECT goal.status, node.assigned_thread_id, goal.title
+FROM thread_goals goal
+JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
+                "#,
+            )
+            .fetch_one(&query_pool)
+            .await
+            .expect("repaired schema should join goals and nodes");
+        assert_eq!("deferred", status);
+        assert_eq!("thread-1", assigned_thread_id);
+        assert_eq!(None, goal_title);
+        let lifecycle_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_context_lifecycle")
+                .fetch_one(&query_pool)
+                .await
+                .expect("goal context lifecycle table should exist");
+        assert_eq!(0, lifecycle_count);
+        let indexes: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'thread_goal_plan_nodes' AND name LIKE 'idx_%' ORDER BY name",
+        )
+        .fetch_all(&query_pool)
+        .await
+        .expect("plan node indexes should query");
+        assert_eq!(
+            vec![
+                "idx_thread_goal_plan_nodes_assigned_status".to_string(),
+                "idx_thread_goal_plan_nodes_plan_status".to_string(),
+                "idx_thread_goal_plan_nodes_projected_goal".to_string(),
+                "idx_thread_goal_plan_nodes_thread_status".to_string(),
+            ],
+            indexes
+        );
+        // Idempotence: a second init sees nothing left to repair.
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize again after the repair");
+        runtime.pool.close().await;
+        runtime.logs_pool.close().await;
+        drop(runtime);
+        query_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
