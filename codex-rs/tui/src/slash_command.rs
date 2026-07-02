@@ -52,6 +52,7 @@ pub enum SlashCommand {
     Recap,
     Plan,
     Goal,
+    Teach,
     #[strum(
         to_string = "mission-control",
         serialize = "mission",
@@ -163,6 +164,7 @@ impl SlashCommand {
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Teach => "toggle teaching callouts for future replies",
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
@@ -213,6 +215,7 @@ impl SlashCommand {
                 | SlashCommand::Prompt
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Teach
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
                 | SlashCommand::Queued
@@ -296,6 +299,7 @@ impl SlashCommand {
             | SlashCommand::Ps
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::Teach
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
@@ -432,6 +436,19 @@ mod tests {
     }
 
     #[test]
+    fn teach_command_supports_session_teaching_mode_controls() {
+        assert_eq!(SlashCommand::Teach.command(), "teach");
+        assert_eq!(SlashCommand::from_str("teach"), Ok(SlashCommand::Teach));
+        assert_eq!(
+            SlashCommand::Teach.description(),
+            "toggle teaching callouts for future replies"
+        );
+        assert!(SlashCommand::Teach.supports_inline_args());
+        assert!(SlashCommand::Teach.available_during_task());
+        assert!(!SlashCommand::Teach.available_in_side_conversation());
+    }
+
+    #[test]
     fn model_command_is_singular() {
         assert_eq!(SlashCommand::Model.command(), "model");
         assert!(SlashCommand::from_str("models").is_err());
@@ -519,6 +536,8 @@ mod tests {
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
+        assert!(SlashCommand::Teach.available_during_task());
+        assert!(SlashCommand::Teach.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
     }
@@ -533,6 +552,7 @@ mod tests {
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
             SlashCommand::Pr,
+            SlashCommand::Teach,
             SlashCommand::Worktree,
             SlashCommand::Status,
             SlashCommand::Statusline,

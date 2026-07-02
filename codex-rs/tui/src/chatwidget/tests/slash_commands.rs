@@ -291,6 +291,79 @@ fn next_session_recap_request_event(
     }
 }
 
+fn drain_history_text(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
+    drain_insert_history(rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn slash_teach_toggles_status_and_does_not_submit_core_op() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Teach);
+    assert!(chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!("slash_teach_enabled_info_cell", drain_history_text(&mut rx));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "status".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!("slash_teach_status_info_cell", drain_history_text(&mut rx));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "off".to_string(), Vec::new());
+    assert!(!chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!(
+        "slash_teach_disabled_info_cell",
+        drain_history_text(&mut rx)
+    );
+}
+
+#[tokio::test]
+async fn slash_teach_on_off_and_invalid_args_are_local() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "on".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Teaching mode enabled."));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "nope".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Usage: /teach [on|off|status]"));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "disable".to_string(), Vec::new());
+    assert!(!chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Teaching mode disabled."));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_slash_teach_toggles_and_preserves_follow_up_queue() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    queue_composer_text_with_tab(&mut chat, "/teach on");
+    queue_composer_text_with_tab(&mut chat, "hello after teach");
+
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    assert!(chat.teaching_mode_enabled());
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.input_queue.queued_user_messages.front().unwrap().text,
+        "hello after teach"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let rendered = drain_history_text(&mut rx);
+    assert!(
+        rendered.contains("Teaching mode enabled."),
+        "expected teaching mode info cell, got {rendered:?}"
+    );
+}
+
 #[tokio::test]
 async fn service_tier_commands_lowercase_catalog_names() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;

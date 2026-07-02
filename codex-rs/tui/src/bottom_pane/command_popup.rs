@@ -265,6 +265,7 @@ impl CommandItem {
 
     fn aliases(&self) -> &'static [&'static str] {
         match self {
+            Self::Builtin(SlashCommand::Compact) => &["ac"],
             Self::Builtin(SlashCommand::Pets) => &["pet"],
             Self::Builtin(_) | Self::ServiceTier(_) => &[],
         }

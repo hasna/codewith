@@ -10,6 +10,44 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
+fn configure_chat_for_submission(
+    chat: &mut ChatWidget,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) {
+    configure_chat_for_submission_with_thread(chat, rx, ThreadId::new());
+}
+
+fn configure_chat_for_submission_with_thread(
+    chat: &mut ChatWidget,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    thread_id: ThreadId,
+) {
+    chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        thread_id,
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        auth_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
+        message_history: None,
+        network_proxy: None,
+        rollout_path: None,
+    });
+    drain_insert_history(rx);
+}
+
 #[tokio::test]
 async fn submission_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -223,6 +261,118 @@ async fn submission_omits_active_permission_profile_for_legacy_snapshot() {
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
     assert_eq!(active_permission_profile, None);
+}
+
+#[tokio::test]
+async fn teaching_mode_adds_application_context_to_future_turns_only_when_enabled() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    configure_chat_for_submission(&mut chat, &mut rx);
+    chat.dispatch_command_with_args(SlashCommand::Teach, "on".to_string(), Vec::new());
+    drain_insert_history(&mut rx);
+
+    chat.bottom_pane
+        .set_composer_text("explain this pipeline".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let (items, additional_context) = match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            additional_context,
+            ..
+        } => (items, additional_context),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "explain this pipeline".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+    let additional_context = additional_context.expect("expected teaching additional context");
+    let teaching_context = additional_context
+        .get("teaching_mode")
+        .expect("missing teaching context");
+    assert_eq!(
+        teaching_context.kind,
+        codex_app_server_protocol::AdditionalContextKind::Application
+    );
+    assert!(teaching_context.value.contains("> **Teaching note**"));
+    assert!(
+        teaching_context
+            .value
+            .contains("Do not reveal hidden chain-of-thought")
+    );
+    assert!(!teaching_context.value.contains("show your reasoning"));
+    assert!(
+        !teaching_context
+            .value
+            .contains("<teaching_mode_instructions>")
+    );
+
+    let display = ChatWidget::user_message_display_from_inputs(&items);
+    assert_eq!(
+        display,
+        ChatWidget::user_message_display_from_parts(
+            "explain this pipeline".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    );
+
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    configure_chat_for_submission(&mut chat, &mut rx);
+    chat.bottom_pane
+        .set_composer_text("plain follow-up".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let (items, additional_context) = match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            additional_context,
+            ..
+        } => (items, additional_context),
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "plain follow-up".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+    assert_eq!(additional_context, None);
+}
+
+#[tokio::test]
+async fn teaching_mode_is_scoped_to_thread_within_session() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_a = ThreadId::new();
+    let thread_b = ThreadId::new();
+
+    configure_chat_for_submission_with_thread(&mut chat, &mut rx, thread_a);
+    chat.dispatch_command_with_args(SlashCommand::Teach, "on".to_string(), Vec::new());
+    drain_insert_history(&mut rx);
+    assert!(chat.teaching_mode_enabled());
+
+    configure_chat_for_submission_with_thread(&mut chat, &mut rx, thread_b);
+    assert!(!chat.teaching_mode_enabled());
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "on".to_string(), Vec::new());
+    drain_insert_history(&mut rx);
+    assert!(chat.teaching_mode_enabled());
+
+    configure_chat_for_submission_with_thread(&mut chat, &mut rx, thread_a);
+    assert!(chat.teaching_mode_enabled());
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "off".to_string(), Vec::new());
+    drain_insert_history(&mut rx);
+    assert!(!chat.teaching_mode_enabled());
+
+    configure_chat_for_submission_with_thread(&mut chat, &mut rx, thread_b);
+    assert!(chat.teaching_mode_enabled());
 }
 
 #[tokio::test]
