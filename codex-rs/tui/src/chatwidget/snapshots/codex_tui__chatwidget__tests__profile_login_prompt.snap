@@ -6,11 +6,9 @@ expression: popup
   Create a profile tied to one provider subscription.
 
 › 1. ChatGPT                  Create a profile tied to ChatGPT.
-  2. Claude.ai / Claude Code  Tie this profile to your local Claude Code
-                              subscription login.
-  3. Cursor                   Tie this profile to your Cursor subscription
+  2. Cursor                   Tie this profile to your Cursor subscription
                               login.
-  4. Grok                     Tie this profile to your Grok subscription
+  3. Grok                     Tie this profile to your Grok subscription
                               login.
 
   Press enter to confirm or esc to go back

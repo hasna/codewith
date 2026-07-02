@@ -52,6 +52,51 @@ const CLAUDE_SAFE_ENV_VARS: &[&str] = &[
     "XDG_STATE_HOME",
     "CLAUDE_CONFIG_DIR",
 ];
+const CLAUDE_AGENT_SDK_AUTH_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+];
+const CLAUDE_AWS_AUTH_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_AWS_WORKSPACE_ID",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_BEDROCK_SERVICE_TIER",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_STS_REGIONAL_ENDPOINTS",
+];
+const CLAUDE_VERTEX_AUTH_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_QUOTA_PROJECT",
+    "GOOGLE_PROJECT",
+    "GCLOUD_PROJECT",
+];
+const CLAUDE_FOUNDRY_AUTH_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+];
 const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 const CLAUDE_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CLAUDE_STDERR_MAX_BYTES: usize = 64 * 1024;
@@ -123,6 +168,10 @@ impl ClaudeCodeHarness {
             Err(err) => return self.runtime_missing_readiness(err.to_string()),
         };
 
+        if has_agent_sdk_auth_env(source_env) {
+            return self.runtime_ready_readiness(&program);
+        }
+
         match Command::new(&program)
             .args(["auth", "status"])
             .env_clear()
@@ -188,7 +237,9 @@ impl ClaudeCodeHarness {
             "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
             self.descriptor.id.to_string(),
         )]);
-        self.env_policy.sanitize(source_env, &extra_env)
+        let mut env = self.env_policy.sanitize(source_env, &extra_env);
+        add_agent_sdk_auth_env(&mut env, source_env);
+        env
     }
 
     fn resolve_program(
@@ -282,7 +333,7 @@ impl ClaudeCodeHarness {
             version: None,
             supported_modes: self.descriptor.supported_modes.to_vec(),
             detail: Some(format!(
-                "`{} auth status` reported no active Claude login",
+                "`{} auth status` reported no active local Claude login and no Claude Agent SDK auth environment was configured",
                 program.display()
             )),
         }
@@ -571,6 +622,74 @@ fn claude_code_args(task: &str) -> Vec<String> {
     .into_iter()
     .map(std::string::ToString::to_string)
     .collect()
+}
+
+fn add_agent_sdk_auth_env(
+    env: &mut BTreeMap<String, String>,
+    source_env: &BTreeMap<String, String>,
+) {
+    copy_env_vars(env, source_env, CLAUDE_AGENT_SDK_AUTH_ENV_VARS);
+    if env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_MANTLE")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_BEDROCK_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_MANTLE_AUTH")
+    {
+        copy_env_vars(env, source_env, CLAUDE_AWS_AUTH_ENV_VARS);
+    }
+    if env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_VERTEX")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_VERTEX_AUTH")
+    {
+        copy_env_vars(env, source_env, CLAUDE_VERTEX_AUTH_ENV_VARS);
+    }
+    if env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_FOUNDRY")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH")
+    {
+        copy_env_vars(env, source_env, CLAUDE_FOUNDRY_AUTH_ENV_VARS);
+    }
+}
+
+fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
+    env_value_is_set(source_env, "ANTHROPIC_API_KEY")
+        || env_value_is_set(source_env, "ANTHROPIC_AUTH_TOKEN")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_VERTEX")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_FOUNDRY")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_MANTLE")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_BEDROCK_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_MANTLE_AUTH")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_VERTEX_AUTH")
+}
+
+fn copy_env_vars(
+    env: &mut BTreeMap<String, String>,
+    source_env: &BTreeMap<String, String>,
+    names: &[&str],
+) {
+    for name in names {
+        if let Some(value) = source_env.get(*name)
+            && !value.trim().is_empty()
+        {
+            env.insert((*name).to_string(), value.clone());
+        }
+    }
+}
+
+fn env_value_is_set(source_env: &BTreeMap<String, String>, name: &str) -> bool {
+    source_env
+        .get(name)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn env_flag_is_enabled(source_env: &BTreeMap<String, String>, name: &str) -> bool {
+    source_env.get(name).is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
 }
 
 fn validate_claude_system_event(
@@ -889,6 +1008,25 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn readiness_accepts_agent_sdk_auth_env_without_local_login() {
+        let (_temp_dir, mut env) = fake_claude_env(
+            r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 1
+fi
+exit 2
+"#,
+        );
+        env.insert("ANTHROPIC_API_KEY".to_string(), "test-value".to_string());
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn readiness_reports_ready_when_claude_auth_status_succeeds() {
         let (_temp_dir, env) = fake_claude_env(
             r#"#!/bin/sh
@@ -924,7 +1062,7 @@ exit 2
     }
 
     #[test]
-    fn launch_env_preserves_stable_config_and_scrubs_provider_credentials() {
+    fn launch_env_preserves_stable_config_and_claude_auth_only() {
         let harness = claude_code_harness().expect("claude harness");
         let source = BTreeMap::from([
             ("HOME".to_string(), "/home/alex".to_string()),
@@ -941,11 +1079,72 @@ exit 2
                 "CLAUDE_CONFIG_DIR".to_string(),
                 "/home/alex/.claude".to_string(),
             ),
-            ("ANTHROPIC_API_KEY".to_string(), "secret".to_string()),
-            ("CURSOR_API_KEY".to_string(), "secret".to_string()),
-            ("GROK_API_KEY".to_string(), "secret".to_string()),
-            ("OPENAI_API_KEY".to_string(), "secret".to_string()),
-            ("XAI_API_KEY".to_string(), "secret".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), "test-value".to_string()),
+            (
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://api.example.invalid".to_string(),
+            ),
+            ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            (
+                "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+                "https://bedrock.example.invalid".to_string(),
+            ),
+            (
+                "ANTHROPIC_BEDROCK_MANTLE_BASE_URL".to_string(),
+                "https://mantle.example.invalid".to_string(),
+            ),
+            (
+                "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                "test-value".to_string(),
+            ),
+            (
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "test-value".to_string(),
+            ),
+            ("CLAUDE_CODE_USE_ANTHROPIC_AWS".to_string(), "1".to_string()),
+            (
+                "ANTHROPIC_AWS_API_KEY".to_string(),
+                "test-value".to_string(),
+            ),
+            (
+                "ANTHROPIC_AWS_WORKSPACE_ID".to_string(),
+                "workspace".to_string(),
+            ),
+            ("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string()),
+            (
+                "ANTHROPIC_VERTEX_PROJECT_ID".to_string(),
+                "project".to_string(),
+            ),
+            ("CLOUD_ML_REGION".to_string(), "us-east1".to_string()),
+            ("CLAUDE_CODE_USE_FOUNDRY".to_string(), "1".to_string()),
+            (
+                "ANTHROPIC_FOUNDRY_API_KEY".to_string(),
+                "test-value".to_string(),
+            ),
+            (
+                "ANTHROPIC_FOUNDRY_RESOURCE".to_string(),
+                "resource".to_string(),
+            ),
+            ("CLAUDE_CODE_USE_MANTLE".to_string(), "1".to_string()),
+            (
+                "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH".to_string(),
+                "1".to_string(),
+            ),
+            ("CLAUDE_CODE_SKIP_BEDROCK_AUTH".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_SKIP_FOUNDRY_AUTH".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_SKIP_MANTLE_AUTH".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_SKIP_VERTEX_AUTH".to_string(), "1".to_string()),
+            ("AWS_PROFILE".to_string(), "dev".to_string()),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                "/home/alex/gcp.json".to_string(),
+            ),
+            ("AZURE_CLIENT_SECRET".to_string(), "test-value".to_string()),
+            ("CURSOR_API_KEY".to_string(), "test-value".to_string()),
+            ("GROK_API_KEY".to_string(), "test-value".to_string()),
+            ("OPENAI_API_KEY".to_string(), "test-value".to_string()),
+            ("XAI_API_KEY".to_string(), "test-value".to_string()),
         ]);
 
         let spec = harness.launch_spec("/repo", "/usr/bin/claude", &source);
@@ -953,10 +1152,67 @@ exit 2
         assert_eq!(
             spec.env,
             BTreeMap::from([
+                ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+                ("ANTHROPIC_AUTH_TOKEN".to_string(), "test-value".to_string()),
+                (
+                    "ANTHROPIC_AWS_API_KEY".to_string(),
+                    "test-value".to_string()
+                ),
+                (
+                    "ANTHROPIC_AWS_WORKSPACE_ID".to_string(),
+                    "workspace".to_string()
+                ),
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "https://api.example.invalid".to_string()
+                ),
+                (
+                    "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+                    "https://bedrock.example.invalid".to_string()
+                ),
+                (
+                    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL".to_string(),
+                    "https://mantle.example.invalid".to_string()
+                ),
+                (
+                    "ANTHROPIC_FOUNDRY_API_KEY".to_string(),
+                    "test-value".to_string()
+                ),
+                (
+                    "ANTHROPIC_FOUNDRY_RESOURCE".to_string(),
+                    "resource".to_string()
+                ),
+                (
+                    "ANTHROPIC_VERTEX_PROJECT_ID".to_string(),
+                    "project".to_string()
+                ),
+                (
+                    "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                    "test-value".to_string()
+                ),
+                (
+                    "AWS_SECRET_ACCESS_KEY".to_string(),
+                    "test-value".to_string()
+                ),
+                ("AWS_PROFILE".to_string(), "dev".to_string()),
                 (
                     "CLAUDE_CONFIG_DIR".to_string(),
                     "/home/alex/.claude".to_string()
                 ),
+                ("CLAUDE_CODE_USE_ANTHROPIC_AWS".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_USE_FOUNDRY".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_USE_MANTLE".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string()),
+                (
+                    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH".to_string(),
+                    "1".to_string()
+                ),
+                ("CLAUDE_CODE_SKIP_BEDROCK_AUTH".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_SKIP_FOUNDRY_AUTH".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_SKIP_MANTLE_AUTH".to_string(), "1".to_string()),
+                ("CLAUDE_CODE_SKIP_VERTEX_AUTH".to_string(), "1".to_string()),
+                ("CLOUD_ML_REGION".to_string(), "us-east1".to_string()),
                 (
                     "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
                     "claude".to_string()
