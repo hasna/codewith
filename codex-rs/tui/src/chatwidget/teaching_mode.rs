@@ -56,6 +56,7 @@ pub(super) fn teaching_mode_additional_context() -> HashMap<String, AdditionalCo
         AdditionalContextEntry {
             value: TEACHING_MODE_INSTRUCTIONS.to_string(),
             kind: AdditionalContextKind::Application,
+            source: None,
         },
     )])
 }
