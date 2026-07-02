@@ -332,6 +332,18 @@ impl SlashCommand {
         }
     }
 
+    /// If this command is a backwards-compatible duplicate, return the visible command it aliases.
+    pub fn hidden_alias_target(self) -> Option<SlashCommand> {
+        match self {
+            SlashCommand::BackgroundAgent => Some(SlashCommand::Agent),
+            SlashCommand::MultiAgents => Some(SlashCommand::Session),
+            SlashCommand::Exit => Some(SlashCommand::Quit),
+            SlashCommand::Btw => Some(SlashCommand::Side),
+            SlashCommand::Stats => Some(SlashCommand::Status),
+            _ => None,
+        }
+    }
+
     fn is_visible(self) -> bool {
         match self {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
@@ -340,12 +352,8 @@ impl SlashCommand {
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
             // Hidden aliases: these still parse and dispatch (see
             // `find_builtin_command`) but are kept out of the completion popup to
-            // debloat it. `/exit`→`/quit`, `/btw`→`/side`, `/stats`→`/status`.
-            SlashCommand::BackgroundAgent
-            | SlashCommand::MultiAgents
-            | SlashCommand::Exit
-            | SlashCommand::Btw
-            | SlashCommand::Stats => false,
+            // debloat it.
+            command if command.hidden_alias_target().is_some() => false,
             _ => true,
         }
     }
@@ -379,14 +387,25 @@ mod tests {
 
     #[test]
     fn hidden_duplicate_aliases_parse_but_are_not_listed() {
-        // `/exit`, `/btw`, `/stats` still dispatch (they parse) but are kept out
-        // of the completion popup to debloat it; their canonical twins stay.
-        for (alias, canonical) in [
-            (SlashCommand::Exit, SlashCommand::Quit),
-            (SlashCommand::Btw, SlashCommand::Side),
-            (SlashCommand::Stats, SlashCommand::Status),
+        // Hidden duplicates still dispatch but are kept out of the completion
+        // popup to debloat it; their canonical twins stay visible.
+        for (alias_name, alias, canonical) in [
+            (
+                "background-agent",
+                SlashCommand::BackgroundAgent,
+                SlashCommand::Agent,
+            ),
+            (
+                "subagents",
+                SlashCommand::MultiAgents,
+                SlashCommand::Session,
+            ),
+            ("exit", SlashCommand::Exit, SlashCommand::Quit),
+            ("btw", SlashCommand::Btw, SlashCommand::Side),
+            ("stats", SlashCommand::Stats, SlashCommand::Status),
         ] {
-            assert_eq!(SlashCommand::from_str(alias.command()), Ok(alias));
+            assert_eq!(SlashCommand::from_str(alias_name), Ok(alias));
+            assert_eq!(alias.hidden_alias_target(), Some(canonical));
             let listed = super::built_in_slash_commands();
             assert!(
                 !listed.iter().any(|(_, c)| *c == alias),
