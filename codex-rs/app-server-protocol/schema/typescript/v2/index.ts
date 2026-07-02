@@ -438,6 +438,8 @@ export type { ThreadGoalListResponse } from "./ThreadGoalListResponse";
 export type { ThreadGoalPlan } from "./ThreadGoalPlan";
 export type { ThreadGoalPlanActivateNodeParams } from "./ThreadGoalPlanActivateNodeParams";
 export type { ThreadGoalPlanActivateNodeResponse } from "./ThreadGoalPlanActivateNodeResponse";
+export type { ThreadGoalPlanAddGoalParams } from "./ThreadGoalPlanAddGoalParams";
+export type { ThreadGoalPlanAddGoalResponse } from "./ThreadGoalPlanAddGoalResponse";
 export type { ThreadGoalPlanAutoExecute } from "./ThreadGoalPlanAutoExecute";
 export type { ThreadGoalPlanNode } from "./ThreadGoalPlanNode";
 export type { ThreadGoalPlanNodeStatus } from "./ThreadGoalPlanNodeStatus";

@@ -1217,6 +1217,24 @@ pub struct ThreadGoalPlanActivateNodeResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalParams {
+    pub thread_id: String,
+    pub objective: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalResponse {
+    pub goal: Option<ThreadGoal>,
+    pub plan: ThreadGoalPlan,
+    pub added_node: ThreadGoalPlanNode,
+    pub created_plan: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadGoalClearParams {
     pub thread_id: String,
 }

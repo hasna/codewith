@@ -2205,6 +2205,30 @@
             },
             "method": {
               "enum": [
+                "thread/goalPlan/addGoal"
+              ],
+              "title": "Thread/goalPlan/addGoalRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadGoalPlanAddGoalParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/goalPlan/addGoalRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/goal/clear"
               ],
               "title": "Thread/goal/clearRequestMethod",
@@ -17521,6 +17545,54 @@
         "plan"
       ],
       "title": "ThreadGoalPlanActivateNodeResponse",
+      "type": "object"
+    },
+    "ThreadGoalPlanAddGoalParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "objective": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective",
+        "threadId"
+      ],
+      "title": "ThreadGoalPlanAddGoalParams",
+      "type": "object"
+    },
+    "ThreadGoalPlanAddGoalResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "addedNode": {
+          "$ref": "#/definitions/ThreadGoalPlanNode"
+        },
+        "createdPlan": {
+          "type": "boolean"
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadGoal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "$ref": "#/definitions/ThreadGoalPlan"
+        }
+      },
+      "required": [
+        "addedNode",
+        "createdPlan",
+        "plan"
+      ],
+      "title": "ThreadGoalPlanAddGoalResponse",
       "type": "object"
     },
     "ThreadGoalPlanAutoExecute": {

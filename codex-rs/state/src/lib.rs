@@ -196,6 +196,8 @@ pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbPath;
 pub use runtime::ScheduleStore;
 pub use runtime::ThreadFilterOptions;
+pub use runtime::ThreadGoalPlanAddOutcome;
+pub use runtime::ThreadGoalPlanAddParams;
 pub use runtime::ThreadGoalPlanAdvanceOutcome;
 pub use runtime::ThreadGoalPlanCreateParams;
 pub use runtime::ThreadGoalPlanListPage;

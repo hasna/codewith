@@ -5,6 +5,7 @@
 //! when the visible thread changes.
 
 use super::*;
+use crate::app::app_server_requests::AppServerRequestResolution;
 use crate::session_resume::read_session_model;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
 
@@ -784,11 +785,18 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
-        let Some(resolution) = self
+        let mut resolution = self
             .pending_app_server_requests
             .take_resolution(op)
-            .map_err(|err| color_eyre::eyre::eyre!(err))?
-        else {
+            .map_err(|err| color_eyre::eyre::eyre!(err))?;
+        if resolution.is_none() {
+            resolution = self
+                .recover_app_server_request_resolution(thread_id, op)
+                .await
+                .map_err(|err| color_eyre::eyre::eyre!(err))?;
+        }
+        let Some(resolution) = resolution else {
+            self.warn_missing_app_server_request_resolution(thread_id, op);
             return Ok(false);
         };
 
@@ -811,6 +819,62 @@ impl App {
                 Ok(false)
             }
         }
+    }
+
+    fn warn_missing_app_server_request_resolution(&self, thread_id: ThreadId, op: &AppCommand) {
+        let Some(lookup) = app_server_request_lookup(op) else {
+            return;
+        };
+        tracing::warn!(
+            thread_id = %thread_id,
+            request_kind = lookup.kind,
+            request_key = %lookup.key,
+            turn_id = ?lookup.turn_id,
+            "missing app-server request mapping for outbound interactive response"
+        );
+    }
+
+    async fn recover_app_server_request_resolution(
+        &mut self,
+        thread_id: ThreadId,
+        op: &AppCommand,
+    ) -> std::result::Result<Option<AppServerRequestResolution>, String> {
+        let request = {
+            let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+                return Ok(None);
+            };
+            let store = channel.store.lock().await;
+            store.pending_server_request_for_op(op)
+        };
+        let Some(request) = request else {
+            return Ok(None);
+        };
+
+        let request_id = request.id().clone();
+        if let Some(unsupported) = self
+            .pending_app_server_requests
+            .note_server_request(&request)
+        {
+            return Err(format!(
+                "cannot recover unsupported app-server request {:?}: {}",
+                unsupported.request_id, unsupported.message
+            ));
+        }
+
+        let resolution = self.pending_app_server_requests.take_resolution(op)?;
+        if resolution.is_some()
+            && let Some(lookup) = app_server_request_lookup(op)
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                request_kind = lookup.kind,
+                request_key = %lookup.key,
+                turn_id = ?lookup.turn_id,
+                server_request_id = ?request_id,
+                "recovered missing app-server request mapping from thread event buffer"
+            );
+        }
+        Ok(resolution)
     }
 
     pub(super) async fn refresh_pending_thread_approvals(&mut self) {
@@ -1603,11 +1667,59 @@ impl App {
     }
 }
 
+struct AppServerRequestLookup {
+    kind: &'static str,
+    key: String,
+    turn_id: Option<String>,
+}
+
+fn app_server_request_lookup(op: &AppCommand) -> Option<AppServerRequestLookup> {
+    match op {
+        AppCommand::ExecApproval { id, turn_id, .. } => Some(AppServerRequestLookup {
+            kind: "commandExecutionApproval",
+            key: id.clone(),
+            turn_id: turn_id.clone(),
+        }),
+        AppCommand::PatchApproval { id, .. } => Some(AppServerRequestLookup {
+            kind: "fileChangeApproval",
+            key: id.clone(),
+            turn_id: None,
+        }),
+        AppCommand::RequestPermissionsResponse { id, .. } => Some(AppServerRequestLookup {
+            kind: "permissionsApproval",
+            key: id.clone(),
+            turn_id: None,
+        }),
+        AppCommand::UserInputAnswer { id, .. } => Some(AppServerRequestLookup {
+            kind: "requestUserInput",
+            key: id.clone(),
+            turn_id: Some(id.clone()),
+        }),
+        AppCommand::ResolveElicitation {
+            server_name,
+            request_id,
+            ..
+        } => Some(AppServerRequestLookup {
+            kind: "mcpElicitation",
+            key: format!("{server_name}:{request_id:?}"),
+            turn_id: None,
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::PermissionGrantScope as AppServerPermissionGrantScope;
+    use codex_app_server_protocol::PermissionsRequestApprovalParams;
+    use codex_app_server_protocol::PermissionsRequestApprovalResponse;
+    use codex_app_server_protocol::RequestId as AppServerRequestId;
     use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+    use codex_protocol::request_permissions::PermissionGrantScope;
+    use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
+    use codex_protocol::request_permissions::RequestPermissionsResponse;
 
     async fn config_with_workspace_profile() -> Config {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1673,6 +1785,65 @@ mod tests {
                 Some(&permission_profile),
             ),
             TurnPermissionsOverride::LegacySandbox(effective_permission_profile)
+        );
+    }
+
+    #[tokio::test]
+    async fn recovers_missing_app_server_request_mapping_from_thread_event_buffer() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let thread_id = ThreadId::new();
+        let op = AppCommand::RequestPermissionsResponse {
+            id: "permissions-1".to_string(),
+            response: RequestPermissionsResponse {
+                permissions: CoreRequestPermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: false,
+            },
+        };
+
+        {
+            let channel = app.ensure_thread_channel(thread_id);
+            let mut store = channel.store.lock().await;
+            store.push_request(ServerRequest::PermissionsRequestApproval {
+                request_id: AppServerRequestId::Integer(11),
+                params: PermissionsRequestApprovalParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "permissions-1".to_string(),
+                    environment_id: None,
+                    started_at_ms: 0,
+                    cwd: test_path_buf("/tmp/project").abs(),
+                    reason: Some("needs permissions".to_string()),
+                    permissions: codex_app_server_protocol::RequestPermissionProfile {
+                        network: None,
+                        file_system: None,
+                    },
+                },
+            });
+        }
+
+        let resolution = app
+            .recover_app_server_request_resolution(thread_id, &op)
+            .await
+            .expect("recovery should serialize response")
+            .expect("pending request should recover a resolution");
+        assert_eq!(resolution.request_id, AppServerRequestId::Integer(11));
+        let response: PermissionsRequestApprovalResponse =
+            serde_json::from_value(resolution.result)
+                .expect("permissions resolution should decode");
+        assert_eq!(response.scope, AppServerPermissionGrantScope::Turn);
+        assert_eq!(response.strict_auto_review, None);
+        assert_eq!(response.permissions.network, None);
+        assert_eq!(response.permissions.file_system, None);
+
+        app.note_thread_outbound_op(thread_id, &op).await;
+
+        assert!(
+            app.recover_app_server_request_resolution(thread_id, &op)
+                .await
+                .expect("second recovery should not fail")
+                .is_none(),
+            "answered request should no longer be recoverable"
         );
     }
 }
