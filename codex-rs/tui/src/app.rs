@@ -236,6 +236,7 @@ mod thread_settings;
 mod thread_workflow_actions;
 mod tmux_handoff;
 mod ui_dynamic_tools;
+mod ui_management_tool_summaries;
 mod ui_management_tools;
 mod ui_mcp_tool;
 mod ui_mcp_tool_helpers;

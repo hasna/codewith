@@ -1604,6 +1604,8 @@ impl AppServerSession {
     pub(crate) async fn agent_events_list(
         &mut self,
         agent_id: String,
+        cursor: Option<String>,
+        limit: Option<usize>,
     ) -> Result<AgentEventsListResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1611,8 +1613,8 @@ impl AppServerSession {
                 request_id,
                 params: AgentEventsListParams {
                     agent_id,
-                    cursor: None,
-                    limit: Some(100),
+                    cursor,
+                    limit: limit.map(|limit| limit as u32).or(Some(100)),
                 },
             })
             .await
@@ -1893,6 +1895,8 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         monitor_id: String,
+        cursor: Option<String>,
+        limit: Option<usize>,
     ) -> Result<ThreadMonitorReadResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1901,8 +1905,8 @@ impl AppServerSession {
                 params: ThreadMonitorReadParams {
                     thread_id: thread_id.to_string(),
                     monitor_id,
-                    cursor: None,
-                    limit: Some(50),
+                    cursor,
+                    limit: limit.map(|limit| limit as u32).or(Some(50)),
                 },
             })
             .await

@@ -20,6 +20,8 @@ use codex_tools::ToolSpec;
 use croner::Cron;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::fmt::Write as _;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,6 +30,7 @@ const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_LOOP_EXPIRATION_DAYS: i64 = 7;
 const MAX_THREAD_SCHEDULE_PROMPT_CHARS: usize = 4_000;
 const MAX_THREAD_SCHEDULES: usize = 50;
+const COMPACT_PROMPT_PREVIEW_CHARS: usize = 160;
 
 pub struct ManageLoopHandler;
 
@@ -42,6 +45,7 @@ struct ManageLoopArgs {
     timezone: Option<String>,
     next_run_at: Option<i64>,
     expires_at: Option<i64>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -163,12 +167,13 @@ impl ToolExecutor<ToolInvocation> for ManageLoopHandler {
         };
 
         let args: ManageLoopArgs = parse_arguments(&arguments)?;
+        let verbose = args.verbose.unwrap_or(false);
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
         let auth_profile = session.selected_auth_profile().await;
         let response = manage_loop(state_db, session.thread_id(), auth_profile, args).await?;
-        loop_response(response).map(boxed_tool_output)
+        loop_response(response, verbose).map(boxed_tool_output)
     }
 }
 
@@ -753,10 +758,76 @@ fn format_loop_error(err: anyhow::Error) -> String {
     message
 }
 
-fn loop_response(response: ManageLoopResponse) -> Result<FunctionToolOutput, FunctionCallError> {
-    let response = serde_json::to_string_pretty(&response)
-        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+fn loop_response(
+    response: ManageLoopResponse,
+    verbose: bool,
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    let response = if verbose {
+        serde_json::to_string_pretty(&response)
+    } else {
+        serde_json::to_string_pretty(&compact_loop_response(&response))
+    }
+    .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(FunctionToolOutput::from_text(response, Some(true)))
+}
+
+fn compact_loop_response(response: &ManageLoopResponse) -> JsonValue {
+    json!({
+        "action": response.action,
+        "scheduleId": response.schedule_id,
+        "message": response.message,
+        "deleted": response.deleted,
+        "count": response.schedules.len(),
+        "affectedSchedule": response
+            .affected_schedule
+            .as_ref()
+            .map(compact_loop_schedule),
+        "schedules": response
+            .schedules
+            .iter()
+            .map(compact_loop_schedule)
+            .collect::<Vec<_>>(),
+        "hint": "Default loop output is compact. Pass verbose=true for full prompts, lease timestamps, and complete run stats.",
+    })
+}
+
+fn compact_loop_schedule(schedule: &LoopScheduleSnapshot) -> JsonValue {
+    json!({
+        "scheduleId": schedule.schedule_id,
+        "status": schedule.status,
+        "schedule": schedule.schedule,
+        "timezone": schedule.timezone,
+        "nextRunAt": schedule.next_run_at,
+        "lastRunAt": schedule.last_run_at,
+        "expiresAt": schedule.expires_at,
+        "failureCount": schedule.failure_count,
+        "promptPreview": compact_text_preview(&schedule.prompt, COMPACT_PROMPT_PREVIEW_CHARS),
+        "promptChars": schedule.prompt.chars().count(),
+        "runs": {
+            "total": schedule.stats.total_runs,
+            "running": schedule.stats.running_runs,
+            "completed": schedule.stats.completed_runs,
+            "failed": schedule.stats.failed_runs,
+            "lastErrorPreview": schedule.stats.last_error.as_deref().map(|error| {
+                compact_text_preview(error, COMPACT_PROMPT_PREVIEW_CHARS)
+            }),
+        },
+    })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn model_error(message: impl Into<String>) -> FunctionCallError {
@@ -803,7 +874,69 @@ mod tests {
             timezone: None,
             next_run_at: None,
             expires_at: None,
+            verbose: None,
         }
+    }
+
+    fn loop_snapshot(prompt: &str) -> LoopScheduleSnapshot {
+        LoopScheduleSnapshot {
+            thread_id: test_thread_id(/*id*/ 99).to_string(),
+            schedule_id: "loop-1".to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
+            prompt: prompt.to_string(),
+            prompt_source: "inline".to_string(),
+            schedule: LoopScheduleSpecSnapshot::Interval {
+                amount: 5,
+                unit: "minutes".to_string(),
+            },
+            timezone: "UTC".to_string(),
+            status: "active".to_string(),
+            next_run_at: Some(1_700_000_300),
+            last_run_at: Some(1_700_000_200),
+            expires_at: Some(1_700_003_600),
+            failure_count: 1,
+            lease_expires_at: Some(1_700_000_250),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+            stats: LoopScheduleStatsSnapshot {
+                total_runs: 3,
+                leased_runs: 0,
+                running_runs: 1,
+                deferred_runs: 0,
+                completed_runs: 1,
+                failed_runs: 1,
+                last_started_at: Some(1_700_000_200),
+                last_completed_at: Some(1_700_000_220),
+                last_error: Some("last failure had a very long diagnostic".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn compact_loop_response_uses_prompt_preview_without_full_prompt() {
+        let response = ManageLoopResponse {
+            action: LoopAction::List,
+            schedule_id: None,
+            affected_schedule: None,
+            schedules: vec![loop_snapshot(&"loop prompt ".repeat(40))],
+            deleted: None,
+            message: "Listed loops for this thread.".to_string(),
+        };
+
+        let compact = compact_loop_response(&response);
+
+        assert_eq!(compact["count"], 1);
+        assert_eq!(compact["schedules"][0]["scheduleId"], "loop-1");
+        assert_eq!(compact["schedules"][0]["promptChars"], 480);
+        assert!(
+            compact["schedules"][0]["promptPreview"]
+                .as_str()
+                .expect("prompt preview")
+                .ends_with("...")
+        );
+        assert!(compact["schedules"][0]["prompt"].is_null());
+        assert!(compact["schedules"][0]["leaseExpiresAt"].is_null());
     }
 
     async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {

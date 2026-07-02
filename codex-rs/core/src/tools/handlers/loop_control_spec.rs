@@ -68,12 +68,20 @@ pub fn create_manage_loop_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "verbose".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. When true, return full prompts, lease timestamps, and complete run stats instead of the compact summary."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_LOOP_TOOL_NAME.to_string(),
         description: r#"Manage recurring `/loop` schedules for the current thread.
 Use `list` before mutating when the user did not name a specific loop, or when exact run counts are needed.
+List and mutation responses are compact by default: they include ids, timing, status, prompt previews, and counts. Set `verbose=true` only when full prompts or complete run stats are needed.
 `create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence.
 For nested loops, pass parent_schedule_id on create; child loops must run slower than their parent and nesting is limited to five levels.
 `stop` pauses future scheduled runs; it does not abort an already running turn.
