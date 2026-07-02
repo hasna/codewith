@@ -75,6 +75,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::state_db::StateDbHandle;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -1804,6 +1805,105 @@ fn thread_schedule_run_now_executes_goal_command_as_scheduled_goal_turn() -> Res
                 .any(|body| body.contains(&format!("/goal {objective}"))
                     || body.contains("Scheduled prompt:\n/goal")),
             "scheduled goal prompt should not be sent as a raw slash command: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_run_now_recovers_context_window_errors() -> Result<()> {
+    run_schedule_harness_test(async {
+        let server = MockServer::start().await;
+        let request_log = responses::mount_sse_sequence(
+            &server,
+            vec![
+                responses::sse_failed(
+                    "resp_context_window",
+                    "context_length_exceeded",
+                    "Your input exceeds the context window of this model.",
+                ),
+                responses::sse(vec![
+                    responses::ev_assistant_message(
+                        "msg_compact",
+                        "SCHEDULE_CONTEXT_RECOVERY_SUMMARY",
+                    ),
+                    responses::ev_completed("resp_compact"),
+                ]),
+                responses::sse(vec![
+                    responses::ev_assistant_message("msg_retry", "Scheduled recovered"),
+                    responses::ev_completed("resp_retry"),
+                ]),
+            ],
+        )
+        .await;
+        let mut harness = ScheduleHarness::new_with_mock_server(server, Vec::new()).await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    prompt: "check whether context recovery works".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Hours,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_800_000_000),
+                    expires_at: Some(1_800_086_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        harness
+            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+            .await;
+
+        let (updated_schedule, completed) = harness
+            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+        assert_eq!(None, completed.run.error);
+        assert!(completed.run.completed_at.is_some());
+        assert_eq!(0, updated_schedule.schedule.failure_count);
+
+        let requests = request_log.requests();
+        assert_eq!(
+            3,
+            requests.len(),
+            "expected failed sampling, local compact sampling, and retry sampling"
+        );
+        assert!(
+            requests[1].body_contains_text("check whether context recovery works"),
+            "local compaction should include the scheduled prompt context"
+        );
+        assert!(
+            requests[2].body_contains_text("SCHEDULE_CONTEXT_RECOVERY_SUMMARY"),
+            "retry should include the recovered context summary"
+        );
+        assert!(
+            requests[2].body_contains_text("check whether context recovery works"),
+            "retry should keep the scheduled prompt visible"
         );
 
         harness.shutdown().await;

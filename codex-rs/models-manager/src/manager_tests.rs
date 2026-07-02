@@ -349,6 +349,25 @@ async fn get_model_info_uses_custom_catalog() {
 }
 
 #[tokio::test]
+async fn get_model_info_caps_openai_gpt_5_5_alias_from_remote_prefix_match() {
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    let remote = remote_model("gpt-5.5", "GPT-5.5", /*priority*/ 0);
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![remote],
+    });
+
+    let model_info = manager.get_model_info("gpt-5.5-2026-06-01", &config).await;
+
+    assert_eq!(model_info.slug, "gpt-5.5-2026-06-01");
+    assert_eq!(model_info.context_window, Some(128_000));
+    assert_eq!(model_info.max_context_window, Some(128_000));
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
 async fn get_model_info_matches_namespaced_suffix() {
     let config = ModelsManagerConfig::default();
     let mut remote = remote_model("gpt-image", "Image", /*priority*/ 0);

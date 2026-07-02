@@ -407,6 +407,22 @@ fn bundled_catalog_instructions_include_effort_estimate_guidance() {
 }
 
 #[test]
+fn bundled_openai_gpt_5_5_uses_endpoint_context_window() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+    let model = response
+        .models
+        .into_iter()
+        .find(|model| model.slug == GPT_5_5_MODEL_ID)
+        .expect("bundled catalog should include GPT-5.5");
+
+    assert_eq!(model.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
+    assert_eq!(
+        model.max_context_window,
+        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+    );
+}
+
+#[test]
 fn reasoning_summaries_override_false_does_not_disable_support() {
     let mut model = model_info_from_slug("unknown-model");
     model.supports_reasoning_summaries = true;
@@ -448,6 +464,64 @@ fn model_context_window_override_clamps_to_max_context_window() {
     expected.context_window = Some(400_000);
 
     assert_eq!(updated, expected);
+}
+
+#[test]
+fn openai_gpt_5_5_context_window_is_capped_after_overrides() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(272_000);
+    model.max_context_window = Some(272_000);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some(OPENAI_MODEL_PROVIDER_ID.to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
+    assert_eq!(
+        updated.max_context_window,
+        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+    );
+}
+
+#[test]
+fn openai_gpt_5_5_alias_context_window_is_capped_after_overrides() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = "gpt-5.5-2026-06-01".to_string();
+    model.context_window = Some(272_000);
+    model.max_context_window = Some(272_000);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some(OPENAI_MODEL_PROVIDER_ID.to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(GPT_5_5_OPENAI_CONTEXT_WINDOW));
+    assert_eq!(
+        updated.max_context_window,
+        Some(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+    );
+}
+
+#[test]
+fn gpt_5_5_context_cap_does_not_apply_to_other_providers() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(272_000);
+    model.max_context_window = Some(272_000);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openrouter".to_string()),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model.clone(), &config);
+
+    assert_eq!(updated, model);
 }
 
 #[test]

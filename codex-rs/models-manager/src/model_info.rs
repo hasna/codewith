@@ -24,6 +24,9 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+const OPENAI_MODEL_PROVIDER_ID: &str = "openai";
+const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
+const GPT_5_5_OPENAI_CONTEXT_WINDOW: i64 = 128_000;
 pub const GPT_5_3_CODEX_SPARK: &str = "gpt-5.3-codex-spark";
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
@@ -65,7 +68,34 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
         model.model_messages = None;
     }
 
+    apply_endpoint_context_caps(&mut model, config);
+
     model
+}
+
+fn apply_endpoint_context_caps(model: &mut ModelInfo, config: &ModelsManagerConfig) {
+    let is_gpt_5_5_endpoint_slug = model
+        .slug
+        .strip_prefix(GPT_5_5_MODEL_ID)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('-'));
+    if config.model_provider_id.as_deref() != Some(OPENAI_MODEL_PROVIDER_ID)
+        || !is_gpt_5_5_endpoint_slug
+    {
+        return;
+    }
+
+    model.context_window = Some(
+        model
+            .context_window
+            .unwrap_or(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+            .min(GPT_5_5_OPENAI_CONTEXT_WINDOW),
+    );
+    model.max_context_window = Some(
+        model
+            .max_context_window
+            .unwrap_or(GPT_5_5_OPENAI_CONTEXT_WINDOW)
+            .min(GPT_5_5_OPENAI_CONTEXT_WINDOW),
+    );
 }
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
