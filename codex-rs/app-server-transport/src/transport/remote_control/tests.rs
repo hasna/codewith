@@ -464,6 +464,8 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
                 "params": {
                     "summary": "test",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })
@@ -1055,6 +1057,8 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
                 "params": {
                     "summary": "stale",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })
@@ -1341,6 +1345,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                 "params": {
                     "summary": "backend",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })
