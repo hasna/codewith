@@ -160,6 +160,11 @@ jobs:
       # 2026-03-04: temporarily change releases to use thin LTO because
       # Ubuntu ARM is timing out at 60 minutes.
       CARGO_PROFILE_RELEASE_LTO: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'thin' }}
+      # Compiler caching. SCCACHE_IGNORE_SERVER_IO_ERROR keeps builds fail-open:
+      # a broken or unreachable cache backend must never fail a release build.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SIGN_MACOS: ${{ github.event_name != 'workflow_dispatch' }}
       MACOS_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
 
@@ -167,7 +172,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
@@ -261,6 +266,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
         shell: bash
@@ -325,13 +333,11 @@ jobs:
           if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *linux* ]]; then
             export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
           fi
-          if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *apple* ]]; then
-            # macOS primary release builds compile the full CLI and have repeatedly
-            # timed out with the workspace release profile's codegen-units = 1.
-            # Use Cargo's env override here instead of changing the profile for
-            # every release target.
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
-          fi
+          # Release builds have repeatedly timed out with the workspace release
+          # profile's codegen-units = 1 (originally on macOS primary; now applied
+          # to every target and bundle to cut compile times). Use Cargo's env
+          # override here instead of changing the pinned profile in Cargo.toml.
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 
           build_args=()
           for binary in ${{ matrix.binaries }}; do
