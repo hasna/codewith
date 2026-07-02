@@ -28,6 +28,14 @@ async fn get_user_instructions(config: &Config) -> Option<String> {
         .map(|loaded| loaded.text())
 }
 
+async fn loaded_user_instructions(config: &Config) -> (Option<LoadedAgentsMd>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(config)
+        .user_instructions_with_fs(LOCAL_FS.as_ref(), &mut warnings)
+        .await;
+    (loaded, warnings)
+}
+
 async fn agents_md_paths(config: &Config) -> std::io::Result<Vec<AbsolutePathBuf>> {
     AgentsMdManager::new(config)
         .agents_md_paths(LOCAL_FS.as_ref())
@@ -45,6 +53,24 @@ fn assert_invalid_utf8_warning(warnings: &[String], source: &str, path: &Path) {
             && warning.contains("Invalid byte sequences were replaced."),
         "unexpected invalid UTF-8 warning: {warning:?}"
     );
+}
+
+#[cfg(unix)]
+fn create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, link)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_file_symlink(_source: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "file symlinks are unsupported on this platform",
+    ))
 }
 
 /// Helper that returns a `Config` pointing at `root` and using `limit` as
@@ -165,12 +191,14 @@ fn loaded_instructions_with_only_empty_or_whitespace_entries_are_empty() {
             contents: String::new(),
             provenance: InstructionProvenance::Internal,
         }],
+        source_paths: Vec::new(),
     };
     let whitespace = LoadedAgentsMd {
         entries: vec![InstructionEntry {
             contents: " \n\t".to_string(),
             provenance: InstructionProvenance::Internal,
         }],
+        source_paths: Vec::new(),
     };
 
     assert!(empty.is_empty());
@@ -403,6 +431,7 @@ async fn concatenates_root_and_cwd_docs() {
                 provenance: InstructionProvenance::Project(crate_agents.clone()),
             },
         ],
+        source_paths: vec![root_agents.clone(), crate_agents.clone()],
     };
 
     assert_eq!(loaded, expected);
@@ -486,6 +515,7 @@ async fn child_agents_message_after_global_instructions_uses_plain_separator() {
                 provenance: InstructionProvenance::Internal,
             },
         ],
+        source_paths: vec![cfg.codex_home.join(DEFAULT_AGENTS_MD_FILENAME)],
     };
 
     assert_eq!(loaded, expected);
@@ -523,6 +553,7 @@ async fn instruction_sources_include_global_before_agents_md_docs() {
                 provenance: InstructionProvenance::Project(project_agents.clone()),
             },
         ],
+        source_paths: vec![global_agents.clone(), project_agents.clone()],
     };
     assert_eq!(loaded, expected);
     assert_eq!(
@@ -568,6 +599,7 @@ async fn child_agents_message_after_project_docs_is_not_an_instruction_source() 
                 provenance: InstructionProvenance::Internal,
             },
         ],
+        source_paths: vec![global_agents.clone(), project_agents.clone()],
     };
     assert_eq!(loaded, expected);
     assert_eq!(
@@ -637,6 +669,269 @@ async fn project_codewith_dir_override_is_preferred() {
     let discovery = agents_md_paths(&cfg).await.expect("discover paths");
     assert_eq!(discovery.len(), 1);
     assert!(discovery[0].ends_with(Path::new(LOCAL_PROJECT_AGENTS_MD_PATH)));
+}
+
+#[tokio::test]
+async fn project_codewith_doc_expands_markdown_include() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "before\n{{ include \"rust.md\" }}\nafter",
+    );
+    write_doc(
+        tmp.path(),
+        ".codewith/instructions/rust.md",
+        "included rust",
+    );
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("expanded doc expected");
+    let codewith_doc = tmp.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH).abs();
+    let include_doc = tmp.path().join(".codewith/instructions/rust.md").abs();
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(loaded.text(), "before\nincluded rust\nafter");
+    assert_eq!(
+        loaded.sources().collect::<Vec<_>>(),
+        vec![&codewith_doc, &include_doc]
+    );
+}
+
+#[tokio::test]
+async fn root_fallback_doc_resolves_include_under_sibling_codewith_instructions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_AGENTS_MD_FILENAME,
+        "{{ include \"rust.md\" }}",
+    );
+    write_doc(
+        tmp.path(),
+        ".codewith/instructions/rust.md",
+        "included rust",
+    );
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("expanded doc expected");
+    let include_doc = tmp.path().join(".codewith/instructions/rust.md").abs();
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(loaded.text(), "included rust");
+    assert_eq!(loaded.sources().collect::<Vec<_>>(), vec![&include_doc]);
+}
+
+#[tokio::test]
+async fn multiple_markdown_includes_expand_in_model_visible_order() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "{{ include \"first.md\" }}\nroot\n{{ include \"reviews/security.md\" }}",
+    );
+    write_doc(tmp.path(), ".codewith/instructions/first.md", "first");
+    write_doc(
+        tmp.path(),
+        ".codewith/instructions/reviews/security.md",
+        "security",
+    );
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("expanded doc expected");
+    let first = tmp.path().join(".codewith/instructions/first.md").abs();
+    let codewith_doc = tmp.path().join(DEFAULT_PROJECT_AGENTS_MD_PATH).abs();
+    let security = tmp
+        .path()
+        .join(".codewith/instructions/reviews/security.md")
+        .abs();
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(loaded.text(), "first\nroot\nsecurity");
+    assert_eq!(
+        loaded.sources().collect::<Vec<_>>(),
+        vec![&first, &codewith_doc, &security]
+    );
+}
+
+#[tokio::test]
+async fn included_directives_are_not_expanded_recursively() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "{{ include \"outer.md\" }}",
+    );
+    write_doc(
+        tmp.path(),
+        ".codewith/instructions/outer.md",
+        "outer\n{{ include \"inner.md\" }}",
+    );
+    write_doc(tmp.path(), ".codewith/instructions/inner.md", "inner");
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("expanded doc expected");
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(loaded.text(), "outer\n{{ include \"inner.md\" }}");
+}
+
+#[tokio::test]
+async fn markdown_include_expansion_respects_project_doc_byte_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "ab\n{{ include \"rust.md\" }}\ncd",
+    );
+    write_doc(tmp.path(), ".codewith/instructions/rust.md", "included");
+
+    let cfg = make_config(&tmp, /*limit*/ 6, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("expanded doc expected");
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(loaded.text(), "ab\ninc");
+}
+
+#[tokio::test]
+async fn missing_markdown_include_warns_and_drops_directive_line() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "before\n{{ include \"missing.md\" }}\nafter",
+    );
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("doc expected");
+
+    assert_eq!(loaded.text(), "before\nafter");
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].contains("included file was not found"),
+        "unexpected warning: {:?}",
+        warnings[0]
+    );
+}
+
+#[tokio::test]
+async fn rejected_markdown_include_paths_warn_and_do_not_read_content() {
+    let cases = [
+        ("parent traversal", "../secret.md"),
+        ("absolute path", "/tmp/secret.md"),
+        ("tilde path", "~/.secret.md"),
+        ("url path", "https://example.test/secret.md"),
+        ("windows prefix", "C:/secret.md"),
+        ("non markdown", "secret.txt"),
+    ];
+
+    for (case, include_path) in cases {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_doc(
+            tmp.path(),
+            DEFAULT_PROJECT_AGENTS_MD_PATH,
+            &format!("before\n{{{{ include \"{include_path}\" }}}}\nafter"),
+        );
+        write_doc(
+            tmp.path(),
+            ".codewith/instructions/secret.md",
+            "blocked secret",
+        );
+        write_doc(
+            tmp.path(),
+            ".codewith/instructions/secret.txt",
+            "blocked secret",
+        );
+
+        let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+        let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+        let loaded = loaded.expect("doc expected");
+
+        assert_eq!(loaded.text(), "before\nafter", "{case}");
+        assert_eq!(warnings.len(), 1, "{case}");
+        assert!(
+            warnings[0].contains("Skipped CODEWITH.md include"),
+            "{case}: {:?}",
+            warnings[0]
+        );
+        assert!(
+            !loaded.text().contains("blocked secret"),
+            "{case}: blocked content leaked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn markdown_include_rejects_directory_and_symlink_escape_targets() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "{{ include \"directory.md\" }}\n{{ include \"escape.md\" }}\nkept",
+    );
+    fs::create_dir_all(tmp.path().join(".codewith/instructions/directory.md")).unwrap();
+    let outside = tmp.path().join("outside.md");
+    fs::write(&outside, "escaped secret").unwrap();
+    let escape_link = tmp.path().join(".codewith/instructions/escape.md");
+    create_file_symlink(&outside, &escape_link).expect("create symlink escape");
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("doc expected");
+
+    assert_eq!(loaded.text(), "kept");
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("include target is not a regular file")),
+        "expected directory warning, got {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("include target escapes include root")),
+        "expected symlink escape warning, got {warnings:?}"
+    );
+    assert!(!loaded.text().contains("escaped secret"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn markdown_include_rejects_special_file_target() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_doc(
+        tmp.path(),
+        DEFAULT_PROJECT_AGENTS_MD_PATH,
+        "{{ include \"pipe.md\" }}\nkept",
+    );
+    fs::create_dir_all(tmp.path().join(".codewith/instructions")).unwrap();
+    let path = tmp.path().join(".codewith/instructions/pipe.md");
+    let c_path = CString::new(path.as_os_str().as_bytes()).expect("path without nul");
+    // SAFETY: `c_path` is a valid, nul-terminated path and `mkfifo` does not
+    // retain the pointer after the call.
+    let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) };
+    assert_eq!(rc, 0);
+
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let (loaded, warnings) = loaded_user_instructions(&cfg).await;
+    let loaded = loaded.expect("doc expected");
+
+    assert_eq!(loaded.text(), "kept");
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].contains("include target is not a regular file"),
+        "unexpected warning: {:?}",
+        warnings[0]
+    );
 }
 
 #[tokio::test]
