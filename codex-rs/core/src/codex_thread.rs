@@ -72,6 +72,7 @@ pub struct ThreadConfigSnapshot {
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
     pub session_prompt: Option<String>,
+    pub worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
     pub selected_auth_profile: Option<String>,
     pub session_source: SessionSource,
     pub forked_from_thread_id: Option<ThreadId>,
@@ -182,6 +183,7 @@ pub struct CodexThreadSettingsOverrides {
     pub service_tier: Option<Option<String>>,
     pub session_prompt: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
+    pub worktree_mode: Option<codex_protocol::protocol::SessionWorktreeMode>,
     pub personality: Option<Personality>,
 }
 
@@ -502,6 +504,7 @@ impl CodexThread {
             service_tier,
             session_prompt,
             collaboration_mode,
+            worktree_mode,
             personality,
         } = overrides;
         let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
@@ -527,6 +530,7 @@ impl CodexThread {
             windows_sandbox_level,
             model_provider_id: model_provider,
             collaboration_mode: Some(collaboration_mode),
+            worktree_mode,
             reasoning_summary: summary,
             service_tier,
             session_prompt,

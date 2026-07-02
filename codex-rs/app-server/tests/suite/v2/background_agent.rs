@@ -39,9 +39,16 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeCleanupResponse;
 use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachResponse;
@@ -77,6 +84,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result<()> {
@@ -2042,6 +2050,234 @@ async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_create_rejects_subagent_threads() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id =
+        start_thread_for_worktree_attach_with_source(&mut mcp, Some(ThreadSource::Subagent))
+            .await?;
+
+    let error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "subagent-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, error.error.code);
+    assert_eq!(
+        "subagent sessions cannot create managed worktrees",
+        error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_worktree_mode_blocks_session_create_and_attach() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let repo_path = codex_home.path().join("repo");
+    std::fs::create_dir_all(repo_path.as_path())?;
+    init_git_repo(repo_path.as_path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_managed_worktree(state_db.as_ref(), "wt-shared", repo_path.as_path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), repo_path.as_path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::Shared,
+    )
+    .await?;
+
+    let create_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "shared-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "baseRepoPath": repo_path.display().to_string(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, create_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        create_error.error.message
+    );
+
+    let attach_error = raw_request_error(
+        &mut mcp,
+        "worktree/attach",
+        json!({
+            "worktreeId": "wt-shared",
+            "threadId": thread_id,
+            "agentRunId": null,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, attach_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        attach_error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pull_request_worktree_mode_requires_attached_worktree_for_turns() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "done",
+        )?])
+        .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), codex_home.path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::PullRequest,
+    )
+    .await?;
+
+    let turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "implement the PR-mode feature".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, turn_error.error.code);
+    assert_eq!(
+        "pull-request mode requires an attached active managed worktree before starting a turn",
+        turn_error.error.message
+    );
+
+    let retain_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "pr-retain-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "cleanupPolicy": "retain",
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, retain_cleanup_error.error.code);
+    assert_eq!(
+        "pull-request mode worktrees use deleteIfClean cleanup policy",
+        retain_cleanup_error.error.message
+    );
+
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "pr-mode",
+                "startPoint": "HEAD",
+                "threadId": thread_id,
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    assert_eq!(
+        WorktreeCleanupPolicy::DeleteIfClean,
+        created.worktree.cleanup_policy
+    );
+    assert_eq!(WorktreeOwnerKind::MainSession, created.worktree.owner_kind);
+    assert_eq!(Some(thread_id.clone()), created.worktree.owner_thread_id);
+    assert!(
+        created
+            .worktree
+            .identity
+            .as_deref()
+            .is_some_and(|identity| identity.starts_with("pr-mode:"))
+    );
+
+    let outside_cwd_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "try to keep working from the shared checkout".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let outside_cwd_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(outside_cwd_turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, outside_cwd_error.error.code);
+    assert!(
+        outside_cwd_error
+            .error
+            .message
+            .contains("pull-request mode requires cwd"),
+        "unexpected error: {}",
+        outside_cwd_error.error.message
+    );
+
+    let successful_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            cwd: Some(std::path::PathBuf::from(
+                created.worktree.worktree_path.as_str(),
+            )),
+            input: vec![V2UserInput::Text {
+                text: "now work inside the PR worktree".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let successful_turn_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(successful_turn_request_id)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response(successful_turn_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Result<()> {
     let codex_home = TempDir::new()?;
     let repo_path = codex_home.path().join("repo");
@@ -2789,9 +3025,17 @@ async fn create_background_agent_git_worktree_lease(
 }
 
 async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String> {
+    start_thread_for_worktree_attach_with_source(mcp, None).await
+}
+
+async fn start_thread_for_worktree_attach_with_source(
+    mcp: &mut McpProcess,
+    thread_source: Option<ThreadSource>,
+) -> Result<String> {
     let request_id = mcp
         .send_thread_start_request(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            thread_source,
             ..Default::default()
         })
         .await?;
@@ -2823,6 +3067,27 @@ async fn upsert_thread_for_worktree_attach_with_retry(
             Err(err) => return Err(err),
         }
     }
+    Ok(())
+}
+
+async fn update_thread_worktree_mode(
+    mcp: &mut McpProcess,
+    thread_id: &str,
+    worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
+) -> Result<()> {
+    let request_id = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            worktree_mode: Some(worktree_mode),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadSettingsUpdateResponse = read_response(mcp, request_id).await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/settings/updated"),
+    )
+    .await??;
     Ok(())
 }
 

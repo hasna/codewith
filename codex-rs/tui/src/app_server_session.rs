@@ -1719,6 +1719,7 @@ impl AppServerSession {
         branch: Option<String>,
         start_point: Option<String>,
         cleanup_policy: Option<WorktreeCleanupPolicy>,
+        thread_id: Option<String>,
     ) -> Result<WorktreeCreateResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1730,7 +1731,7 @@ impl AppServerSession {
                     branch,
                     start_point,
                     cleanup_policy,
-                    thread_id: None,
+                    thread_id,
                 },
             })
             .await

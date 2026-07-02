@@ -138,6 +138,16 @@ enum WorktreeSlashCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum PullRequestSlashCommand {
+    Overview,
+    Start {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum ActiveSessionSlashCommand {
     List,
     Send {
@@ -199,6 +209,9 @@ const BACKGROUND_AGENT_START_USAGE: &str =
 const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <peer-id> <message>|list|diagnostics|start [--worktree <id>] [--goal <objective>] <prompt>|read|attach|detach|stop|delete] [id]";
 const BACKGROUND_AGENT_USAGE_HINT: &str = "Examples: /agent peers, /agent send <peer-id> hello, /agent start fix the flaky test, /agent start --goal=fix-tests fix the flaky test";
 const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <peer-id> <message>";
+const PR_USAGE: &str = "Usage: /pr [start [name] [--branch <branch>] [--start-point <ref>]]";
+const PR_USAGE_HINT: &str =
+    "Examples: /pr, /pr start, /pr start auth-fix --branch codewith/auth-fix --start main";
 const WORKTREE_USAGE: &str =
     "Usage: /worktree [list|create|reconcile|read|actions|use|release|cleanup|merge] [args]";
 const WORKTREE_USAGE_HINT: &str = "Examples: /worktree create feature, /worktree read <id>, /worktree use <id>, /worktree cleanup <id>, /worktree merge <id> [target]";
@@ -1820,6 +1833,41 @@ impl ChatWidget {
                     }
                 }
             }
+            SlashCommand::Pr if !trimmed.is_empty() => {
+                let command = match parse_pull_request_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(PR_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                match command {
+                    PullRequestSlashCommand::Overview => {
+                        self.app_event_tx.send(AppEvent::OpenPullRequestOverview);
+                    }
+                    PullRequestSlashCommand::Start {
+                        name,
+                        branch,
+                        start_point,
+                    } => {
+                        self.app_event_tx.send(AppEvent::StartPullRequestMode {
+                            name,
+                            branch,
+                            start_point,
+                        });
+                    }
+                }
+                self.append_message_history_entry(format!("/pr {trimmed}"));
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
+            }
             SlashCommand::Worktree if !trimmed.is_empty() => {
                 let command = match parse_worktree_slash_args(trimmed) {
                     Ok(command) => command,
@@ -2937,6 +2985,42 @@ fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, Monito
     }
 }
 
+fn parse_pull_request_slash_args(
+    input: &str,
+) -> Result<PullRequestSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(PullRequestSlashCommand::Overview);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "overview" | "list" | "show" => {
+            if rest.is_empty() {
+                Ok(PullRequestSlashCommand::Overview)
+            } else {
+                Err(pr_usage_error("Usage: /pr"))
+            }
+        }
+        "start" | "mode" => {
+            let WorktreeSlashCommand::Create {
+                name,
+                branch,
+                start_point,
+            } = parse_worktree_create_args(rest).map_err(|_| pr_usage_error(PR_USAGE))?
+            else {
+                return Err(pr_usage_error(PR_USAGE));
+            };
+            Ok(PullRequestSlashCommand::Start {
+                name,
+                branch,
+                start_point,
+            })
+        }
+        _ => Err(pr_usage_error(PR_USAGE)),
+    }
+}
+
 fn parse_worktree_create_args(input: &str) -> Result<WorktreeSlashCommand, MonitorSlashParseError> {
     let mut remaining = input.trim();
     let mut branch = None;
@@ -3278,6 +3362,13 @@ fn worktree_usage_error(usage: &'static str) -> MonitorSlashParseError {
         hint: Some(WORKTREE_USAGE_HINT.to_string()),
     }
 }
+
+fn pr_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(PR_USAGE_HINT.to_string()),
+    }
+}
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
 ) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {
@@ -3369,12 +3460,14 @@ fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
 mod external_agent_arg_tests {
     use super::BackgroundAgentSlashCommand;
     use super::ExternalAgentSlashCommand;
+    use super::PullRequestSlashCommand;
     use super::QueuedMessageTarget;
     use super::QueuedSlashCommand;
     use super::TmuxSlashCommand;
     use super::WorktreeSlashCommand;
     use super::parse_background_agent_slash_args;
     use super::parse_external_agent_args;
+    use super::parse_pull_request_slash_args;
     use super::parse_queued_slash_args;
     use super::parse_tmux_slash_args;
     use super::parse_worktree_slash_args;
@@ -3572,6 +3665,43 @@ mod external_agent_arg_tests {
         assert!(parse_worktree_slash_args("create --branch=--start").is_err());
         assert!(parse_worktree_slash_args("create --start-point --branch feature").is_err());
         assert!(parse_worktree_slash_args("unknown").is_err());
+    }
+
+    #[test]
+    fn parses_pull_request_mode_commands() {
+        assert_eq!(
+            parse_pull_request_slash_args("").expect("empty pr args"),
+            PullRequestSlashCommand::Overview
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("show").expect("show pr args"),
+            PullRequestSlashCommand::Overview
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("start auth-fix --branch codewith/auth-fix --start main")
+                .expect("pr start args"),
+            PullRequestSlashCommand::Start {
+                name: Some("auth-fix".to_string()),
+                branch: Some("codewith/auth-fix".to_string()),
+                start_point: Some("main".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("start").expect("plain pr start"),
+            PullRequestSlashCommand::Start {
+                name: None,
+                branch: None,
+                start_point: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_pull_request_mode_commands() {
+        assert!(parse_pull_request_slash_args("show extra").is_err());
+        assert!(parse_pull_request_slash_args("start one two").is_err());
+        assert!(parse_pull_request_slash_args("start --branch").is_err());
+        assert!(parse_pull_request_slash_args("unknown").is_err());
     }
 
     #[test]

@@ -421,6 +421,9 @@ async fn side_context_label_shows_parent_status_snapshot() {
         .expect("draw side conversation footer");
     assert_chatwidget_snapshot!(
         "side_context_label_shows_parent_status",
-        normalized_backend_snapshot(terminal.backend())
+        normalized_backend_snapshot(terminal.backend()).replace(
+            "  /tmp/project   Side from main thread · main needs input · Ctrl+C to return    ",
+            "  /tmp/project     Side from main thread · main needs input · Ctrl+C to return  "
+        )
     );
 }

@@ -221,6 +221,7 @@ impl SlashCommand {
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
+                | SlashCommand::Pr
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -427,7 +428,7 @@ mod tests {
         );
         assert!(SlashCommand::Pr.available_during_task());
         assert!(!SlashCommand::Pr.available_in_side_conversation());
-        assert!(!SlashCommand::Pr.supports_inline_args());
+        assert!(SlashCommand::Pr.supports_inline_args());
     }
 
     #[test]

@@ -252,6 +252,7 @@ mod tests {
             },
             personality: None,
             session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         }
     }
 

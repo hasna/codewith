@@ -743,6 +743,13 @@ pub(crate) enum AppEvent {
         start_point: Option<String>,
     },
 
+    /// Start pull-request mode in a fresh Codewith-managed worktree.
+    StartPullRequestMode {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+
     /// Open actions for one Codewith-managed worktree.
     OpenWorktreeActions {
         worktree_id: String,

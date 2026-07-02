@@ -209,6 +209,7 @@ pub(crate) fn thread_settings_from_config_snapshot(
         collaboration_mode: config_snapshot.collaboration_mode.clone(),
         personality: config_snapshot.personality,
         session_prompt: config_snapshot.session_prompt.clone(),
+        worktree_mode: config_snapshot.worktree_mode,
     }
 }
 
@@ -235,6 +236,7 @@ pub(crate) fn thread_settings_from_core_snapshot(
         collaboration_mode: snapshot.collaboration_mode,
         personality: snapshot.personality,
         session_prompt: snapshot.session_prompt,
+        worktree_mode: snapshot.worktree_mode,
     }
 }
 

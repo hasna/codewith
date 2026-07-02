@@ -16,6 +16,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -327,6 +328,9 @@ pub struct ThreadSettingsUpdateParams {
     )]
     #[ts(optional = nullable)]
     pub session_prompt: Option<Option<String>>,
+    /// Override session-level managed worktree behavior.
+    #[ts(optional = nullable)]
+    pub worktree_mode: Option<SessionWorktreeMode>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -352,6 +356,7 @@ pub struct ThreadSettings {
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
     pub session_prompt: Option<String>,
+    pub worktree_mode: SessionWorktreeMode,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

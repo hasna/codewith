@@ -100,6 +100,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_permissions::PermissionGrantScope;
@@ -189,6 +190,12 @@ fn api_worktree_session_mode_from_config(mode: CoreWorktreeSessionMode) -> Workt
         CoreWorktreeSessionMode::Manual => WorktreeSessionMode::Manual,
         CoreWorktreeSessionMode::Auto => WorktreeSessionMode::Auto,
     }
+}
+
+struct SessionWorktreePolicy {
+    worktree_mode: SessionWorktreeMode,
+    is_subagent: bool,
+    cwd: AbsolutePathBuf,
 }
 
 impl ThreadRequestProcessor {
@@ -525,28 +532,95 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    async fn session_worktree_policy_for_thread(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> Result<SessionWorktreePolicy, JSONRPCErrorError> {
+        let thread = self
+            .thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|_| invalid_params(format!("thread not found: {thread_id}")))?;
+        let snapshot = thread.config_snapshot().await;
+        let is_subagent = snapshot.session_source.is_non_root_agent()
+            || matches!(snapshot.thread_source, Some(ThreadSource::Subagent));
+        Ok(SessionWorktreePolicy {
+            worktree_mode: snapshot.worktree_mode,
+            is_subagent,
+            cwd: snapshot.cwd,
+        })
+    }
+
     pub(crate) async fn worktree_create(
         &self,
         params: WorktreeCreateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
-        let base_repo_path = self
-            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
-            .await?
-            .ok_or_else(|| invalid_params("worktree/create requires a git repository"))?;
-        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
-        ensure_worktree_policy_enabled(&policy)?;
+        if self.background_agent_worker_process
+            || self.thread_manager.session_source().is_non_root_agent()
+        {
+            return Err(invalid_params(
+                "subagent sessions cannot create managed worktrees",
+            ));
+        }
         let attach_thread_id = params
             .thread_id
             .as_deref()
             .map(codex_protocol::ThreadId::from_string)
             .transpose()
             .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+        let attach_thread_policy = if let Some(thread_id) = attach_thread_id {
+            let thread_policy = self.session_worktree_policy_for_thread(thread_id).await?;
+            if thread_policy.is_subagent {
+                return Err(invalid_params(
+                    "subagent sessions cannot create managed worktrees",
+                ));
+            }
+            if thread_policy.worktree_mode == SessionWorktreeMode::Shared {
+                return Err(invalid_params(
+                    "managed worktrees are disabled for this session",
+                ));
+            }
+            Some(thread_policy)
+        } else {
+            None
+        };
+        let base_repo_cwd = attach_thread_policy
+            .as_ref()
+            .map(|policy| &policy.cwd)
+            .unwrap_or(&self.config.cwd);
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path_for_cwd(
+                params.base_repo_path.as_deref(),
+                base_repo_cwd,
+            )
+            .await?
+            .ok_or_else(|| invalid_params("worktree/create requires a git repository"))?;
+        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
+        ensure_worktree_policy_enabled(&policy)?;
         if attach_thread_id.is_some() && policy.main_sessions == WorktreeSessionMode::Off {
             return Err(invalid_params(
                 "main-session worktrees are disabled in config",
             ));
         }
+        let cleanup_policy = if attach_thread_policy
+            .as_ref()
+            .is_some_and(|policy| policy.worktree_mode == SessionWorktreeMode::PullRequest)
+        {
+            if params.cleanup_policy.is_some_and(|cleanup_policy| {
+                cleanup_policy != WorktreeCleanupPolicy::DeleteIfClean
+            }) {
+                return Err(invalid_params(
+                    "pull-request mode worktrees use deleteIfClean cleanup policy",
+                ));
+            }
+            codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean
+        } else {
+            params
+                .cleanup_policy
+                .map(state_worktree_cleanup_policy)
+                .unwrap_or_else(|| state_worktree_cleanup_policy(policy.cleanup_default))
+        };
 
         let worktree_id = Uuid::new_v4().to_string();
         let branch = worktree_branch_name(
@@ -616,15 +690,19 @@ impl ThreadRequestProcessor {
             move || get_git_worktree_status_snapshot(worktree_path.as_path())
         })
         .await?;
-        let cleanup_policy = params
-            .cleanup_policy
-            .map(state_worktree_cleanup_policy)
-            .unwrap_or_else(|| state_worktree_cleanup_policy(policy.cleanup_default));
         let create_result = state_db
             .managed_worktrees()
             .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
                 worktree_id: Some(worktree_id.clone()),
-                identity: Some(format!("manual:{worktree_id}")),
+                identity: Some(
+                    match attach_thread_policy
+                        .as_ref()
+                        .map(|policy| policy.worktree_mode)
+                    {
+                        Some(SessionWorktreeMode::PullRequest) => format!("pr-mode:{worktree_id}"),
+                        _ => format!("manual:{worktree_id}"),
+                    },
+                ),
                 mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
                 base_repo_path: base_repo_path.clone(),
                 worktree_path: worktree_path.clone(),
@@ -841,6 +919,16 @@ impl ThreadRequestProcessor {
             return Err(invalid_params(
                 "main-session worktrees are disabled in config",
             ));
+        }
+        if let Some(thread_id) = params.thread_id.as_deref() {
+            let thread_id = codex_protocol::ThreadId::from_string(thread_id)
+                .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+            let thread_policy = self.session_worktree_policy_for_thread(thread_id).await?;
+            if thread_policy.worktree_mode == SessionWorktreeMode::Shared {
+                return Err(invalid_params(
+                    "managed worktrees are disabled for this session",
+                ));
+            }
         }
         if params.agent_run_id.is_some() && policy.sub_sessions == WorktreeSessionMode::Off {
             return Err(invalid_params(
@@ -1370,10 +1458,18 @@ impl ThreadRequestProcessor {
         &self,
         requested_base_repo_path: Option<&str>,
     ) -> Result<Option<PathBuf>, JSONRPCErrorError> {
-        let current_base_repo_path =
-            resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &self.config.cwd)
-                .await
-                .map(AbsolutePathBuf::into_path_buf);
+        self.resolve_worktree_base_repo_path_for_cwd(requested_base_repo_path, &self.config.cwd)
+            .await
+    }
+
+    async fn resolve_worktree_base_repo_path_for_cwd(
+        &self,
+        requested_base_repo_path: Option<&str>,
+        cwd: &AbsolutePathBuf,
+    ) -> Result<Option<PathBuf>, JSONRPCErrorError> {
+        let current_base_repo_path = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), cwd)
+            .await
+            .map(AbsolutePathBuf::into_path_buf);
         let requested_base_repo_path = requested_base_repo_path
             .map(str::trim)
             .filter(|path| !path.is_empty());

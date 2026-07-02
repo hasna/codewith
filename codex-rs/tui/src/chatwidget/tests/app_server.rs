@@ -33,6 +33,7 @@ fn thread_settings_for_test(
             },
             personality: Some(Personality::Pragmatic),
             session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         },
     }
 }
