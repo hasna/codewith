@@ -205,6 +205,36 @@ fn assistant_message(text: &str) -> ResponseItem {
     }
 }
 
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_call_output(call_id: &str, output: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text(output.to_string()),
+    }
+}
+
+fn function_call_output_text<'a>(items: &'a [ResponseItem], call_id: &str) -> &'a str {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: item_call_id,
+                output,
+            } if item_call_id == call_id => output.text_content(),
+            _ => None,
+        })
+        .expect("function output should exist")
+}
+
 fn test_session_telemetry_without_metadata() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
     let metrics = MetricsClient::new(
@@ -9662,6 +9692,107 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
     session.emit_thread_idle_lifecycle_if_idle().await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let call_id = "goal-headless-output";
+    let long_output = "goal continuation historical stdout\n".repeat(2_500);
+    sess.replace_history(
+        vec![
+            function_call(call_id),
+            function_call_output(call_id, &long_output),
+        ],
+        None,
+    )
+    .await;
+
+    sess.try_start_turn_if_idle(vec![user_message("continue active goal")])
+        .await
+        .expect("idle goal continuation should start");
+    let prompt = sess
+        .clone_history()
+        .await
+        .for_prompt(&tc.model_info.input_modalities);
+    let output = function_call_output_text(&prompt, call_id);
+    assert_ne!(long_output, output);
+    assert!(
+        output.contains("tokens truncated"),
+        "expected historical output to be truncated: {output}"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let call_id = "scheduled-headless-output";
+    let long_output = "scheduled run historical web output\n".repeat(2_500);
+    sess.replace_history(
+        vec![
+            function_call(call_id),
+            function_call_output(call_id, &long_output),
+        ],
+        None,
+    )
+    .await;
+
+    sess.try_start_user_input_turn_if_idle(
+        "scheduled-turn".to_string(),
+        vec![UserInput::Text {
+            text: "run scheduled prompt".to_string(),
+            text_elements: Vec::new(),
+        }],
+        Default::default(),
+        SessionSettingsUpdate::default(),
+    )
+    .await
+    .expect("idle scheduled turn should start");
+    let prompt = sess
+        .clone_history()
+        .await
+        .for_prompt(&tc.model_info.input_modalities);
+    let output = function_call_output_text(&prompt, call_id);
+    assert_ne!(long_output, output);
+    assert!(
+        output.contains("tokens truncated"),
+        "expected historical output to be truncated: {output}"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn try_start_user_input_turn_if_idle_rejects_plan_mode_update_without_mutating() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    assert_eq!(ModeKind::Default, collaboration_mode.mode);
+    collaboration_mode.mode = ModeKind::Plan;
+
+    let err = sess
+        .try_start_user_input_turn_if_idle(
+            "scheduled-plan-turn".to_string(),
+            vec![UserInput::Text {
+                text: "run scheduled prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("plan-mode scheduled turn update should be rejected");
+
+    assert_eq!(
+        Some(TryStartTurnIfIdleRejectionReason::PlanMode),
+        err.reason()
+    );
+    assert!(sess.active_turn.lock().await.is_none());
+    assert_eq!(ModeKind::Default, sess.collaboration_mode().await.mode);
 }
 
 #[tokio::test]

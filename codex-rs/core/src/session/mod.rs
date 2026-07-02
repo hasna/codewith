@@ -197,6 +197,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod auth_profile_auto_switch;
 mod config_lock;
 mod handlers;
 pub(crate) use handlers::enqueue_inter_agent_communication;
@@ -1901,7 +1902,10 @@ impl Session {
             return;
         }
 
-        if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+        if !matches!(
+            msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
+        ) {
             return;
         }
 

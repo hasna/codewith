@@ -3,6 +3,8 @@ use crate::QueuedMailboxMoveDirection;
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
+use crate::session::QueuedMailboxMessage;
+use crate::session::QueuedMailboxMoveDirection;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
@@ -342,6 +344,11 @@ impl CodexThread {
     #[doc(hidden)]
     pub async fn ensure_rollout_materialized(&self) {
         self.codex.session.ensure_rollout_materialized().await;
+    }
+
+    #[doc(hidden)]
+    pub async fn try_ensure_rollout_materialized(&self) -> std::io::Result<()> {
+        self.codex.session.try_ensure_rollout_materialized().await
     }
 
     #[doc(hidden)]

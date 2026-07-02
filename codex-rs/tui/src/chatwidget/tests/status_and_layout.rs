@@ -3033,6 +3033,92 @@ async fn status_line_goal_title_updates_and_clears_with_goal_state() {
 }
 
 #[tokio::test]
+async fn status_line_run_state_maps_deterministic_task_states() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+
+    handle_turn_started(&mut chat, "turn-1");
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+
+    handle_agent_reasoning_delta(&mut chat, "**Thinking**");
+    assert_eq!(status_line_text(&chat), Some("Thinking".to_string()));
+
+    begin_unified_exec_startup(&mut chat, "call-wait-state", "proc-state", "just test");
+    terminal_interaction(&mut chat, "call-wait-state-poll", "proc-state", "");
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Waiting on background".to_string())
+    );
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_run_state_updates_for_human_feedback() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-action-required");
+
+    let request = ExecApprovalRequestEvent {
+        call_id: "call-action-required".into(),
+        approval_id: Some("call-action-required".into()),
+        turn_id: "turn-action-required".into(),
+        command: vec!["bash".into(), "-lc".into(), "echo hello".into()],
+        cwd: test_path_buf("/tmp").abs(),
+        reason: Some("need confirmation".into()),
+        network_approval_context: None,
+        proposed_execpolicy_amendment: None,
+        proposed_network_policy_amendments: None,
+        additional_permissions: None,
+        available_decisions: None,
+    };
+    handle_exec_approval_request(&mut chat, "sub-action-required", request);
+
+    chat.pre_draw_tick();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Waiting on human".to_string())
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    chat.pre_draw_tick();
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_run_state_background_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-background");
+    begin_unified_exec_startup(
+        &mut chat,
+        "call-background",
+        "proc-background",
+        "cargo test -p codex-tui",
+    );
+    terminal_interaction(&mut chat, "call-background-poll", "proc-background", "");
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw run-state footer");
+    assert_chatwidget_snapshot!(
+        "status_line_run_state_background_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());

@@ -1630,6 +1630,84 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal_plan")
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-loop-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "init",
+                        "objective": "Initialize a headless loop run"
+                    },
+                    {
+                        "key": "finish",
+                        "objective": "Finish the headless loop run",
+                        "depends_on": ["init"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+
+    let plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(codex_state::ThreadGoalPlanStatus::Blocked, plan.plan.status);
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Blocked,
+        plan.nodes[0].status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Pending,
+        plan.nodes[1].status
+    );
+
+    let pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::Blocked,
+    )
+    .await?;
+    assert_eq!(1, pending.len());
+    assert_eq!(Some(goal.goal_id.as_str()), pending[0].source_id.as_deref());
+    assert_eq!(Some("turn-1"), pending[0].turn_id.as_deref());
+    assert_eq!(pending[0].request_payload_json["reason"], "turn-error");
+    assert_eq!(
+        pending[0].request_payload_json["terminalError"],
+        json!({
+            "codexErrorInfo": "context_window_exceeded",
+            "code": "context_window_exceeded",
+            "action": "The turn exceeded the model context window. Reduce prompt/history size or run a cleanup/compaction before retrying the loop.",
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn usage_limit_budget_limited_goal_accounts_remaining_progress() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

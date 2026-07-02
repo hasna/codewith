@@ -12,6 +12,14 @@ fn resume_parses_prompt_after_global_flags() {
         "--json",
         "--model",
         "gpt-5.2-codex",
+        "--auth-profile",
+        "account005",
+        "--sandbox",
+        "read-only",
+        "-C",
+        "/tmp/resume-cwd",
+        "--add-dir",
+        "/tmp/resume-add-dir",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--ephemeral",
@@ -23,6 +31,17 @@ fn resume_parses_prompt_after_global_flags() {
     assert!(cli.ephemeral);
     assert!(cli.ignore_user_config);
     assert!(cli.ignore_rules);
+    assert_eq!(cli.shared.model.as_deref(), Some("gpt-5.2-codex"));
+    assert_eq!(cli.shared.auth_profile.as_deref(), Some("account005"));
+    assert!(matches!(
+        cli.shared.sandbox_mode,
+        Some(codex_utils_cli::SandboxModeCliArg::ReadOnly)
+    ));
+    assert_eq!(cli.shared.cwd, Some(PathBuf::from("/tmp/resume-cwd")));
+    assert_eq!(
+        cli.shared.add_dir,
+        vec![PathBuf::from("/tmp/resume-add-dir")]
+    );
     let Some(Command::Resume(args)) = cli.command else {
         panic!("expected resume command");
     };
@@ -34,6 +53,27 @@ fn resume_parses_prompt_after_global_flags() {
         }
     });
     assert_eq!(effective_prompt.as_deref(), Some(PROMPT));
+}
+
+#[test]
+fn durable_parses_as_explicit_persistent_mode() {
+    let cli = Cli::parse_from(["codex-exec", "--durable", "summarize"]);
+
+    assert!(cli.durable);
+    assert!(!cli.ephemeral);
+
+    let cli = Cli::parse_from(["codex-exec", "--persist", "summarize"]);
+
+    assert!(cli.durable);
+    assert!(!cli.ephemeral);
+}
+
+#[test]
+fn durable_conflicts_with_ephemeral() {
+    let error = Cli::try_parse_from(["codex-exec", "--durable", "--ephemeral", "summarize"])
+        .expect_err("storage modes should be mutually exclusive");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
 #[test]

@@ -152,6 +152,36 @@ fn custom_tool_call_output(call_id: &str, output: &str) -> ResponseItem {
     }
 }
 
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_call_output(call_id: &str, output: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text(output.to_string()),
+    }
+}
+
+fn function_call_output_text<'a>(items: &'a [ResponseItem], call_id: &str) -> &'a str {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: item_call_id,
+                output,
+            } if item_call_id == call_id => output.text_content(),
+            _ => None,
+        })
+        .expect("function output should exist")
+}
+
 fn reasoning_msg(text: &str) -> ResponseItem {
     ResponseItem::Reasoning {
         id: String::new(),
@@ -1082,6 +1112,35 @@ fn record_items_respects_custom_token_limit() {
         stored
             .text_content()
             .is_some_and(|content| content.contains("tokens truncated"))
+    );
+}
+
+#[test]
+fn bound_headless_turn_tool_outputs_caps_recent_outputs_and_omits_older_outputs() {
+    let large_output = "headless fan-in stdout line\n".repeat(2_500);
+    let mut items = Vec::new();
+    for index in 0..8 {
+        let call_id = format!("call-{index}");
+        items.push(function_call(&call_id));
+        items.push(function_call_output(&call_id, &large_output));
+    }
+    let mut history = ContextManager::new();
+    history.replace(items);
+    let history_version = history.history_version();
+
+    assert!(history.bound_headless_turn_tool_outputs());
+    assert!(history.history_version() > history_version);
+
+    let prompt = history.for_prompt(&default_input_modalities());
+    assert_eq!(
+        HEADLESS_TOOL_OUTPUT_OMITTED,
+        function_call_output_text(&prompt, "call-0")
+    );
+    let recent_output = function_call_output_text(&prompt, "call-7");
+    assert_ne!(large_output, recent_output);
+    assert!(
+        recent_output.contains("tokens truncated"),
+        "expected recent output to be truncated: {recent_output}"
     );
 }
 

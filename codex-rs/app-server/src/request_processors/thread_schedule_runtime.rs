@@ -1,13 +1,16 @@
 use super::*;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_from_state;
 use crate::request_processors::thread_schedule_api::api_thread_schedule_run_from_state;
+use anyhow::Context as _;
 use chrono_tz::Tz;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
+use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use croner::Cron;
+use std::fmt::Write as _;
 use std::str::FromStr;
 
 const SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -17,6 +20,8 @@ const MAX_SCHEDULE_CLAIMS_PER_TICK: usize = 16;
 const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_SCHEDULE_EXPIRATION_DAYS: i64 = 7;
 const MAX_SCHEDULE_RUN_ERROR_CHARS: usize = 1_000;
+const SCHEDULE_IDLE_RETRY_DELAY_SECONDS: i64 = 30;
+const SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub(crate) struct ThreadScheduleRuntime {
@@ -87,6 +92,14 @@ impl ThreadScheduleRuntime {
         self.cancel_token.cancel();
     }
 
+    pub(crate) fn local_active_owner_id(&self) -> &str {
+        self.local_active_owner_id.as_str()
+    }
+
+    pub(crate) fn local_active_fresh_after(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        schedule_local_active_fresh_after(now)
+    }
+
     pub(crate) async fn drain_background_tasks(&self) {
         self.shutdown();
         self.tasks.close();
@@ -135,11 +148,18 @@ impl ThreadScheduleRuntime {
         {
             warn!("failed to expire thread schedules: {err}");
         }
+        let local_active_fresh_after = schedule_local_active_fresh_after(now);
         for _ in 0..MAX_SCHEDULE_CLAIMS_PER_TICK {
             let lease_id = Uuid::new_v4().to_string();
             let claim = match state_db
                 .thread_schedules()
-                .claim_due_thread_schedule(now, lease_id.as_str(), SCHEDULE_LEASE_DURATION)
+                .claim_due_thread_schedule_with_params(codex_state::ThreadScheduleDueClaimParams {
+                    now,
+                    lease_id: lease_id.as_str(),
+                    lease_duration: SCHEDULE_LEASE_DURATION,
+                    local_active_owner_id: Some(self.local_active_owner_id.as_str()),
+                    local_active_fresh_after: Some(local_active_fresh_after),
+                })
                 .await
             {
                 Ok(Some(claim)) => claim,
@@ -171,12 +191,18 @@ impl ThreadScheduleRuntime {
                 thread_id = %thread_id,
                 "failed to submit scheduled thread run: {err}"
             );
-            self.fail_claimed_run_after_submit_error(
-                state_db,
-                claim,
-                schedule_run_error(err.to_string()),
-            )
-            .await;
+            if let Some(wait) = err.downcast_ref::<ScheduleUsageProfileWait>() {
+                self.defer_claimed_run_for_usage_profile_wait(state_db, claim, wait.clone())
+                    .await;
+                return;
+            }
+            if let Some(deferral) = err.downcast_ref::<ScheduleRunDeferral>() {
+                self.defer_claimed_run(state_db, claim, deferral.clone())
+                    .await;
+                return;
+            }
+            self.fail_claimed_run_after_submit_error(state_db, claim, schedule_submit_error(&err))
+                .await;
         }
     }
 
@@ -193,6 +219,21 @@ impl ThreadScheduleRuntime {
         let claim_auth_profile = self
             .claim_auth_profile(&state_db, thread_id, &claim.schedule)
             .await;
+        let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
+            &self.auth_manager,
+            &self.config,
+            claim_auth_profile.clone(),
+        )
+        .await;
+        let claim_auth_profile = match schedule_auth_profile_after_broker_decision(
+            claim_auth_profile,
+            broker_decision,
+            self.config.usage_self_heal.reset_retry_buffer_secs,
+            Utc::now(),
+        ) {
+            Ok(resolved) => resolved,
+            Err(wait) => return Err(anyhow::Error::new(wait)),
+        };
         let thread = self
             .load_or_resume_thread(thread_id, claim_auth_profile.clone())
             .await?;
@@ -272,6 +313,9 @@ impl ThreadScheduleRuntime {
                 .lock()
                 .await
                 .take_scheduled_run(turn_id.as_str());
+            if let Some(deferral) = schedule_deferral_for_idle_rejection(&err, Utc::now()) {
+                return Err(anyhow::Error::new(deferral));
+            }
             return Err(anyhow::anyhow!("failed to start scheduled prompt: {err}"));
         }
         self.spawn_lease_heartbeat(
@@ -452,9 +496,9 @@ impl ThreadScheduleRuntime {
         .ok_or_else(|| anyhow::anyhow!("thread not found: {thread_id}"))?;
         let initial_history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path)
             .await
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to load rollout {} for scheduled task: {err}",
+            .with_context(|| {
+                format!(
+                    "failed to load rollout {} for scheduled task",
                     rollout_path.display()
                 )
             })?;
@@ -474,7 +518,7 @@ impl ThreadScheduleRuntime {
             .config_manager
             .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
             .await
-            .map_err(|err| anyhow::anyhow!("failed to load config for scheduled task: {err}"))?;
+            .context("failed to load config for scheduled task")?;
         self.thread_manager
             .resume_thread_with_history(
                 config,
@@ -484,7 +528,7 @@ impl ThreadScheduleRuntime {
             )
             .await
             .map(|new_thread| new_thread.thread)
-            .map_err(|err| anyhow::anyhow!("failed to resume scheduled task thread: {err}"))
+            .context("failed to resume scheduled task thread")
     }
 
     async fn ensure_schedule_listener(
@@ -599,6 +643,44 @@ impl ThreadScheduleRuntime {
             .await;
     }
 
+    async fn defer_claimed_run_for_usage_profile_wait(
+        &self,
+        state_db: StateDbHandle,
+        claim: codex_state::ThreadScheduleClaim,
+        wait: ScheduleUsageProfileWait,
+    ) {
+        self.defer_claimed_run(
+            state_db,
+            claim,
+            ScheduleRunDeferral {
+                retry_at: wait.retry_at,
+                error: wait.to_string(),
+            },
+        )
+        .await;
+    }
+
+    async fn defer_claimed_run(
+        &self,
+        state_db: StateDbHandle,
+        claim: codex_state::ThreadScheduleClaim,
+        deferral: ScheduleRunDeferral,
+    ) {
+        match defer_scheduled_run_state(&state_db, &claim, &deferral, Utc::now()).await {
+            Ok(Some((schedule, run))) => {
+                self.emit_schedule_updated(claim.schedule.thread_id, schedule)
+                    .await;
+                self.emit_schedule_run_updated(claim.schedule.thread_id, run)
+                    .await;
+            }
+            Ok(None) => {}
+            Err(err) => warn!(
+                schedule_id = %claim.schedule.schedule_id,
+                "failed to defer scheduled thread run: {err}"
+            ),
+        }
+    }
+
     async fn emit_schedule_updated(
         &self,
         thread_id: ThreadId,
@@ -645,7 +727,7 @@ You are running one new scheduled Codewith prompt.
 Run id: {run_id}
 Scheduled for: {scheduled_for}
 
-This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, start a timer, or schedule follow-up runs; Codewith manages scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+This is a distinct run even if the scheduled prompt matches earlier runs. Execute only the scheduled prompt below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not wait, sleep, or start a timer; Codewith manages scheduling. If the scheduled prompt asks for durable follow-up work, use native create_goal or create_goal_plan goal tools. Do not create follow-up schedules unless the scheduled prompt explicitly asks for scheduling. If the prompt mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
 
 Scheduled prompt:
 {prompt}"
@@ -700,15 +782,14 @@ fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
             Some(ScheduledTurnFinish::Complete)
         }
         EventMsg::TurnComplete(_) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
-            "scheduled turn completed without a final assistant message".to_string(),
+            "scheduled turn completed without a final assistant message",
         ))),
         EventMsg::TurnAborted(aborted) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
             format!("scheduled turn aborted: {:?}", aborted.reason),
         ))),
-        EventMsg::Error(error) => Some(ScheduledTurnFinish::Failed(schedule_run_error(format!(
-            "scheduled turn failed: {}",
-            error.message
-        )))),
+        EventMsg::Error(error) => Some(ScheduledTurnFinish::Failed(schedule_turn_event_error(
+            error,
+        ))),
         _ => None,
     }
 }
@@ -748,6 +829,54 @@ pub(super) fn next_thread_schedule_run_at(
     Ok(next)
 }
 
+fn next_thread_schedule_run_after_completion(
+    schedule: &codex_state::ThreadScheduleSpec,
+    timezone: &str,
+    scheduled_for: Option<DateTime<Utc>>,
+    completed_at: DateTime<Utc>,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let interval_duration = match schedule {
+        codex_state::ThreadScheduleSpec::Dynamic => {
+            Some(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
+        }
+        codex_state::ThreadScheduleSpec::Interval(interval) => {
+            let amount = interval.amount;
+            Some(match interval.unit {
+                codex_state::ThreadScheduleIntervalUnit::Minutes => ChronoDuration::minutes(amount),
+                codex_state::ThreadScheduleIntervalUnit::Hours => ChronoDuration::hours(amount),
+                codex_state::ThreadScheduleIntervalUnit::Days => ChronoDuration::days(amount),
+            })
+        }
+        codex_state::ThreadScheduleSpec::Once | codex_state::ThreadScheduleSpec::Cron { .. } => {
+            None
+        }
+    };
+
+    if let (Some(interval_duration), Some(scheduled_for)) = (interval_duration, scheduled_for) {
+        let Some(next_run_at) = scheduled_for.checked_add_signed(interval_duration) else {
+            return Ok(None);
+        };
+        if next_run_at > completed_at {
+            return Ok(Some(next_run_at));
+        }
+        let duration_ms = interval_duration.num_milliseconds();
+        if duration_ms <= 0 {
+            return Ok(None);
+        }
+        let elapsed_ms = completed_at
+            .signed_duration_since(scheduled_for)
+            .num_milliseconds();
+        let periods_elapsed = elapsed_ms.div_euclid(duration_ms).saturating_add(1);
+        return Ok(duration_ms
+            .checked_mul(periods_elapsed)
+            .and_then(|advance_ms| {
+                scheduled_for.checked_add_signed(ChronoDuration::milliseconds(advance_ms))
+            }));
+    }
+
+    next_thread_schedule_run_at(schedule, timezone, completed_at)
+}
+
 pub(super) fn normalize_schedule_timezone(timezone: &str) -> anyhow::Result<String> {
     parse_schedule_timezone(timezone).map(|timezone| timezone.name().to_string())
 }
@@ -761,10 +890,7 @@ pub(super) async fn finish_scheduled_run_after_turn(
 ) {
     let completed_at = Utc::now();
     let error = match (scheduled_turn_finish(event), turn_error) {
-        (Some(_), Some(error)) => Some(schedule_run_error(format!(
-            "scheduled turn failed: {}",
-            error.message
-        ))),
+        (Some(_), Some(error)) => Some(schedule_turn_error(&error)),
         (Some(ScheduledTurnFinish::Complete), None) => None,
         (Some(ScheduledTurnFinish::Failed(error)), None) => Some(error),
         (None, _) => return,
@@ -824,6 +950,101 @@ fn schedule_failure_backoff_run_at(
     natural_next.max(backoff_until)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduleUsageProfileWait {
+    retry_at: DateTime<Utc>,
+}
+
+impl std::fmt::Display for ScheduleUsageProfileWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "all eligible auth profiles are exhausted; retrying scheduled run after {}",
+            self.retry_at.to_rfc3339()
+        )
+    }
+}
+
+impl std::error::Error for ScheduleUsageProfileWait {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduleRunDeferral {
+    retry_at: DateTime<Utc>,
+    error: String,
+}
+
+impl std::fmt::Display for ScheduleRunDeferral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; retrying scheduled run after {}",
+            self.error,
+            self.retry_at.to_rfc3339()
+        )
+    }
+}
+
+impl std::error::Error for ScheduleRunDeferral {}
+
+fn schedule_deferral_for_idle_rejection(
+    err: &codex_core::TryStartUserInputTurnIfIdleError,
+    now: DateTime<Utc>,
+) -> Option<ScheduleRunDeferral> {
+    let reason = err.reason()?;
+    let error = match reason {
+        codex_core::TryStartTurnIfIdleRejectionReason::Busy => {
+            "scheduled thread is busy".to_string()
+        }
+        codex_core::TryStartTurnIfIdleRejectionReason::PendingTriggerTurn => {
+            "scheduled thread has pending mailbox trigger-turn work".to_string()
+        }
+        codex_core::TryStartTurnIfIdleRejectionReason::PlanMode => return None,
+    };
+    Some(ScheduleRunDeferral {
+        retry_at: now + ChronoDuration::seconds(SCHEDULE_IDLE_RETRY_DELAY_SECONDS),
+        error,
+    })
+}
+
+fn schedule_auth_profile_after_broker_decision(
+    current_auth_profile: Option<Option<String>>,
+    decision: super::usage_profile_broker::UsageProfileBrokerDecision,
+    reset_retry_buffer_secs: u64,
+    now: DateTime<Utc>,
+) -> Result<Option<Option<String>>, ScheduleUsageProfileWait> {
+    if let Some(profile) = decision.selected_profile {
+        return Ok(Some(Some(profile)));
+    }
+    if let Some(retry_at) = decision.retry_at
+        && let Some(retry_at) =
+            schedule_broker_retry_at_datetime(reset_retry_buffer_secs, retry_at, now)
+    {
+        return Err(ScheduleUsageProfileWait { retry_at });
+    }
+    Ok(current_auth_profile)
+}
+
+fn schedule_broker_retry_at_datetime(
+    reset_retry_buffer_secs: u64,
+    retry_at: i64,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let retry_at = DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0)?;
+    let buffer_secs = i64::try_from(reset_retry_buffer_secs).ok()?;
+    let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
+    (retry_at > now).then_some(retry_at)
+}
+
+fn schedule_local_active_fresh_after(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - ChronoDuration::seconds(duration_seconds_i64(
+        SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER,
+    ))
+}
+
+fn duration_seconds_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
 async fn finish_scheduled_run_state(
     state_db: &StateDbHandle,
     schedule_id: &str,
@@ -839,8 +1060,17 @@ async fn finish_scheduled_run_state(
     else {
         return Ok(None);
     };
-    let natural_next_run_at =
-        next_thread_schedule_run_at(&schedule.schedule, &schedule.timezone, completed_at)?;
+    let scheduled_for = state_db
+        .thread_schedules()
+        .get_thread_schedule_run(run_id)
+        .await?
+        .and_then(|run| run.scheduled_for);
+    let natural_next_run_at = next_thread_schedule_run_after_completion(
+        &schedule.schedule,
+        &schedule.timezone,
+        scheduled_for,
+        completed_at,
+    )?;
 
     // On failure, back off (and eventually trip a circuit breaker) so a
     // persistently-failing recurring schedule cannot re-fire every cadence
@@ -904,6 +1134,58 @@ async fn finish_scheduled_run_state(
         .get_thread_schedule_run(run_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("schedule run {run_id} disappeared after finish"))?;
+    Ok(Some((schedule, run)))
+}
+
+#[cfg(test)]
+async fn defer_scheduled_run_for_usage_profile_wait_state(
+    state_db: &StateDbHandle,
+    claim: &codex_state::ThreadScheduleClaim,
+    wait: &ScheduleUsageProfileWait,
+    completed_at: DateTime<Utc>,
+) -> anyhow::Result<Option<(codex_state::ThreadSchedule, codex_state::ThreadScheduleRun)>> {
+    defer_scheduled_run_state(
+        state_db,
+        claim,
+        &ScheduleRunDeferral {
+            retry_at: wait.retry_at,
+            error: wait.to_string(),
+        },
+        completed_at,
+    )
+    .await
+}
+
+async fn defer_scheduled_run_state(
+    state_db: &StateDbHandle,
+    claim: &codex_state::ThreadScheduleClaim,
+    deferral: &ScheduleRunDeferral,
+    completed_at: DateTime<Utc>,
+) -> anyhow::Result<Option<(codex_state::ThreadSchedule, codex_state::ThreadScheduleRun)>> {
+    let updated = state_db
+        .thread_schedules()
+        .defer_thread_schedule_run(
+            claim.schedule.schedule_id.as_str(),
+            claim.run.run_id.as_str(),
+            claim.run.lease_id.as_str(),
+            completed_at,
+            deferral.retry_at,
+            deferral.error.clone(),
+        )
+        .await?;
+    if !updated {
+        return Ok(None);
+    }
+    let schedule = state_db
+        .thread_schedules()
+        .get_thread_schedule(&claim.schedule.schedule_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("deferred schedule missing after state update"))?;
+    let run = state_db
+        .thread_schedules()
+        .get_thread_schedule_run(&claim.run.run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("deferred schedule run missing after state update"))?;
     Ok(Some((schedule, run)))
 }
 
@@ -1085,23 +1367,27 @@ pub(super) fn schedule_resume_auth_profile(
 
     let history_auth_profile = initial_history.get_auth_profile();
     if matches!(history_auth_profile, Some(None))
-        && let Some(Some(auth_profile)) = initial_session_auth_profile(initial_history)
+        && let Some(Some(auth_profile)) = latest_session_auth_profile(initial_history)
     {
         return Some(Some(auth_profile));
     }
     history_auth_profile
 }
 
-fn initial_session_auth_profile(initial_history: &InitialHistory) -> Option<Option<String>> {
+fn latest_session_auth_profile(initial_history: &InitialHistory) -> Option<Option<String>> {
     match initial_history {
         InitialHistory::New | InitialHistory::Cleared => None,
-        InitialHistory::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
-            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == resumed.conversation_id => {
-                meta_line.meta.auth_profile.clone()
-            }
-            _ => None,
-        }),
-        InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+        InitialHistory::Resumed(resumed) => {
+            resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta_line)
+                    if meta_line.meta.id == resumed.conversation_id =>
+                {
+                    meta_line.meta.auth_profile.clone()
+                }
+                _ => None,
+            })
+        }
+        InitialHistory::Forked(items) => items.iter().rev().find_map(|item| match item {
             RolloutItem::SessionMeta(meta_line) => meta_line.meta.auth_profile.clone(),
             _ => None,
         }),
@@ -1126,8 +1412,133 @@ fn parse_schedule_timezone(timezone: &str) -> anyhow::Result<Tz> {
         .map_err(|err| anyhow::anyhow!("invalid schedule timezone `{timezone}`: {err}"))
 }
 
-fn schedule_run_error(error: String) -> String {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[derive(Clone, Copy)]
+enum ScheduleRunErrorClass {
+    UsageLimit,
+    ContextWindow,
+}
+
+impl ScheduleRunErrorClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UsageLimit => "usage-limit",
+            Self::ContextWindow => "context-window",
+        }
+    }
+}
+
+fn schedule_submit_error(error: &anyhow::Error) -> String {
+    let message = format_schedule_error_chain(error);
+    let classification = classify_schedule_run_error_message(&message);
+    schedule_run_error_with_classification(&message, classification)
+}
+
+fn format_schedule_error_chain(error: &anyhow::Error) -> String {
+    let mut message = error.to_string();
+    for cause in error.chain().skip(1) {
+        let _ = write!(message, ": {cause}");
+    }
+    message
+}
+
+fn schedule_turn_event_error(error: &codex_protocol::protocol::ErrorEvent) -> String {
+    let classification = error
+        .codex_error_info
+        .as_ref()
+        .and_then(classify_core_codex_error_info);
+    schedule_run_error_with_classification(
+        &format!("scheduled turn failed: {}", error.message),
+        classification,
+    )
+}
+
+fn schedule_turn_error(error: &codex_app_server_protocol::TurnError) -> String {
+    let classification = error
+        .codex_error_info
+        .as_ref()
+        .and_then(classify_codex_error_info);
+    schedule_run_error_with_classification(
+        &format!("scheduled turn failed: {}", error.message),
+        classification,
+    )
+}
+
+fn schedule_run_error(error: impl AsRef<str>) -> String {
+    schedule_run_error_with_classification(error.as_ref(), None)
+}
+
+fn schedule_run_error_with_classification(
+    error: &str,
+    classification: Option<ScheduleRunErrorClass>,
+) -> String {
+    let classification = classification.or_else(|| classify_schedule_run_error_message(error));
+    let error = match classification {
+        Some(classification) => format!("[{}] {error}", classification.as_str()),
+        None => error.to_string(),
+    };
     truncate_schedule_run_error(redact_schedule_run_error(&error))
+}
+
+fn classify_core_codex_error_info(info: &CoreCodexErrorInfo) -> Option<ScheduleRunErrorClass> {
+    match info {
+        CoreCodexErrorInfo::UsageLimitExceeded => Some(ScheduleRunErrorClass::UsageLimit),
+        CoreCodexErrorInfo::ContextWindowExceeded => Some(ScheduleRunErrorClass::ContextWindow),
+        CoreCodexErrorInfo::ServerOverloaded
+        | CoreCodexErrorInfo::CyberPolicy
+        | CoreCodexErrorInfo::HttpConnectionFailed { .. }
+        | CoreCodexErrorInfo::ResponseStreamConnectionFailed { .. }
+        | CoreCodexErrorInfo::InternalServerError
+        | CoreCodexErrorInfo::Unauthorized
+        | CoreCodexErrorInfo::BadRequest
+        | CoreCodexErrorInfo::ThreadRollbackFailed
+        | CoreCodexErrorInfo::SandboxError
+        | CoreCodexErrorInfo::ResponseStreamDisconnected { .. }
+        | CoreCodexErrorInfo::ResponseTooManyFailedAttempts { .. }
+        | CoreCodexErrorInfo::ActiveTurnNotSteerable { .. }
+        | CoreCodexErrorInfo::Other => None,
+    }
+}
+
+fn classify_codex_error_info(info: &CodexErrorInfo) -> Option<ScheduleRunErrorClass> {
+    match info {
+        CodexErrorInfo::UsageLimitExceeded => Some(ScheduleRunErrorClass::UsageLimit),
+        CodexErrorInfo::ContextWindowExceeded => Some(ScheduleRunErrorClass::ContextWindow),
+        CodexErrorInfo::ServerOverloaded
+        | CodexErrorInfo::CyberPolicy
+        | CodexErrorInfo::HttpConnectionFailed { .. }
+        | CodexErrorInfo::ResponseStreamConnectionFailed { .. }
+        | CodexErrorInfo::InternalServerError
+        | CodexErrorInfo::Unauthorized
+        | CodexErrorInfo::BadRequest
+        | CodexErrorInfo::ThreadRollbackFailed
+        | CodexErrorInfo::SandboxError
+        | CodexErrorInfo::ResponseStreamDisconnected { .. }
+        | CodexErrorInfo::ResponseTooManyFailedAttempts { .. }
+        | CodexErrorInfo::ActiveTurnNotSteerable { .. }
+        | CodexErrorInfo::Other => None,
+    }
+}
+
+fn classify_schedule_run_error_message(message: &str) -> Option<ScheduleRunErrorClass> {
+    let message = message.to_ascii_lowercase();
+    if message.contains("usage limit")
+        || message.contains("usage_limit")
+        || message.contains("usage-limit")
+        || message.contains("quota exceeded")
+        || message.contains("usage not included")
+    {
+        return Some(ScheduleRunErrorClass::UsageLimit);
+    }
+    if message.contains("context_length_exceeded")
+        || message.contains("context-length")
+        || message.contains("context length")
+        || message.contains("context window")
+        || message.contains("ran out of room in the model")
+    {
+        return Some(ScheduleRunErrorClass::ContextWindow);
+    }
+    None
 }
 
 fn truncate_schedule_run_error(error: String) -> String {
@@ -1794,7 +2205,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_schedule_creation_auth_uses_latest_turn_auth_profile() {
+    fn legacy_schedule_auth_prefers_session_profile_over_root_turn() {
         let thread_id = ThreadId::new();
         let history = resumed_history_with_session_and_turn_auth_profile(
             thread_id,
@@ -1806,6 +2217,495 @@ mod tests {
         assert_eq!(
             Some(Some("account002".to_string())),
             schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &history)
+        );
+    }
+
+    #[test]
+    fn legacy_schedule_auth_preserves_latest_root_session_profile() {
+        let thread_id = ThreadId::new();
+        let mut history = resumed_history_with_session_and_turn_auth_profile(
+            thread_id,
+            Some(Some("account002")),
+            Some(None),
+        );
+        let InitialHistory::Resumed(resumed) = &mut history else {
+            panic!("test history should be resumed");
+        };
+        resumed.history.insert(
+            1,
+            RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    auth_profile: Some(None),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }),
+        );
+
+        assert_eq!(Some(None), history.get_auth_profile());
+        assert_eq!(
+            Some(None),
+            schedule_resume_auth_profile(/*schedule_auth_profile*/ None, &history)
+        );
+    }
+
+    #[test]
+    fn schedule_auth_profile_uses_broker_selected_profile_for_pinned_loop() {
+        let decision = super::usage_profile_broker::UsageProfileBrokerDecision {
+            selected_profile: Some("account003".to_string()),
+            retry_at: None,
+            reason: super::usage_profile_broker::UsageProfileBrokerDecisionReason::SelectedHealthyProfile,
+        };
+
+        let resolved = schedule_auth_profile_after_broker_decision(
+            Some(Some("account001".to_string())),
+            decision,
+            /*reset_retry_buffer_secs*/ 30,
+            at(/*seconds*/ 1_700_000_000),
+        )
+        .expect("broker-selected profile should be usable");
+
+        assert_eq!(Some(Some("account003".to_string())), resolved);
+    }
+
+    #[test]
+    fn schedule_auth_profile_reports_usage_wait_when_profiles_exhausted() {
+        let now = at(/*seconds*/ 1_700_000_000);
+        let decision = super::usage_profile_broker::UsageProfileBrokerDecision {
+            selected_profile: None,
+            retry_at: Some(now.timestamp() + 120),
+            reason:
+                super::usage_profile_broker::UsageProfileBrokerDecisionReason::NoAvailableProfiles,
+        };
+
+        let wait = schedule_auth_profile_after_broker_decision(
+            Some(Some("account001".to_string())),
+            decision,
+            /*reset_retry_buffer_secs*/ 45,
+            now,
+        )
+        .expect_err("exhausted profiles should defer the scheduled run");
+
+        assert_eq!(
+            ScheduleUsageProfileWait {
+                retry_at: now + chrono::Duration::seconds(165),
+            },
+            wait
+        );
+        assert_eq!(
+            "all eligible auth profiles are exhausted; retrying scheduled run after 2023-11-14T22:16:05+00:00",
+            wait.to_string()
+        );
+    }
+
+    #[test]
+    fn stringified_usage_profile_wait_does_not_downcast() {
+        let wait = ScheduleUsageProfileWait {
+            retry_at: at(/*seconds*/ 1_700_000_165),
+        };
+        let error = anyhow::anyhow!(wait.to_string());
+
+        assert!(error.downcast_ref::<ScheduleUsageProfileWait>().is_none());
+        assert_eq!(wait.to_string(), schedule_submit_error(&error));
+    }
+
+    #[test]
+    fn idle_rejection_deferral_only_retries_transient_busy_states() {
+        let now = at(/*seconds*/ 1_700_000_000);
+
+        assert_eq!(
+            Some(ScheduleRunDeferral {
+                retry_at: at(/*seconds*/ 1_700_000_030),
+                error: "scheduled thread is busy".to_string(),
+            }),
+            schedule_deferral_for_idle_rejection(
+                &codex_core::TryStartUserInputTurnIfIdleError::Rejected(
+                    codex_core::TryStartTurnIfIdleRejectionReason::Busy,
+                ),
+                now,
+            )
+        );
+        assert_eq!(
+            Some(ScheduleRunDeferral {
+                retry_at: at(/*seconds*/ 1_700_000_030),
+                error: "scheduled thread has pending mailbox trigger-turn work".to_string(),
+            }),
+            schedule_deferral_for_idle_rejection(
+                &codex_core::TryStartUserInputTurnIfIdleError::Rejected(
+                    codex_core::TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                ),
+                now,
+            )
+        );
+        assert_eq!(
+            None,
+            schedule_deferral_for_idle_rejection(
+                &codex_core::TryStartUserInputTurnIfIdleError::Rejected(
+                    codex_core::TryStartTurnIfIdleRejectionReason::PlanMode,
+                ),
+                now,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_rejection_deferral_rearms_without_incrementing_failure_count() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "wait until the thread is idle".to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Interval(
+                    codex_state::ThreadScheduleInterval {
+                        amount: 5,
+                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                ),
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should create");
+        let claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-busy", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = now + chrono::Duration::seconds(5);
+        let deferral = ScheduleRunDeferral {
+            retry_at: now + chrono::Duration::seconds(SCHEDULE_IDLE_RETRY_DELAY_SECONDS),
+            error: "scheduled thread is busy".to_string(),
+        };
+
+        let (deferred_schedule, deferred_run) =
+            defer_scheduled_run_state(&state_db, &claim, &deferral, completed_at)
+                .await
+                .expect("idle rejection should defer")
+                .expect("deferred rows should load");
+
+        assert_eq!(
+            codex_state::ThreadSchedule {
+                next_run_at: Some(deferral.retry_at),
+                last_run_at: Some(completed_at),
+                failure_count: 0,
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: deferred_schedule.updated_at,
+                ..schedule
+            },
+            deferred_schedule
+        );
+        assert_eq!(
+            codex_state::ThreadScheduleRun {
+                status: codex_state::ThreadScheduleRunStatus::Deferred,
+                turn_id: None,
+                error: Some(deferral.error),
+                completed_at: Some(completed_at),
+                ..claim.run
+            },
+            deferred_run
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_profile_wait_defers_claim_without_incrementing_failure_count() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule_for_auth_profile(
+                codex_state::ThreadScheduleCreateParams {
+                    thread_id,
+                    prompt: "wait for usage".to_string(),
+                    prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                    schedule: codex_state::ThreadScheduleSpec::Interval(
+                        codex_state::ThreadScheduleInterval {
+                            amount: 5,
+                            unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                        },
+                    ),
+                    timezone: "UTC".to_string(),
+                    status: codex_state::ThreadScheduleStatus::Active,
+                    next_run_at: Some(now),
+                    expires_at: None,
+                },
+                Some("account001".to_string()),
+            )
+            .await
+            .expect("schedule should create");
+        let claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-wait", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = now + chrono::Duration::seconds(5);
+        let wait = ScheduleUsageProfileWait {
+            retry_at: now + chrono::Duration::minutes(20),
+        };
+        let error = anyhow::Error::new(wait.clone());
+        let wait = error
+            .downcast_ref::<ScheduleUsageProfileWait>()
+            .expect("typed usage wait should survive anyhow wrapping")
+            .clone();
+
+        let (deferred_schedule, deferred_run) = defer_scheduled_run_for_usage_profile_wait_state(
+            &state_db,
+            &claim,
+            &wait,
+            completed_at,
+        )
+        .await
+        .expect("usage wait should defer")
+        .expect("deferred rows should load");
+
+        assert_eq!(
+            codex_state::ThreadSchedule {
+                next_run_at: Some(wait.retry_at),
+                last_run_at: Some(completed_at),
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: deferred_schedule.updated_at,
+                ..schedule
+            },
+            deferred_schedule
+        );
+        assert_eq!(
+            codex_state::ThreadScheduleRun {
+                status: codex_state::ThreadScheduleRunStatus::Deferred,
+                turn_id: None,
+                error: Some(wait.to_string()),
+                completed_at: Some(completed_at),
+                ..claim.run
+            },
+            deferred_run
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_profile_wait_retry_completion_rearms_from_retry_run() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "wait for usage".to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Interval(
+                    codex_state::ThreadScheduleInterval {
+                        amount: 5,
+                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                ),
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should create");
+        let first_claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-wait", Duration::from_secs(300))
+            .await
+            .expect("first claim should succeed")
+            .expect("schedule should claim");
+        let wait = ScheduleUsageProfileWait {
+            retry_at: now + chrono::Duration::minutes(3),
+        };
+        defer_scheduled_run_for_usage_profile_wait_state(
+            &state_db,
+            &first_claim,
+            &wait,
+            now + chrono::Duration::seconds(5),
+        )
+        .await
+        .expect("usage wait should defer")
+        .expect("deferred rows should load");
+
+        let retry_claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(wait.retry_at, "lease-retry", Duration::from_secs(300))
+            .await
+            .expect("retry claim should succeed")
+            .expect("retry should claim deferred schedule");
+        assert_eq!(Some(wait.retry_at), retry_claim.run.scheduled_for);
+        let completed_at = wait.retry_at + chrono::Duration::seconds(5);
+
+        let (finished_schedule, finished_run) = finish_scheduled_run_state(
+            &state_db,
+            &schedule.schedule_id,
+            &retry_claim.run.run_id,
+            "lease-retry",
+            None,
+            completed_at,
+        )
+        .await
+        .expect("retry run should finish")
+        .expect("finished rows should load");
+
+        assert_eq!(
+            codex_state::ThreadSchedule {
+                next_run_at: Some(wait.retry_at + chrono::Duration::minutes(5)),
+                last_run_at: Some(completed_at),
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: finished_schedule.updated_at,
+                ..schedule
+            },
+            finished_schedule
+        );
+        assert_eq!(
+            codex_state::ThreadScheduleRun {
+                status: codex_state::ThreadScheduleRunStatus::Completed,
+                completed_at: Some(completed_at),
+                ..retry_claim.run
+            },
+            finished_run
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_recurring_run_preserves_scheduled_cadence() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let scheduled_for = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "tick".to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Interval(
+                    codex_state::ThreadScheduleInterval {
+                        amount: 1,
+                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                ),
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: Some(scheduled_for),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should create");
+        let claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(scheduled_for, "lease-run", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = scheduled_for + chrono::Duration::seconds(5);
+
+        let (finished_schedule, finished_run) = finish_scheduled_run_state(
+            &state_db,
+            &schedule.schedule_id,
+            &claim.run.run_id,
+            "lease-run",
+            None,
+            completed_at,
+        )
+        .await
+        .expect("run should finish")
+        .expect("finished rows should load");
+
+        assert_eq!(
+            codex_state::ThreadSchedule {
+                next_run_at: Some(scheduled_for + chrono::Duration::minutes(1)),
+                last_run_at: Some(completed_at),
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: finished_schedule.updated_at,
+                ..schedule
+            },
+            finished_schedule
+        );
+        assert_eq!(
+            codex_state::ThreadScheduleRun {
+                status: codex_state::ThreadScheduleRunStatus::Completed,
+                completed_at: Some(completed_at),
+                ..claim.run
+            },
+            finished_run
         );
     }
 
@@ -1822,6 +2722,118 @@ mod tests {
                 at(/*seconds*/ 1_700_000_000),
             )
             .expect("next interval should compute")
+        );
+    }
+
+    #[test]
+    fn computes_recurring_next_run_from_scheduled_time_without_drift() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_000_060)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                    amount: 1,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                }),
+                "UTC",
+                Some(at(/*seconds*/ 1_700_000_000)),
+                at(/*seconds*/ 1_700_000_005),
+            )
+            .expect("next interval should compute")
+        );
+    }
+
+    #[test]
+    fn computes_recurring_next_run_skipping_missed_intervals() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_000_180)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                    amount: 1,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                }),
+                "UTC",
+                Some(at(/*seconds*/ 1_700_000_000)),
+                at(/*seconds*/ 1_700_000_125),
+            )
+            .expect("next interval should compute")
+        );
+    }
+
+    #[test]
+    fn computes_recurring_next_run_from_completion_without_scheduled_time() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_000_360)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                    amount: 1,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                }),
+                "UTC",
+                None,
+                at(/*seconds*/ 1_700_000_300),
+            )
+            .expect("next interval should compute")
+        );
+    }
+
+    #[test]
+    fn computes_dynamic_next_run_from_scheduled_time_without_drift() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_000_060)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Dynamic,
+                "UTC",
+                Some(at(/*seconds*/ 1_700_000_000)),
+                at(/*seconds*/ 1_700_000_005),
+            )
+            .expect("next dynamic run should compute")
+        );
+    }
+
+    #[test]
+    fn computes_manual_recurring_run_next_from_manual_scheduled_time() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_000_360)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                    amount: 1,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                }),
+                "UTC",
+                Some(at(/*seconds*/ 1_700_000_300)),
+                at(/*seconds*/ 1_700_000_305),
+            )
+            .expect("manual recurring run should compute from its own scheduled time")
+        );
+    }
+
+    #[test]
+    fn computes_once_completion_without_rearming() {
+        assert_eq!(
+            None,
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Once,
+                "UTC",
+                Some(at(/*seconds*/ 1_700_000_000)),
+                at(/*seconds*/ 1_700_000_005),
+            )
+            .expect("one-time completion should not compute a follow-up run")
+        );
+    }
+
+    #[test]
+    fn computes_cron_completion_from_completion_time() {
+        assert_eq!(
+            Some(at(/*seconds*/ 1_700_031_600)),
+            next_thread_schedule_run_after_completion(
+                &codex_state::ThreadScheduleSpec::Cron {
+                    expression: "0 9 * * *".to_string(),
+                },
+                "Europe/Bucharest",
+                Some(at(/*seconds*/ 1_699_913_600)),
+                at(/*seconds*/ 1_700_000_000),
+            )
+            .expect("cron completion should compute from completion time")
         );
     }
 
@@ -1871,7 +2883,8 @@ mod tests {
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
         assert!(prompt.contains("This is a distinct run"));
         assert!(prompt.contains("Produce exactly one visible final response"));
-        assert!(prompt.contains("Do not wait, sleep, start a timer"));
+        assert!(prompt.contains("Do not wait, sleep, or start a timer"));
+        assert!(prompt.contains("use native create_goal or create_goal_plan goal tools"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
     }
@@ -1961,10 +2974,68 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_turn_usage_limit_error_is_classified_and_redacted() {
+        let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
+            message: "You've hit your usage limit. OPENAI_API_KEY=sk-test-secret".to_string(),
+            codex_error_info: Some(CoreCodexErrorInfo::UsageLimitExceeded),
+        }));
+
+        let expected = "[usage-limit] scheduled turn failed: You've hit your usage limit. OPENAI_API_KEY=[redacted]".to_string();
+        assert_eq!(Some(ScheduledTurnFinish::Failed(expected)), finish);
+    }
+
+    #[test]
+    fn scheduled_turn_context_window_error_preserves_node_init_detail() {
+        let error = codex_app_server_protocol::TurnError {
+            message: "node init failed: process exited with code 1: child stderr: Codewith ran out of room in the model's context window. token=sk-test-secret".to_string(),
+            codex_error_info: Some(CodexErrorInfo::ContextWindowExceeded),
+            additional_details: None,
+        };
+
+        let sanitized = schedule_turn_error(&error);
+
+        assert!(sanitized.starts_with("[context-window] scheduled turn failed:"));
+        assert!(sanitized.contains("node init failed"));
+        assert!(sanitized.contains("context window"));
+        assert!(!sanitized.contains("sk-test-secret"));
+        assert_ne!(
+            "node init failed: process exited with code 1",
+            sanitized.as_str()
+        );
+    }
+
+    #[test]
+    fn submit_error_preserves_usage_limit_cause_below_node_init() {
+        let error =
+            anyhow::anyhow!("child stderr: You've hit your usage limit. Bearer sk-test-secret")
+                .context("node init failed: process exited with code 1");
+
+        let sanitized = schedule_submit_error(&error);
+
+        assert!(sanitized.starts_with("[usage-limit]"));
+        assert!(sanitized.contains("node init failed"));
+        assert!(sanitized.contains("usage limit"));
+        assert!(!sanitized.contains("sk-test-secret"));
+        assert_ne!(
+            "node init failed: process exited with code 1",
+            sanitized.as_str()
+        );
+    }
+
+    #[test]
+    fn schedule_run_error_heuristically_classifies_context_length() {
+        let sanitized = schedule_run_error(
+            "node init failed: process exited with code 1: context_length_exceeded: input too large",
+        );
+
+        assert!(sanitized.starts_with("[context-window]"));
+        assert!(sanitized.contains("context_length_exceeded"));
+    }
+
+    #[test]
     fn redacts_sensitive_schedule_run_error_values() {
         let sanitized = schedule_run_error(
-            "failed with OPENAI_API_KEY=sk-test-secret token: plain-secret Bearer sk-bearer-secret"
-                .to_string(),
+            "failed with OPENAI_API_KEY=sk-test-secret token: plain-secret Bearer sk-bearer-secret",
         );
 
         assert_eq!(
@@ -1979,7 +3050,7 @@ mod tests {
     #[test]
     fn redacts_short_prefixed_api_keys_from_schedule_run_errors() {
         let sanitized = schedule_run_error(
-            "unexpected status 401 Unauthorized: Incorrect API key provided: sk-work.".to_string(),
+            "unexpected status 401 Unauthorized: Incorrect API key provided: sk-work.",
         );
 
         assert!(sanitized.contains("[redacted]"));

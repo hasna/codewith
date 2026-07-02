@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadGoal;
 
@@ -38,7 +39,7 @@ pub(crate) struct GoalRuntimeConfig {
 }
 
 pub(crate) enum ActiveGoalStopReason {
-    TurnError,
+    TurnError(CodexErrorInfo),
     UsageLimit,
 }
 
@@ -436,8 +437,8 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let (event_name, status) = match reason {
-            ActiveGoalStopReason::TurnError => {
+        let (event_name, status) = match &reason {
+            ActiveGoalStopReason::TurnError(_) => {
                 ("turn-error", codex_state::ThreadGoalStatus::Blocked)
             }
             ActiveGoalStopReason::UsageLimit => {
@@ -490,14 +491,28 @@ impl GoalRuntimeHandle {
         else {
             return Ok(());
         };
-        crate::pending_interaction::record_goal_status_wait(
-            self.inner.state_dbs.as_ref(),
-            self.thread_id(),
-            &goal,
-            Some(turn_id),
-            event_name,
-        )
-        .await?;
+        match &reason {
+            ActiveGoalStopReason::TurnError(error) => {
+                crate::pending_interaction::record_goal_turn_error_status_wait(
+                    self.inner.state_dbs.as_ref(),
+                    self.thread_id(),
+                    &goal,
+                    turn_id,
+                    error,
+                )
+                .await?;
+            }
+            ActiveGoalStopReason::UsageLimit => {
+                crate::pending_interaction::record_goal_status_wait(
+                    self.inner.state_dbs.as_ref(),
+                    self.thread_id(),
+                    &goal,
+                    Some(turn_id),
+                    event_name,
+                )
+                .await?;
+            }
+        }
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);

@@ -1256,6 +1256,24 @@ fn parse_guardian_assessment_treats_bare_allow_as_low_risk() {
 }
 
 #[test]
+fn parse_guardian_assessment_treats_nullable_allow_details_as_low_risk() {
+    let parsed = parse_guardian_assessment(Some(
+        r#"{"risk_level":null,"user_authorization":null,"outcome":"allow","rationale":null}"#,
+    ))
+    .expect("guardian assessment");
+
+    assert_eq!(
+        parsed,
+        GuardianAssessment {
+            risk_level: GuardianRiskLevel::Low,
+            user_authorization: GuardianUserAuthorization::Unknown,
+            outcome: GuardianAssessmentOutcome::Allow,
+            rationale: "Auto-review returned a low-risk allow decision.".to_string(),
+        }
+    );
+}
+
+#[test]
 fn parse_guardian_assessment_treats_bare_deny_as_high_risk() {
     let parsed =
         parse_guardian_assessment(Some(r#"{"outcome":"deny"}"#)).expect("guardian assessment");
@@ -1272,7 +1290,7 @@ fn parse_guardian_assessment_treats_bare_deny_as_high_risk() {
 }
 
 #[test]
-fn guardian_output_schema_requires_only_outcome_and_allows_optional_details() {
+fn guardian_output_schema_is_strict_response_format_compatible() {
     let schema = guardian_output_schema();
 
     assert_eq!(
@@ -1282,22 +1300,22 @@ fn guardian_output_schema_requires_only_outcome_and_allows_optional_details() {
             "additionalProperties": false,
             "properties": {
                 "risk_level": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high", "critical"]
+                    "type": ["string", "null"],
+                    "enum": ["low", "medium", "high", "critical", null]
                 },
                 "user_authorization": {
-                    "type": "string",
-                    "enum": ["unknown", "low", "medium", "high"]
+                    "type": ["string", "null"],
+                    "enum": ["unknown", "low", "medium", "high", null]
                 },
                 "outcome": {
                     "type": "string",
                     "enum": ["allow", "deny"]
                 },
                 "rationale": {
-                    "type": "string"
+                    "type": ["string", "null"]
                 }
             },
-            "required": ["outcome"]
+            "required": ["risk_level", "user_authorization", "outcome", "rationale"]
         })
     );
 }
@@ -1474,7 +1492,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     let request_body = request.body_json();
     assert_eq!(
         request_body.pointer("/text/format/strict"),
-        Some(&serde_json::json!(false))
+        Some(&serde_json::json!(true))
     );
     assert_eq!(
         request_body.pointer("/text/format/schema"),
@@ -1483,22 +1501,22 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
             "additionalProperties": false,
             "properties": {
                 "risk_level": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high", "critical"]
+                    "type": ["string", "null"],
+                    "enum": ["low", "medium", "high", "critical", null]
                 },
                 "user_authorization": {
-                    "type": "string",
-                    "enum": ["unknown", "low", "medium", "high"]
+                    "type": ["string", "null"],
+                    "enum": ["unknown", "low", "medium", "high", null]
                 },
                 "outcome": {
                     "type": "string",
                     "enum": ["allow", "deny"]
                 },
                 "rationale": {
-                    "type": "string"
+                    "type": ["string", "null"]
                 }
             },
-            "required": ["outcome"]
+            "required": ["risk_level", "user_authorization", "outcome", "rationale"]
         }))
     );
     let request_model = request_body

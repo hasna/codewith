@@ -38,6 +38,108 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.54] - 2026-07-02
+
+Tag: `rust-v0.1.54`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.54>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.53...rust-v0.1.54>
+
+### Fixed
+
+- Tuned macOS primary release builds to override the workspace release
+  `codegen-units = 1` setting, preventing the full CLI release build from
+  timing out before npm publishing can run.
+
+## [0.1.53] - 2026-07-01
+
+Tag: `rust-v0.1.53`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.53>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.52...rust-v0.1.53>
+
+### Fixed
+
+- Preserved durable resumed thread cwd, workspace roots, permission profile,
+  auth profile, model settings, approval policy, and reasoning effort unless a
+  `codewith exec resume` caller explicitly overrides them.
+- Restored permission profiles from persisted rollout history when resuming
+  headless threads, preventing ambient caller sandbox defaults from replacing
+  the original agentic work sandbox.
+- Fixed the human startup summary for resumed `codewith exec` sessions so it
+  reports the effective resumed session configuration instead of the local
+  caller process defaults.
+
+## [0.1.52] - 2026-07-01
+
+Tag: `rust-v0.1.52`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.52>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.51...rust-v0.1.52>
+
+### Fixed
+
+- Added explicit durable headless execution flags for `codewith exec`
+  (`--durable` and `--persist`) while keeping persistent execution as the
+  default and rejecting conflicting `--ephemeral` usage.
+- Preserved GPT-5.5 model metadata at the full 272k context window and added
+  focused regression coverage for GPT-5.5 context-window handling and
+  auto-compact behavior.
+
+## [0.1.51] - 2026-06-26
+
+Tag: `rust-v0.1.51`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.51>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.50...rust-v0.1.51>
+
+### Fixed
+
+- Added a SQLite-level guard so already-running stale Codewith scheduler
+  processes cannot claim a `/loop` that belongs to a fresh live interactive
+  session, preventing background execution from stealing turns that should be
+  visible in the TUI.
+- Hardened manual `/loop` run-now claims with the same live-owner protection,
+  including regression coverage for legacy claim suppression, foreign live-owner
+  rejection, and owner-scoped successful claims.
+
+## [0.1.50] - 2026-06-26
+
+Tag: `rust-v0.1.50`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.50>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.49...rust-v0.1.50>
+
+### Fixed
+
+- Fixed fresh interactive `/loop` sessions so creating a loop materializes the
+  thread rollout before the loop can fire, allowing cold resume and cross-process
+  recovery instead of failing with `thread not found`.
+- Routed due scheduled loop claims away from other local Codewith processes
+  while a fresh live owner is active, so background pollers cannot consume a
+  loop that should inject into the visible interactive session.
+- Added regression coverage for fresh no-turn loop materialization, foreign
+  active-owner claim suppression, stale-owner recovery, and repeated visible
+  scheduled-turn injection.
+
+## [0.1.49] - 2026-06-26
+
+Tag: `rust-v0.1.49`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.49>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.47...rust-v0.1.49>
+
+### Notes
+
+- Corrective release that intentionally supersedes `0.1.48`. The `0.1.48`
+  publish came from a broad spark01 preservation branch and could trigger local
+  SQLite migration checksum failures; this release returns to the migration-safe
+  `0.1.47` base and reapplies the loop and mailbox fixes.
+
+### Fixed
+
+- Hardened scheduled `/loop` execution so usage waits and busy threads defer
+  runs without incrementing failure counts, then re-arm correctly after retry.
+- Restored repeated interval loop injection as visible interactive turns, with
+  regression coverage proving each firing creates a fresh turn, persists user
+  and assistant messages, and submits a distinct model request.
+- Reapplied mailbox dispatcher fixes on the safe migration base, including
+  queued mailbox input handling and local active-session migration stability.
+
 ## [0.1.45] - 2026-06-24
 
 Tag: `rust-v0.1.45`

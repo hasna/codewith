@@ -596,14 +596,18 @@ impl ThreadScheduleRequestProcessor {
             .resolve_schedule_id_for_thread(&state_db, thread_id, params.schedule_id.as_str())
             .await?;
         let lease_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let local_active_fresh_after = self.schedule_runtime.local_active_fresh_after(now);
         let claim = state_db
             .thread_schedules()
-            .claim_thread_schedule_now(
-                schedule_id.as_str(),
-                Utc::now(),
-                lease_id.as_str(),
-                Duration::from_secs(RUN_NOW_LEASE_SECONDS),
-            )
+            .claim_thread_schedule_now_with_params(codex_state::ThreadScheduleNowClaimParams {
+                schedule_id: schedule_id.as_str(),
+                now,
+                lease_id: lease_id.as_str(),
+                lease_duration: Duration::from_secs(RUN_NOW_LEASE_SECONDS),
+                local_active_owner_id: Some(self.schedule_runtime.local_active_owner_id()),
+                local_active_fresh_after: Some(local_active_fresh_after),
+            })
             .await
             .map_err(|err| internal_error(format!("failed to claim thread schedule: {err}")))?
             .ok_or_else(|| {
@@ -658,11 +662,27 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         let running_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let rollout_path = match running_thread.as_ref() {
-            Some(thread) => thread.rollout_path().ok_or_else(|| {
-                invalid_request(format!(
-                    "ephemeral thread does not support scheduled tasks: {thread_id}"
-                ))
-            })?,
+            Some(thread) => {
+                let rollout_path = thread.rollout_path().ok_or_else(|| {
+                    invalid_request(format!(
+                        "ephemeral thread does not support scheduled tasks: {thread_id}"
+                    ))
+                })?;
+                thread
+                    .try_ensure_rollout_materialized()
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to materialize thread rollout before scheduling: {err}"
+                        ))
+                    })?;
+                thread.flush_rollout().await.map_err(|err| {
+                    internal_error(format!(
+                        "failed to flush thread rollout before scheduling: {err}"
+                    ))
+                })?;
+                rollout_path
+            }
             None => codex_rollout::find_thread_path_by_id_str(
                 &self.config.codex_home,
                 &thread_id.to_string(),

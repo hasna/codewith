@@ -138,6 +138,16 @@ impl SessionConfiguration {
         self.permission_profile_state.profile_workspace_roots()
     }
 
+    pub(super) fn effective_workspace_roots_for_summary(&self) -> Vec<AbsolutePathBuf> {
+        let mut workspace_roots = self.workspace_roots.clone();
+        for root in self.profile_workspace_roots() {
+            if !workspace_roots.iter().any(|existing| existing == root) {
+                workspace_roots.push(root.clone());
+            }
+        }
+        workspace_roots
+    }
+
     pub(super) fn apply_permission_profile_to_permissions(
         &self,
         permissions: &mut crate::config::Permissions,
@@ -1221,6 +1231,9 @@ impl Session {
                     permission_profile: session_configuration.permission_profile(),
                     active_permission_profile: session_configuration.active_permission_profile(),
                     cwd: session_configuration.cwd.clone(),
+                    workspace_roots: Some(
+                        session_configuration.effective_workspace_roots_for_summary(),
+                    ),
                     reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
                     initial_messages,
                     network_proxy: session_network_proxy.filter(|_| {

@@ -174,6 +174,224 @@ fn merge_persisted_resume_metadata(
     }
 }
 
+fn merge_persisted_permission_profile_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.permission_profile.is_some()
+        || typesafe_overrides.default_permissions.is_some()
+        || typesafe_overrides.sandbox_mode.is_some()
+        || request_override_contains_any(
+            request_overrides,
+            &["permission_profile", "default_permissions", "sandbox_mode"],
+        )
+    {
+        return;
+    }
+
+    if let Some(permission_profile) = permission_profile_from_history(thread_history) {
+        typesafe_overrides.permission_profile = Some(permission_profile);
+    }
+}
+
+fn merge_persisted_approval_settings_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.approval_policy.is_none()
+        && !request_override_contains(request_overrides, "approval_policy")
+        && let Some(approval_policy) = approval_policy_from_history(thread_history)
+    {
+        typesafe_overrides.approval_policy = Some(approval_policy);
+    }
+    if typesafe_overrides.approvals_reviewer.is_none()
+        && !request_override_contains(request_overrides, "approvals_reviewer")
+        && let Some(approvals_reviewer) = approvals_reviewer_from_history(thread_history)
+    {
+        typesafe_overrides.approvals_reviewer = Some(approvals_reviewer);
+    }
+}
+
+fn merge_persisted_cwd_and_workspace_roots_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.cwd.is_none()
+        && !request_override_contains(request_overrides, "cwd")
+        && let Some(cwd) = cwd_from_history(thread_history)
+    {
+        typesafe_overrides.cwd = Some(cwd);
+    }
+
+    if typesafe_overrides.workspace_roots.is_none()
+        && !request_override_contains_any(
+            request_overrides,
+            &["workspace_roots", "runtime_workspace_roots"],
+        )
+        && let Some(workspace_roots) = workspace_roots_from_history(thread_history)
+    {
+        typesafe_overrides.workspace_roots = Some(workspace_roots);
+    }
+}
+
+fn permission_profile_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            permission_profile_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => permission_profile_from_items(items, None),
+    }
+}
+
+fn permission_profile_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.permission_profile())
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.permission_profile.clone())
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.permission_profile.clone())
+        }
+        _ => None,
+    })
+}
+
+fn approval_policy_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::protocol::AskForApproval> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            approval_policy_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => approval_policy_from_items(items, None),
+    }
+}
+
+fn approval_policy_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::protocol::AskForApproval> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.approval_policy)
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.approval_policy)
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.approval_policy)
+        }
+        _ => None,
+    })
+}
+
+fn approvals_reviewer_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::config_types::ApprovalsReviewer> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            approvals_reviewer_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, None),
+    }
+}
+
+fn approvals_reviewer_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::config_types::ApprovalsReviewer> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.approvals_reviewer)
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.approvals_reviewer)
+        }
+        _ => None,
+    })
+}
+
+fn cwd_from_history(thread_history: &InitialHistory) -> Option<PathBuf> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            cwd_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => cwd_from_items(items, None),
+    }
+}
+
+fn cwd_from_items(items: &[RolloutItem], thread_id: Option<ThreadId>) -> Option<PathBuf> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.cwd.clone())
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.cwd.to_path_buf())
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.cwd.to_path_buf())
+        }
+        RolloutItem::SessionMeta(meta_line)
+            if thread_id.is_none_or(|thread_id| meta_line.meta.id == thread_id) =>
+        {
+            Some(meta_line.meta.cwd.clone())
+        }
+        _ => None,
+    })
+}
+
+fn workspace_roots_from_history(thread_history: &InitialHistory) -> Option<Vec<AbsolutePathBuf>> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            workspace_roots_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => workspace_roots_from_items(items, None),
+    }
+}
+
+fn workspace_roots_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<Vec<AbsolutePathBuf>> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            turn_context.workspace_roots.clone()
+        }
+        _ => None,
+    })
+}
+
 pub(super) fn merge_persisted_auth_profile_from_history(
     typesafe_overrides: &mut ConfigOverrides,
     thread_history: &InitialHistory,
@@ -217,6 +435,13 @@ fn request_override_contains(
     key: &str,
 ) -> bool {
     request_overrides.is_some_and(|overrides| overrides.contains_key(key))
+}
+
+fn request_override_contains_any(
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    keys: &[&str],
+) -> bool {
+    request_overrides.is_some_and(|overrides| keys.iter().any(|key| overrides.contains_key(*key)))
 }
 
 fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
@@ -1286,6 +1511,7 @@ impl ThreadRequestProcessor {
             service_tier: config_snapshot.service_tier,
             cwd: config_snapshot.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
+            profile_workspace_roots: config_snapshot.profile_workspace_roots,
             instruction_sources,
             approval_policy: config_snapshot.approval_policy.into(),
             approvals_reviewer: config_snapshot.approvals_reviewer.into(),
@@ -2886,6 +3112,7 @@ impl ThreadRequestProcessor {
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
                     runtime_workspace_roots: config_snapshot.workspace_roots,
+                    profile_workspace_roots: config_snapshot.profile_workspace_roots,
                     instruction_sources,
                     approval_policy: session_configured.approval_policy.into(),
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
@@ -2940,6 +3167,21 @@ impl ThreadRequestProcessor {
             return None;
         };
         merge_persisted_auth_profile_from_history(typesafe_overrides, thread_history);
+        merge_persisted_cwd_and_workspace_roots_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
+        merge_persisted_approval_settings_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
+        merge_persisted_permission_profile_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
         let state_db_ctx = self.state_db.clone()?;
         let persisted_metadata = state_db_ctx
             .get_thread(resumed_history.conversation_id)
@@ -3601,6 +3843,7 @@ impl ThreadRequestProcessor {
             service_tier: session_configured.service_tier,
             cwd: session_configured.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
+            profile_workspace_roots: config_snapshot.profile_workspace_roots,
             instruction_sources,
             approval_policy: session_configured.approval_policy.into(),
             approvals_reviewer: session_configured.approvals_reviewer.into(),

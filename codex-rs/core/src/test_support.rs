@@ -4,6 +4,7 @@
 //! We prefer this to using a crate feature to avoid building multiple
 //! permutations of the crate.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -48,8 +49,11 @@ pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing(auth)
 }
 
-pub fn auth_manager_from_auth_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<AuthManager> {
-    AuthManager::from_auth_for_testing_with_home(auth, codex_home)
+pub fn auth_manager_from_auth_with_home(
+    auth: CodexAuth,
+    codex_home: impl AsRef<Path>,
+) -> Arc<AuthManager> {
+    AuthManager::from_auth_for_testing_with_home(auth, codex_home.as_ref().to_path_buf())
 }
 
 pub fn thread_manager_with_models_provider(

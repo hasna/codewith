@@ -187,6 +187,8 @@ pub use remote_control::RemoteControlEnrollmentRecord;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;
+pub use schedules::ThreadScheduleDueClaimParams;
+pub use schedules::ThreadScheduleNowClaimParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
 pub use workflow_automation::WorkflowAutomationStore;

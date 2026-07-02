@@ -41,6 +41,23 @@ pub struct ThreadScheduleClaim {
     pub run: crate::ThreadScheduleRun,
 }
 
+pub struct ThreadScheduleDueClaimParams<'a> {
+    pub now: DateTime<Utc>,
+    pub lease_id: &'a str,
+    pub lease_duration: Duration,
+    pub local_active_owner_id: Option<&'a str>,
+    pub local_active_fresh_after: Option<DateTime<Utc>>,
+}
+
+pub struct ThreadScheduleNowClaimParams<'a> {
+    pub schedule_id: &'a str,
+    pub now: DateTime<Utc>,
+    pub lease_id: &'a str,
+    pub lease_duration: Duration,
+    pub local_active_owner_id: Option<&'a str>,
+    pub local_active_fresh_after: Option<DateTime<Utc>>,
+}
+
 impl ScheduleStore {
     pub async fn create_thread_schedule(
         &self,
@@ -346,6 +363,7 @@ SELECT
     COUNT(*) AS total_runs,
     COALESCE(SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END), 0) AS leased_runs,
     COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running_runs,
+    COALESCE(SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END), 0) AS deferred_runs,
     COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_runs,
     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_runs,
     MAX(started_at_ms) AS last_started_at_ms,
@@ -362,6 +380,7 @@ WHERE schedule_id = ?
 SELECT error
 FROM thread_schedule_runs
 WHERE schedule_id = ?
+  AND status = 'failed'
   AND error IS NOT NULL
   AND TRIM(error) != ''
 ORDER BY completed_at_ms DESC, started_at_ms DESC
@@ -375,6 +394,7 @@ LIMIT 1
             total_runs: row.try_get("total_runs")?,
             leased_runs: row.try_get("leased_runs")?,
             running_runs: row.try_get("running_runs")?,
+            deferred_runs: row.try_get("deferred_runs")?,
             completed_runs: row.try_get("completed_runs")?,
             failed_runs: row.try_get("failed_runs")?,
             last_started_at: row
@@ -395,11 +415,53 @@ LIMIT 1
         lease_id: &str,
         lease_duration: Duration,
     ) -> anyhow::Result<Option<ThreadScheduleClaim>> {
+        self.claim_due_thread_schedule_with_params(ThreadScheduleDueClaimParams {
+            now,
+            lease_id,
+            lease_duration,
+            local_active_owner_id: None,
+            local_active_fresh_after: None,
+        })
+        .await
+    }
+
+    pub async fn claim_due_thread_schedule_with_params(
+        &self,
+        params: ThreadScheduleDueClaimParams<'_>,
+    ) -> anyhow::Result<Option<ThreadScheduleClaim>> {
+        let ThreadScheduleDueClaimParams {
+            now,
+            lease_id,
+            lease_duration,
+            local_active_owner_id,
+            local_active_fresh_after,
+        } = params;
         let now_ms = datetime_to_epoch_millis(now);
         let lease_expires_at = now + chrono::Duration::from_std(lease_duration)?;
         let lease_expires_at_ms = datetime_to_epoch_millis(lease_expires_at);
         let mut tx = self.pool.begin().await?;
-        let sql = schedule_returning(
+        let owner_filter = match (local_active_owner_id, local_active_fresh_after) {
+            (Some(owner_id), Some(fresh_after)) => {
+                Some((owner_id, datetime_to_epoch_millis(fresh_after)))
+            }
+            _ => None,
+        };
+        let owner_scoped_lease_id = owner_filter.as_ref().map(|_| format!("owner:{lease_id}"));
+        let lease_id = owner_scoped_lease_id.as_deref().unwrap_or(lease_id);
+        let active_owner_filter = if owner_filter.is_some() {
+            r#"
+      AND NOT EXISTS (
+          SELECT 1
+          FROM local_active_sessions
+          WHERE local_active_sessions.thread_id = thread_schedules.thread_id
+            AND local_active_sessions.last_seen_at_ms >= ?
+            AND local_active_sessions.owner_id != ?
+      )
+"#
+        } else {
+            ""
+        };
+        let sql = schedule_returning(&format!(
             r#"
 UPDATE thread_schedules
 SET lease_id = ?, lease_expires_at_ms = ?, updated_at_ms = ?
@@ -411,21 +473,24 @@ WHERE schedule_id = (
       AND next_run_at_ms <= ?
       AND (expires_at_ms IS NULL OR expires_at_ms > ?)
       AND (lease_id IS NULL OR lease_expires_at_ms <= ?)
+{active_owner_filter}
     ORDER BY next_run_at_ms, created_at_ms
     LIMIT 1
 )
 RETURNING
 "#,
-        );
-        let schedule_row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        ));
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(lease_id)
             .bind(lease_expires_at_ms)
             .bind(now_ms)
             .bind(now_ms)
             .bind(now_ms)
-            .bind(now_ms)
-            .fetch_optional(&mut *tx)
-            .await?;
+            .bind(now_ms);
+        if let Some((owner_id, fresh_after_ms)) = owner_filter {
+            query = query.bind(fresh_after_ms).bind(owner_id);
+        }
+        let schedule_row = query.fetch_optional(&mut *tx).await?;
         let Some(schedule_row) = schedule_row else {
             tx.commit().await?;
             return Ok(None);
@@ -445,11 +510,55 @@ RETURNING
         lease_id: &str,
         lease_duration: Duration,
     ) -> anyhow::Result<Option<ThreadScheduleClaim>> {
+        self.claim_thread_schedule_now_with_params(ThreadScheduleNowClaimParams {
+            schedule_id,
+            now,
+            lease_id,
+            lease_duration,
+            local_active_owner_id: None,
+            local_active_fresh_after: None,
+        })
+        .await
+    }
+
+    pub async fn claim_thread_schedule_now_with_params(
+        &self,
+        params: ThreadScheduleNowClaimParams<'_>,
+    ) -> anyhow::Result<Option<ThreadScheduleClaim>> {
+        let ThreadScheduleNowClaimParams {
+            schedule_id,
+            now,
+            lease_id,
+            lease_duration,
+            local_active_owner_id,
+            local_active_fresh_after,
+        } = params;
         let now_ms = datetime_to_epoch_millis(now);
         let lease_expires_at = now + chrono::Duration::from_std(lease_duration)?;
         let lease_expires_at_ms = datetime_to_epoch_millis(lease_expires_at);
         let mut tx = self.pool.begin().await?;
-        let sql = schedule_returning(
+        let owner_filter = match (local_active_owner_id, local_active_fresh_after) {
+            (Some(owner_id), Some(fresh_after)) => {
+                Some((owner_id, datetime_to_epoch_millis(fresh_after)))
+            }
+            _ => None,
+        };
+        let owner_scoped_lease_id = owner_filter.as_ref().map(|_| format!("owner:{lease_id}"));
+        let lease_id = owner_scoped_lease_id.as_deref().unwrap_or(lease_id);
+        let active_owner_filter = if owner_filter.is_some() {
+            r#"
+  AND NOT EXISTS (
+      SELECT 1
+      FROM local_active_sessions
+      WHERE local_active_sessions.thread_id = thread_schedules.thread_id
+        AND local_active_sessions.last_seen_at_ms >= ?
+        AND local_active_sessions.owner_id != ?
+  )
+"#
+        } else {
+            ""
+        };
+        let sql = schedule_returning(&format!(
             r#"
 UPDATE thread_schedules
 SET lease_id = ?, lease_expires_at_ms = ?, updated_at_ms = ?
@@ -457,18 +566,21 @@ WHERE schedule_id = ?
   AND status = 'active'
   AND (expires_at_ms IS NULL OR expires_at_ms > ?)
   AND (lease_id IS NULL OR lease_expires_at_ms <= ?)
+{active_owner_filter}
 RETURNING
 "#,
-        );
-        let schedule_row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        ));
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(lease_id)
             .bind(lease_expires_at_ms)
             .bind(now_ms)
             .bind(schedule_id)
             .bind(now_ms)
-            .bind(now_ms)
-            .fetch_optional(&mut *tx)
-            .await?;
+            .bind(now_ms);
+        if let Some((owner_id, fresh_after_ms)) = owner_filter {
+            query = query.bind(fresh_after_ms).bind(owner_id);
+        }
+        let schedule_row = query.fetch_optional(&mut *tx).await?;
         let Some(schedule_row) = schedule_row else {
             tx.commit().await?;
             return Ok(None);
@@ -612,6 +724,73 @@ WHERE schedule_id = ? AND lease_id = ?
             FinishScheduleRun::Failed { error },
         )
         .await
+    }
+
+    pub async fn defer_thread_schedule_run(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        next_run_at: DateTime<Utc>,
+        error: String,
+    ) -> anyhow::Result<bool> {
+        let completed_at_ms = datetime_to_epoch_millis(completed_at);
+        let requested_next_run_at_ms = datetime_to_epoch_millis(next_run_at);
+        let mut tx = self.pool.begin().await?;
+        let schedule_result = sqlx::query(
+            r#"
+UPDATE thread_schedules
+SET
+    status = CASE
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN 'expired'
+        ELSE status
+    END,
+    lease_id = NULL,
+    lease_expires_at_ms = NULL,
+    last_run_at_ms = ?,
+    next_run_at_ms = CASE
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN NULL
+        ELSE ?
+    END,
+    updated_at_ms = ?
+WHERE schedule_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(requested_next_run_at_ms)
+        .bind(completed_at_ms)
+        .bind(requested_next_run_at_ms)
+        .bind(requested_next_run_at_ms)
+        .bind(completed_at_ms)
+        .bind(schedule_id)
+        .bind(lease_id)
+        .execute(&mut *tx)
+        .await?;
+        if schedule_result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let run_result = sqlx::query(
+            r#"
+UPDATE thread_schedule_runs
+SET status = ?, turn_id = NULL, error = ?, completed_at_ms = ?
+WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(crate::ThreadScheduleRunStatus::Deferred.as_str())
+        .bind(error)
+        .bind(completed_at_ms)
+        .bind(schedule_id)
+        .bind(run_id)
+        .bind(lease_id)
+        .execute(&mut *tx)
+        .await?;
+        if run_result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn expire_thread_schedules(&self, now: DateTime<Utc>) -> anyhow::Result<u64> {
@@ -1217,6 +1396,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_due_thread_schedule_skips_fresh_foreign_active_owner() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 3);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "live owner task", Some(now)).await;
+        runtime
+            .local_active_sessions()
+            .heartbeat_session(LocalActiveSessionHeartbeatParams {
+                thread_id,
+                owner_id: "owner-a".to_string(),
+                session_id: "session-a".to_string(),
+                pid: Some(100),
+                now,
+            })
+            .await
+            .expect("active session should heartbeat");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_due_thread_schedule_with_params(ThreadScheduleDueClaimParams {
+                    now,
+                    lease_id: "lease-owner-b",
+                    lease_duration: Duration::from_secs(300),
+                    local_active_owner_id: Some("owner-b"),
+                    local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+                })
+                .await
+                .expect("claim should not fail")
+                .is_none(),
+            "foreign processes should not claim loops owned by a fresh live session"
+        );
+
+        let owner_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule_with_params(ThreadScheduleDueClaimParams {
+                now,
+                lease_id: "lease-owner-a",
+                lease_duration: Duration::from_secs(300),
+                local_active_owner_id: Some("owner-a"),
+                local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+            })
+            .await
+            .expect("owner claim should succeed")
+            .expect("live owner should claim its due schedule");
+
+        assert_eq!(schedule.schedule_id, owner_claim.schedule.schedule_id);
+        assert_eq!(
+            Some("owner:lease-owner-a".to_string()),
+            owner_claim.schedule.lease_id
+        );
+        assert_eq!("owner:lease-owner-a", owner_claim.run.lease_id);
+    }
+
+    #[tokio::test]
+    async fn claim_due_thread_schedule_ignores_legacy_claim_when_live_owner_is_fresh() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 5);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = Utc::now();
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "legacy live owner task", Some(now))
+                .await;
+        runtime
+            .local_active_sessions()
+            .heartbeat_session(LocalActiveSessionHeartbeatParams {
+                thread_id,
+                owner_id: "owner-a".to_string(),
+                session_id: "session-a".to_string(),
+                pid: Some(100),
+                now,
+            })
+            .await
+            .expect("active session should heartbeat");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_due_thread_schedule(now, "legacy-lease", Duration::from_secs(300))
+                .await
+                .expect("legacy claim should be ignored without failing")
+                .is_none(),
+            "legacy schedulers should not steal loops from fresh live sessions"
+        );
+
+        let schedules = runtime
+            .thread_schedules()
+            .list_thread_schedules(thread_id)
+            .await
+            .expect("schedules should list");
+        assert_eq!(None, schedules[0].lease_id);
+
+        let owner_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule_with_params(ThreadScheduleDueClaimParams {
+                now,
+                lease_id: "owner-lease",
+                lease_duration: Duration::from_secs(300),
+                local_active_owner_id: Some("owner-a"),
+                local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+            })
+            .await
+            .expect("owner claim should succeed")
+            .expect("live owner should claim after legacy claim is ignored");
+
+        assert_eq!(schedule.schedule_id, owner_claim.schedule.schedule_id);
+        assert_eq!(
+            Some("owner:owner-lease".to_string()),
+            owner_claim.schedule.lease_id
+        );
+        assert_eq!("owner:owner-lease", owner_claim.run.lease_id);
+    }
+
+    #[tokio::test]
+    async fn claim_due_thread_schedule_allows_stale_foreign_active_owner() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 4);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "stale owner task", Some(now)).await;
+        runtime
+            .local_active_sessions()
+            .heartbeat_session(LocalActiveSessionHeartbeatParams {
+                thread_id,
+                owner_id: "owner-a".to_string(),
+                session_id: "session-a".to_string(),
+                pid: Some(100),
+                now: now - chrono::Duration::seconds(30),
+            })
+            .await
+            .expect("active session should heartbeat");
+
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule_with_params(ThreadScheduleDueClaimParams {
+                now,
+                lease_id: "lease-owner-b",
+                lease_duration: Duration::from_secs(300),
+                local_active_owner_id: Some("owner-b"),
+                local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("stale foreign owner should not block recovery");
+
+        assert_eq!(schedule.schedule_id, claim.schedule.schedule_id);
+        assert_eq!(
+            Some("owner:lease-owner-b".to_string()),
+            claim.schedule.lease_id
+        );
+        assert_eq!("owner:lease-owner-b", claim.run.lease_id);
+    }
+
+    #[tokio::test]
     async fn claim_thread_schedule_now_leases_specific_active_schedule() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 5);
@@ -1268,6 +1604,86 @@ mod tests {
                 .expect("second manual claim should not fail")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn claim_thread_schedule_now_ignores_legacy_claim_and_allows_live_owner() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 6);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(Utc::now().timestamp());
+        let schedule = create_interval_schedule(
+            &runtime,
+            thread_id,
+            "manual live owner task",
+            Some(now + chrono::Duration::hours(1)),
+        )
+        .await;
+        runtime
+            .local_active_sessions()
+            .heartbeat_session(LocalActiveSessionHeartbeatParams {
+                thread_id,
+                owner_id: "owner-a".to_string(),
+                session_id: "session-a".to_string(),
+                pid: Some(100),
+                now,
+            })
+            .await
+            .expect("active session should heartbeat");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_thread_schedule_now(
+                    &schedule.schedule_id,
+                    now,
+                    "legacy-manual-lease",
+                    Duration::from_secs(300),
+                )
+                .await
+                .expect("legacy manual claim should be ignored without failing")
+                .is_none(),
+            "legacy manual run-now should not steal loops from fresh live sessions"
+        );
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_thread_schedule_now_with_params(ThreadScheduleNowClaimParams {
+                    schedule_id: &schedule.schedule_id,
+                    now,
+                    lease_id: "manual-foreign-lease",
+                    lease_duration: Duration::from_secs(300),
+                    local_active_owner_id: Some("owner-b"),
+                    local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+                })
+                .await
+                .expect("foreign manual claim should not fail")
+                .is_none(),
+            "new foreign manual run-now should not steal loops from fresh live sessions"
+        );
+
+        let owner_claim = runtime
+            .thread_schedules()
+            .claim_thread_schedule_now_with_params(ThreadScheduleNowClaimParams {
+                schedule_id: &schedule.schedule_id,
+                now,
+                lease_id: "manual-owner-lease",
+                lease_duration: Duration::from_secs(300),
+                local_active_owner_id: Some("owner-a"),
+                local_active_fresh_after: Some(now - chrono::Duration::seconds(15)),
+            })
+            .await
+            .expect("owner manual claim should succeed")
+            .expect("live owner should claim manual run-now");
+
+        assert_eq!(schedule.schedule_id, owner_claim.schedule.schedule_id);
+        assert_eq!(
+            Some("owner:manual-owner-lease".to_string()),
+            owner_claim.schedule.lease_id
+        );
+        assert_eq!("owner:manual-owner-lease", owner_claim.run.lease_id);
+        assert_eq!(Some(now), owner_claim.run.scheduled_for);
     }
 
     #[tokio::test]
@@ -1604,6 +2020,91 @@ mod tests {
                 ..after_failure
             },
             resumed
+        );
+    }
+
+    #[tokio::test]
+    async fn defer_thread_schedule_run_rearms_without_incrementing_failure_count() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 16);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "wait for usage", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-wait", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let completed_at = now + chrono::Duration::seconds(5);
+        let retry_at = now + chrono::Duration::minutes(20);
+        let error = "all eligible auth profiles are exhausted".to_string();
+        let schedule_id = schedule.schedule_id.clone();
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .defer_thread_schedule_run(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-wait",
+                    completed_at,
+                    retry_at,
+                    error.clone(),
+                )
+                .await
+                .expect("run should defer")
+        );
+
+        let deferred = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadSchedule {
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(retry_at),
+                last_run_at: Some(completed_at),
+                failure_count: 0,
+                lease_id: None,
+                lease_expires_at: None,
+                updated_at: deferred.updated_at,
+                ..schedule
+            },
+            deferred
+        );
+        let run_id = claim.run.run_id.clone();
+        assert_eq!(
+            Some(crate::ThreadScheduleRun {
+                status: crate::ThreadScheduleRunStatus::Deferred,
+                turn_id: None,
+                error: Some(error),
+                completed_at: Some(completed_at),
+                ..claim.run
+            }),
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_run(&run_id)
+                .await
+                .expect("run should load")
+        );
+        assert_eq!(
+            crate::ThreadScheduleStats {
+                total_runs: 1,
+                deferred_runs: 1,
+                last_started_at: Some(now),
+                last_completed_at: Some(completed_at),
+                last_error: None,
+                ..crate::ThreadScheduleStats::default()
+            },
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(&schedule_id)
+                .await
+                .expect("deferred run stats should load")
         );
     }
 

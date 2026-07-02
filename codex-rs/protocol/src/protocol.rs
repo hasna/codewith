@@ -3632,6 +3632,14 @@ pub struct SessionConfiguredEvent {
     /// session.
     pub cwd: AbsolutePathBuf,
 
+    /// Effective user-visible workspace roots for this session, including
+    /// runtime roots and profile-defined roots. Older rollouts may omit this,
+    /// in which case clients should avoid borrowing roots from the ambient
+    /// process config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_roots: Option<Vec<AbsolutePathBuf>>,
+
     /// The effort the model is putting into reasoning about the user's request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
@@ -3681,6 +3689,8 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             #[serde(default)]
             active_permission_profile: Option<ActivePermissionProfile>,
             cwd: AbsolutePathBuf,
+            #[serde(default)]
+            workspace_roots: Option<Vec<AbsolutePathBuf>>,
             reasoning_effort: Option<ReasoningEffortConfig>,
             initial_messages: Option<Vec<EventMsg>>,
             network_proxy: Option<SessionNetworkProxyRuntime>,
@@ -3714,6 +3724,7 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             permission_profile,
             active_permission_profile: wire.active_permission_profile,
             cwd: wire.cwd,
+            workspace_roots: wire.workspace_roots,
             reasoning_effort: wire.reasoning_effort,
             initial_messages: wire.initial_messages,
             network_proxy: wire.network_proxy,
@@ -5609,6 +5620,7 @@ mod tests {
                 permission_profile: permission_profile.clone(),
                 active_permission_profile: None,
                 cwd: test_path_buf("/home/user/project").abs(),
+                workspace_roots: None,
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 initial_messages: None,
                 network_proxy: None,

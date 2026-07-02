@@ -320,13 +320,13 @@ where
             return;
         };
 
-        let reason = match input.error {
+        let reason = match &input.error {
             CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
             // The turn has ended because the error was non-retryable or its
             // retries were exhausted. Block the goal to prevent automatic
             // continuation from looping and consuming tokens, as can happen
             // with compaction errors.
-            _ => ActiveGoalStopReason::TurnError,
+            _ => ActiveGoalStopReason::TurnError(input.error.clone()),
         };
         if let Err(err) = runtime
             .stop_active_goal_for_turn(input.turn_id, reason)

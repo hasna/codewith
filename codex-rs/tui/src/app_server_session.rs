@@ -3724,6 +3724,7 @@ mod tests {
                 test_path_buf("/tmp/project").abs(),
                 test_path_buf("/tmp/project/extra").abs(),
             ],
+            profile_workspace_roots: Vec::new(),
             instruction_sources: vec![test_path_buf("/tmp/project/CODEWITH.md").abs()],
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
