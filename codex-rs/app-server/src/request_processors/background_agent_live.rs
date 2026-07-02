@@ -3167,64 +3167,80 @@ async fn handle_background_agent_event(
 ) -> anyhow::Result<bool> {
     match msg {
         EventMsg::TurnStarted(event) => {
-            append_status(
-                context,
+            tolerate_transient_busy(
+                append_status(
+                    context,
+                    run_id,
+                    generation,
+                    BackgroundAgentRunStatus::Running,
+                    "turn started",
+                    "agent.turnStarted",
+                    json!({"turnId": event.turn_id, "startedAt": event.started_at}),
+                )
+                .await,
                 run_id,
-                generation,
-                BackgroundAgentRunStatus::Running,
-                "turn started",
-                "agent.turnStarted",
-                json!({"turnId": event.turn_id, "startedAt": event.started_at}),
-            )
-            .await?;
+                "turn started status",
+            )?;
         }
         EventMsg::AgentMessageContentDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.messageDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.messageDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "message delta event",
+            )?;
         }
         EventMsg::PlanDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.planDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.planDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "plan delta event",
+            )?;
         }
         EventMsg::ReasoningContentDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.reasoningDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.reasoningDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "reasoning delta event",
+            )?;
         }
         EventMsg::ExecApprovalRequest(event) => {
             let interaction = create_pending_interaction(
@@ -3515,15 +3531,19 @@ async fn handle_background_agent_event(
         }
         other => {
             let event_type = core_event_type(&other);
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    event_type,
+                    &json!({}),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                event_type,
-                &json!({}),
-                false,
-            )
-            .await?;
+                "mirrored core event",
+            )?;
         }
     }
     Ok(false)
@@ -3693,10 +3713,14 @@ async fn heartbeat_and_continue(
     generation: i64,
     thread: &Arc<codex_core::CodexThread>,
 ) -> anyhow::Result<bool> {
-    if !context
-        .state_db
-        .heartbeat_background_agent_run(run_id, context.supervisor_id.as_str(), generation)
-        .await?
+    if !retry_transient_sqlite_busy("heartbeat background agent run", || {
+        context.state_db.heartbeat_background_agent_run(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+        )
+    })
+    .await?
     {
         let _ = thread.submit(Op::Interrupt).await;
         return Ok(false);
@@ -3957,6 +3981,18 @@ async fn mark_background_agent_worker_failed(
     run_id: &str,
     err: &anyhow::Error,
 ) -> anyhow::Result<()> {
+    if is_transient_sqlite_busy(err) {
+        // The worker only lost a bookkeeping write to state DB contention;
+        // the run itself is not known to be unhealthy. Leave its status
+        // untouched: the heartbeat-timeout orphan sweep will mark it
+        // recoverable and the supervisor will resume it, instead of
+        // permanently failing a healthy run.
+        warn!(
+            run_id,
+            "background agent worker hit persistent SQLite busy; leaving run recoverable instead of marking it failed: {err}"
+        );
+        return Ok(());
+    }
     let Some(run) = context.state_db.get_run(run_id).await? else {
         return Ok(());
     };
@@ -4221,36 +4257,44 @@ fn core_event_type(msg: &EventMsg) -> &'static str {
     }
 }
 
-async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
+/// Retries state DB operations on transient SQLITE_BUSY /
+/// SQLITE_BUSY_SNAPSHOT with exponential backoff plus jitter and a total
+/// sleep budget of at least 15s (see `codex_state::busy_retry`). The shared
+/// state DB is written by many concurrent processes, so short bursts of
+/// lock/snapshot contention are expected and must not fail healthy runs.
+async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
 {
-    let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
-                debug!(
-                    operation,
-                    attempt = attempt + 1,
-                    "retrying background agent operation after SQLite busy: {err}"
-                );
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("retry loop should return on success or final error")
+    codex_state::busy_retry::retry_on_busy(operation, f).await
 }
 
 fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("database is locked")
-        || message.contains("database is busy")
-        || message.contains("code: 5")
-        || message.contains("code: 517")
+    codex_state::busy_retry::is_transient_busy_error(err)
+}
+
+/// Treats a failed best-effort bookkeeping write as non-fatal when the
+/// failure is transient SQLite contention. A missed mirror/status event does
+/// not affect the model turn, so a healthy run must not be torn down (and
+/// marked failed) just because the state DB stayed busy past the retry
+/// budget. Non-busy errors (including ownership loss) still propagate.
+fn tolerate_transient_busy<T>(
+    result: anyhow::Result<T>,
+    run_id: &str,
+    what: &'static str,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if is_transient_sqlite_busy(&err) => {
+            warn!(
+                run_id,
+                what, "skipping best-effort background agent bookkeeping write after persistent SQLite busy: {err}"
+            );
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub(super) fn new_background_agent_supervisor_id() -> String {

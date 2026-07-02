@@ -5,6 +5,7 @@
 //! orchestration and rollout scanning live in `codex-core`.
 
 mod audit;
+pub mod busy_retry;
 mod extract;
 pub mod log_db;
 mod migrations;

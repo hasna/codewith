@@ -20,6 +20,7 @@ use codex_state::BackgroundAgentRunCreateParams;
 use codex_state::BackgroundAgentRunStatus;
 use codex_state::BackgroundAgentStatusSnapshotParams;
 use codex_state::StateRuntime;
+use codex_state::busy_retry::retry_on_busy;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentStartRuntimeContext {
@@ -476,10 +477,11 @@ async fn start_agent(
         anyhow::bail!("agent prompt must not be empty");
     }
     if let Some(idempotency_key) = cmd.idempotency_key.as_deref()
-        && let Some(run) = state_db
-            .get_background_agent_run_by_idempotency_key(idempotency_key)
-            .await
-            .context("failed to load background agent idempotency key")?
+        && let Some(run) = retry_on_busy("load background agent idempotency key", || {
+            state_db.get_background_agent_run_by_idempotency_key(idempotency_key)
+        })
+        .await
+        .context("failed to load background agent idempotency key")?
     {
         let daemon = background_agent_daemon()?;
         let daemon_output = daemon.start().await?;
@@ -498,83 +500,94 @@ async fn start_agent(
         .or(auth_profile)
         .map(str::to_string);
     let prompt_snapshot_ref = format!("inline:{agent_id}:prompt");
-    let run = state_db
-        .create_background_agent_run(&BackgroundAgentRunCreateParams {
-            id: agent_id.clone(),
-            idempotency_key: cmd.idempotency_key,
-            request_id: None,
-            source: "cli".to_string(),
-            prompt_snapshot_ref: prompt_snapshot_ref.clone(),
-            input_snapshot_ref: None,
-            thread_id: None,
-            thread_store_kind: "background-agent".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
-            parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: auth_profile_ref.clone(),
-            status_reason: Some("queued by codewith agent start".to_string()),
-            config_fingerprint: None,
-            version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
-        })
-        .await
-        .context("failed to create background agent")?;
-    let event = state_db
-        .append_background_agent_event(
+    // The state DB is shared across many concurrent processes; every write
+    // below retries transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT contention
+    // with backoff instead of failing the whole `agent start` invocation.
+    let create_params = BackgroundAgentRunCreateParams {
+        id: agent_id.clone(),
+        idempotency_key: cmd.idempotency_key,
+        request_id: None,
+        source: "cli".to_string(),
+        prompt_snapshot_ref: prompt_snapshot_ref.clone(),
+        input_snapshot_ref: None,
+        thread_id: None,
+        thread_store_kind: "background-agent".to_string(),
+        thread_store_id: None,
+        rollout_path: None,
+        parent_thread_id: None,
+        parent_agent_run_id: None,
+        spawn_linkage_json: None,
+        auth_profile_ref: auth_profile_ref.clone(),
+        status_reason: Some("queued by codewith agent start".to_string()),
+        config_fingerprint: None,
+        version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
+    };
+    let run = retry_on_busy("create background agent run", || {
+        state_db.create_background_agent_run(&create_params)
+    })
+    .await
+    .context("failed to create background agent")?;
+    let start_event_payload = json!({
+        "cwd": cwd.display().to_string(),
+        "prompt": prompt,
+        "promptSnapshotRef": prompt_snapshot_ref,
+    });
+    let event = retry_on_busy("append background agent start event", || {
+        state_db.append_background_agent_event(
             agent_id.as_str(),
             "agent.started",
-            &json!({
-                "cwd": cwd.display().to_string(),
-                "prompt": prompt,
-                "promptSnapshotRef": prompt_snapshot_ref,
-            }),
+            &start_event_payload,
         )
-        .await
-        .context("failed to append background agent start event")?;
-    state_db
-        .create_background_agent_execution_snapshot(&BackgroundAgentExecutionSnapshotParams {
-            run_id: agent_id.clone(),
-            snapshot_kind: "initial_execution_context".to_string(),
-            payload_json: json!({
-                "snapshotSource": "codewith agent start",
-                "cwd": cwd.display().to_string(),
-                "workspaceRoots": runtime_context.map(|context| {
-                    context
-                        .workspace_roots
-                        .iter()
-                        .map(|root| root.display().to_string())
-                        .collect::<Vec<_>>()
-                }),
-                "authProfileRef": auth_profile_ref,
-                "approvalPolicy": runtime_context
-                    .and_then(|context| context.approval_policy.as_ref()),
-                "permissionProfile": runtime_context
-                    .and_then(|context| context.permission_profile.as_ref()),
-                "model": runtime_context.and_then(|context| context.model.as_deref()),
-                "provider": runtime_context.and_then(|context| context.provider.as_deref()),
-                "serviceTier": runtime_context
-                    .and_then(|context| context.service_tier.as_deref()),
-                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+    })
+    .await
+    .context("failed to append background agent start event")?;
+    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.clone(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "snapshotSource": "codewith agent start",
+            "cwd": cwd.display().to_string(),
+            "workspaceRoots": runtime_context.map(|context| {
+                context
+                    .workspace_roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
             }),
-            recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-            config_fingerprint: None,
-        })
-        .await
-        .context("failed to create background agent execution snapshot")?;
-    state_db
-        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
-            run_id: agent_id,
-            seq: event.seq,
-            status: BackgroundAgentRunStatus::Queued,
-            desired_state: BackgroundAgentDesiredState::Running,
-            summary: Some("Queued".to_string()),
-            pending_interaction_count: 0,
-            last_event_seq: event.seq,
-            payload_json: json!({"phase": "queued"}),
-        })
-        .await
-        .context("failed to create background agent status snapshot")?;
+            "authProfileRef": auth_profile_ref,
+            "approvalPolicy": runtime_context
+                .and_then(|context| context.approval_policy.as_ref()),
+            "permissionProfile": runtime_context
+                .and_then(|context| context.permission_profile.as_ref()),
+            "model": runtime_context.and_then(|context| context.model.as_deref()),
+            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+            "serviceTier": runtime_context
+                .and_then(|context| context.service_tier.as_deref()),
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: None,
+    };
+    retry_on_busy("create background agent execution snapshot", || {
+        state_db.create_background_agent_execution_snapshot(&snapshot_params)
+    })
+    .await
+    .context("failed to create background agent execution snapshot")?;
+    let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
+        run_id: agent_id,
+        seq: event.seq,
+        status: BackgroundAgentRunStatus::Queued,
+        desired_state: BackgroundAgentDesiredState::Running,
+        summary: Some("Queued".to_string()),
+        pending_interaction_count: 0,
+        last_event_seq: event.seq,
+        payload_json: json!({"phase": "queued"}),
+    };
+    retry_on_busy("create background agent status snapshot", || {
+        state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
+    })
+    .await
+    .context("failed to create background agent status snapshot")?;
     let daemon = background_agent_daemon()?;
     let daemon_output = daemon.start().await?;
     Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
