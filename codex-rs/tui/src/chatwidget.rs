@@ -368,6 +368,7 @@ mod loop_display;
 mod loop_slash;
 mod mission_control_menu;
 mod monitor_display;
+mod webhook_display;
 mod workflow_display;
 mod workflow_slash;
 mod worktree_display;
@@ -380,8 +381,10 @@ mod input_submission;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_agent_approval;
 mod mcp_manager;
 mod mcp_startup;
+pub(crate) use self::mcp_agent_approval::McpAgentMutationApprovalSummary;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
 mod queued_messages;
@@ -427,6 +430,7 @@ use self::realtime::RealtimeConversationUiState;
 mod reasoning_shortcuts;
 mod review;
 mod review_popups;
+mod session_prompt;
 use self::review::ReviewState;
 #[cfg(test)]
 pub(crate) use self::review_popups::show_review_commit_picker_with_entries;
@@ -444,6 +448,7 @@ mod status_panel;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
+mod teaching_mode;
 mod tool_lifecycle;
 mod tool_requests;
 mod transcript;
@@ -451,8 +456,11 @@ use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
+mod usage_panel;
 mod usage_profile_broker;
 mod usage_self_heal;
+use self::usage_panel::UsagePanelMiniMaxUsageState;
+use self::usage_panel::UsagePanelRateLimitState;
 use self::usage_self_heal::UsageSelfHealErrorKind;
 use self::usage_self_heal::UsageSelfHealState;
 mod user_messages;
@@ -585,6 +593,10 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    /// Extra developer prompt scoped to the active session/thread only.
+    session_prompt: Option<String>,
+    teaching_mode_enabled: bool,
+    teaching_mode_by_thread: HashMap<ThreadId, bool>,
     has_chatgpt_account: bool,
     model_catalog: Arc<ModelCatalog>,
     session_telemetry: SessionTelemetry,
@@ -603,6 +615,8 @@ pub(crate) struct ChatWidget {
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
+    usage_panel_rate_limit_state: UsagePanelRateLimitState,
+    usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
@@ -611,6 +625,8 @@ pub(crate) struct ChatWidget {
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
+    auth_profile_auto_switch_cooldowns:
+        BTreeMap<crate::legacy_core::usage_profile_health::UsageProfileCooldownKey, Instant>,
     usage_self_heal: UsageSelfHealState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,

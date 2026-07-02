@@ -34,6 +34,7 @@ use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
 use serde_json::json;
 
+use super::thread_mailbox_context::validate_mailbox_payload_context_size;
 use super::thread_mailbox_processor::mapping::api_mailbox_receipt;
 use super::thread_mailbox_processor::mapping::api_mailbox_summary;
 use super::thread_pending_interaction_processor::api_pending_interaction;
@@ -245,6 +246,8 @@ impl RemoteDispatchRequestProcessor {
         } else {
             MissionControlDeliveryPolicy::LiveOnly
         };
+        validate_mailbox_payload_context_size(&json!({ "text": text.as_str() }))
+            .map_err(invalid_request)?;
         let preview = truncate_preview(text.as_str());
         if submit_params.dry_run {
             return Ok(Some(
@@ -737,7 +740,11 @@ fn remote_instruction_payload(
     });
     match delivery_policy {
         MissionControlDeliveryPolicy::LiveOnly => {
-            json!({ "text": text, "remoteDispatch": remote_dispatch })
+            json!({
+                "text": text,
+                "delivery": "liveOnly",
+                "remoteDispatch": remote_dispatch,
+            })
         }
         MissionControlDeliveryPolicy::ResumeAndTrigger => {
             json!({
@@ -1174,6 +1181,10 @@ mod tests {
         assert_eq!(
             Some("remote hello"),
             page.data[0].payload_json["text"].as_str()
+        );
+        assert_eq!(
+            Some("liveOnly"),
+            page.data[0].payload_json["delivery"].as_str()
         );
         assert_eq!(
             Some("trusted"),

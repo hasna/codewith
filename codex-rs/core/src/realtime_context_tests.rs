@@ -59,6 +59,7 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
             branch: Some("main".to_string()),
             repository_url: None,
         }),
+        auth_profile: None,
         approval_mode: AskForApproval::Never,
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,

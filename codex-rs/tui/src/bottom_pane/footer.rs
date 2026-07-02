@@ -41,6 +41,7 @@
 //! In short: `single_line_footer_layout` chooses *what* best fits, and the two
 //! render helpers choose whether to draw the chosen line or the default
 //! `FooterProps` mapping.
+use crate::goal_display::format_goal_elapsed_seconds;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
@@ -101,15 +102,19 @@ pub(crate) enum CollaborationModeIndicator {
 pub(crate) enum GoalStatusIndicator {
     Active {
         usage: Option<String>,
+        elapsed_seconds: i64,
     },
     ActivePlan {
         usage: Option<String>,
         current_goal: i64,
         total_goals: i64,
+        current_elapsed_seconds: i64,
+        total_elapsed_seconds: i64,
     },
     Paused,
     Blocked,
     UsageLimited,
+    Deferred,
     BudgetLimited {
         usage: Option<String>,
     },
@@ -564,28 +569,38 @@ pub(crate) fn goal_status_indicator_line(
 ) -> Option<Line<'static>> {
     let indicator = indicator?;
     let label = match indicator {
-        GoalStatusIndicator::Active { usage } => {
+        GoalStatusIndicator::Active {
+            usage,
+            elapsed_seconds,
+        } => {
+            let elapsed = format_goal_elapsed_seconds(*elapsed_seconds);
             if let Some(usage) = usage {
-                format!("Pursuing goal ({usage})")
+                format!("Pursuing goal ({elapsed}, {usage})")
             } else {
-                "Pursuing goal".to_string()
+                format!("Pursuing goal ({elapsed})")
             }
         }
         GoalStatusIndicator::ActivePlan {
             usage,
             current_goal,
             total_goals,
+            current_elapsed_seconds,
+            total_elapsed_seconds,
         } => {
             let label = format!("Pursuing goal {current_goal}/{total_goals}");
+            let current_elapsed = format_goal_elapsed_seconds(*current_elapsed_seconds);
+            let total_elapsed = format_goal_elapsed_seconds(*total_elapsed_seconds);
+            let elapsed = format!("{current_elapsed} current, {total_elapsed} total");
             if let Some(usage) = usage {
-                format!("{label} ({usage})")
+                format!("{label} ({elapsed}, {usage})")
             } else {
-                label
+                format!("{label} ({elapsed})")
             }
         }
         GoalStatusIndicator::Paused => "Goal paused (/goal resume)".to_string(),
         GoalStatusIndicator::Blocked => "Goal blocked (/goal resume)".to_string(),
         GoalStatusIndicator::UsageLimited => "Goal hit usage limits (/goal resume)".to_string(),
+        GoalStatusIndicator::Deferred => "Goal deferred (/goal resume)".to_string(),
         GoalStatusIndicator::BudgetLimited { usage } => {
             if let Some(usage) = usage {
                 format!("Goal unmet ({usage})")
@@ -1827,9 +1842,11 @@ mod tests {
     #[test]
     fn goal_status_indicator_line_formats_goal_plan_position() {
         let line = goal_status_indicator_line(Some(&GoalStatusIndicator::ActivePlan {
-            usage: Some("40s".to_string()),
+            usage: None,
             current_goal: 2,
             total_goals: 4,
+            current_elapsed_seconds: 8 * 60,
+            total_elapsed_seconds: 42 * 60,
         }))
         .expect("goal status indicator should render");
 

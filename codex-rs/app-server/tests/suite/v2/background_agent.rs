@@ -39,9 +39,16 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeCleanupResponse;
 use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachResponse;
@@ -56,6 +63,7 @@ use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_state::BackgroundAgentDesiredState as StateBackgroundAgentDesiredState;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
@@ -76,6 +84,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result<()> {
@@ -240,6 +249,74 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_records_initial_goal_objective() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut params = start_params(
+        "fix the flaky test",
+        Some("initial-goal-start".to_string()),
+        codex_home.path(),
+    );
+    params.initial_goal_objective = Some("Investigate flaky regression".to_string());
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let start = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(
+        start.execution_snapshot.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+    assert_eq!(
+        start.event.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+
+    let retry = start_agent(
+        &mut mcp,
+        start_params(
+            "retry with different params",
+            Some("initial-goal-start".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+
+    assert_eq!(retry.agent.agent_id, start.agent.agent_id);
+    assert_eq!(
+        retry.execution_snapshot.payload.get("initialGoalObjective"),
+        Some(&json!("Investigate flaky regression"))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_empty_initial_goal_objective() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut params = start_params(
+        "fix the flaky test",
+        Some("empty-initial-goal-start".to_string()),
+        codex_home.path(),
+    );
+    params.initial_goal_objective = Some(" \t ".to_string());
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let error = start_agent_error(&mut mcp, params).await?;
+
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(error.error.message, "goal objective must not be empty");
+    let list = agent_list(&mut mcp).await?;
+    assert!(list.data.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
@@ -376,6 +453,175 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         start.execution_snapshot.payload.get("serviceTier"),
         Some(&JsonValue::Null)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let created_worktree_id = created.worktree.worktree_id.clone();
+    let created_worktree_path = created.worktree.worktree_path.clone();
+    let mut params = start_params(
+        "run inside the managed worktree",
+        Some("validated-managed-worktree-cwd".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(created_worktree_path.clone());
+    let context = params
+        .execution_context
+        .as_mut()
+        .expect("test params include execution context");
+    context.workspace_roots = Some(vec!["/tmp/client-root".to_string()]);
+
+    let start = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(
+        start.execution_snapshot.payload.get("cwd"),
+        Some(&json!(created_worktree_path))
+    );
+    assert_eq!(
+        start.execution_snapshot.payload.get("workspaceRoots"),
+        Some(&json!([created_worktree_path]))
+    );
+    let read_request_id = mcp
+        .send_raw_request(
+            "worktree/read",
+            Some(json!({
+                "worktreeId": created_worktree_id,
+            })),
+        )
+        .await?;
+    let read: WorktreeReadResponse = read_response(&mut mcp, read_request_id).await?;
+    let worktree = read.worktree.expect("managed worktree should still exist");
+    assert_eq!(
+        Some(start.agent.agent_id.as_str()),
+        worktree.owner_agent_run_id.as_deref()
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config_with_sandbox_mode_and_extra(
+        codex_home.path(),
+        server.uri().as_str(),
+        "workspace-write",
+        r#"
+[sandbox_workspace_write]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+"#,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start-write",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let created_worktree_path = created.worktree.worktree_path.clone();
+    let mut params = start_params(
+        "run inside the managed writable worktree",
+        Some("validated-managed-worktree-permissions".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(created_worktree_path.clone());
+
+    let start = start_agent(&mut mcp, params).await?;
+
+    let permission_profile: PermissionProfile = serde_json::from_value(
+        start
+            .execution_snapshot
+            .payload
+            .get("permissionProfile")
+            .expect("execution snapshot should include permissionProfile")
+            .clone(),
+    )?;
+    let file_system_policy = permission_profile.file_system_sandbox_policy();
+    let worktree_path = Path::new(created_worktree_path.as_str());
+    assert!(
+        file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
+        "managed worktree should be writable, policy: {file_system_policy:?}"
+    );
+    assert!(
+        !file_system_policy.can_write_path_with_cwd(codex_home.path(), worktree_path),
+        "base checkout must not stay writable after worktree rebinding, policy: {file_system_policy:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_shared_repository_managed_worktree_cwd() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_managed_worktree_with_mode(
+        state_db.as_ref(),
+        "wt-shared-agent-start",
+        codex_home.path(),
+        codex_state::ManagedWorktreeMode::SharedRepository,
+    )
+    .await?;
+
+    let mut params = start_params(
+        "run inside a shared-repository worktree",
+        Some("shared-repository-managed-worktree-cwd".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(
+        codex_home
+            .path()
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-shared-agent-start")
+            .display()
+            .to_string(),
+    );
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let error = start_agent_error(&mut mcp, params).await?;
+
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, error.error.code);
+    assert_eq!(
+        "agent/start worktree cwd requires an isolated managed worktree",
+        error.error.message
+    );
+    let list = agent_list(&mut mcp).await?;
+    assert!(list.data.is_empty());
+
     Ok(())
 }
 
@@ -1804,6 +2050,234 @@ async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_create_rejects_subagent_threads() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id =
+        start_thread_for_worktree_attach_with_source(&mut mcp, Some(ThreadSource::Subagent))
+            .await?;
+
+    let error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "subagent-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, error.error.code);
+    assert_eq!(
+        "subagent sessions cannot create managed worktrees",
+        error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_worktree_mode_blocks_session_create_and_attach() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let repo_path = codex_home.path().join("repo");
+    std::fs::create_dir_all(repo_path.as_path())?;
+    init_git_repo(repo_path.as_path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_managed_worktree(state_db.as_ref(), "wt-shared", repo_path.as_path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), repo_path.as_path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::Shared,
+    )
+    .await?;
+
+    let create_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "shared-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "baseRepoPath": repo_path.display().to_string(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, create_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        create_error.error.message
+    );
+
+    let attach_error = raw_request_error(
+        &mut mcp,
+        "worktree/attach",
+        json!({
+            "worktreeId": "wt-shared",
+            "threadId": thread_id,
+            "agentRunId": null,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, attach_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        attach_error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pull_request_worktree_mode_requires_attached_worktree_for_turns() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "done",
+        )?])
+        .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), codex_home.path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::PullRequest,
+    )
+    .await?;
+
+    let turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "implement the PR-mode feature".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, turn_error.error.code);
+    assert_eq!(
+        "pull-request mode requires an attached active managed worktree before starting a turn",
+        turn_error.error.message
+    );
+
+    let retain_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "pr-retain-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "cleanupPolicy": "retain",
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, retain_cleanup_error.error.code);
+    assert_eq!(
+        "pull-request mode worktrees use deleteIfClean cleanup policy",
+        retain_cleanup_error.error.message
+    );
+
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "pr-mode",
+                "startPoint": "HEAD",
+                "threadId": thread_id,
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    assert_eq!(
+        WorktreeCleanupPolicy::DeleteIfClean,
+        created.worktree.cleanup_policy
+    );
+    assert_eq!(WorktreeOwnerKind::MainSession, created.worktree.owner_kind);
+    assert_eq!(Some(thread_id.clone()), created.worktree.owner_thread_id);
+    assert!(
+        created
+            .worktree
+            .identity
+            .as_deref()
+            .is_some_and(|identity| identity.starts_with("pr-mode:"))
+    );
+
+    let outside_cwd_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "try to keep working from the shared checkout".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let outside_cwd_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(outside_cwd_turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, outside_cwd_error.error.code);
+    assert!(
+        outside_cwd_error
+            .error
+            .message
+            .contains("pull-request mode requires cwd"),
+        "unexpected error: {}",
+        outside_cwd_error.error.message
+    );
+
+    let successful_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            cwd: Some(std::path::PathBuf::from(
+                created.worktree.worktree_path.as_str(),
+            )),
+            input: vec![V2UserInput::Text {
+                text: "now work inside the PR worktree".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let successful_turn_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(successful_turn_request_id)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response(successful_turn_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Result<()> {
     let codex_home = TempDir::new()?;
     let repo_path = codex_home.path().join("repo");
@@ -1988,6 +2462,101 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     assert_eq!(
         "later work\n",
         std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
+    );
+    assert_eq!(
+        "later work\n",
+        std::fs::read_to_string(codex_home.path().join("later.txt"))?
+    );
+
+    let race_create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "target-race",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let race_created: WorktreeCreateResponse =
+        read_response(&mut mcp, race_create_request_id).await?;
+    let race_worktree_path = std::path::PathBuf::from(race_created.worktree.worktree_path.as_str());
+    std::fs::write(race_worktree_path.join("race.txt"), "race candidate\n")?;
+    git(race_worktree_path.as_path(), &["add", "race.txt"])?;
+    git(
+        race_worktree_path.as_path(),
+        &["commit", "-m", "add race candidate"],
+    )?;
+    let race_refresh_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": race_created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let race_refreshed: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, race_refresh_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        race_refreshed.candidate.status
+    );
+    std::fs::write(
+        codex_home.path().join("main-advanced.txt"),
+        "main advanced\n",
+    )?;
+    git(codex_home.path(), &["add", "main-advanced.txt"])?;
+    git(codex_home.path(), &["commit", "-m", "advance merge target"])?;
+    let target_changed_apply_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": race_refreshed.candidate.candidate_id,
+        }),
+    )
+    .await?;
+    assert_eq!(
+        INVALID_PARAMS_ERROR_CODE,
+        target_changed_apply_error.error.code
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .starts_with("worktree/mergeCandidate/apply target changed from "),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .ends_with("; refresh before applying"),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(!codex_home.path().join("race.txt").exists());
+    assert_eq!(
+        "race candidate\n",
+        std::fs::read_to_string(race_worktree_path.join("race.txt"))?
+    );
+    assert_eq!(
+        "main advanced\n",
+        std::fs::read_to_string(codex_home.path().join("main-advanced.txt"))?
+    );
+
+    let dismiss_applied_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/dismiss",
+        json!({
+            "candidateId": candidate_id.clone(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, dismiss_applied_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+        dismiss_applied_error.error.message
     );
 
     let apply_again_error = raw_request_error(
@@ -2340,12 +2909,27 @@ async fn create_managed_worktree(
     worktree_id: &str,
     base_repo_path: &Path,
 ) -> Result<()> {
+    create_managed_worktree_with_mode(
+        state_db,
+        worktree_id,
+        base_repo_path,
+        codex_state::ManagedWorktreeMode::IsolatedWorktree,
+    )
+    .await
+}
+
+async fn create_managed_worktree_with_mode(
+    state_db: &codex_state::StateRuntime,
+    worktree_id: &str,
+    base_repo_path: &Path,
+    mode: codex_state::ManagedWorktreeMode,
+) -> Result<()> {
     state_db
         .managed_worktrees()
         .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
             worktree_id: Some(worktree_id.to_string()),
             identity: Some(format!("test:{worktree_id}")),
-            mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
+            mode,
             base_repo_path: base_repo_path.to_path_buf(),
             worktree_path: base_repo_path
                 .join(".codewith")
@@ -2441,9 +3025,17 @@ async fn create_background_agent_git_worktree_lease(
 }
 
 async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String> {
+    start_thread_for_worktree_attach_with_source(mcp, /*thread_source*/ None).await
+}
+
+async fn start_thread_for_worktree_attach_with_source(
+    mcp: &mut McpProcess,
+    thread_source: Option<ThreadSource>,
+) -> Result<String> {
     let request_id = mcp
         .send_thread_start_request(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            thread_source,
             ..Default::default()
         })
         .await?;
@@ -2475,6 +3067,27 @@ async fn upsert_thread_for_worktree_attach_with_retry(
             Err(err) => return Err(err),
         }
     }
+    Ok(())
+}
+
+async fn update_thread_worktree_mode(
+    mcp: &mut McpProcess,
+    thread_id: &str,
+    worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
+) -> Result<()> {
+    let request_id = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            worktree_mode: Some(worktree_mode),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadSettingsUpdateResponse = read_response(mcp, request_id).await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/settings/updated"),
+    )
+    .await??;
     Ok(())
 }
 
@@ -2549,13 +3162,22 @@ fn write_config(codex_home: &Path, server_uri: &str) -> Result<()> {
 }
 
 fn write_config_with_extra(codex_home: &Path, server_uri: &str, extra_toml: &str) -> Result<()> {
+    write_config_with_sandbox_mode_and_extra(codex_home, server_uri, "read-only", extra_toml)
+}
+
+fn write_config_with_sandbox_mode_and_extra(
+    codex_home: &Path,
+    server_uri: &str,
+    sandbox_mode: &str,
+    extra_toml: &str,
+) -> Result<()> {
     std::fs::write(
         codex_home.join("config.toml"),
         format!(
             r#"
 model = "mock-model"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "{sandbox_mode}"
 model_provider = "mock_provider"
 suppress_unstable_features_warning = true
 
@@ -2684,6 +3306,7 @@ fn start_params(
 ) -> AgentStartParams {
     AgentStartParams {
         prompt: prompt.to_string(),
+        initial_goal_objective: None,
         cwd: Some(codex_home.display().to_string()),
         idempotency_key,
         request_id: None,

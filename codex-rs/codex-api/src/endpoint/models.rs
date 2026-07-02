@@ -837,6 +837,42 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_sparse_glm52_response_uses_openrouter_reasoning_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "z-ai/glm-5.2"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("openrouter"),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "Z.ai GLM 5.2");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.max_context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(model.supports_parallel_tool_calls);
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+        assert_eq!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort.clone())
+                .collect::<Vec<_>>(),
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert!(model.supports_reasoning_summaries);
+    }
+
+    #[test]
     fn renamed_openrouter_provider_uses_base_url_for_known_metadata() {
         let models = decode_models_response(
             serde_json::to_string(&json!({

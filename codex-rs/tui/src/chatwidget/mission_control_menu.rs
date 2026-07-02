@@ -1058,6 +1058,9 @@ fn goal_plan_row_description(plan: &ThreadGoalPlan) -> String {
     if plan.usage_limited_node_count > 0 || plan.budget_limited_node_count > 0 {
         return "limited".to_string();
     }
+    if plan.deferred_node_count > 0 {
+        return "deferred".to_string();
+    }
     if plan.completed_node_count == plan.node_count {
         return "done".to_string();
     }
@@ -1090,6 +1093,7 @@ fn goal_plan_node_status_label(
         codex_app_server_protocol::ThreadGoalPlanNodeStatus::Blocked => "blocked",
         codex_app_server_protocol::ThreadGoalPlanNodeStatus::UsageLimited => "usage-limited",
         codex_app_server_protocol::ThreadGoalPlanNodeStatus::BudgetLimited => "budget-limited",
+        codex_app_server_protocol::ThreadGoalPlanNodeStatus::Deferred => "deferred",
         codex_app_server_protocol::ThreadGoalPlanNodeStatus::Complete => "complete",
         codex_app_server_protocol::ThreadGoalPlanNodeStatus::Cancelled => "cancelled",
     }

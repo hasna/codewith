@@ -11,6 +11,8 @@ fn test_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> ThreadSched
     ThreadSchedule {
         thread_id: "thread-1".to_string(),
         schedule_id: schedule_id.to_string(),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: "check whether CI is green and write the next action".to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule: ThreadScheduleSpec::Interval {
@@ -41,6 +43,22 @@ fn test_once_schedule(schedule_id: &str, status: ThreadScheduleStatus) -> Thread
     }
 }
 
+fn test_nested_schedule(
+    schedule_id: &str,
+    parent_schedule_id: &str,
+    nesting_depth: i64,
+) -> ThreadSchedule {
+    ThreadSchedule {
+        parent_schedule_id: Some(parent_schedule_id.to_string()),
+        nesting_depth,
+        schedule: ThreadScheduleSpec::Interval {
+            amount: 30,
+            unit: ThreadScheduleIntervalUnit::Minutes,
+        },
+        ..test_schedule(schedule_id, ThreadScheduleStatus::Active)
+    }
+}
+
 fn test_schedule_run(
     thread_id: ThreadId,
     schedule_id: &str,
@@ -49,7 +67,9 @@ fn test_schedule_run(
 ) -> ThreadScheduleRun {
     let completed_at = if matches!(
         status,
-        ThreadScheduleRunStatus::Completed | ThreadScheduleRunStatus::Failed
+        ThreadScheduleRunStatus::Deferred
+            | ThreadScheduleRunStatus::Completed
+            | ThreadScheduleRunStatus::Failed
     ) {
         Some(1_700_000_002)
     } else {
@@ -90,6 +110,26 @@ async fn loop_manager_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn loop_manager_nested_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_loop_manager(
+        thread_id,
+        vec![
+            test_schedule("sch_parent", ThreadScheduleStatus::Active),
+            test_nested_schedule("child_one", "sch_parent", 2),
+            test_nested_schedule("child_two", "sch_parent", 2),
+        ],
+    );
+
+    assert_chatwidget_snapshot!(
+        "loop_manager_nested_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
 async fn loop_actions_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
@@ -101,6 +141,22 @@ async fn loop_actions_popup_snapshot() {
 
     assert_chatwidget_snapshot!(
         "loop_actions_popup",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+}
+
+#[tokio::test]
+async fn loop_nested_actions_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+
+    chat.show_loop_schedule_actions(
+        thread_id,
+        test_nested_schedule("child_one", "sch_parent", 2),
+    );
+
+    assert_chatwidget_snapshot!(
+        "loop_nested_actions_popup",
         render_bottom_popup(&chat, /*width*/ 100)
     );
 }
@@ -197,6 +253,12 @@ async fn loop_run_updates_surface_active_thread_progress() {
         "0eb8d7d4-a324-47a8-9e1c-6912c6d76e87",
         ThreadScheduleRunStatus::Completed,
     ));
+    chat.on_thread_schedule_run_updated(test_schedule_run(
+        thread_id,
+        "02f1072a-c22e-447e-9448-c41bc7717ab1",
+        "2de3e518-a42e-4f77-8763-1344c919f127",
+        ThreadScheduleRunStatus::Deferred,
+    ));
     let mut failed = test_schedule_run(
         thread_id,
         "02f1072a-c22e-447e-9448-c41bc7717ab1",
@@ -211,6 +273,7 @@ async fn loop_run_updates_surface_active_thread_progress() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
         .join("");
+    assert_chatwidget_snapshot!("loop_run_updates_surface_active_thread_progress", rendered);
 
     assert!(rendered.contains("Loop run started"), "{rendered}");
     assert!(
@@ -220,6 +283,11 @@ async fn loop_run_updates_surface_active_thread_progress() {
     assert!(rendered.contains("Loop run completed"), "{rendered}");
     assert!(
         rendered.contains("0eb8d7d4 completed for 02f1072a"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Loop run deferred"), "{rendered}");
+    assert!(
+        rendered.contains("2de3e518 deferred for 02f1072a"),
         "{rendered}"
     );
     assert!(

@@ -28,6 +28,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
+use crate::context::SessionPromptInstructions;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::exec_policy::ExecPolicyManager;
@@ -111,6 +112,7 @@ use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadNameUpdatedEvent;
 use codex_protocol::protocol::ThreadSource;
@@ -197,6 +199,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod auth_profile_auto_switch;
 mod config_lock;
 mod handlers;
 pub(crate) use handlers::enqueue_inter_agent_communication;
@@ -606,9 +609,11 @@ impl Codex {
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
             collaboration_mode,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
             model_reasoning_summary: config.model_reasoning_summary,
             service_tier,
             developer_instructions: config.developer_instructions.clone(),
+            session_prompt: None,
             user_instructions,
             personality: config.personality,
             base_instructions,
@@ -729,6 +734,13 @@ impl Codex {
     /// Use sparingly: prefer `submit()` so Codewith is responsible for generating
     /// unique IDs for each submission.
     pub async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+        if let Op::UserInput {
+            thread_settings, ..
+        } = &sub.op
+        {
+            self.ensure_pr_mode_worktree_ready_for_user_input(thread_settings.cwd.clone())
+                .await?;
+        }
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
@@ -736,6 +748,58 @@ impl Codex {
             .send(sub)
             .await
             .map_err(|_| CodexErr::InternalAgentDied)?;
+        Ok(())
+    }
+
+    async fn ensure_pr_mode_worktree_ready_for_user_input(
+        &self,
+        cwd_override: Option<AbsolutePathBuf>,
+    ) -> CodexResult<()> {
+        let (thread_id, worktree_mode, configured_cwd, state_db) = {
+            let state = self.session.state.lock().await;
+            (
+                self.session.thread_id,
+                state.session_configuration.worktree_mode,
+                state.session_configuration.cwd.clone(),
+                self.session.state_db(),
+            )
+        };
+        if worktree_mode != SessionWorktreeMode::PullRequest {
+            return Ok(());
+        }
+        let cwd = cwd_override.unwrap_or(configured_cwd);
+        let Some(state_db) = state_db else {
+            return Err(CodexErr::InvalidRequest(
+                "pull-request worktree mode requires managed worktree state".to_string(),
+            ));
+        };
+        let worktree = state_db
+            .managed_worktrees()
+            .active_thread_managed_worktree(thread_id)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("failed to read active worktree for PR mode: {err}"))
+            })?;
+        let Some(worktree) = worktree else {
+            return Err(CodexErr::InvalidRequest(
+                "pull-request mode requires an attached active managed worktree before starting a turn"
+                    .to_string(),
+            ));
+        };
+        if worktree.mode != codex_state::ManagedWorktreeMode::IsolatedWorktree {
+            return Err(CodexErr::InvalidRequest(format!(
+                "pull-request mode requires an isolated managed worktree, but worktree {} is {:?}",
+                worktree.worktree_id, worktree.mode
+            )));
+        }
+        if !path_is_inside(cwd.as_path(), worktree.worktree_path.as_path()) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "pull-request mode requires cwd {} to be inside attached managed worktree {}",
+                cwd.display(),
+                worktree.worktree_path.display()
+            )));
+        }
+
         Ok(())
     }
 
@@ -1420,11 +1484,19 @@ impl Session {
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
         let previous_turn_settings = reconstructed_rollout.previous_turn_settings.clone();
+        let worktree_mode = latest_reconstructed_worktree_mode(
+            rollout_items,
+            reconstructed_rollout.reference_context_item.as_ref(),
+        );
         self.replace_history(
             reconstructed_rollout.history,
             reconstructed_rollout.reference_context_item,
         )
         .await;
+        if let Some(worktree_mode) = worktree_mode {
+            let mut state = self.state.lock().await;
+            state.session_configuration.worktree_mode = worktree_mode;
+        }
         let prefix_tokens = if matches!(
             turn_context.config.model_auto_compact_token_limit_scope,
             AutoCompactTokenLimitScope::BodyAfterPrefix
@@ -1901,7 +1973,10 @@ impl Session {
             return;
         }
 
-        if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+        if !matches!(
+            msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
+        ) {
             return;
         }
 
@@ -3045,6 +3120,11 @@ impl Session {
                 .render(),
             );
         }
+        if let Some(instructions) =
+            session_worktree_mode_developer_instructions(turn_context.worktree_mode)
+        {
+            developer_sections.push(instructions);
+        }
         let separate_guardian_developer_message =
             crate::guardian::is_guardian_reviewer_source(&session_source);
         // Keep the guardian policy prompt out of the aggregated developer bundle so it
@@ -3054,6 +3134,11 @@ impl Session {
             && !developer_instructions.is_empty()
         {
             developer_sections.push(developer_instructions.to_string());
+        }
+        if let Some(session_prompt) = turn_context.session_prompt.as_deref()
+            && let Some(instructions) = SessionPromptInstructions::from_prompt(session_prompt)
+        {
+            developer_sections.push(instructions.render());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if turn_context.config.include_collaboration_mode_instructions
@@ -3648,6 +3733,43 @@ pub(crate) fn emit_subagent_session_started(
         subagent_source,
         created_at,
     });
+}
+
+fn session_worktree_mode_developer_instructions(mode: SessionWorktreeMode) -> Option<String> {
+    match mode {
+        SessionWorktreeMode::Shared => Some(
+            "<worktree_mode>\nManaged worktrees are disabled for this session. Work in the current shared checkout and do not create or attach session-managed worktrees unless the session mode changes.\n</worktree_mode>"
+                .to_string()
+        ),
+        SessionWorktreeMode::Manual => None,
+        SessionWorktreeMode::PullRequest => Some(
+            "<worktree_mode>\nThis session is in pull-request mode. Work must happen inside the attached isolated Codewith-managed worktree, on a PR-ready branch, without dirtying the shared checkout. Before concluding, create or prepare the pull request, detach the managed worktree assignment, and release it with delete-if-clean cleanup, or report the blocker that prevents safe cleanup.\n</worktree_mode>"
+                .to_string()
+        ),
+    }
+}
+
+fn latest_reconstructed_worktree_mode(
+    rollout_items: &[RolloutItem],
+    reference_context_item: Option<&TurnContextItem>,
+) -> Option<SessionWorktreeMode> {
+    rollout_items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some(event.thread_settings.worktree_mode)
+            }
+            _ => None,
+        })
+        .or_else(|| reference_context_item.map(|item| item.worktree_mode))
+}
+
+fn path_is_inside(path: &Path, root: &Path) -> bool {
+    if let (Ok(path), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        return path.starts_with(root);
+    }
+    path.starts_with(root)
 }
 
 /// Builds the hook engine for one config snapshot, including any enabled plugin hooks.

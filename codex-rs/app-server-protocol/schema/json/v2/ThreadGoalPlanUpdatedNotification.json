@@ -30,6 +30,10 @@
           "format": "int64",
           "type": "integer"
         },
+        "deferredNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
         "maxTokens": {
           "format": "int64",
           "type": [
@@ -100,6 +104,7 @@
         "cancelledNodeCount",
         "completedNodeCount",
         "createdAt",
+        "deferredNodeCount",
         "nodeCount",
         "nodes",
         "pausedNodeCount",
@@ -226,6 +231,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],

@@ -263,14 +263,23 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         mcp.read_stream_until_response_message(RequestId::Integer(claude_id)),
     )
     .await??;
+    let claude_response: ThreadExternalAgentStartResponse = to_response(claude_resp)?;
     assert_eq!(
-        to_response::<ThreadExternalAgentStartResponse>(claude_resp)?,
-        ThreadExternalAgentStartResponse {
-            status: ThreadExternalAgentStartStatus::Gated,
-            run_id: None,
-            message: "external-agent runtime `claude` requires an active Claude.ai auth profile"
-                .to_string(),
-        }
+        claude_response.status,
+        ThreadExternalAgentStartStatus::Gated
+    );
+    assert_eq!(claude_response.run_id, None);
+    assert!(
+        claude_response
+            .message
+            .starts_with("Claude Code external-agent runtime is gated: missing runtime."),
+        "expected Claude runtime readiness gate, got: {}",
+        claude_response.message
+    );
+    assert!(
+        !claude_response.message.contains("auth profile"),
+        "Claude runtime should not be gated on a generic Claude.ai auth profile: {}",
+        claude_response.message
     );
 
     Ok(())

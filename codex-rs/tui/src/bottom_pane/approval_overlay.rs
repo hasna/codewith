@@ -433,6 +433,7 @@ impl ApprovalOverlay {
                 /*summary*/ None,
                 /*service_tier*/ None,
                 /*collaboration_mode*/ None,
+                /*session_prompt*/ None,
                 /*personality*/ None,
             ),
         });

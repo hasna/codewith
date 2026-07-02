@@ -58,6 +58,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod usage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
@@ -66,6 +67,7 @@ use self::mcp_cmd::McpCli;
 use self::plugin_cmd::PluginCli;
 use self::plugin_cmd::PluginSubcommand;
 use self::remote_control_cmd::RemoteControlCommand;
+use self::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -143,6 +145,9 @@ enum Subcommand {
 
     /// Manage named authentication profiles.
     Profile(ProfileCommand),
+
+    /// Inspect current session/account usage and saved auth-profile usage.
+    Usage(UsageCommand),
 
     /// Manage external MCP servers for Codewith.
     Mcp(McpCli),
@@ -246,14 +251,30 @@ struct BackgroundAgentEventsCommand {
     after_seq: Option<i64>,
 
     /// Maximum number of events to return.
-    #[arg(long = "limit", default_value_t = 100)]
-    limit: usize,
+    #[arg(long = "limit")]
+    limit: Option<usize>,
+
+    /// Output full event payloads as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
 struct BackgroundAgentIdCommand {
     /// Background-agent run id.
     agent_id: String,
+
+    /// Output the full background-agent record as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
@@ -596,7 +617,11 @@ struct ProfileCommand {
 enum ProfileSubcommand {
     /// List saved authentication profiles.
     #[clap(visible_alias = "ls")]
-    List,
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long = "json")]
+        json: bool,
+    },
 
     /// Save the current login as a named authentication profile.
     Save {
@@ -1284,6 +1309,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
+                /*json*/ true,
+                cmd.verbose,
                 root_auth_profile.as_deref(),
             )
             .await?;
@@ -1298,6 +1325,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 cmd.agent_id,
                 cmd.after_seq,
                 cmd.limit,
+                /*json*/ true,
+                cmd.verbose,
                 root_auth_profile.as_deref(),
             )
             .await?;
@@ -1308,8 +1337,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "stop",
             )?;
-            agent_cmd::run_background_agent_stop(cmd.agent_id, root_auth_profile.as_deref())
-                .await?;
+            agent_cmd::run_background_agent_stop(
+                cmd.agent_id,
+                /*json*/ true,
+                cmd.verbose,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
         }
         Some(Subcommand::Rm(cmd)) => {
             reject_remote_mode_for_subcommand(
@@ -1317,8 +1351,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "rm",
             )?;
-            agent_cmd::run_background_agent_delete(cmd.agent_id, root_auth_profile.as_deref())
-                .await?;
+            agent_cmd::run_background_agent_delete(
+                cmd.agent_id,
+                /*json*/ true,
+                cmd.verbose,
+                root_auth_profile.as_deref(),
+            )
+            .await?;
         }
         Some(Subcommand::Daemon(cmd)) => match cmd.subcommand {
             None | Some(BackgroundAgentDaemonSubcommand::Status) => {
@@ -1647,8 +1686,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_config_overrides.clone(),
             );
             match profile_cli.action {
-                ProfileSubcommand::List => {
-                    profile_cmd::run_profile_list(profile_cli.config_overrides).await;
+                ProfileSubcommand::List { json } => {
+                    profile_cmd::run_profile_list(profile_cli.config_overrides, json).await;
                 }
                 ProfileSubcommand::Save { name } => {
                     profile_cmd::run_profile_save(profile_cli.config_overrides, name).await;
@@ -1660,6 +1699,18 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     profile_cmd::run_profile_remove(profile_cli.config_overrides, name).await;
                 }
             }
+        }
+        Some(Subcommand::Usage(mut usage_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "usage",
+            )?;
+            prepend_config_flags(
+                &mut usage_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            usage_cmd::run_usage(usage_cli).await?;
         }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -2440,6 +2491,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Profile(_)) => Some("profile"),
+        Some(Subcommand::Usage(_)) => Some("usage"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
@@ -3018,6 +3070,20 @@ mod tests {
     }
 
     #[test]
+    fn profile_list_json_flag_parses() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "profile", "list", "--json"]).expect("parse");
+
+        let Some(Subcommand::Profile(profile)) = cli.subcommand else {
+            panic!("expected profile subcommand");
+        };
+        assert!(matches!(
+            profile.action,
+            ProfileSubcommand::List { json: true }
+        ));
+    }
+
+    #[test]
     fn auth_profile_inherits_from_root_into_exec() {
         let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work", "exec"])
             .expect("parse");
@@ -3157,7 +3223,7 @@ mod tests {
         assert_matches!(
             cli.subcommand,
             Some(Subcommand::Agent(AgentCli {
-                subcommand: agent_cmd::AgentSubcommand::Diagnostics
+                subcommand: agent_cmd::AgentSubcommand::Diagnostics(_)
             }))
         );
 
@@ -3182,6 +3248,8 @@ mod tests {
             "7",
             "--limit",
             "20",
+            "--json",
+            "--verbose",
         ])
         .expect("parse top-level logs");
         assert_matches!(cli.subcommand, Some(Subcommand::Logs(_)));

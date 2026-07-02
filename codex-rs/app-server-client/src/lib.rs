@@ -111,6 +111,10 @@ pub mod legacy_core {
         pub use codex_core::test_support::*;
     }
 
+    pub mod usage_profile_health {
+        pub use codex_core::usage_profile_health::*;
+    }
+
     pub mod util {
         pub use codex_core::util::*;
     }

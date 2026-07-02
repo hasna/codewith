@@ -320,7 +320,14 @@ fn sha1_hex(s: &str) -> String {
     let mut hasher = Sha1::new();
     hasher.update(s.as_bytes());
     let sha1 = hasher.finalize();
-    format!("{sha1:x}")
+    let bytes: &[u8] = sha1.as_ref();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    hex
 }
 
 fn callable_name_hash_suffix(raw_identity: &str) -> String {

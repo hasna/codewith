@@ -98,7 +98,7 @@ impl TerminalTitleItem {
                 "Spinner while working, action-required message while blocked."
             }
             TerminalTitleItem::Status => {
-                "Compact session run-state text (Ready, Working, Thinking)"
+                "Compact session run-state text (Idle, Working, Thinking, Waiting)"
             }
             TerminalTitleItem::Thread => "Current thread title, or thread identifier when unnamed",
             TerminalTitleItem::GitBranch => "Current Git branch (omitted when unavailable)",

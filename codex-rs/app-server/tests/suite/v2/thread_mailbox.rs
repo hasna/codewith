@@ -10,6 +10,7 @@ use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
@@ -38,10 +39,13 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
+use codex_core::context::MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES;
+use codex_core::context::MAX_MAILBOX_STORED_PAYLOAD_BYTES;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
@@ -115,6 +119,59 @@ async fn thread_mailbox_enqueue_list_read_claim_ack_and_receipts() -> Result<()>
             codex_app_server_protocol::ThreadMailboxReceiptKind::Acknowledged,
         ]
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_enqueue_rejects_oversized_context_payload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let err = enqueue_message_with_payload_error(
+        &mut mcp,
+        &thread_id,
+        json!({ "text": "x".repeat(MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES + 1) }),
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!(
+            "mailbox message rendered for model context must not exceed {MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES} bytes"
+        )
+    );
+    assert_eq!(list_messages(&mut mcp, &thread_id).await?.data, Vec::new());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_enqueue_rejects_oversized_stored_payload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let err = enqueue_message_with_payload_error(
+        &mut mcp,
+        &thread_id,
+        json!({
+            "text": "small",
+            "metadata": "x".repeat(MAX_MAILBOX_STORED_PAYLOAD_BYTES + 1),
+        }),
+    )
+    .await?;
+
+    assert_eq!(
+        err.error.message,
+        format!("mailbox message payload must not exceed {MAX_MAILBOX_STORED_PAYLOAD_BYTES} bytes")
+    );
+    assert_eq!(list_messages(&mut mcp, &thread_id).await?.data, Vec::new());
 
     Ok(())
 }
@@ -211,7 +268,7 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let thread_id = start_thread(&mut mcp).await?;
-    let enqueued = enqueue_message_with_sender(
+    let enqueued = enqueue_auto_dispatch_message_with_sender(
         &mut mcp,
         &thread_id,
         "dispatcher-live",
@@ -277,7 +334,9 @@ async fn thread_mailbox_dispatcher_delivers_to_live_thread_in_separate_app_serve
     wait_for_fresh_local_active_session(codex_home.path(), &thread_id).await?;
 
     let mut sender_mcp = init_mcp(codex_home.path()).await?;
-    let enqueued = enqueue_message(&mut sender_mcp, &thread_id, "dispatcher-cross-process").await?;
+    let enqueued =
+        enqueue_auto_dispatch_message(&mut sender_mcp, &thread_id, "dispatcher-cross-process")
+            .await?;
     let acknowledged = wait_for_message_matching(
         &mut sender_mcp,
         &thread_id,
@@ -356,7 +415,7 @@ async fn thread_mailbox_dispatcher_does_not_steal_live_target_from_dispatch_disa
         /*mailbox_dispatcher_enabled*/ true,
     )?;
     let mut sender_mcp = init_mcp(codex_home.path()).await?;
-    let enqueued = enqueue_message_with_max_attempts(
+    let enqueued = enqueue_auto_dispatch_message_with_max_attempts(
         &mut sender_mcp,
         &thread_id,
         "dispatcher-disabled-foreign-owner",
@@ -459,6 +518,66 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
 }
 
 #[tokio::test]
+async fn thread_mailbox_dispatcher_resume_preserves_persisted_permissions() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_body = responses::sse(vec![
+        responses::ev_response_created("resp-permission-resume"),
+        responses::ev_assistant_message("msg-permission-resume", "Done"),
+        responses::ev_completed("resp-permission-resume"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, response_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_mailbox_dispatcher_and_sandbox(
+        codex_home.path(),
+        &server.uri(),
+        /*enabled*/ true,
+        "danger-full-access",
+    )?;
+
+    let persisted_permission_profile = PermissionProfile::read_only();
+    let persisted_sandbox_policy = serde_json::to_string(&persisted_permission_profile)?;
+    let thread_id = seed_unloaded_thread_with_persisted_sandbox_policy(
+        codex_home.path(),
+        Some(persisted_sandbox_policy),
+    )
+    .await?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let enqueued = enqueue_message_with_payload_and_max_attempts(
+        &mut mcp,
+        &thread_id,
+        "dispatcher-resume-permissions",
+        json!({
+            "text": "decompose this",
+            "delivery": "resumeAndTrigger",
+        }),
+        /*max_attempts*/ 3,
+    )
+    .await?;
+
+    let acknowledged = wait_for_message_matching(
+        &mut mcp,
+        &thread_id,
+        &enqueued.message.message_id,
+        |message| message.status == ThreadMailboxMessageStatus::Acknowledged,
+    )
+    .await?;
+    assert_eq!(acknowledged.attempt_count, 1);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
+
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let thread_metadata = state_db
+        .get_thread(ThreadId::from_string(&thread_id)?)
+        .await?
+        .expect("thread metadata should persist");
+    let resumed_permission_profile: PermissionProfile =
+        serde_json::from_str(&thread_metadata.sandbox_policy)?;
+    assert_eq!(persisted_permission_profile, resumed_permission_profile);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_mailbox_dispatcher_resumes_unloaded_thread_by_default() -> Result<()> {
     let server = responses::start_mock_server().await;
     let response_body = responses::sse(vec![
@@ -492,6 +611,43 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_by_default() -> Resul
     )
     .await?;
     assert_eq!(acknowledged.attempt_count, 1);
+    wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_mailbox_dispatcher_leaves_plain_rows_for_manual_claim_by_default() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let seed_body = responses::sse(vec![
+        responses::ev_response_created("resp-manual-seed"),
+        responses::ev_assistant_message("msg-manual-seed", "Seed done"),
+        responses::ev_completed("resp-manual-seed"),
+    ]);
+    let response_mock = responses::mount_sse_once(&server, seed_body).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_default_features(codex_home.path(), &server.uri())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let enqueued = enqueue_message(&mut mcp, &thread_id, "manual-default").await?;
+    sleep(std::time::Duration::from_secs(2)).await;
+
+    let read = read_message(&mut mcp, &thread_id, &enqueued.message.message_id).await?;
+    assert_eq!(
+        read.message.summary.status,
+        ThreadMailboxMessageStatus::Queued
+    );
+    assert_eq!(read.message.summary.attempt_count, 0);
+
+    let claim = claim_message(&mut mcp, &thread_id)
+        .await?
+        .claim
+        .expect("plain mailbox row should remain manually claimable");
+    assert_eq!(
+        claim.message.summary.message_id,
+        enqueued.message.message_id
+    );
     wait_for_response_mock_request_count(&response_mock, /*expected_count*/ 1).await?;
 
     Ok(())
@@ -557,7 +713,7 @@ async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Re
         anyhow::bail!("expected ToolRequestUserInput request, got: {server_req:?}");
     };
 
-    let enqueued = enqueue_message(&mut mcp, &thread_id, "dispatcher-busy").await?;
+    let enqueued = enqueue_auto_dispatch_message(&mut mcp, &thread_id, "dispatcher-busy").await?;
     let acknowledged = wait_for_message_matching(
         &mut mcp,
         &thread_id,
@@ -628,14 +784,14 @@ async fn thread_mailbox_dispatcher_retries_and_poisons_offline_targets() -> Resu
     };
 
     let mut mcp = init_mcp(codex_home.path()).await?;
-    let retry = enqueue_message_with_max_attempts(
+    let retry = enqueue_auto_dispatch_message_with_max_attempts(
         &mut mcp,
         &retry_thread_id,
         "dispatcher-retry",
         /*max_attempts*/ 2,
     )
     .await?;
-    let poison = enqueue_message_with_max_attempts(
+    let poison = enqueue_auto_dispatch_message_with_max_attempts(
         &mut mcp,
         &poison_thread_id,
         "dispatcher-poison",
@@ -699,19 +855,66 @@ async fn enqueue_message_with_max_attempts(
     .await
 }
 
-async fn enqueue_message_with_sender(
+async fn enqueue_auto_dispatch_message(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        /*max_attempts*/ 3,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_max_attempts(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    max_attempts: u32,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        /*sender_thread_id*/ None,
+        max_attempts,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_sender(
     mcp: &mut TestAppServer,
     thread_id: &str,
     idempotency_key: &str,
     sender_thread_id: Option<String>,
+) -> Result<ThreadMailboxEnqueueResponse> {
+    enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+        mcp,
+        thread_id,
+        idempotency_key,
+        sender_thread_id,
+        /*max_attempts*/ 3,
+    )
+    .await
+}
+
+async fn enqueue_auto_dispatch_message_with_sender_and_max_attempts(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    idempotency_key: &str,
+    sender_thread_id: Option<String>,
+    max_attempts: u32,
 ) -> Result<ThreadMailboxEnqueueResponse> {
     enqueue_message_with_sender_and_payload_and_max_attempts(
         mcp,
         thread_id,
         idempotency_key,
         sender_thread_id,
-        json!({ "text": "decompose this" }),
-        /*max_attempts*/ 3,
+        json!({ "text": "decompose this", "delivery": "liveOnly" }),
+        max_attempts,
     )
     .await
 }
@@ -763,6 +966,34 @@ async fn enqueue_message_with_sender_and_payload_and_max_attempts(
     )
     .await??;
     to_response::<ThreadMailboxEnqueueResponse>(resp)
+}
+
+async fn enqueue_message_with_payload_error(
+    mcp: &mut TestAppServer,
+    thread_id: &str,
+    payload: Value,
+) -> Result<JSONRPCError> {
+    let request_id = mcp
+        .send_thread_mailbox_enqueue_request(ThreadMailboxEnqueueParams {
+            target_thread_id: thread_id.to_string(),
+            sender_thread_id: None,
+            sender_label: Some("coordinator".to_string()),
+            idempotency_key: Some("oversized-context-payload".to_string()),
+            kind: ThreadMailboxMessageKind::UserInstruction,
+            message: payload,
+            preview: Some("oversized".to_string()),
+            priority: Some(5),
+            max_attempts: Some(3),
+            next_attempt_at: None,
+            expires_at: None,
+        })
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(err)
 }
 
 async fn wait_for_message_matching(
@@ -1021,6 +1252,13 @@ fn create_request_user_input_body(call_id: &str) -> Result<String> {
 }
 
 async fn seed_unloaded_thread(codex_home: &Path) -> Result<String> {
+    seed_unloaded_thread_with_persisted_sandbox_policy(codex_home, /*sandbox_policy*/ None).await
+}
+
+async fn seed_unloaded_thread_with_persisted_sandbox_policy(
+    codex_home: &Path,
+    sandbox_policy: Option<String>,
+) -> Result<String> {
     const FILENAME_TS: &str = "2025-02-03T10-00-00";
     const META_RFC3339: &str = "2025-02-03T10:00:00Z";
     let thread_id = create_fake_rollout(
@@ -1045,7 +1283,10 @@ async fn seed_unloaded_thread(codex_home: &Path) -> Result<String> {
     builder.model_provider = Some("mock_provider".to_string());
     builder.cwd = codex_home.to_path_buf();
     builder.cli_version = Some("0.0.0".to_string());
-    let metadata = builder.build("mock_provider");
+    let mut metadata = builder.build("mock_provider");
+    if let Some(sandbox_policy) = sandbox_policy {
+        metadata.sandbox_policy = sandbox_policy;
+    }
     state_db.upsert_thread(&metadata).await?;
     Ok(thread_id)
 }
@@ -1061,7 +1302,10 @@ fn create_config_toml_with_default_features(
     server_uri: &str,
 ) -> std::io::Result<()> {
     write_config_toml(
-        codex_home, server_uri, /*mailbox_dispatcher_enabled*/ None,
+        codex_home,
+        server_uri,
+        /*mailbox_dispatcher_enabled*/ None,
+        "read-only",
     )
 }
 
@@ -1070,13 +1314,33 @@ fn create_config_toml_with_mailbox_dispatcher(
     server_uri: &str,
     mailbox_dispatcher_enabled: bool,
 ) -> std::io::Result<()> {
-    write_config_toml(codex_home, server_uri, Some(mailbox_dispatcher_enabled))
+    create_config_toml_with_mailbox_dispatcher_and_sandbox(
+        codex_home,
+        server_uri,
+        mailbox_dispatcher_enabled,
+        "read-only",
+    )
+}
+
+fn create_config_toml_with_mailbox_dispatcher_and_sandbox(
+    codex_home: &Path,
+    server_uri: &str,
+    mailbox_dispatcher_enabled: bool,
+    sandbox_mode: &str,
+) -> std::io::Result<()> {
+    write_config_toml(
+        codex_home,
+        server_uri,
+        Some(mailbox_dispatcher_enabled),
+        sandbox_mode,
+    )
 }
 
 fn write_config_toml(
     codex_home: &Path,
     server_uri: &str,
     mailbox_dispatcher_enabled: Option<bool>,
+    sandbox_mode: &str,
 ) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
     let feature_config = mailbox_dispatcher_enabled
@@ -1088,7 +1352,7 @@ fn write_config_toml(
             r#"
 model = "mock-model"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "{sandbox_mode}"
 
 model_provider = "mock_provider"
 

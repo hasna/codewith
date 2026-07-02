@@ -2,6 +2,9 @@ use super::*;
 use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
+const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
+const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+
 fn assert_effort_estimate_guidance(text: &str, label: &str) {
     for expected in [
         "## Effort estimates",
@@ -207,21 +210,22 @@ fn known_openrouter_glm_5_1_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(202_752));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, None);
-    assert!(model.supported_reasoning_levels.is_empty());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
 #[test]
 fn known_openrouter_current_models_use_local_metadata() {
     let cases = [
-        (
-            "z-ai/glm-5.2",
-            "Z.ai GLM 5.2",
-            1_048_576,
-            vec![InputModality::Text],
-        ),
         (
             "qwen/qwen3.7-plus",
             "Qwen3.7 Plus",
@@ -262,14 +266,47 @@ fn known_openrouter_current_models_use_local_metadata() {
 }
 
 #[test]
-fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
+fn known_openrouter_glm_4_7_model_advertises_reasoning_effort() {
     let model = model_info_from_slug_for_provider("z-ai/glm-4.7", Some("openrouter"));
 
     assert_eq!(model.display_name, "Z.ai GLM 4.7");
     assert_eq!(model.context_window, Some(202_752));
-    assert_eq!(model.default_reasoning_level, None);
-    assert_eq!(model.supported_reasoning_levels, Vec::new());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_openrouter_glm_5_2_model_advertises_high_reasoning_effort() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.2", Some("openrouter"));
+
+    assert_eq!(model.display_name, "Z.ai GLM 5.2");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
@@ -407,6 +444,19 @@ fn bundled_catalog_instructions_include_effort_estimate_guidance() {
 }
 
 #[test]
+fn bundled_openai_gpt_5_5_uses_upstream_context_window() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+    let model = response
+        .models
+        .into_iter()
+        .find(|model| model.slug == GPT_5_5_MODEL_ID)
+        .expect("bundled catalog should include GPT-5.5");
+
+    assert_eq!(model.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    assert_eq!(model.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[test]
 fn reasoning_summaries_override_false_does_not_disable_support() {
     let mut model = model_info_from_slug("unknown-model");
     model.supports_reasoning_summaries = true;
@@ -448,6 +498,56 @@ fn model_context_window_override_clamps_to_max_context_window() {
     expected.context_window = Some(400_000);
 
     assert_eq!(updated, expected);
+}
+
+#[test]
+fn openai_gpt_5_5_context_window_uses_catalog_value_without_override() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model.clone(), &config);
+
+    assert_eq!(updated, model);
+}
+
+#[test]
+fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    assert_eq!(updated.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[test]
+fn gpt_5_5_context_window_is_not_provider_specific_endpoint_capped() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_5_MODEL_ID.to_string();
+    model.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("amazon-bedrock".to_string()),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model.clone(), &config);
+
+    assert_eq!(updated, model);
 }
 
 #[test]

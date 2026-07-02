@@ -157,6 +157,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: Vec::new(),
         },
@@ -165,6 +167,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         service_tier: None,
         cwd: absolute_path("tmp"),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AskForApproval::OnFailure,
         approvals_reviewer: ApprovalsReviewer::User,
@@ -306,6 +309,28 @@ fn thread_turns_items_list_round_trips() {
             "backwardsCursor": "cursor_0",
         })
     );
+}
+
+#[test]
+fn thread_name_updated_notification_serializes_explicit_null_name() {
+    let notification = ThreadNameUpdatedNotification {
+        thread_id: "thread-1".to_string(),
+        thread_name: None,
+    };
+
+    let value =
+        serde_json::to_value(&notification).expect("serialize thread/name/updated notification");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thread-1",
+            "threadName": null,
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadNameUpdatedNotification>(value)
+        .expect("deserialize thread/name/updated notification");
+    assert_eq!(decoded, notification);
 }
 
 #[test]
@@ -3907,6 +3932,85 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn additional_context_entry_round_trips_optional_source() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "additionalContext": {
+            "open-todos/task/b646d063": {
+                "value": "Task: design native app context injection",
+                "kind": "untrusted",
+                "source": {
+                    "namespace": "open-todos",
+                    "id": "b646d063",
+                    "recordType": "task",
+                    "label": "Native Codewith integration design"
+                }
+            },
+            "legacy-client-source": {
+                "value": "legacy clients omit provenance",
+                "kind": "application"
+            },
+            "minimal-source": {
+                "value": "source metadata can omit optional display fields",
+                "kind": "untrusted",
+                "source": {
+                    "namespace": "open-projects",
+                    "id": "project_123"
+                }
+            }
+        }
+    }))
+    .expect("turn/start params should deserialize");
+
+    let context = params
+        .additional_context
+        .as_ref()
+        .expect("additional context should be present");
+    assert_eq!(
+        context.get("open-todos/task/b646d063"),
+        Some(&AdditionalContextEntry {
+            value: "Task: design native app context injection".to_string(),
+            kind: AdditionalContextKind::Untrusted,
+            source: Some(AdditionalContextSource {
+                namespace: "open-todos".to_string(),
+                id: "b646d063".to_string(),
+                record_type: Some("task".to_string()),
+                label: Some("Native Codewith integration design".to_string()),
+            }),
+        })
+    );
+    assert_eq!(
+        context
+            .get("legacy-client-source")
+            .and_then(|entry| entry.source.as_ref()),
+        None
+    );
+    assert_eq!(
+        context
+            .get("minimal-source")
+            .and_then(|entry| entry.source.as_ref()),
+        Some(&AdditionalContextSource {
+            namespace: "open-projects".to_string(),
+            id: "project_123".to_string(),
+            record_type: None,
+            label: None,
+        })
+    );
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(
+        serialized["additionalContext"]["open-todos/task/b646d063"]["source"],
+        json!({
+            "namespace": "open-todos",
+            "id": "b646d063",
+            "recordType": "task",
+            "label": "Native Codewith integration design"
+        })
+    );
 }
 
 #[test]

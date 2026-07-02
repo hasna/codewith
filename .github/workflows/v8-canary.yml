@@ -304,7 +304,7 @@ jobs:
 
       - name: Upload staged artifacts
         if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-${{ matrix.variant }}-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*
@@ -385,9 +385,14 @@ jobs:
           $version = "v0.8.2"
           $platform = "x86_64-pc-windows-msvc"
           $basename = "sccache-$version-$platform"
+          $expectedSha256 = "de5e9f66bb8a6bbdf0e28cb8a086a8d12699af796bf70bcd9dc40d80715bf9b8"
           $url = "https://github.com/mozilla/sccache/releases/download/$version/$basename.tar.gz"
           cd ~
-          curl -LO $url
+          curl -fL -o "$basename.tar.gz" "$url"
+          $actualSha256 = (Get-FileHash -LiteralPath "$basename.tar.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "sccache archive checksum mismatch. Expected $expectedSha256 but got $actualSha256."
+          }
           tar -xzvf "$basename.tar.gz"
           . $basename/sccache --start-server
           echo "$(pwd)/$basename" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -441,7 +446,7 @@ jobs:
           )
 
       - name: Upload staged artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-ptrcomp-sandbox-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*

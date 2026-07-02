@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/loop_menu.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Loops
+  Select a recurring prompt to manage
+
+  Search loops
+› check whether CI is green… active · every 30 minutes · level 2 · parent sch_pare · child_on
+  check whether CI is green… active · every 30 minutes · level 2 · parent sch_pare · child_tw
+  check whether CI is green… active · every 5 minutes · sch_pare
+
+  Press enter to confirm or esc to go back

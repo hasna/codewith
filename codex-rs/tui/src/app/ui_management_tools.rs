@@ -9,12 +9,21 @@ use codex_app_server_protocol::ActiveSessionPeer;
 use codex_app_server_protocol::ActiveSessionPeerKind;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ThreadScheduleSpec;
-use codex_config::types::McpServerTransportConfig;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
+
+use super::ui_management_tool_summaries::COMPACT_LIST_LIMIT;
+use super::ui_management_tool_summaries::compact_agent_logs_response;
+use super::ui_management_tool_summaries::compact_agent_read_response;
+use super::ui_management_tool_summaries::compact_agent_value;
+use super::ui_management_tool_summaries::compact_monitor_read_response;
+use super::ui_management_tool_summaries::compact_monitor_value;
+use super::ui_management_tool_summaries::compact_schedule_value;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct BackgroundTerminalsArgs {
@@ -22,14 +31,12 @@ pub(super) struct BackgroundTerminalsArgs {
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct McpArgs {
-    pub(super) action: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub(super) struct BackgroundAgentsArgs {
     pub(super) action: String,
     pub(super) agent_id: Option<String>,
+    pub(super) cursor: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,12 +53,24 @@ pub(super) struct ActiveSessionsArgs {
 pub(super) struct SchedulesArgs {
     pub(super) action: String,
     pub(super) kind: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct MonitorsArgs {
     pub(super) action: String,
     pub(super) monitor_id: Option<String>,
+    pub(super) cursor: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduleKind {
+    All,
+    Once,
+    Loop,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,44 +115,6 @@ impl App {
         }
     }
 
-    pub(super) async fn handle_mcp_tool(
-        &mut self,
-        _app_server: &mut AppServerSession,
-        args: McpArgs,
-    ) -> Result<JsonValue, String> {
-        match args.action.as_str() {
-            "open" => {
-                self.chat_widget.open_mcp_control_center();
-                Ok(json!({ "opened": "mcp" }))
-            }
-            "list" => Ok(json!({
-                "servers": self
-                    .config
-                    .mcp_servers
-                    .get()
-                    .iter()
-                    .map(|(name, config)| json!({
-                        "name": name,
-                        "enabled": config.enabled,
-                        "required": config.required,
-                        "supports_parallel_tool_calls": config.supports_parallel_tool_calls,
-                        "enabled_tools": config.enabled_tools,
-                        "disabled_tools": config.disabled_tools,
-                        "transport": redacted_mcp_transport(&config.transport),
-                    }))
-                    .collect::<Vec<_>>(),
-            })),
-            "add" | "set_server_enabled" | "set_tool_enabled" | "reload" => {
-                self.chat_widget.open_mcp_control_center();
-                Err(interactive_user_confirmation_required(args.action.as_str()))
-            }
-            action => Err(unknown_action_with_expected(
-                action,
-                "open or list; MCP mutations require the interactive /mcp UI",
-            )),
-        }
-    }
-
     pub(super) async fn handle_background_agents_tool(
         &mut self,
         app_server: &mut AppServerSession,
@@ -150,12 +131,26 @@ impl App {
                     .agent_list()
                     .await
                     .map(|response| {
+                        let agents = response
+                            .data
+                            .into_iter()
+                            .filter(|agent| {
+                                agent.parent_thread_id.as_deref() == Some(thread_id.as_str())
+                            })
+                            .collect::<Vec<_>>();
+                        if args.verbose.unwrap_or(false) {
+                            return json!({ "agents": agents });
+                        }
+                        let total = agents.len();
+                        let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
                         json!({
-                            "agents": response
-                                .data
-                                .into_iter()
-                                .filter(|agent| agent.parent_thread_id.as_deref() == Some(thread_id.as_str()))
-                                .collect::<Vec<_>>()
+                            "count": total,
+                            "agents": agents
+                                .iter()
+                                .take(limit)
+                                .map(compact_agent_value)
+                                .collect::<Vec<_>>(),
+                            "hint": "Default agent output is compact. Pass verbose=true for raw agent records, or use action=read/logs with agent_id for details.",
                         })
                     })
                     .map_err(|err| format!("failed to list background agents: {err}"))
@@ -177,12 +172,22 @@ impl App {
                     ));
                 }
                 if args.action == "read" {
-                    Ok(json!(response))
+                    if args.verbose.unwrap_or(false) {
+                        Ok(json!(response))
+                    } else {
+                        Ok(compact_agent_read_response(&response, args.limit))
+                    }
                 } else {
                     app_server
-                        .agent_events_list(agent_id)
+                        .agent_events_list(agent_id, args.cursor, args.limit)
                         .await
-                        .map(|response| json!(response))
+                        .map(|response| {
+                            if args.verbose.unwrap_or(false) {
+                                json!(response)
+                            } else {
+                                compact_agent_logs_response(&response, args.limit)
+                            }
+                        })
                         .map_err(|err| format!("failed to list background agent logs: {err}"))
                 }
             }
@@ -285,7 +290,12 @@ impl App {
                 )),
             },
             "list" => {
-                let kind = args.kind.unwrap_or_else(|| "all".to_string());
+                let kind = args
+                    .kind
+                    .as_deref()
+                    .map(ScheduleKind::try_from)
+                    .transpose()?
+                    .unwrap_or(ScheduleKind::All);
                 let response = app_server
                     .thread_schedule_list(thread_id)
                     .await
@@ -293,9 +303,23 @@ impl App {
                 let data = response
                     .data
                     .into_iter()
-                    .filter(|schedule| schedule_matches_kind(schedule, &kind))
+                    .filter(|schedule| kind.matches(schedule))
                     .collect::<Vec<_>>();
-                Ok(json!({ "kind": kind, "schedules": data }))
+                if args.verbose.unwrap_or(false) {
+                    return Ok(json!({ "kind": kind.as_str(), "schedules": data }));
+                }
+                let total = data.len();
+                let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                Ok(json!({
+                    "kind": kind.as_str(),
+                    "count": total,
+                    "schedules": data
+                        .iter()
+                        .take(limit)
+                        .map(compact_schedule_value)
+                        .collect::<Vec<_>>(),
+                    "hint": "Default schedule output is compact. Pass verbose=true for raw schedule records, or open the /schedule or /loop UI for mutations.",
+                }))
             }
             "create" | "pause" | "resume" | "delete" | "run_now" => {
                 Err(interactive_user_confirmation_required(args.action.as_str()))
@@ -322,15 +346,37 @@ impl App {
             "list" => app_server
                 .thread_monitor_list(thread_id)
                 .await
-                .map(|response| json!({ "monitors": response.data }))
+                .map(|response| {
+                    if args.verbose.unwrap_or(false) {
+                        return json!({ "monitors": response.data });
+                    }
+                    let total = response.data.len();
+                    let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                    json!({
+                        "count": total,
+                        "monitors": response
+                            .data
+                            .iter()
+                            .take(limit)
+                            .map(compact_monitor_value)
+                            .collect::<Vec<_>>(),
+                        "hint": "Default monitor output is compact. Pass verbose=true for raw monitor records, or action=read with monitor_id for recent events.",
+                    })
+                })
                 .map_err(|err| format!("failed to list monitors: {err}")),
             "read" => {
                 let monitor_id =
                     required_string(args.monitor_id, "action=read requires monitor_id")?;
                 app_server
-                    .thread_monitor_read(thread_id, monitor_id)
+                    .thread_monitor_read(thread_id, monitor_id, args.cursor, args.limit)
                     .await
-                    .map(|response| json!(response))
+                    .map(|response| {
+                        if args.verbose.unwrap_or(false) {
+                            json!(response)
+                        } else {
+                            compact_monitor_read_response(&response, args.limit)
+                        }
+                    })
                     .map_err(|err| format!("failed to read monitor: {err}"))
             }
             "stop" | "restart" | "delete" => {
@@ -580,59 +626,6 @@ fn interactive_user_confirmation_required(action: &str) -> String {
     )
 }
 
-fn redacted_mcp_transport(transport: &McpServerTransportConfig) -> JsonValue {
-    match transport {
-        McpServerTransportConfig::Stdio {
-            command,
-            args,
-            env,
-            env_vars,
-            cwd,
-        } => json!({
-            "type": "stdio",
-            "command": command,
-            "args_count": args.len(),
-            "env": env
-                .as_ref()
-                .map(|env| redacted_keys(env.keys()))
-                .unwrap_or_default(),
-            "env_vars": env_vars
-                .iter()
-                .map(|env_var| env_var.name().to_string())
-                .collect::<Vec<_>>(),
-            "cwd_configured": cwd.is_some(),
-        }),
-        McpServerTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            http_headers,
-            env_http_headers,
-        } => json!({
-            "type": "streamable_http",
-            "url_configured": !url.is_empty(),
-            "bearer_token_env_var": bearer_token_env_var,
-            "http_headers": http_headers
-                .as_ref()
-                .map(|headers| redacted_keys(headers.keys()))
-                .unwrap_or_default(),
-            "env_http_headers": env_http_headers,
-        }),
-    }
-}
-
-fn redacted_keys<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<JsonValue> {
-    let mut keys = keys.collect::<Vec<_>>();
-    keys.sort();
-    keys.into_iter()
-        .map(|key| {
-            json!({
-                "name": key,
-                "value": "<redacted>",
-            })
-        })
-        .collect()
-}
-
 fn background_terminal_processes_json(
     processes: Vec<crate::history_cell::UnifiedExecProcessDetails>,
 ) -> Vec<JsonValue> {
@@ -648,12 +641,36 @@ fn background_terminal_processes_json(
         .collect()
 }
 
-fn schedule_matches_kind(schedule: &codex_app_server_protocol::ThreadSchedule, kind: &str) -> bool {
-    match kind {
-        "all" => true,
-        "once" | "schedule" => matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        "loop" | "loops" => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        _ => false,
+impl ScheduleKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Once => "once",
+            Self::Loop => "loop",
+        }
+    }
+
+    fn matches(self, schedule: &codex_app_server_protocol::ThreadSchedule) -> bool {
+        match self {
+            Self::All => true,
+            Self::Once => matches!(schedule.schedule, ThreadScheduleSpec::Once),
+            Self::Loop => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
+        }
+    }
+}
+
+impl TryFrom<&str> for ScheduleKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "all" => Ok(Self::All),
+            "once" | "schedule" => Ok(Self::Once),
+            "loop" | "loops" => Ok(Self::Loop),
+            kind => Err(format!(
+                "unknown schedule kind `{kind}`; expected once, loop, or all"
+            )),
+        }
     }
 }
 
@@ -661,7 +678,6 @@ fn schedule_matches_kind(schedule: &codex_app_server_protocol::ThreadSchedule, k
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::collections::HashMap;
 
     #[test]
     fn interactive_user_confirmation_message_is_explicit() {
@@ -669,57 +685,6 @@ mod tests {
             interactive_user_confirmation_required("delete"),
             "action=delete requires interactive user confirmation; open the matching manager UI instead"
         );
-    }
-
-    #[test]
-    fn mcp_transport_summary_redacts_raw_secret_values() {
-        let stdio = McpServerTransportConfig::Stdio {
-            command: "npx".to_string(),
-            args: vec![
-                "-y".to_string(),
-                "server".to_string(),
-                "--token=arg-secret".to_string(),
-            ],
-            env: Some(HashMap::from([(
-                "API_KEY".to_string(),
-                "sk-secret".to_string(),
-            )])),
-            env_vars: vec![codex_config::types::McpServerEnvVar::Name(
-                "SAFE_ENV_NAME".to_string(),
-            )],
-            cwd: Some(std::path::PathBuf::from("/tmp/secret-project")),
-        };
-        let summary = redacted_mcp_transport(&stdio);
-        assert_eq!(summary["args_count"], 3);
-        assert_eq!(summary["env"][0]["name"], "API_KEY");
-        assert_eq!(summary["env"][0]["value"], "<redacted>");
-        assert_eq!(summary["env_vars"][0], "SAFE_ENV_NAME");
-        assert_eq!(summary["cwd_configured"], true);
-        let rendered = summary.to_string();
-        assert!(!rendered.contains("sk-secret"));
-        assert!(!rendered.contains("arg-secret"));
-        assert!(!rendered.contains("secret-project"));
-
-        let http = McpServerTransportConfig::StreamableHttp {
-            url: "https://example.com/mcp?token=query-secret".to_string(),
-            bearer_token_env_var: Some("MCP_TOKEN".to_string()),
-            http_headers: Some(HashMap::from([(
-                "Authorization".to_string(),
-                "Bearer raw-secret".to_string(),
-            )])),
-            env_http_headers: Some(HashMap::from([(
-                "X-Api-Key".to_string(),
-                "MCP_API_KEY".to_string(),
-            )])),
-        };
-        let summary = redacted_mcp_transport(&http);
-        assert_eq!(summary["http_headers"][0]["name"], "Authorization");
-        assert_eq!(summary["http_headers"][0]["value"], "<redacted>");
-        assert_eq!(summary["url_configured"], true);
-        assert_eq!(summary["bearer_token_env_var"], "MCP_TOKEN");
-        let rendered = summary.to_string();
-        assert!(!rendered.contains("raw-secret"));
-        assert!(!rendered.contains("query-secret"));
     }
 
     #[test]
@@ -737,6 +702,16 @@ mod tests {
     }
 
     #[test]
+    fn schedule_kind_rejects_unknown_values() {
+        let err = ScheduleKind::try_from("daily").expect_err("kind should be rejected");
+
+        assert_eq!(
+            err,
+            "unknown schedule kind `daily`; expected once, loop, or all"
+        );
+    }
+
+    #[test]
     fn active_session_peer_tool_json_marks_current_and_names_capabilities() {
         let thread_id =
             ThreadId::from_string("019eca00-0000-7000-8000-000000000001").expect("thread id");
@@ -751,6 +726,8 @@ mod tests {
             .expect("absolute cwd"),
             display_name: Some("reviewer".to_string()),
             agent_path: Some("/root/reviewer".to_string()),
+            auth_profile: Some("work".to_string()),
+            auth_profile_kind: AuthProfileKind::Named,
             capabilities: vec![
                 ActiveSessionCapability::ReceiveMessage,
                 ActiveSessionCapability::QueueMessage,

@@ -160,6 +160,14 @@ jobs:
       # 2026-03-04: temporarily change releases to use thin LTO because
       # Ubuntu ARM is timing out at 60 minutes.
       CARGO_PROFILE_RELEASE_LTO: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'thin' }}
+      # Compiler caching. SCCACHE_IGNORE_SERVER_IO_ERROR keeps builds fail-open:
+      # a broken or unreachable cache backend must never fail a release build.
+      # RUSTC_WRAPPER is set by the "Enable sccache" step only when the
+      # (continue-on-error) install actually produced a runnable sccache, so
+      # an install failure degrades to an uncached build instead of aborting
+      # the release.
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SIGN_MACOS: ${{ github.event_name != 'workflow_dispatch' }}
       MACOS_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
 
@@ -167,7 +175,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
@@ -261,6 +269,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install sccache
+        # Fail-open: a GitHub API outage or a bad latest sccache release must
+        # not block the release; the build then runs without the cache.
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable sccache if available
+        shell: bash
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache unavailable; building without compiler cache"
+          fi
+
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
         shell: bash
@@ -325,17 +348,23 @@ jobs:
           if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *linux* ]]; then
             export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
           fi
+          # Release builds have repeatedly timed out with the workspace release
+          # profile's codegen-units = 1 (originally on macOS primary; now applied
+          # to every target and bundle to cut compile times). Use Cargo's env
+          # override here instead of changing the pinned profile in Cargo.toml.
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             build_args+=(--bin "$binary")
           done
           echo "CARGO_PROFILE_RELEASE_LTO: ${CARGO_PROFILE_RELEASE_LTO}"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-Cargo.toml default}"
           echo "CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-default}"
           cargo build --target ${{ matrix.target }} --release --timings "${build_args[@]}"
 
       - name: Upload Cargo timings
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cargo-timings-rust-release-${{ matrix.target }}-${{ matrix.bundle }}
           path: codex-rs/target/**/cargo-timings/cargo-timing.html
@@ -374,7 +403,7 @@ jobs:
 
       - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS != 'true' }}
         name: Upload unsigned macOS artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}-unsigned
           path: codex-rs/unsigned-dist/${{ matrix.target }}/*
@@ -541,7 +570,7 @@ jobs:
             zstd -T0 -3 --rm "$dest/$base"
           done
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
         with:
           name: ${{ matrix.artifact_name }}
@@ -746,7 +775,7 @@ jobs:
             zstd -T0 -3 --rm "$dest/$base"
           done
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -963,7 +992,7 @@ jobs:
 
       - name: Re-upload promoted Linux x64 artifacts
         if: ${{ env.RELEASE_MODE == 'promote_signed' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: x86_64-unknown-linux-musl
           path: dist/x86_64-unknown-linux-musl/*
@@ -971,7 +1000,7 @@ jobs:
 
       - name: Re-upload promoted Linux arm64 artifacts
         if: ${{ env.RELEASE_MODE == 'promote_signed' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aarch64-unknown-linux-musl
           path: dist/aarch64-unknown-linux-musl/*
@@ -979,7 +1008,7 @@ jobs:
 
       - name: Re-upload promoted Windows x64 artifacts
         if: ${{ env.RELEASE_MODE == 'promote_signed' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: x86_64-pc-windows-msvc
           path: dist/x86_64-pc-windows-msvc/*
@@ -987,7 +1016,7 @@ jobs:
 
       - name: Re-upload promoted Windows arm64 artifacts
         if: ${{ env.RELEASE_MODE == 'promote_signed' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aarch64-pc-windows-msvc
           path: dist/aarch64-pc-windows-msvc/*
@@ -1087,7 +1116,7 @@ jobs:
 
       - name: Setup pnpm
         if: ${{ env.SIGN_MACOS == 'true' }}
-        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           run_install: false
 
@@ -1122,7 +1151,7 @@ jobs:
           cp scripts/install/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           name: ${{ steps.release_name.outputs.name }}
           tag_name: ${{ github.ref_name }}

@@ -208,6 +208,7 @@ fn goal_summary_lines(goal: &AppThreadGoal) -> Vec<Line<'static>> {
         }
         AppThreadGoalStatus::Paused
         | AppThreadGoalStatus::Blocked
+        | AppThreadGoalStatus::Deferred
         | AppThreadGoalStatus::UsageLimited => {
             "Commands: /goal edit, /goal resume, /goal cancel, /goal clear"
         }
@@ -228,6 +229,7 @@ fn goal_status_label(status: AppThreadGoalStatus) -> &'static str {
         AppThreadGoalStatus::Blocked => "blocked",
         AppThreadGoalStatus::UsageLimited => "usage limited",
         AppThreadGoalStatus::BudgetLimited => "limited by budget",
+        AppThreadGoalStatus::Deferred => "deferred",
         AppThreadGoalStatus::Complete => "complete",
         AppThreadGoalStatus::Cancelled => "cancelled",
     }
@@ -238,6 +240,7 @@ fn edited_goal_status(status: AppThreadGoalStatus) -> AppThreadGoalStatus {
         AppThreadGoalStatus::Active => AppThreadGoalStatus::Active,
         AppThreadGoalStatus::Paused
         | AppThreadGoalStatus::Blocked
+        | AppThreadGoalStatus::Deferred
         | AppThreadGoalStatus::UsageLimited => status,
         AppThreadGoalStatus::BudgetLimited
         | AppThreadGoalStatus::Complete
@@ -359,6 +362,7 @@ fn goal_plan_row_name(plan: &ThreadGoalPlan) -> String {
             plan.node_count,
             plan.active_node_count,
             plan.completed_node_count,
+            plan.deferred_node_count,
             plan.cancelled_node_count,
         ),
         goal_time_part(plan.total_time_used_seconds),
@@ -384,6 +388,9 @@ fn goal_plan_selected_detail(plan: &ThreadGoalPlan) -> String {
     }
     if plan.budget_limited_node_count > 0 {
         parts.push(format!("{} budget limited", plan.budget_limited_node_count));
+    }
+    if plan.deferred_node_count > 0 {
+        parts.push(format!("{} deferred", plan.deferred_node_count));
     }
     if plan.cancelled_node_count > 0 {
         parts.push(format!("{} cancelled", plan.cancelled_node_count));
@@ -472,6 +479,12 @@ fn goal_manager_subtitle(
             .iter()
             .map(|plan| plan.cancelled_node_count)
             .sum::<i64>();
+    let deferred = current_status.is_some_and(|status| status == AppThreadGoalStatus::Deferred)
+        as i64
+        + goal_plans
+            .iter()
+            .map(|plan| plan.deferred_node_count)
+            .sum::<i64>();
     let blocked = current_status.is_some_and(|status| {
         matches!(
             status,
@@ -510,6 +523,9 @@ fn goal_manager_subtitle(
     if limited > 0 {
         parts.push(format!("{limited} limited"));
     }
+    if deferred > 0 {
+        parts.push(format!("{deferred} deferred"));
+    }
     if cancelled > 0 {
         parts.push(format!("{cancelled} cancelled"));
     }
@@ -525,6 +541,7 @@ fn goal_can_cancel(status: AppThreadGoalStatus) -> bool {
         AppThreadGoalStatus::Active
             | AppThreadGoalStatus::Paused
             | AppThreadGoalStatus::Blocked
+            | AppThreadGoalStatus::Deferred
             | AppThreadGoalStatus::UsageLimited
             | AppThreadGoalStatus::BudgetLimited
     )
@@ -615,13 +632,22 @@ fn goal_time_part(time_used_seconds: i64) -> String {
     format!("time {}", format_goal_elapsed_seconds(time_used_seconds))
 }
 
-fn goal_count_summary(node_count: i64, active: i64, complete: i64, cancelled: i64) -> String {
+fn goal_count_summary(
+    node_count: i64,
+    active: i64,
+    complete: i64,
+    deferred: i64,
+    cancelled: i64,
+) -> String {
     let mut parts = vec![format!("{node_count} goals")];
     if active > 0 {
         parts.push(format!("{active} current"));
     }
     if complete > 0 {
         parts.push(format!("{complete} done"));
+    }
+    if deferred > 0 {
+        parts.push(format!("{deferred} deferred"));
     }
     if cancelled > 0 {
         parts.push(format!("{cancelled} cancelled"));
@@ -656,6 +682,7 @@ fn plan_node_status_label(status: ThreadGoalPlanNodeStatus) -> &'static str {
         ThreadGoalPlanNodeStatus::Blocked => "blocked",
         ThreadGoalPlanNodeStatus::UsageLimited => "usage-limited",
         ThreadGoalPlanNodeStatus::BudgetLimited => "budget-limited",
+        ThreadGoalPlanNodeStatus::Deferred => "deferred",
         ThreadGoalPlanNodeStatus::Complete => "complete",
         ThreadGoalPlanNodeStatus::Cancelled => "cancelled",
     }
@@ -669,6 +696,7 @@ fn thread_goal_status_from_node_status(status: ThreadGoalPlanNodeStatus) -> AppT
         ThreadGoalPlanNodeStatus::Blocked => AppThreadGoalStatus::Blocked,
         ThreadGoalPlanNodeStatus::UsageLimited => AppThreadGoalStatus::UsageLimited,
         ThreadGoalPlanNodeStatus::BudgetLimited => AppThreadGoalStatus::BudgetLimited,
+        ThreadGoalPlanNodeStatus::Deferred => AppThreadGoalStatus::Deferred,
         ThreadGoalPlanNodeStatus::Complete => AppThreadGoalStatus::Complete,
         ThreadGoalPlanNodeStatus::Cancelled => AppThreadGoalStatus::Cancelled,
     }

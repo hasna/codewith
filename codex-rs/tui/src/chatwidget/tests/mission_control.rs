@@ -1,6 +1,7 @@
 use super::*;
 use codex_app_server_protocol::ActiveSessionCapability;
 use codex_app_server_protocol::ActiveSessionPeerKind;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::LocalSession;
 use codex_app_server_protocol::LocalSessionGitInfo;
 use codex_app_server_protocol::LocalSessionPeer;
@@ -541,6 +542,9 @@ fn test_local_session(
         agent_path: None,
         model_provider: "openai".to_string(),
         model: model.map(ToString::to_string),
+        auth_profile: Some("work".to_string()),
+        auth_profile_kind: AuthProfileKind::Named,
+        account_label: Some("work@example.com".to_string()),
         source: SessionSource::Cli,
         thread_source: Some(ThreadSource::User),
         created_at: 1_700,
@@ -606,6 +610,7 @@ fn test_plan(thread_id: &str, status: ThreadGoalPlanStatus) -> ThreadGoalPlan {
         },
         usage_limited_node_count: 0,
         budget_limited_node_count: 0,
+        deferred_node_count: 0,
         cancelled_node_count: 0,
         created_at: 1_700,
         updated_at: 1_800,
@@ -653,6 +658,7 @@ fn test_long_plan(thread_id: &str) -> ThreadGoalPlan {
         blocked_node_count: 0,
         usage_limited_node_count: 0,
         budget_limited_node_count: 0,
+        deferred_node_count: 0,
         cancelled_node_count: 0,
         created_at: 1_700,
         updated_at: 1_800,
@@ -697,6 +703,8 @@ fn test_schedule(
     ThreadSchedule {
         thread_id: thread_id.to_string(),
         schedule_id: format!("schedule-{thread_id}"),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: prompt.to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule,

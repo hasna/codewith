@@ -20,6 +20,8 @@ use codex_tools::ToolSpec;
 use croner::Cron;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::fmt::Write as _;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,6 +30,7 @@ const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_LOOP_EXPIRATION_DAYS: i64 = 7;
 const MAX_THREAD_SCHEDULE_PROMPT_CHARS: usize = 4_000;
 const MAX_THREAD_SCHEDULES: usize = 50;
+const COMPACT_PROMPT_PREVIEW_CHARS: usize = 160;
 
 pub struct ManageLoopHandler;
 
@@ -36,11 +39,13 @@ pub struct ManageLoopHandler;
 struct ManageLoopArgs {
     action: LoopAction,
     schedule_id: Option<String>,
+    parent_schedule_id: Option<String>,
     prompt: Option<String>,
     schedule: Option<LoopScheduleSpecArg>,
     timezone: Option<String>,
     next_run_at: Option<i64>,
     expires_at: Option<i64>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -94,6 +99,8 @@ struct ManageLoopResponse {
 struct LoopScheduleSnapshot {
     thread_id: String,
     schedule_id: String,
+    parent_schedule_id: Option<String>,
+    nesting_depth: i64,
     prompt: String,
     prompt_source: String,
     schedule: LoopScheduleSpecSnapshot,
@@ -115,6 +122,7 @@ struct LoopScheduleStatsSnapshot {
     total_runs: i64,
     leased_runs: i64,
     running_runs: i64,
+    deferred_runs: i64,
     completed_runs: i64,
     failed_runs: i64,
     last_started_at: Option<i64>,
@@ -159,12 +167,13 @@ impl ToolExecutor<ToolInvocation> for ManageLoopHandler {
         };
 
         let args: ManageLoopArgs = parse_arguments(&arguments)?;
+        let verbose = args.verbose.unwrap_or(false);
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
         let auth_profile = session.selected_auth_profile().await;
         let response = manage_loop(state_db, session.thread_id(), auth_profile, args).await?;
-        loop_response(response).map(boxed_tool_output)
+        loop_response(response, verbose).map(boxed_tool_output)
     }
 }
 
@@ -305,11 +314,13 @@ async fn manage_loop(
             let schedule =
                 ensure_current_thread_schedule(&state_db, thread_id, schedule_id.as_str()).await?;
             let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
-            let deleted = state_db
+            let deleted_schedule_ids = state_db
                 .thread_schedules()
-                .delete_thread_schedule(schedule_id.as_str())
+                .delete_thread_schedule_tree(schedule_id.as_str())
                 .await
                 .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+            let deleted = !deleted_schedule_ids.is_empty();
+            let deleted_count = deleted_schedule_ids.len();
             let schedules = list_loop_snapshots(&state_db, thread_id).await?;
             Ok(ManageLoopResponse {
                 action: LoopAction::Clear,
@@ -318,7 +329,17 @@ async fn manage_loop(
                 schedules,
                 deleted: Some(deleted),
                 message: if deleted {
-                    format!("Loop {schedule_id} cleared.")
+                    if deleted_count > 1 {
+                        let child_count = deleted_count - 1;
+                        let child_label = if child_count == 1 {
+                            "nested child loop"
+                        } else {
+                            "nested child loops"
+                        };
+                        format!("Loop {schedule_id} and {child_count} {child_label} cleared.")
+                    } else {
+                        format!("Loop {schedule_id} cleared.")
+                    }
                 } else {
                     format!("Loop {schedule_id} was already absent.")
                 },
@@ -344,6 +365,18 @@ async fn create_loop(
         .schedule
         .ok_or_else(|| model_error("schedule is required when action is create"))
         .and_then(loop_schedule_spec_arg_to_state)?;
+    let parent_schedule_id = args
+        .parent_schedule_id
+        .as_deref()
+        .map(str::trim)
+        .map(|value| {
+            if value.is_empty() {
+                Err(model_error("parent_schedule_id cannot be empty"))
+            } else {
+                Ok(value.to_string())
+            }
+        })
+        .transpose()?;
     let timezone = normalize_timezone(args.timezone)?;
     let now = Utc::now();
     let explicit_next_run_at = args
@@ -365,23 +398,35 @@ async fn create_loop(
         .or_else(|| default_loop_expires_at(now));
     validate_loop_expiry(next_run_at, expires_at)?;
 
-    let schedule = state_db
-        .thread_schedules()
-        .create_thread_schedule_for_auth_profile(
-            codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt,
-                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule,
-                timezone,
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at,
-                expires_at,
-            },
-            auth_profile,
-        )
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
+    let create_params = codex_state::ThreadScheduleCreateParams {
+        thread_id,
+        prompt,
+        prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+        schedule,
+        timezone,
+        status: codex_state::ThreadScheduleStatus::Active,
+        next_run_at,
+        expires_at,
+    };
+    let schedule = match parent_schedule_id {
+        Some(parent_schedule_id) => {
+            state_db
+                .thread_schedules()
+                .create_nested_thread_schedule_for_auth_profile(
+                    create_params,
+                    parent_schedule_id,
+                    auth_profile,
+                )
+                .await
+        }
+        None => {
+            state_db
+                .thread_schedules()
+                .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                .await
+        }
+    }
+    .map_err(|err| FunctionCallError::RespondToModel(format_loop_error(err)))?;
     let affected_schedule = loop_schedule_snapshot(&state_db, schedule).await?;
     let schedules = list_loop_snapshots(&state_db, thread_id).await?;
     let schedule_id = affected_schedule.schedule_id.clone();
@@ -647,6 +692,8 @@ async fn loop_schedule_snapshot(
     Ok(LoopScheduleSnapshot {
         thread_id: schedule.thread_id.to_string(),
         schedule_id: schedule.schedule_id,
+        parent_schedule_id: schedule.parent_schedule_id,
+        nesting_depth: schedule.nesting_depth,
         prompt: schedule.prompt,
         prompt_source: schedule.prompt_source.as_str().to_string(),
         schedule: LoopScheduleSpecSnapshot::from(schedule.schedule),
@@ -669,6 +716,7 @@ impl From<codex_state::ThreadScheduleStats> for LoopScheduleStatsSnapshot {
             total_runs: stats.total_runs,
             leased_runs: stats.leased_runs,
             running_runs: stats.running_runs,
+            deferred_runs: stats.deferred_runs,
             completed_runs: stats.completed_runs,
             failed_runs: stats.failed_runs,
             last_started_at: timestamp_seconds(stats.last_started_at),
@@ -710,10 +758,76 @@ fn format_loop_error(err: anyhow::Error) -> String {
     message
 }
 
-fn loop_response(response: ManageLoopResponse) -> Result<FunctionToolOutput, FunctionCallError> {
-    let response = serde_json::to_string_pretty(&response)
-        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+fn loop_response(
+    response: ManageLoopResponse,
+    verbose: bool,
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    let response = if verbose {
+        serde_json::to_string_pretty(&response)
+    } else {
+        serde_json::to_string_pretty(&compact_loop_response(&response))
+    }
+    .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(FunctionToolOutput::from_text(response, Some(true)))
+}
+
+fn compact_loop_response(response: &ManageLoopResponse) -> JsonValue {
+    json!({
+        "action": response.action,
+        "scheduleId": response.schedule_id,
+        "message": response.message,
+        "deleted": response.deleted,
+        "count": response.schedules.len(),
+        "affectedSchedule": response
+            .affected_schedule
+            .as_ref()
+            .map(compact_loop_schedule),
+        "schedules": response
+            .schedules
+            .iter()
+            .map(compact_loop_schedule)
+            .collect::<Vec<_>>(),
+        "hint": "Default loop output is compact. Pass verbose=true for full prompts, lease timestamps, and complete run stats.",
+    })
+}
+
+fn compact_loop_schedule(schedule: &LoopScheduleSnapshot) -> JsonValue {
+    json!({
+        "scheduleId": schedule.schedule_id,
+        "status": schedule.status,
+        "schedule": schedule.schedule,
+        "timezone": schedule.timezone,
+        "nextRunAt": schedule.next_run_at,
+        "lastRunAt": schedule.last_run_at,
+        "expiresAt": schedule.expires_at,
+        "failureCount": schedule.failure_count,
+        "promptPreview": compact_text_preview(&schedule.prompt, COMPACT_PROMPT_PREVIEW_CHARS),
+        "promptChars": schedule.prompt.chars().count(),
+        "runs": {
+            "total": schedule.stats.total_runs,
+            "running": schedule.stats.running_runs,
+            "completed": schedule.stats.completed_runs,
+            "failed": schedule.stats.failed_runs,
+            "lastErrorPreview": schedule.stats.last_error.as_deref().map(|error| {
+                compact_text_preview(error, COMPACT_PROMPT_PREVIEW_CHARS)
+            }),
+        },
+    })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn model_error(message: impl Into<String>) -> FunctionCallError {
@@ -754,12 +868,75 @@ mod tests {
         ManageLoopArgs {
             action,
             schedule_id: None,
+            parent_schedule_id: None,
             prompt: None,
             schedule: None,
             timezone: None,
             next_run_at: None,
             expires_at: None,
+            verbose: None,
         }
+    }
+
+    fn loop_snapshot(prompt: &str) -> LoopScheduleSnapshot {
+        LoopScheduleSnapshot {
+            thread_id: test_thread_id(/*id*/ 99).to_string(),
+            schedule_id: "loop-1".to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
+            prompt: prompt.to_string(),
+            prompt_source: "inline".to_string(),
+            schedule: LoopScheduleSpecSnapshot::Interval {
+                amount: 5,
+                unit: "minutes".to_string(),
+            },
+            timezone: "UTC".to_string(),
+            status: "active".to_string(),
+            next_run_at: Some(1_700_000_300),
+            last_run_at: Some(1_700_000_200),
+            expires_at: Some(1_700_003_600),
+            failure_count: 1,
+            lease_expires_at: Some(1_700_000_250),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+            stats: LoopScheduleStatsSnapshot {
+                total_runs: 3,
+                leased_runs: 0,
+                running_runs: 1,
+                deferred_runs: 0,
+                completed_runs: 1,
+                failed_runs: 1,
+                last_started_at: Some(1_700_000_200),
+                last_completed_at: Some(1_700_000_220),
+                last_error: Some("last failure had a very long diagnostic".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn compact_loop_response_uses_prompt_preview_without_full_prompt() {
+        let response = ManageLoopResponse {
+            action: LoopAction::List,
+            schedule_id: None,
+            affected_schedule: None,
+            schedules: vec![loop_snapshot(&"loop prompt ".repeat(40))],
+            deleted: None,
+            message: "Listed loops for this thread.".to_string(),
+        };
+
+        let compact = compact_loop_response(&response);
+
+        assert_eq!(compact["count"], 1);
+        assert_eq!(compact["schedules"][0]["scheduleId"], "loop-1");
+        assert_eq!(compact["schedules"][0]["promptChars"], 480);
+        assert!(
+            compact["schedules"][0]["promptPreview"]
+                .as_str()
+                .expect("prompt preview")
+                .ends_with("...")
+        );
+        assert!(compact["schedules"][0]["prompt"].is_null());
+        assert!(compact["schedules"][0]["leaseExpiresAt"].is_null());
     }
 
     async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {
@@ -908,6 +1085,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_loop_accepts_nested_parent_schedule_id() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let parent_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                prompt: Some("Parent loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("parent loop should be created");
+        let parent_schedule_id = parent_response
+            .schedule_id
+            .expect("parent schedule id should be returned");
+
+        let child_response = manage_loop(
+            runtime.clone(),
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id.clone()),
+                prompt: Some("Child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+        let child = child_response
+            .affected_schedule
+            .expect("child schedule should be returned");
+        assert_eq!(Some(parent_schedule_id.clone()), child.parent_schedule_id);
+        assert_eq!(2, child.nesting_depth);
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(parent_schedule_id),
+                prompt: Some("Same minute child".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Dynamic),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("same-minute child should be rejected");
+        match err {
+            FunctionCallError::RespondToModel(message) => assert!(
+                message.contains("child cadence must be slower than parent cadence"),
+                "unexpected model error: {message}"
+            ),
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_loop_nests_loops_to_depth_five() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 18);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let mut parent_schedule_id = None;
+        for level in 1..=5 {
+            let response = manage_loop(
+                runtime.clone(),
+                thread_id,
+                /*auth_profile*/ None,
+                ManageLoopArgs {
+                    parent_schedule_id: parent_schedule_id.clone(),
+                    prompt: Some(format!("level {level} loop")),
+                    schedule: Some(LoopScheduleSpecArg::Interval {
+                        amount: level,
+                        unit: LoopScheduleIntervalUnitArg::Minutes,
+                    }),
+                    timezone: Some("UTC".to_string()),
+                    ..loop_args(LoopAction::Create)
+                },
+            )
+            .await
+            .expect("nested loop should be created");
+            let affected_schedule = response
+                .affected_schedule
+                .clone()
+                .expect("affected schedule should be returned");
+            assert_eq!(parent_schedule_id, affected_schedule.parent_schedule_id);
+            assert_eq!(level, affected_schedule.nesting_depth);
+            parent_schedule_id = response.schedule_id;
+        }
+
+        let err = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id,
+                prompt: Some("level 6 loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 6,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect_err("sixth nesting level should be rejected");
+
+        match err {
+            FunctionCallError::RespondToModel(message) => {
+                assert!(message.contains("maximum nesting depth is 5"))
+            }
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn clear_parent_loop_removes_nested_child_loops() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 19);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let root = manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                prompt: Some("root loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 1,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("root loop should be created");
+        let root_schedule_id = root
+            .schedule_id
+            .expect("root schedule id should be returned");
+        manage_loop(
+            runtime.clone(),
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                parent_schedule_id: Some(root_schedule_id.clone()),
+                prompt: Some("child loop".to_string()),
+                schedule: Some(LoopScheduleSpecArg::Interval {
+                    amount: 2,
+                    unit: LoopScheduleIntervalUnitArg::Minutes,
+                }),
+                timezone: Some("UTC".to_string()),
+                ..loop_args(LoopAction::Create)
+            },
+        )
+        .await
+        .expect("child loop should be created");
+
+        let response = manage_loop(
+            runtime,
+            thread_id,
+            /*auth_profile*/ None,
+            ManageLoopArgs {
+                schedule_id: Some(root_schedule_id),
+                ..loop_args(LoopAction::Clear)
+            },
+        )
+        .await
+        .expect("root loop should clear");
+
+        assert_eq!(Some(true), response.deleted);
+        assert!(response.message.contains("and 1 nested child loop cleared"));
+        assert_eq!(Vec::<LoopScheduleSnapshot>::new(), response.schedules);
+    }
+
+    #[tokio::test]
     async fn list_loop_returns_exact_run_stats() {
         let (_temp_dir, runtime) = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 11);
@@ -998,6 +1367,7 @@ mod tests {
                 total_runs: 2,
                 leased_runs: 0,
                 running_runs: 0,
+                deferred_runs: 0,
                 completed_runs: 1,
                 failed_runs: 1,
                 last_started_at: Some(second_run_at.timestamp()),
@@ -1246,6 +1616,7 @@ mod tests {
                 total_runs: 1,
                 leased_runs: 0,
                 running_runs: 0,
+                deferred_runs: 0,
                 completed_runs: 1,
                 failed_runs: 0,
                 last_started_at: Some(first_run_at.timestamp()),

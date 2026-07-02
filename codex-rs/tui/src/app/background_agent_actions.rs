@@ -47,6 +47,7 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         prompt: String,
+        initial_goal_objective: Option<String>,
         worktree_id: Option<String>,
     ) {
         let (cwd, workspace_roots, worktree_hint, attach_worktree_id) =
@@ -105,6 +106,7 @@ impl App {
         match app_server
             .agent_start(
                 prompt,
+                initial_goal_objective,
                 cwd,
                 workspace_roots,
                 parent_thread_id,
@@ -252,7 +254,10 @@ impl App {
         else {
             return;
         };
-        match app_server.agent_events_list(agent_id.clone()).await {
+        match app_server
+            .agent_events_list(agent_id.clone(), /*cursor*/ None, /*limit*/ None)
+            .await
+        {
             Ok(response) => self
                 .chat_widget
                 .show_background_agent_logs(agent_id, response),

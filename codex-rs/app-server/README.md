@@ -10,6 +10,7 @@
 - [Lifecycle Overview](#lifecycle-overview)
 - [Initialization](#initialization)
 - [API Overview](#api-overview)
+- [Bridge Adapter Contract](#bridge-adapter-contract)
 - [Events](#events)
 - [Approvals](#approvals)
 - [Skills](#skills)
@@ -145,10 +146,10 @@ Example with notification opt-out:
 - `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `modelProvider` switches the provider for subsequent turns; `authProfile` switches auth for subsequent turns; `serviceTier: null` clears the tier; `sandboxPolicy` and `permissions` cannot be combined. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
-- `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
+- `thread/goal/set` — create or update the single persisted goal for a materialized thread, including an optional compact `title` for status surfaces; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
-- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
-- `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal and refreshed plan snapshot.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
+- `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal, using the node title when present, and refreshed plan snapshot.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goalPlan/updated` — notification emitted whenever a durable goal plan changes; includes the full plan snapshot with aggregate usage.
@@ -160,15 +161,20 @@ Example with notification opt-out:
 - `thread/workflow/run/get` and `thread/workflow/run/list` — experimental; fetch or page through sanitized workflow run state for a materialized thread.
 - `thread/workflow/run/pause`, `thread/workflow/run/resume`, and `thread/workflow/run/cancel` — experimental; request lifecycle changes for a workflow run in the same materialized thread and keep any projected goal plan in sync when the run status actually changes.
 - `thread/mailbox/enqueue`, `thread/mailbox/list`, `thread/mailbox/read`, `thread/mailbox/claim`, `thread/mailbox/ack`, `thread/mailbox/fail`, and `thread/mailbox/receipts/list` — experimental; persist local durable mailbox messages for materialized threads with idempotency, leases, attempts, receipts, retry/poison state, and redacted list views. This is separate from `activeSession/send`.
+- `webhook/event/ingest`, `webhook/event/list`, `webhook/event/read`, and `webhook/event/mark` — persist and inspect local app webhook events. Stored payloads are redacted before display, idempotency keys are hidden from summaries, and clients must treat payload content as untrusted external data. These APIs do not create public webhook receivers or auto-inject events into conversations.
 - `thread/queuedMessage/list`, `thread/queuedMessage/update`, and `thread/queuedMessage/move` — inspect and manage in-memory active-session messages that have been delivered through `activeSession/send` while the target thread is busy and are waiting for the next turn. These calls require the thread to be loaded; they do not resume unloaded threads or mutate durable mailbox rows.
 - `missionControl/overview`, `missionControl/enqueueInstruction`, `missionControl/mailboxReceipts`, and `missionControl/respondInteraction` — experimental; local-first orchestration facade that combines local session inventory, durable mailbox enqueue/receipts, pending interactions, current goals, and goal-plan summaries. It does not mutate workflow definitions or expose shell, filesystem, or remote-machine control.
+- `worktree/list`, `worktree/read`, `worktree/create`, `worktree/reconcile`, `worktree/attach`, `worktree/detach`, `worktree/release`, `worktree/cleanup`, and `worktree/mergeCandidate/*` — experimental; manage Codewith-owned isolated worktrees and merge candidates for local background-agent and workflow orchestration. Worktree list/read/merge-candidate operations are scoped to the current repo unless `baseRepoPath` is accepted by that method.
 - `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
 - `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
 - `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
 - `thread/schedule/update` — update prompt, schedule, timezone, status, or run timestamps for a scheduled turn loop; emits `thread/schedule/updated`.
 - `thread/schedule/pause` and `thread/schedule/resume` — pause or resume a scheduled turn loop; emits `thread/schedule/updated`.
-- `thread/schedule/delete` — delete a scheduled turn loop; emits `thread/schedule/deleted` when a row is removed.
-- `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, completed, or failed states.
+- `thread/schedule/delete` — delete a scheduled turn loop and any nested child schedules; emits `thread/schedule/deleted` for each removed row.
+- `thread/schedule/runNow` — lease and submit a scheduled turn immediately; emits `thread/schedule/run/updated` as the run moves through leased, running, deferred, completed, or failed states. Deferred runs are retryable non-failures, for example when the thread is busy or eligible auth profiles need time to reset.
+- `thread/monitor/create` — create a thread-scoped monitor command for a materialized thread; optional `cwd` and `outputFile` paths must be relative paths inside the thread cwd.
+- `thread/monitor/list`, `thread/monitor/read`, `thread/monitor/stop`, `thread/monitor/restart`, and `thread/monitor/delete` — manage stored monitors for a materialized thread.
+- `thread/monitor/updated`, `thread/monitor/deleted`, and `thread/monitor/event` — notifications emitted as monitor state and output events change.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
@@ -180,9 +186,9 @@ Example with notification opt-out:
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
 - `thread/rollback` — drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
-- `turn/start` — add user input to a thread and begin Codewith generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Pass `modelProvider` with `model` when switching to a provider whose model slugs are not provider-prefixed. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
+- `turn/start` — add user input to a thread and begin Codewith generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Pass `modelProvider` with `model` when switching to a provider whose model slugs are not provider-prefixed. Experimental `additionalContext` injects keyed context fragments before the turn input; each entry declares its trust `kind` and may include `source` provenance for local app-store records such as OpenProjects projects, OpenTodos tasks, Conversations threads, or Mementos notes. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
-- `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`.
+- `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Like `turn/start`, experimental `additionalContext` may refresh keyed context for the active turn. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
 - `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`.
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
@@ -235,6 +241,8 @@ Example with notification opt-out:
 - `remoteControl/disable` — experimental; disable remote control for the current app-server process and return the current remote-control status snapshot. This does not revoke already enrolled controller devices.
 - `remoteControl/status/read` — experimental; read the current remote-control status snapshot. `status` is one of `disabled`, `connecting`, `connected`, or `errored`; `serverName` is the local machine name used by this app-server process; `environmentId` is a string when the app-server has a current enrollment and `null` when that enrollment is cleared, invalidated, or remote control is disabled.
 - `remoteControl/status/changed` — notification emitted when the remote-control status or client-visible environment id changes. `status` is one of `disabled`, `connecting`, `connected`, or `errored`; `serverName` is the local machine name used by this app-server process; `environmentId` is a string when the app-server has a current enrollment and `null` when that enrollment is cleared, invalidated, or remote control is disabled. Newly initialized app-server clients always receive the current status snapshot.
+
+Requests delivered through the remote-control websocket are origin-scoped. After `initialize`, remote-control-origin clients may call only the constrained remote surfaces: `missionControl/*` and `remoteDispatch/*`. Remote-control management methods (`remoteControl/*`) and the broader local app-server RPC surface remain available only to local transports such as stdio, the control socket, websocket, and in-process clients.
 - `skills/config/write` — write user-level skill config by name or absolute path.
 - `plugin/install` — install a plugin from a discovered marketplace entry, rejecting marketplace entries marked unavailable for install, install MCPs if any, and return the effective plugin auth policy plus any apps that still need auth (**under development; do not call from production clients yet**).
 - `plugin/uninstall` — uninstall a local plugin by `pluginId` in `<plugin>@<marketplace>` form by removing its cached files and clearing its user-level config entry, or uninstall a remote ChatGPT plugin by backend `pluginId` by forwarding the uninstall to the ChatGPT plugin backend and removing any downloaded remote-plugin cache (**under development; do not call from production clients yet**).
@@ -252,6 +260,29 @@ Example with notification opt-out:
 - `config/value/write` — write a single config key/value to the user's config.toml on disk; dotted paths such as `desktop.someKey` use the same generic write surface.
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk, with optional `reloadUserConfig: true` to hot-reload loaded threads, including multiple `desktop.*` edits.
 - `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`, `allowedPermissions`), lifecycle hook lockdown (`allowManagedHooksOnly`), computer use policy (`computerUse`), pinned feature values (`featureRequirements`), managed lifecycle hooks (`hooks`), `enforceResidency`, and `network` constraints such as canonical domain/socket permissions plus `managedAllowedDomainsOnly` and `dangerFullAccessDenylistOnly`.
+
+## Bridge Adapter Contract
+
+The OSS package `@hasna/bridge` should treat Codewith as a local control plane and call only machine-readable surfaces. Do not parse human CLI output except where no JSON mode exists.
+
+Stable adapter entry points:
+
+- Auth profile inventory: call `codewith profile list --json` to enumerate named profiles and the runtime `currentProfile`. `currentProfile.profileKind` is `default` when Codewith will use the root login and `named` when `--auth-profile`, `CODEWITH_AUTH_PROFILE`, or `CODEX_AUTH_PROFILE` selected a named profile for this process. Each named profile includes `profileKind: "named"`, `selected`, `usable`, `unusableReason`, `authMode`, `subscriptionProvider`, and `accountLabel`. `usable: true` means the profile is launch-compatible with Codewith model auth; metadata-only profiles for non-ChatGPT providers are listed but return `usable: false`. Create or refresh a named login with `codewith login --auth-profile <name> ...`. Do not call `codewith profile switch` for bridge-launched work; that mutates the user's global active login.
+- Profile-aware launch: pass the root CLI option `--auth-profile <name>` when launching Codewith commands, including TUI, `exec`, `app-server`, and background-agent flows. In app-server v2, use `thread/start.authProfile`, `thread/resume.authProfile`, `thread/fork.authProfile`, `thread/settings/update.authProfile`, and `agent/start.authProfileRef`. Passing JSON `null` selects the default root auth profile; omitting the field preserves the server or thread default.
+- App-server transport: start the local control endpoint with `codewith remote-control start --json` and read the returned daemon/socket endpoint. Use JSON-RPC over that endpoint; initialize once per connection with `clientInfo.name: "hasna_bridge"` or another bridge-specific client id.
+- Session state: use `localSession/list` for durable local inventory and `activeSession/list` for currently loaded message-capable peers. Bridge-facing state fields are `threadId`, `runtimeSessionId`/`sessionId`, `peerId`, `cwd`, `authProfile`, `authProfileKind`, `accountLabel`, `status`, `activeFlags`, `capabilities`, `lastSeenAt`/`updatedAt`, and nullable routing details such as `peer`. `authProfileKind` is `unknown`, `default`, or `named`; use it instead of inferring root/default semantics from nullable `authProfile`.
+- Daemon and agent state: use `codewith agent list --json`, `codewith agent read --json`, `codewith agent logs --json`, `codewith agent attach --json`, and app-server `agent/*` methods for background agents. Agent JSON includes ids, cwd, auth profile ref, status, last event sequence, timestamps, pending interactions, and event logs.
+- Prompt/control: for loaded sessions, send live messages with `activeSession/send` and treat `status: "delivered"` as live in-memory enqueue only. For durable/offline intent, use `missionControl/enqueueInstruction` or `thread/mailbox/enqueue`, then read receipts with `missionControl/mailboxReceipts` or `thread/mailbox/receipts/list`. Use `turn/start` for app-server-owned threads when bridge is directly driving a turn; it supports text plus `image` and `localImage` inputs.
+- Attachments: use `turn/start` user inputs for images. Durable mailbox and mission-control instruction APIs currently carry text instructions only; if bridge needs non-image file context, pass explicit paths in the instruction after ensuring the file is readable by the local Codewith process, or use app-server filesystem APIs only under the caller's existing local trust boundary.
+- Approval and user-input waits: surface `thread/pendingInteraction/list`, `thread/pendingInteraction/read`, `thread/pendingInteraction/respond`, `missionControl/overview.pendingInteractions`, `missionControl/respondInteraction`, and `agent/pendingInteraction/respond`. Bridge must not special-case Telegram or any other chat transport; blocked approval and user-input states are Codewith pending interactions.
+- Event updates: keep reading JSON-RPC notifications such as `thread/status/changed`, `thread/settings/updated`, `turn/*`, `item/*`, `thread/goal/*`, `thread/schedule/*`, and pending-interaction notifications. For background agents, use event sequence cursors from the `agent/*` APIs or CLI JSON logs.
+
+Compatibility rules for bridge:
+
+- Treat nullable fields as absent values, not as errors. For auth profile state, prefer `authProfileKind` over interpreting `authProfile: null`.
+- Prefer app-server JSON and CLI `--json` output over rollout-file parsing.
+- Keep live delivery (`activeSession/send`) separate from durable mailbox delivery and receipts.
+- Do not call shell/process/filesystem/config/auth/plugin APIs unless the user explicitly grants that bridge workflow local authority.
 
 ### Example: List gateways, providers, and provider-scoped models
 
@@ -482,6 +513,9 @@ When `nextCursor` is `null`, you’ve reached the final page.
         "status": "idle",
         "activeFlags": [],
         "cwd": "/Users/me/project",
+        "authProfile": "work",
+        "authProfileKind": "named",
+        "accountLabel": "me@example.com",
         "displayName": null,
         "agentPath": null,
         "modelProvider": "openai",
@@ -502,7 +536,11 @@ When `nextCursor` is `null`, you’ve reached the final page.
 
 `thread/mailbox/*` is an experimental local durable mailbox for materialized threads. It stores queued instructions separately from active-session delivery, records attempts and receipts, and uses summaries with `redactions: ["messageBody", "idempotencyKey"]` for list/enqueue responses. `thread/mailbox/read` and `thread/mailbox/claim` are the explicit payload-bearing APIs.
 
-Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. This first implementation does not authorize remote callers, discover remote machines, resume unloaded sessions, or deliver into a live runtime automatically; dispatcher behavior builds on these stored primitives separately.
+Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. The built-in local dispatcher is controlled by `[features] mailbox_dispatcher = true` and is enabled by default. To preserve compatibility with integrations that use mailbox rows as a manual work queue, the dispatcher only auto-claims messages whose JSON payload explicitly requests local dispatch with `delivery`, `deliveryMode`, `localDelivery`, or `dispatch.mode` set to `liveOnly`, `live_only`, `resumeAndTrigger`, or `resume_and_trigger`.
+
+Plain payloads such as `{ "text": "..." }` remain queued for explicit `thread/mailbox/claim` callers even when the dispatcher is enabled. Set `[features] mailbox_dispatcher = false` to disable all automatic local claim/delivery/resume behavior for the app-server process.
+
+When an eligible message is due, the dispatcher may claim it in the background, deliver it to a compatible local live thread, acknowledge it with a receipt, retry it, poison it after attempts are exhausted, or resume the target thread when the payload requests `resumeAndTrigger`. Manual-claim clients that opt a message into local dispatch must treat dispatcher receipts and lease owner `app-server-local-mailbox-dispatcher` as part of the same queue contract.
 
 ```json
 { "method": "thread/mailbox/enqueue", "id": 23, "params": {
@@ -548,6 +586,67 @@ Mailbox targets are durable `threadId` values under the local `CODEWITH_HOME`. T
 ```
 
 Use `missionControl/mailboxReceipts` to read receipts for the created mailbox message, and `missionControl/respondInteraction` to answer pending questions or terminal waits. `missionControl/respondInteraction` supports `dryRun: true`, which validates the response shape and returns the current interaction without mutating it.
+
+### Example: Manage isolated worktrees and merge candidates
+
+The `worktree/*` APIs are the app-server control plane for Codewith-owned Git worktrees. They are intended for local clients and task-triggered orchestration that need workers to keep editing in isolated checkouts while verifier or merge agents inspect and integrate finished work.
+
+Expected non-disruptive worker flow:
+
+- Create or discover an isolated worktree under the configured worktree root with `worktree/create` or `worktree/reconcile`.
+- Start a background agent with `agent/start` using that worktree as `cwd`; the background-agent worktree lease records a managed worktree row and assigns it to the agent run.
+- Keep active workers isolated. `worktree/release`, `worktree/cleanup`, and direct detach paths reject worktrees owned by non-terminal background-agent runs, including running, stopping, and orphaned runs.
+- Run verification in a separate worker or deterministic verifier before merge. The verifier should read the worktree state and record evidence without mutating unrelated checkouts.
+- Refresh a merge candidate with `worktree/mergeCandidate/refresh` only after the source worktree is clean. Apply with `worktree/mergeCandidate/apply` only when the source head still matches the candidate, the target checkout is clean, and the target SHA has not advanced. If another merge agent moves the target first, apply fails with a refresh-before-applying error instead of changing the active worker's worktree.
+- Release or clean up through the background-agent lease path after the worker is terminal. Dirty or untracked work is retained or moved to cleanup-pending state unless force cleanup is explicitly requested.
+
+```json
+{ "method": "worktree/list", "id": 40, "params": { "limit": 20 } }
+{ "id": 40, "result": {
+    "data": [{
+        "worktreeId": "wt_123",
+        "mode": "isolatedWorktree",
+        "lifecycleStatus": "active",
+        "baseRepoPath": "/Users/me/project",
+        "worktreePath": "/Users/me/project/.codewith/worktrees/wt_123",
+        "ownerKind": "backgroundAgent",
+        "ownerAgentRunId": "agent_123",
+        "dirty": false
+    }],
+    "nextCursor": null,
+    "policy": {
+        "enabled": true,
+        "root": null,
+        "cleanupDefault": "deleteIfClean",
+        "mainSessions": "manual",
+        "subSessions": "auto",
+        "currentBaseRepoPath": "/Users/me/project"
+    }
+} }
+```
+
+```json
+{ "method": "worktree/mergeCandidate/refresh", "id": 41, "params": {
+    "worktreeId": "wt_123",
+    "targetRef": "HEAD"
+} }
+{ "id": 41, "result": {
+    "candidate": {
+        "candidateId": "mc_123",
+        "worktreeId": "wt_123",
+        "targetRef": "HEAD",
+        "targetSha": "abc123",
+        "baseSha": "abc123",
+        "headSha": "def456",
+        "status": "open",
+        "conflictSummary": null,
+        "createdAt": 1781790000,
+        "updatedAt": 1781790000,
+        "appliedAt": null,
+        "dismissedAt": null
+    }
+} }
+```
 
 ### Example: List and message active sessions
 
@@ -603,6 +702,8 @@ Non-goals for this phase:
         "cwd": "/Users/me/project",
         "displayName": null,
         "agentPath": null,
+        "authProfile": "work",
+        "authProfileKind": "named",
         "capabilities": ["receiveMessage", "queueMessage", "triggerTurn"],
         "lastSeenAt": 1781510000
     }],
@@ -797,18 +898,20 @@ Experimental: use `memory/reset` to clear local memory artifacts and sqlite-back
 
 ### Example: Set and update a thread goal
 
-Use `thread/goal/set` to create or update the current goal for a materialized thread. Clients can set `budgetLimited` when they stop because a token budget is exhausted or nearly exhausted, `blocked` when progress is waiting on outside intervention, and `usageLimited` when usage availability stops further work. The system also sets `budgetLimited` when accounting crosses a configured token budget and `usageLimited` when a turn ends on a hard usage-limit error.
+Use `thread/goal/set` to create or update the current goal for a materialized thread. Clients can set `budgetLimited` when they stop because a token budget is exhausted or nearly exhausted, `blocked` when progress is waiting on outside intervention, and `usageLimited` when usage availability stops further work. The system also sets `budgetLimited` when accounting crosses a configured token budget and `usageLimited` when a turn ends on a hard usage-limit error. `title` is optional, nullable, and intended for compact status displays: omit it to preserve the current title, pass a string to set it, or pass `null` to clear it. Non-null titles are trimmed and must be non-empty, at most 80 characters, and at most 5 words.
 
 ```json
 { "method": "thread/goal/set", "id": 27, "params": {
     "threadId": "thr_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "tokenBudget": 200000
 } }
 { "id": 27, "result": { "goal": {
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "active",
     "tokenBudget": 200000,
     "tokensUsed": 0,
@@ -820,6 +923,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "active",
     "tokenBudget": 200000,
     "tokensUsed": 0,
@@ -838,6 +942,7 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "threadId": "thr_123",
     "goalId": "goal_123",
     "objective": "Keep improving the benchmark until p95 latency is under 120ms",
+    "title": "Benchmark p95 under 120ms",
     "status": "blocked",
     "tokenBudget": 200000,
     "tokensUsed": 10000,
@@ -854,7 +959,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -890,6 +995,7 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
             "sequence": 0,
             "priority": 10,
             "objective": "Implement the planned goal chain",
+            "title": "Implement goal chain",
             "status": "pending",
             "ready": true,
             "tokenBudget": null,
@@ -917,6 +1023,7 @@ Use `thread/goalPlan/activateNode` to start one ready pending node manually when
         "threadId": "thr_123",
         "goalId": "goal_456",
         "objective": "Implement the planned goal chain",
+        "title": "Implement goal chain",
         "status": "active",
         "tokenBudget": null,
         "tokensUsed": 0,
@@ -1010,6 +1117,8 @@ Use `thread/workflow/run/start` to start a saved workflow for the same thread. T
 
 Use `thread/schedule/create` to run future turns on a materialized thread. Scheduled turns inherit the thread's persisted cwd, model, sandbox and permission policy, and approval behavior; they do not run on ephemeral threads and do not bypass normal turn execution. Each thread can have at most 50 non-expired schedules, and schedules expire after seven days by default unless `expiresAt` is supplied.
 
+Nested schedules are represented by `parentScheduleId` and `nestingDepth`. A child schedule must belong to the same thread as its parent, is capped at depth 5, and must use a `dynamic` or `interval` cadence that is slower than the parent cadence. Deleting a parent schedule deletes its nested child schedule subtree and emits `thread/schedule/deleted` for each removed schedule id.
+
 Schedules support three shapes:
 
 - `{ "type": "dynamic" }` runs again after the server's default dynamic interval.
@@ -1029,6 +1138,8 @@ Set `promptSource` to `"inline"` to store and send `prompt` directly. Set it to 
 { "id": 31, "result": { "schedule": {
     "threadId": "thr_123",
     "scheduleId": "sched_123",
+    "parentScheduleId": null,
+    "nestingDepth": 1,
     "prompt": "Check CI and fix any failures.",
     "promptSource": "inline",
     "schedule": { "type": "interval", "amount": 30, "unit": "minutes" },
@@ -1204,6 +1315,35 @@ You can optionally specify config overrides on the new turn. If specified, these
 } }
 { "id": 30, "result": { "turn": {
     "id": "turn_456",
+    "status": "inProgress",
+    "items": [],
+    "error": null
+} } }
+```
+
+### Example: Start a turn with sourced context
+
+Use experimental `additionalContext` when a host app wants Codewith to see local app-store context without adding a visible user message. The map key is the stable dedupe key for that fragment. `kind` controls trust: use `"untrusted"` for project/task/conversation/memento content unless it was generated by the trusted host application. Optional `source` metadata identifies the local record so clients can render, edit, refresh, or remove the context source without granting the agent hidden write access to that store.
+
+```json
+{ "method": "turn/start", "id": 31, "params": {
+    "threadId": "thr_123",
+    "input": [ { "type": "text", "text": "Use the active task context and propose the next implementation step." } ],
+    "additionalContext": {
+        "open-todos/task/b646d063": {
+            "value": "Task b646d063: Design native Codewith integration with OpenProjects, OpenTodos, Conversations, and Mementos.",
+            "kind": "untrusted",
+            "source": {
+                "namespace": "open-todos",
+                "id": "b646d063",
+                "recordType": "task",
+                "label": "Native Codewith integration design"
+            }
+        }
+    }
+} }
+{ "id": 31, "result": { "turn": {
+    "id": "turn_457",
     "status": "inProgress",
     "items": [],
     "error": null
@@ -1692,7 +1832,7 @@ Event notifications are the server-initiated event stream for thread lifecycles,
 
 Thread realtime uses a separate thread-scoped notification surface. `thread/realtime/*` notifications are ephemeral transport events, not `ThreadItem`s, and are not returned by `thread/read`, `thread/resume`, or `thread/fork`.
 
-Recoverable configuration and initialization warnings use the existing `configWarning` notification: `{ summary, details?, path?, range? }`. App-server may emit it during initialization for config parsing and related setup diagnostics.
+Recoverable configuration and initialization warnings use the existing `configWarning` notification: `{ summary, details, path, range }`, where nullable fields are present as `null`. App-server may emit it during initialization for config parsing and related setup diagnostics.
 
 Generic runtime warnings use the `warning` notification: `{ threadId?, message }`. App-server emits this for non-fatal warnings from the core event stream, including cases where not all enabled skills are included in the model-visible skills list for a session.
 
@@ -2265,8 +2405,13 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `account/login/start` — begin login (`apiKey`, `chatgpt`, `chatgptDeviceCode`).
 - `account/login/completed` (notify) — emitted when a login attempt finishes (success or error).
 - `account/login/cancel` — cancel a pending managed ChatGPT login by `loginId`.
+- `authProfile/list` — list saved auth profiles, including provider, auth mode, account identity, plan, and active flag.
+- `authProfile/switch` — switch to a saved ChatGPT auth profile by name; triggers `account/updated`.
 - `account/logout` — sign out; triggers `account/updated`.
 - `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
+- `authProfile/list` — list saved CLI auth profiles and indicate the active profile.
+- `authProfile/saveCurrent` — save current root auth credentials as a named auth profile, switch to it, and trigger `account/updated`.
+- `authProfile/switch` — switch the selected auth profile, refresh account-scoped app-server state, and trigger `account/updated`.
 - `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
@@ -2350,21 +2495,63 @@ Field notes:
 { "method": "account/login/completed", "params": { "loginId": "<uuid>", "success": false, "error": "…" } }
 ```
 
-### 6) Logout
+### 6) Manage auth profiles
+
+List saved profiles:
 
 ```json
-{ "method": "account/logout", "id": 6 }
-{ "id": 6, "result": {} }
+{ "method": "authProfile/list", "id": 6, "params": { "cursor": null, "limit": null } }
+```
+
+```json
+{
+  "id": 6,
+  "result": {
+    "data": [
+      {
+        "name": "work",
+        "subscriptionProvider": "chatgpt",
+        "authMode": "chatgpt",
+        "email": "user@example.com",
+        "accountId": "acct_123",
+        "plan": "pro",
+        "active": true
+      }
+    ],
+    "nextCursor": null
+  }
+}
+```
+
+Save the current root credentials as a named profile:
+
+```json
+{ "method": "authProfile/saveCurrent", "id": 7, "params": { "name": "work" } }
+```
+
+Switch to an existing profile:
+
+```json
+{ "method": "authProfile/switch", "id": 8, "params": { "name": "work" } }
+```
+
+Both save and switch return `{ "profile": { ... } }` and emit `account/updated` after the app-server reloads auth-scoped state.
+
+### 7) Logout
+
+```json
+{ "method": "account/logout", "id": 9 }
+{ "id": 9, "result": {} }
 { "method": "account/updated", "params": { "authMode": null, "planType": null } }
 ```
 
-### 7) Rate limits (ChatGPT)
+### 8) Rate limits (ChatGPT)
 
 ```json
-{ "method": "account/rateLimits/read", "id": 7 }
-{ "method": "account/rateLimits/read", "id": 8, "params": { "authProfile": "work" } }
-{ "method": "account/rateLimits/read", "id": 9, "params": { "authProfile": null } }
-{ "id": 7, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
+{ "method": "account/rateLimits/read", "id": 10 }
+{ "method": "account/rateLimits/read", "id": 11, "params": { "authProfile": "work" } }
+{ "method": "account/rateLimits/read", "id": 12, "params": { "authProfile": null } }
+{ "id": 10, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 
@@ -2376,11 +2563,11 @@ Field notes:
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 
-### 8) Notify a workspace owner about a limit
+### 9) Notify a workspace owner about a limit
 
 ```json
-{ "method": "account/sendAddCreditsNudgeEmail", "id": 8, "params": { "creditType": "credits" } }
-{ "id": 8, "result": { "status": "sent" } }
+{ "method": "account/sendAddCreditsNudgeEmail", "id": 13, "params": { "creditType": "credits" } }
+{ "id": 13, "result": { "status": "sent" } }
 ```
 
 Use `creditType: "credits"` when workspace credits are depleted, or `creditType: "usage_limit"` when the workspace usage limit has been reached. If the owner was already notified recently, the response status is `cooldown_active`.

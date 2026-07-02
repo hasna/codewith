@@ -76,11 +76,13 @@ pub(super) fn goal_status_indicator_from_app_goal(
 ) -> Option<GoalStatusIndicator> {
     match goal.status {
         AppThreadGoalStatus::Active => Some(GoalStatusIndicator::Active {
-            usage: active_goal_usage(goal.token_budget, goal.tokens_used, goal.time_used_seconds),
+            usage: active_goal_usage(goal.token_budget, goal.tokens_used),
+            elapsed_seconds: goal.time_used_seconds,
         }),
         AppThreadGoalStatus::Paused => Some(GoalStatusIndicator::Paused),
         AppThreadGoalStatus::Blocked => Some(GoalStatusIndicator::Blocked),
         AppThreadGoalStatus::UsageLimited => Some(GoalStatusIndicator::UsageLimited),
+        AppThreadGoalStatus::Deferred => Some(GoalStatusIndicator::Deferred),
         AppThreadGoalStatus::BudgetLimited => Some(GoalStatusIndicator::BudgetLimited {
             usage: stopped_goal_budget_usage(goal.token_budget, goal.tokens_used),
         }),
@@ -105,46 +107,62 @@ pub(super) fn goal_status_indicator_with_goal_plan(
     indicator: GoalStatusIndicator,
     goal_plan: Option<&AppThreadGoalPlan>,
 ) -> GoalStatusIndicator {
-    let GoalStatusIndicator::Active { usage } = indicator else {
+    let GoalStatusIndicator::Active {
+        usage,
+        elapsed_seconds,
+    } = indicator
+    else {
         return indicator;
     };
     let Some(goal_plan) = goal_plan else {
-        return GoalStatusIndicator::Active { usage };
+        return GoalStatusIndicator::Active {
+            usage,
+            elapsed_seconds,
+        };
     };
     if goal_plan.status != ThreadGoalPlanStatus::Active || goal_plan.node_count <= 0 {
-        return GoalStatusIndicator::Active { usage };
+        return GoalStatusIndicator::Active {
+            usage,
+            elapsed_seconds,
+        };
     }
-    let Some((index, _)) = goal_plan
+    let Some((index, active_node)) = goal_plan
         .nodes
         .iter()
         .enumerate()
         .find(|(_, node)| node.status == ThreadGoalPlanNodeStatus::Active)
     else {
-        return GoalStatusIndicator::Active { usage };
+        return GoalStatusIndicator::Active {
+            usage,
+            elapsed_seconds,
+        };
     };
     let current_goal = i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1);
+    let current_elapsed_seconds = elapsed_seconds.max(0);
+    let active_node_elapsed_seconds = active_node.time_used_seconds.max(0);
+    let total_elapsed_seconds = goal_plan
+        .total_time_used_seconds
+        .max(0)
+        .saturating_sub(active_node_elapsed_seconds)
+        .saturating_add(current_elapsed_seconds);
 
     GoalStatusIndicator::ActivePlan {
         usage,
         current_goal,
         total_goals: goal_plan.node_count.max(current_goal),
+        current_elapsed_seconds,
+        total_elapsed_seconds,
     }
 }
 
-fn active_goal_usage(
-    token_budget: Option<i64>,
-    tokens_used: i64,
-    time_used_seconds: i64,
-) -> Option<String> {
-    if let Some(token_budget) = token_budget {
-        return Some(format!(
+fn active_goal_usage(token_budget: Option<i64>, tokens_used: i64) -> Option<String> {
+    token_budget.map(|token_budget| {
+        format!(
             "{} / {}",
             format_tokens_compact(tokens_used),
             format_tokens_compact(token_budget)
-        ));
-    }
-
-    Some(format_goal_elapsed_seconds(time_used_seconds))
+        )
+    })
 }
 
 fn stopped_goal_budget_usage(token_budget: Option<i64>, tokens_used: i64) -> Option<String> {
@@ -191,23 +209,16 @@ mod tests {
     #[test]
     fn active_goal_usage_prefers_token_budget() {
         assert_eq!(
-            active_goal_usage(
-                Some(50_000),
-                /*tokens_used*/ 12_500,
-                /*time_used_seconds*/ 90
-            ),
+            active_goal_usage(Some(50_000), /*tokens_used*/ 12_500),
             Some("12.5K / 50K".to_string())
         );
     }
 
     #[test]
-    fn active_goal_usage_reports_time_without_budget() {
+    fn active_goal_usage_omits_unbudgeted_usage() {
         assert_eq!(
-            active_goal_usage(
-                /*token_budget*/ None, /*tokens_used*/ 12_500,
-                /*time_used_seconds*/ 120,
-            ),
-            Some("2m".to_string())
+            active_goal_usage(/*token_budget*/ None, /*tokens_used*/ 12_500),
+            None
         );
     }
 
@@ -261,7 +272,8 @@ mod tests {
                 Some(observed_at - Duration::from_secs(120)),
             ),
             Some(GoalStatusIndicator::Active {
-                usage: Some("2m".to_string())
+                usage: None,
+                elapsed_seconds: 120,
             })
         );
     }
@@ -278,7 +290,8 @@ mod tests {
                 Some(active_turn_started_at),
             ),
             Some(GoalStatusIndicator::Active {
-                usage: Some("2m".to_string())
+                usage: None,
+                elapsed_seconds: 120,
             })
         );
     }
@@ -286,21 +299,27 @@ mod tests {
     #[test]
     fn active_goal_status_includes_goal_plan_position() {
         let indicator = GoalStatusIndicator::Active {
-            usage: Some("40s".to_string()),
+            usage: None,
+            elapsed_seconds: 480,
         };
-        let goal_plan = test_goal_plan(&[
+        let mut goal_plan = test_goal_plan(&[
             ThreadGoalPlanNodeStatus::Complete,
             ThreadGoalPlanNodeStatus::Active,
             ThreadGoalPlanNodeStatus::Pending,
             ThreadGoalPlanNodeStatus::Pending,
         ]);
+        goal_plan.nodes[0].time_used_seconds = 120;
+        goal_plan.nodes[1].time_used_seconds = 60;
+        goal_plan.total_time_used_seconds = 180;
 
         assert_eq!(
             goal_status_indicator_with_goal_plan(indicator, Some(&goal_plan)),
             GoalStatusIndicator::ActivePlan {
-                usage: Some("40s".to_string()),
+                usage: None,
                 current_goal: 2,
                 total_goals: 4,
+                current_elapsed_seconds: 480,
+                total_elapsed_seconds: 600,
             }
         );
     }
@@ -326,7 +345,8 @@ mod tests {
                 Some(active_turn_started_at),
             ),
             Some(GoalStatusIndicator::Active {
-                usage: Some("2m".to_string())
+                usage: None,
+                elapsed_seconds: 150,
             })
         );
     }
@@ -348,7 +368,8 @@ mod tests {
         assert_eq!(
             updated.indicator(observed_at, /*active_turn_started_at*/ None),
             Some(GoalStatusIndicator::Active {
-                usage: Some("0s".to_string())
+                usage: None,
+                elapsed_seconds: 0,
             })
         );
     }
@@ -392,6 +413,7 @@ mod tests {
             ready_node_count: 0,
             active_node_count: count_status(ThreadGoalPlanNodeStatus::Active),
             pending_node_count: count_status(ThreadGoalPlanNodeStatus::Pending),
+            deferred_node_count: count_status(ThreadGoalPlanNodeStatus::Deferred),
             paused_node_count: 0,
             blocked_node_count: 0,
             usage_limited_node_count: 0,

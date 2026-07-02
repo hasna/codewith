@@ -12,6 +12,7 @@ pub(crate) mod registry;
 pub(crate) mod router;
 pub(crate) mod runtimes;
 pub(crate) mod sandboxing;
+pub(crate) mod smart_suggest;
 pub(crate) mod spec_plan;
 pub(crate) mod tool_dispatch_trace;
 

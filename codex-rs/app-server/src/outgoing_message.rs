@@ -874,6 +874,8 @@ mod tests {
                 "params": {
                     "summary": "Config error: using defaults",
                     "details": "error loading config: bad config",
+                    "path": null,
+                    "range": null,
                 },
             }),
             serde_json::to_value(jsonrpc_notification)

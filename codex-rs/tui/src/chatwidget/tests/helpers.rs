@@ -36,12 +36,32 @@ pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
 
 pub(super) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     let mut text = text.into();
+    let replace_platform_path = |text: String, platform_path: &str, unix_path: &str| -> String {
+        if platform_path == unix_path {
+            return text;
+        }
+
+        let extra_padding = platform_path
+            .chars()
+            .count()
+            .saturating_sub(unix_path.chars().count());
+        let mut normalized = String::with_capacity(text.len());
+        let mut remaining = text.as_str();
+        while let Some(index) = remaining.find(platform_path) {
+            normalized.push_str(&remaining[..index]);
+            normalized.push_str(unix_path);
+            remaining = &remaining[index + platform_path.len()..];
+            if extra_padding > 0 && remaining.starts_with(' ') {
+                normalized.extend(std::iter::repeat_n(' ', extra_padding));
+            }
+        }
+        normalized.push_str(remaining);
+        normalized
+    };
 
     for unix_path in ["/tmp/project", "/tmp/hooks.json"] {
         let platform_path = test_path_display(unix_path);
-        if platform_path != unix_path {
-            text = text.replace(&platform_path, unix_path);
-        }
+        text = replace_platform_path(text, &platform_path, unix_path);
     }
 
     let platform_test_cwd = test_path_display("/tmp/project");
@@ -79,7 +99,12 @@ pub(super) fn normalized_backend_snapshot<T: std::fmt::Display>(value: &T) -> St
                 .and_then(|line| line.strip_suffix('"'))
             {
                 let width = content.chars().count();
-                let normalized = normalize_snapshot_paths(content);
+                let normalized = restore_spacing_after_shortened_path(
+                    content,
+                    normalize_snapshot_paths(content),
+                    &platform_test_cwd,
+                    "/tmp/project",
+                );
                 format!("\"{normalized:width$}\"")
             } else {
                 normalize_snapshot_paths(line)
@@ -87,6 +112,57 @@ pub(super) fn normalized_backend_snapshot<T: std::fmt::Display>(value: &T) -> St
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn restore_spacing_after_shortened_path(
+    original: &str,
+    normalized: String,
+    platform_path: &str,
+    normalized_path: &str,
+) -> String {
+    let removed_chars = platform_path
+        .chars()
+        .count()
+        .saturating_sub(normalized_path.chars().count());
+    if removed_chars == 0 || !original.contains(platform_path) {
+        return normalized;
+    }
+
+    let Some(original_path_start) = original.find(platform_path) else {
+        return normalized;
+    };
+    let normalized_prefix = normalize_snapshot_paths(&original[..original_path_start]);
+    let Some(relative_path_start) = normalized[normalized_prefix.len()..].find(normalized_path)
+    else {
+        return normalized;
+    };
+    let path_start = normalized_prefix.len() + relative_path_start;
+    let path_end = path_start + normalized_path.len();
+    let gap_spaces = normalized[path_end..]
+        .bytes()
+        .take_while(|byte| *byte == b' ')
+        .count();
+    if gap_spaces == 0 {
+        return normalized;
+    }
+
+    let trailing_spaces = normalized
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b' ')
+        .count();
+    if trailing_spaces < removed_chars {
+        return normalized;
+    }
+
+    let body_end = normalized.len() - trailing_spaces;
+    format!(
+        "{}{}{}{}",
+        &normalized[..path_end],
+        " ".repeat(removed_chars),
+        &normalized[path_end..body_end],
+        " ".repeat(trailing_spaces - removed_chars)
+    )
 }
 
 pub(super) fn invalid_value(
@@ -1578,5 +1654,41 @@ fn hook_event_label(event_name: codex_app_server_protocol::HookEventName) -> &'s
         codex_app_server_protocol::HookEventName::SubagentStart => "SubagentStart",
         codex_app_server_protocol::HookEventName::SubagentStop => "SubagentStop",
         codex_app_server_protocol::HookEventName::Stop => "Stop",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restore_spacing_after_shortened_path;
+
+    #[test]
+    fn shortened_path_spacing_is_restored_before_trailing_padding() {
+        let normalized = restore_spacing_after_shortened_path(
+            r"C:\tmp\project   Side from main thread · main needs input · Ctrl+C to return  ",
+            "/tmp/project   Side from main thread · main needs input · Ctrl+C to return  "
+                .to_string(),
+            r"C:\tmp\project",
+            "/tmp/project",
+        );
+
+        assert_eq!(
+            normalized,
+            "/tmp/project     Side from main thread · main needs input · Ctrl+C to return"
+        );
+    }
+
+    #[test]
+    fn spacing_restore_targets_replaced_platform_path() {
+        let normalized = restore_spacing_after_shortened_path(
+            r"literal /tmp/project then C:\tmp\project   Side  ",
+            "literal /tmp/project then /tmp/project   Side  ".to_string(),
+            r"C:\tmp\project",
+            "/tmp/project",
+        );
+
+        assert_eq!(
+            normalized,
+            "literal /tmp/project then /tmp/project     Side"
+        );
     }
 }

@@ -4,4 +4,4 @@
 import type { ThreadSchedulePromptSource } from "./ThreadSchedulePromptSource";
 import type { ThreadScheduleSpec } from "./ThreadScheduleSpec";
 
-export type ThreadScheduleCreateParams = { threadId: string, prompt: string, promptSource?: ThreadSchedulePromptSource | null, schedule: ThreadScheduleSpec, timezone?: string | null, nextRunAt?: bigint | null, expiresAt?: bigint | null, };
+export type ThreadScheduleCreateParams = { threadId: string, parentScheduleId?: string | null, prompt: string, promptSource?: ThreadSchedulePromptSource | null, schedule: ThreadScheduleSpec, timezone?: string | null, nextRunAt?: bigint | null, expiresAt?: bigint | null, };

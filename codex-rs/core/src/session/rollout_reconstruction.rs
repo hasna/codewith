@@ -235,7 +235,10 @@ impl Session {
         let mut history = ContextManager::new();
         let mut saw_legacy_compaction_without_replacement_history = false;
         if let Some(base_replacement_history) = base_replacement_history {
-            history.replace(base_replacement_history.to_vec());
+            history.replace_recorded_items(
+                base_replacement_history.iter(),
+                turn_context.truncation_policy,
+            );
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
@@ -252,7 +255,10 @@ impl Session {
                     if let Some(replacement_history) = &compacted.replacement_history {
                         // This should actually never happen, because the reverse loop above (to build rollout_suffix)
                         // should stop before any compaction that has Some replacement_history
-                        history.replace(replacement_history.clone());
+                        history.replace_recorded_items(
+                            replacement_history.iter(),
+                            turn_context.truncation_policy,
+                        );
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
                         // Legacy rollouts without `replacement_history` should rebuild the

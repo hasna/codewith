@@ -291,6 +291,79 @@ fn next_session_recap_request_event(
     }
 }
 
+fn drain_history_text(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
+    drain_insert_history(rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn slash_teach_toggles_status_and_does_not_submit_core_op() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Teach);
+    assert!(chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!("slash_teach_enabled_info_cell", drain_history_text(&mut rx));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "status".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!("slash_teach_status_info_cell", drain_history_text(&mut rx));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "off".to_string(), Vec::new());
+    assert!(!chat.teaching_mode_enabled());
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_chatwidget_snapshot!(
+        "slash_teach_disabled_info_cell",
+        drain_history_text(&mut rx)
+    );
+}
+
+#[tokio::test]
+async fn slash_teach_on_off_and_invalid_args_are_local() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "on".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Teaching mode enabled."));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "nope".to_string(), Vec::new());
+    assert!(chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Usage: /teach [on|off|status]"));
+
+    chat.dispatch_command_with_args(SlashCommand::Teach, "disable".to_string(), Vec::new());
+    assert!(!chat.teaching_mode_enabled());
+    assert!(drain_history_text(&mut rx).contains("Teaching mode disabled."));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn queued_slash_teach_toggles_and_preserves_follow_up_queue() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    queue_composer_text_with_tab(&mut chat, "/teach on");
+    queue_composer_text_with_tab(&mut chat, "hello after teach");
+
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    assert!(chat.teaching_mode_enabled());
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.input_queue.queued_user_messages.front().unwrap().text,
+        "hello after teach"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let rendered = drain_history_text(&mut rx);
+    assert!(
+        rendered.contains("Teaching mode enabled."),
+        "expected teaching mode info cell, got {rendered:?}"
+    );
+}
+
 #[tokio::test]
 async fn service_tier_commands_lowercase_catalog_names() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
@@ -845,7 +918,7 @@ async fn goal_slash_command_emits_set_goal_event() {
     };
     assert_eq!(actual_thread_id, thread_id);
     assert_eq!(objective, "--tokens 98.5K improve benchmark coverage");
-    assert_eq!(mode, crate::app_event::ThreadGoalSetMode::ConfirmIfExists);
+    assert_eq!(mode, crate::app_event::ThreadGoalSetMode::QueueIfExists);
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
@@ -1466,14 +1539,51 @@ async fn agent_slash_command_emits_active_session_events() {
 }
 
 #[tokio::test]
+async fn pair_slash_command_starts_guarded_background_watcher() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let command = "/pair watch for security issues this agent might miss";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected pair watcher event");
+    match event {
+        AppEvent::StartBackgroundAgent {
+            prompt,
+            initial_goal_objective,
+            worktree_id,
+        } => {
+            assert_eq!(initial_goal_objective, None);
+            assert_eq!(worktree_id, None);
+            assert!(prompt.contains(&format!("Codewith thread {thread_id}")));
+            assert!(
+                prompt.contains("watch for security issues this agent might miss"),
+                "expected watcher request in prompt, got {prompt:?}"
+            );
+            assert!(prompt.contains("mission_control_enqueue_instruction"));
+            assert!(prompt.contains(&format!("target_thread_id` = `{thread_id}`")));
+            assert!(prompt.contains("resume=false"));
+            assert!(prompt.contains("does not grant the full raw transcript or secrets"));
+            assert!(prompt.contains("separate thread/session"));
+            assert!(prompt.contains("do not modify workspace files"));
+        }
+        other => panic!("expected StartBackgroundAgent event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
 async fn background_agent_slash_command_emits_manage_events() {
     let cases = [
-        ("/agent list", "list", None, None, None),
+        ("/agent list", "list", None, None, None, None),
         (
             "/agent start fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             None,
         ),
         (
@@ -1481,12 +1591,30 @@ async fn background_agent_slash_command_emits_manage_events() {
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             Some("wt-123"),
         ),
-        ("/background-agent list", "list", None, None, None),
+        (
+            "/agent start --goal=fix-tests fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("fix-tests"),
+            None,
+        ),
+        (
+            "/agent start --worktree wt-123 --goal investigate fix the flaky test",
+            "start",
+            None,
+            Some("fix the flaky test"),
+            Some("investigate"),
+            Some("wt-123"),
+        ),
+        ("/background-agent list", "list", None, None, None, None),
         (
             "/background-agent diagnostics",
             "diagnostics",
+            None,
             None,
             None,
             None,
@@ -1497,19 +1625,22 @@ async fn background_agent_slash_command_emits_manage_events() {
             None,
             Some("fix the flaky test"),
             None,
+            None,
         ),
         (
             "/background-agent start --worktree=wt-456 fix the flaky test",
             "start",
             None,
             Some("fix the flaky test"),
+            None,
             Some("wt-456"),
         ),
-        ("/background-agent read", "read", None, None, None),
+        ("/background-agent read", "read", None, None, None, None),
         (
             "/background-agent read agent-1",
             "read",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1519,11 +1650,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
         (
             "/background-agent attach agent-1",
             "attach",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1533,11 +1666,13 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
         (
             "/background-agent stop agent-1",
             "stop",
             Some("agent-1"),
+            None,
             None,
             None,
         ),
@@ -1547,10 +1682,18 @@ async fn background_agent_slash_command_emits_manage_events() {
             Some("agent-1"),
             None,
             None,
+            None,
         ),
     ];
 
-    for (command, expected_kind, expected_agent_id, expected_prompt, expected_worktree_id) in cases
+    for (
+        command,
+        expected_kind,
+        expected_agent_id,
+        expected_prompt,
+        expected_goal,
+        expected_worktree_id,
+    ) in cases
     {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1566,10 +1709,12 @@ async fn background_agent_slash_command_emits_manage_events() {
                 "start",
                 AppEvent::StartBackgroundAgent {
                     prompt,
+                    initial_goal_objective,
                     worktree_id,
                 },
             ) => {
                 assert_eq!(Some(prompt.as_str()), expected_prompt);
+                assert_eq!(initial_goal_objective.as_deref(), expected_goal);
                 assert_eq!(worktree_id.as_deref(), expected_worktree_id);
             }
             ("read", AppEvent::ReadBackgroundAgent { agent_id }) => {
@@ -1621,6 +1766,41 @@ async fn pr_slash_command_opens_read_only_overview() {
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), "/pr");
+}
+
+#[tokio::test]
+async fn pr_start_slash_command_starts_pull_request_mode() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let _ = drain_insert_history(&mut rx);
+    let command = "/pr start auth-fix --branch codewith/auth-fix --start main";
+
+    submit_composer_text(&mut chat, command);
+
+    let event = rx.try_recv().expect("expected pr mode start event");
+    match event {
+        AppEvent::StartPullRequestMode {
+            name,
+            branch,
+            start_point,
+        } => {
+            assert_eq!(name, Some("auth-fix".to_string()));
+            assert_eq!(branch, Some("codewith/auth-fix".to_string()));
+            assert_eq!(start_point, Some("main".to_string()));
+        }
+        other => panic!("expected StartPullRequestMode event, got {other:?}"),
+    }
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::AppendMessageHistoryEntry {
+            thread_id: event_thread_id,
+            text,
+        }) if event_thread_id == thread_id && text == command
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
 
 #[tokio::test]
@@ -1731,6 +1911,89 @@ async fn worktree_slash_command_emits_manage_events() {
         }
         assert_no_submit_op(&mut op_rx);
         assert_eq!(recall_latest_after_clearing(&mut chat), command);
+    }
+}
+
+#[tokio::test]
+async fn variant_slash_command_emits_start_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(
+        &mut chat,
+        "/variant --count 3 --name parser --start-point main improve parser errors",
+    );
+
+    let event = rx.try_recv().expect("expected variant event");
+    match event {
+        AppEvent::StartVariants {
+            count,
+            name,
+            start_point,
+            prompt,
+        } => {
+            assert_eq!(count, 3);
+            assert_eq!(name.as_deref(), Some("parser"));
+            assert_eq!(start_point.as_deref(), Some("main"));
+            assert_eq!(prompt, "improve parser errors");
+        }
+        other => panic!("expected StartVariants event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        recall_latest_after_clearing(&mut chat),
+        "/variant --count 3 --name parser --start-point main improve parser errors"
+    );
+}
+
+#[tokio::test]
+async fn variant_slash_command_preserves_flag_prompt_after_terminator() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/variant -n 2 -- --audit logging variants");
+
+    let event = rx.try_recv().expect("expected variant event");
+    match event {
+        AppEvent::StartVariants { count, prompt, .. } => {
+            assert_eq!(count, 2);
+            assert_eq!(prompt, "--audit logging variants");
+        }
+        other => panic!("expected StartVariants event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn variant_slash_command_reports_invalid_args_without_event() {
+    let cases = [
+        "/variant build alternatives",
+        "/variant --count 1 build alternatives",
+        "/variant --count 6 build alternatives",
+        "/variant --count nope build alternatives",
+        "/variant --count 2",
+    ];
+
+    for command in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected usage error");
+        match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 100));
+                assert!(
+                    rendered.contains("/variant") || rendered.contains("Variant"),
+                    "expected /variant usage error, got {rendered:?}"
+                );
+            }
+            other => panic!("expected InsertHistoryCell error, got {other:?}"),
+        }
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, AppEvent::StartVariants { .. }) {
+                panic!("expected no variant start event, got {event:?}");
+            }
+        }
+        assert_no_submit_op(&mut op_rx);
     }
 }
 
@@ -1985,6 +2248,7 @@ async fn goal_control_slash_commands_emit_goal_events() {
         ("/goal clear", None),
         ("/goal pause", Some(AppThreadGoalStatus::Paused)),
         ("/goal resume", Some(AppThreadGoalStatus::Active)),
+        ("/goal defer", Some(AppThreadGoalStatus::Deferred)),
         ("/goal cancel", Some(AppThreadGoalStatus::Cancelled)),
     ];
 
@@ -2034,7 +2298,7 @@ async fn goal_control_slash_command_without_thread_shows_full_usage() {
     assert_eq!(cells.len(), 1, "expected goal usage message");
     insta::assert_snapshot!(
         lines_to_single_string(&cells[0]),
-        @"• Usage: /goal [<objective>|cancel|clear|edit|pause|resume] The session must start before you can change a goal."
+        @"• Usage: /goal [<objective>|cancel|clear|defer|edit|pause|resume] The session must start before you can change a goal."
     );
 }
 
@@ -2203,6 +2467,31 @@ async fn workflow_run_controls_work_while_task_running_but_draft_is_blocked() {
         "expected /workflow draft task-running error, got {rendered:?}"
     );
     assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn webhook_slash_command_dispatches_while_task_running_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    submit_composer_text(&mut chat, "/webhook");
+
+    let event = rx.try_recv().expect("expected webhook inbox event");
+    let AppEvent::OpenWebhookInbox {
+        thread_id: actual_thread_id,
+    } = event
+    else {
+        panic!("expected OpenWebhookInbox, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, Some(thread_id));
+    assert_no_submit_op(&mut op_rx);
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "/webhook should not append transcript output"
+    );
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/webhook");
 }
 
 #[tokio::test]
@@ -2646,6 +2935,42 @@ async fn unavailable_slash_command_is_available_from_local_recall() {
         "expected disabled-command message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/model");
+}
+
+#[tokio::test]
+async fn slash_usage_opens_panel_while_task_running_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ChatGpt {
+            email: Some("dev@example.com".to_string()),
+            plan: Some("Pro".to_string()),
+        }),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+    );
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    submit_composer_text(&mut chat, "/usage");
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        popup.contains("Usage"),
+        "expected /usage popup, got:\n{popup}"
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { .. },
+            target: RateLimitRefreshTarget::Selected,
+        })
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),
+        "/usage should not append chat history"
+    );
+    assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
@@ -3247,6 +3572,31 @@ async fn slash_tmux_is_disabled_while_task_running() {
             assert!(
                 rendered.contains("'/tmux' is disabled while a task is in progress."),
                 "expected /tmux task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+}
+
+#[tokio::test]
+async fn slash_variant_is_disabled_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::Variant,
+        "--count 2 build alternatives".to_string(),
+        Vec::new(),
+    );
+
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(
+                rendered.contains("'/variant' is disabled while a task is in progress."),
+                "expected /variant task-running error, got {rendered:?}"
             );
         }
         other => panic!("expected InsertHistoryCell error, got {other:?}"),

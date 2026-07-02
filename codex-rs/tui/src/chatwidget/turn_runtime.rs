@@ -18,12 +18,6 @@ impl ChatWidget {
         self.refresh_status_surfaces();
     }
 
-    pub(super) fn collect_runtime_metrics_delta(&mut self) {
-        if let Some(delta) = self.session_telemetry.runtime_metrics_summary() {
-            self.apply_runtime_metrics_delta(delta);
-        }
-    }
-
     pub(super) fn final_message_separator(
         &self,
         elapsed_seconds: Option<u64>,
@@ -45,6 +39,12 @@ impl ChatWidget {
             runtime_metrics,
             summary_items,
         ))
+    }
+
+    pub(super) fn collect_runtime_metrics_delta(&mut self) {
+        if let Some(delta) = self.session_telemetry.runtime_metrics_summary() {
+            self.apply_runtime_metrics_delta(delta);
+        }
     }
 
     pub(super) fn apply_runtime_metrics_delta(&mut self, delta: RuntimeMetricsSummary) {
@@ -185,6 +185,7 @@ impl ChatWidget {
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.status_state.pending_status_indicator_restore = false;
+        self.status_state.agent_statusline = None;
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
         self.update_task_running_state();
@@ -342,6 +343,7 @@ impl ChatWidget {
         self.stream_controller = None;
         self.plan_stream_controller = None;
         self.status_state.pending_status_indicator_restore = false;
+        self.status_state.agent_statusline = None;
         self.clear_cancel_edit();
         self.request_status_line_branch_refresh();
         self.request_status_line_git_summary_refresh();

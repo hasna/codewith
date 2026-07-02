@@ -278,6 +278,12 @@ pub(super) fn normalize_remote_control_base_url(remote_control_url: &str) -> io:
         let normalized_path = format!("{}/", remote_control_url.path());
         remote_control_url.set_path(&normalized_path);
     }
+    if !remote_control_url.username().is_empty() || remote_control_url.password().is_some() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "invalid remote control URL; URL credentials are not supported",
+        ));
+    }
 
     let host = remote_control_url.host();
     match remote_control_url.scheme() {
@@ -395,6 +401,24 @@ mod tests {
                 format!(
                     "invalid remote control URL `{remote_control_url}`; expected HTTPS URL for chatgpt.com or chatgpt-staging.com, or HTTP/HTTPS URL for localhost"
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_remote_control_url_rejects_url_credentials() {
+        for remote_control_url in [
+            "https://user:secret@chatgpt.com/backend-api",
+            "https://token@api.chatgpt-staging.com/backend-api",
+            "http://user:secret@localhost:8080/backend-api",
+        ] {
+            let err = normalize_remote_control_url(remote_control_url)
+                .expect_err("URL credentials should be rejected");
+
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+            assert_eq!(
+                err.to_string(),
+                "invalid remote control URL; URL credentials are not supported"
             );
         }
     }

@@ -1,5 +1,6 @@
 use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
+use codex_goal_extension::GoalPlanAddRequest;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
@@ -69,6 +70,16 @@ impl ThreadGoalRequestProcessor {
         params: ThreadGoalPlanActivateNodeParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_goal_plan_activate_node_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
+    pub(crate) async fn thread_goal_plan_add_goal(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanAddGoalParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_plan_add_goal_inner(request_id, params)
             .await
             .map(|()| None)
     }
@@ -331,6 +342,76 @@ impl ThreadGoalRequestProcessor {
             .await;
         self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
             .await;
+        self.emit_thread_goal_plan_snapshot_updated_ordered(
+            thread_id,
+            outcome.plan.clone(),
+            listener_command_tx,
+        )
+        .await;
+        outcome.apply_runtime_effects(&self.goal_service).await;
+        Ok(())
+    }
+
+    async fn thread_goal_plan_add_goal_inner(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanAddGoalParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        self.reconcile_thread_goal_rollout(thread_id, &state_db)
+            .await?;
+
+        let listener_command_tx = {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let outcome = self
+            .goal_service
+            .add_thread_goal_to_plan(
+                &state_db,
+                GoalPlanAddRequest {
+                    thread_id,
+                    objective: params.objective.as_str(),
+                    title: None,
+                    token_budget: None,
+                    auto_execute: goal_auto_execute_from_config(&self.config),
+                },
+            )
+            .await
+            .map_err(goal_service_error)?;
+        let goal = outcome.goal.clone().map(ThreadGoal::from);
+        let plan = api_thread_goal_plan_from_state_for_thread(outcome.plan.clone(), thread_id);
+        let added_node = plan
+            .nodes
+            .iter()
+            .find(|node| node.node_id == outcome.added_node.node_id)
+            .cloned()
+            .ok_or_else(|| internal_error("added goal-plan node missing from snapshot"))?;
+        self.outgoing
+            .send_response(
+                request_id,
+                ThreadGoalPlanAddGoalResponse {
+                    goal,
+                    plan: plan.clone(),
+                    added_node,
+                    created_plan: outcome.created_plan,
+                },
+            )
+            .await;
+        if let Some(activated_goal) = outcome.activated_goal.clone() {
+            self.emit_thread_goal_updated_ordered(
+                thread_id,
+                ThreadGoal::from(activated_goal),
+                listener_command_tx.clone(),
+            )
+            .await;
+        }
         self.emit_thread_goal_plan_snapshot_updated_ordered(
             thread_id,
             outcome.plan.clone(),
@@ -604,6 +685,7 @@ pub(crate) fn api_thread_goal_plan_from_state_for_thread(
         blocked_node_count: summary.blocked_node_count,
         usage_limited_node_count: summary.usage_limited_node_count,
         budget_limited_node_count: summary.budget_limited_node_count,
+        deferred_node_count: summary.deferred_node_count,
         cancelled_node_count: summary.cancelled_node_count,
         created_at: snapshot.plan.created_at.timestamp(),
         updated_at: snapshot.plan.updated_at.timestamp(),
@@ -651,6 +733,7 @@ fn api_thread_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> T
         codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Deferred => ThreadGoalStatus::Deferred,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
         codex_state::ThreadGoalStatus::Cancelled => ThreadGoalStatus::Cancelled,
     }
@@ -693,6 +776,7 @@ fn api_thread_goal_plan_node_status_from_state(
         codex_state::ThreadGoalPlanNodeStatus::BudgetLimited => {
             ThreadGoalPlanNodeStatus::BudgetLimited
         }
+        codex_state::ThreadGoalPlanNodeStatus::Deferred => ThreadGoalPlanNodeStatus::Deferred,
         codex_state::ThreadGoalPlanNodeStatus::Complete => ThreadGoalPlanNodeStatus::Complete,
         codex_state::ThreadGoalPlanNodeStatus::Cancelled => ThreadGoalPlanNodeStatus::Cancelled,
     }

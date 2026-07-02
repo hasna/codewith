@@ -129,6 +129,7 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let parent_schedule_id = normalize_parent_schedule_id(params.parent_schedule_id)?;
         let prompt_source = params
             .prompt_source
             .unwrap_or(ThreadSchedulePromptSource::Inline);
@@ -203,11 +204,25 @@ impl ThreadScheduleRequestProcessor {
             next_run_at,
             expires_at,
         };
-        let schedule = state_db
-            .thread_schedules()
-            .create_thread_schedule_for_auth_profile(create_params, auth_profile)
-            .await
-            .map_err(|err| internal_error(format!("failed to create thread schedule: {err}")))?;
+        let schedule = match parent_schedule_id {
+            Some(parent_schedule_id) => {
+                state_db
+                    .thread_schedules()
+                    .create_nested_thread_schedule_for_auth_profile(
+                        create_params,
+                        parent_schedule_id,
+                        auth_profile,
+                    )
+                    .await
+            }
+            None => {
+                state_db
+                    .thread_schedules()
+                    .create_thread_schedule_for_auth_profile(create_params, auth_profile)
+                    .await
+            }
+        }
+        .map_err(|err| schedule_mutation_error("create", err))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
         self.outgoing
@@ -456,7 +471,7 @@ impl ThreadScheduleRequestProcessor {
                 },
             )
             .await
-            .map_err(|err| internal_error(format!("failed to update thread schedule: {err}")))?
+            .map_err(|err| schedule_mutation_error("update", err))?
             .ok_or_else(|| invalid_request(format!("schedule not found: {schedule_id}")))?;
         let schedule = api_thread_schedule_from_state(schedule);
 
@@ -568,18 +583,25 @@ impl ThreadScheduleRequestProcessor {
                 .await;
             return Ok(());
         };
-        let deleted = state_db
+        let deleted_schedule_ids = state_db
             .thread_schedules()
-            .delete_thread_schedule(schedule_id.as_str())
+            .delete_thread_schedule_tree(schedule_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to delete thread schedule: {err}")))?;
+        let deleted = !deleted_schedule_ids.is_empty();
 
         self.outgoing
             .send_response(request_id.clone(), ThreadScheduleDeleteResponse { deleted })
             .await;
         if deleted {
-            self.emit_thread_schedule_deleted_ordered(thread_id, schedule_id, listener_command_tx)
+            for deleted_schedule_id in deleted_schedule_ids {
+                self.emit_thread_schedule_deleted_ordered(
+                    thread_id,
+                    deleted_schedule_id,
+                    listener_command_tx.clone(),
+                )
                 .await;
+            }
         }
         Ok(())
     }
@@ -596,14 +618,18 @@ impl ThreadScheduleRequestProcessor {
             .resolve_schedule_id_for_thread(&state_db, thread_id, params.schedule_id.as_str())
             .await?;
         let lease_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let local_active_fresh_after = self.schedule_runtime.local_active_fresh_after(now);
         let claim = state_db
             .thread_schedules()
-            .claim_thread_schedule_now(
-                schedule_id.as_str(),
-                Utc::now(),
-                lease_id.as_str(),
-                Duration::from_secs(RUN_NOW_LEASE_SECONDS),
-            )
+            .claim_thread_schedule_now_with_params(codex_state::ThreadScheduleNowClaimParams {
+                schedule_id: schedule_id.as_str(),
+                now,
+                lease_id: lease_id.as_str(),
+                lease_duration: Duration::from_secs(RUN_NOW_LEASE_SECONDS),
+                local_active_owner_id: Some(self.schedule_runtime.local_active_owner_id()),
+                local_active_fresh_after: Some(local_active_fresh_after),
+            })
             .await
             .map_err(|err| internal_error(format!("failed to claim thread schedule: {err}")))?
             .ok_or_else(|| {
@@ -658,11 +684,27 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         let running_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let rollout_path = match running_thread.as_ref() {
-            Some(thread) => thread.rollout_path().ok_or_else(|| {
-                invalid_request(format!(
-                    "ephemeral thread does not support scheduled tasks: {thread_id}"
-                ))
-            })?,
+            Some(thread) => {
+                let rollout_path = thread.rollout_path().ok_or_else(|| {
+                    invalid_request(format!(
+                        "ephemeral thread does not support scheduled tasks: {thread_id}"
+                    ))
+                })?;
+                thread
+                    .try_ensure_rollout_materialized()
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to materialize thread rollout before scheduling: {err}"
+                        ))
+                    })?;
+                thread.flush_rollout().await.map_err(|err| {
+                    internal_error(format!(
+                        "failed to flush thread rollout before scheduling: {err}"
+                    ))
+                })?;
+                rollout_path
+            }
             None => codex_rollout::find_thread_path_by_id_str(
                 &self.config.codex_home,
                 &thread_id.to_string(),
@@ -930,6 +972,15 @@ fn next_active_recurring_run_at(
     thread_schedule_runtime::next_thread_schedule_run_at(schedule, timezone, Utc::now())
         .map_err(|err| invalid_request(err.to_string()))?
         .ok_or_else(|| invalid_request("nextRunAt is required for one-time schedules"))
+}
+
+fn schedule_mutation_error(action: &str, err: anyhow::Error) -> JSONRPCErrorError {
+    let message = err.to_string();
+    if message.starts_with("invalid nested loop:") {
+        invalid_request(message)
+    } else {
+        internal_error(format!("failed to {action} thread schedule: {message}"))
+    }
 }
 
 enum ScheduleStatusResponseKind {

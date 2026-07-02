@@ -30,6 +30,7 @@ use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use core_test_support::responses::mount_models_once;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -668,7 +669,7 @@ experimental_bearer_token = "test-token"
             include_hidden: None,
             model_provider: None,
             model_gateway: Some(OPENROUTER_PROVIDER_ID.to_string()),
-            upstream_provider: Some("deepseek".to_string()),
+            upstream_provider: Some("z-ai".to_string()),
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -687,16 +688,36 @@ experimental_bearer_token = "test-token"
                     model.model_gateway.as_str(),
                     model.model_gateway_kind,
                     model.upstream_provider.as_deref(),
+                    model.default_reasoning_effort.clone(),
                 )
             })
             .collect::<Vec<_>>(),
-        vec![(
-            "deepseek/deepseek-v4-flash",
-            OPENROUTER_PROVIDER_ID,
-            OPENROUTER_PROVIDER_ID,
-            ModelGatewayKind::Aggregator,
-            Some("deepseek"),
-        )]
+        vec![
+            (
+                "z-ai/glm-5.2",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::High,
+            ),
+            (
+                "z-ai/glm-4.7",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::Medium,
+            ),
+            (
+                "z-ai/glm-5.1",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::Medium,
+            ),
+        ]
     );
     assert!(next_cursor.is_none());
     Ok(())

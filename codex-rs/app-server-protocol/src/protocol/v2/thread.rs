@@ -16,6 +16,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -27,6 +28,21 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use ts_rs::TS;
+
+// Schemars' `required` attribute otherwise emits the inner string schema for
+// `Option<String>`, so keep the required field nullable in generated fixtures.
+fn required_nullable_string_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    schemars::schema::SchemaObject {
+        instance_type: Some(schemars::schema::SingleOrVec::Vec(vec![
+            schemars::schema::InstanceType::String,
+            schemars::schema::InstanceType::Null,
+        ])),
+        ..Default::default()
+    }
+    .into()
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +225,11 @@ pub struct ThreadStartResponse {
     #[experimental("thread/start.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/start.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -297,6 +318,19 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the personality for subsequent turns.
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    /// Override the session-scoped extra prompt for subsequent turns. `null`
+    /// clears the current prompt; omission leaves it unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub session_prompt: Option<Option<String>>,
+    /// Override session-level managed worktree behavior.
+    #[ts(optional = nullable)]
+    pub worktree_mode: Option<SessionWorktreeMode>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -321,6 +355,8 @@ pub struct ThreadSettings {
     pub summary: Option<ReasoningSummary>,
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
+    pub session_prompt: Option<String>,
+    pub worktree_mode: SessionWorktreeMode,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -535,6 +571,11 @@ pub struct ThreadResumeResponse {
     #[experimental("thread/resume.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/resume.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -696,6 +737,11 @@ pub struct ThreadForkResponse {
     #[experimental("thread/fork.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/fork.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -819,6 +865,7 @@ v2_enum_from_core! {
         Blocked,
         UsageLimited,
         BudgetLimited,
+        Deferred,
         Complete,
         Cancelled,
     }
@@ -942,6 +989,7 @@ pub enum ThreadGoalPlanNodeStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -1070,6 +1118,8 @@ pub struct ThreadGoalPlan {
     #[ts(type = "number")]
     pub budget_limited_node_count: i64,
     #[ts(type = "number")]
+    pub deferred_node_count: i64,
+    #[ts(type = "number")]
     pub cancelled_node_count: i64,
     #[ts(type = "number")]
     pub created_at: i64,
@@ -1098,6 +1148,7 @@ impl From<codex_protocol::protocol::ThreadGoalPlan> for ThreadGoalPlan {
             blocked_node_count: value.blocked_node_count,
             usage_limited_node_count: value.usage_limited_node_count,
             budget_limited_node_count: value.budget_limited_node_count,
+            deferred_node_count: value.deferred_node_count,
             cancelled_node_count: value.cancelled_node_count,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -1172,6 +1223,7 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNodeStatus> for ThreadGoalPlan
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::BudgetLimited => {
                 Self::BudgetLimited
             }
+            codex_protocol::protocol::ThreadGoalPlanNodeStatus::Deferred => Self::Deferred,
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::Complete => Self::Complete,
             codex_protocol::protocol::ThreadGoalPlanNodeStatus::Cancelled => Self::Cancelled,
         }
@@ -1212,6 +1264,24 @@ pub struct ThreadGoalPlanActivateNodeParams {
 pub struct ThreadGoalPlanActivateNodeResponse {
     pub goal: ThreadGoal,
     pub plan: ThreadGoalPlan,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalParams {
+    pub thread_id: String,
+    pub objective: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalResponse {
+    pub goal: Option<ThreadGoal>,
+    pub plan: ThreadGoalPlan,
+    pub added_node: ThreadGoalPlanNode,
+    pub created_plan: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1276,6 +1346,10 @@ pub enum ThreadSchedulePromptSource {
 pub struct ThreadSchedule {
     pub thread_id: String,
     pub schedule_id: String,
+    #[ts(type = "string | null")]
+    pub parent_schedule_id: Option<String>,
+    #[ts(type = "number")]
+    pub nesting_depth: i64,
     pub prompt: String,
     pub prompt_source: ThreadSchedulePromptSource,
     pub schedule: ThreadScheduleSpec,
@@ -1303,6 +1377,7 @@ pub struct ThreadSchedule {
 pub enum ThreadScheduleRunStatus {
     Leased,
     Running,
+    Deferred,
     Completed,
     Failed,
 }
@@ -1339,6 +1414,8 @@ pub struct ThreadScheduleStats {
     #[ts(type = "number")]
     pub running_runs: i64,
     #[ts(type = "number")]
+    pub deferred_runs: i64,
+    #[ts(type = "number")]
     pub completed_runs: i64,
     #[ts(type = "number")]
     pub failed_runs: i64,
@@ -1355,6 +1432,8 @@ pub struct ThreadScheduleStats {
 #[ts(export_to = "v2/")]
 pub struct ThreadScheduleCreateParams {
     pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub parent_schedule_id: Option<String>,
     pub prompt: String,
     #[ts(optional = nullable)]
     pub prompt_source: Option<ThreadSchedulePromptSource>,
@@ -1586,10 +1665,14 @@ pub struct ThreadMonitorCreateParams {
     pub name: String,
     pub prompt: String,
     pub command: String,
+    /// Optional working directory relative to the thread cwd. Parent directory
+    /// traversal and absolute paths are rejected.
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub routing: Option<ThreadMonitorRouting>,
+    /// Optional output file relative to the monitor cwd. Parent directory
+    /// traversal, absolute paths, and symlink targets are rejected.
     #[ts(optional = nullable)]
     pub output_file: Option<String>,
 }
@@ -2395,8 +2478,7 @@ pub struct ThreadClosedNotification {
 #[ts(export_to = "v2/")]
 pub struct ThreadNameUpdatedNotification {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[schemars(required, schema_with = "required_nullable_string_schema")]
     pub thread_name: Option<String>,
 }
 

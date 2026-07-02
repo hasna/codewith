@@ -313,6 +313,10 @@ async fn stored_thread_from_sqlite_metadata(
         .await
         .ok()
         .map(|meta_line| meta_line.meta);
+    let auth_profile = session_meta
+        .as_ref()
+        .map(|meta| meta.auth_profile.clone())
+        .unwrap_or_default();
     let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
@@ -352,6 +356,7 @@ async fn stored_thread_from_sqlite_metadata(
             metadata.git_branch,
             metadata.git_origin_url,
         ),
+        auth_profile,
         approval_mode: parse_or_default(&metadata.approval_mode, AskForApproval::OnRequest),
         permission_profile,
         token_usage: None,
@@ -413,6 +418,7 @@ fn stored_thread_from_meta_line(
         agent_role: meta_line.meta.agent_role,
         agent_path: meta_line.meta.agent_path,
         git_info: meta_line.git,
+        auth_profile: meta_line.meta.auth_profile,
         approval_mode: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,

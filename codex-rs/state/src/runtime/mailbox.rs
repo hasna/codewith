@@ -325,6 +325,12 @@ WHERE message_id = (
       AND next_attempt_at_ms <= ?
       AND (expires_at_ms IS NULL OR expires_at_ms > ?)
       AND attempt_count < max_attempts
+      AND (
+          json_extract(payload_json, '$.delivery') IN ('liveOnly', 'live_only', 'resumeAndTrigger', 'resume_and_trigger')
+          OR json_extract(payload_json, '$.deliveryMode') IN ('liveOnly', 'live_only', 'resumeAndTrigger', 'resume_and_trigger')
+          OR json_extract(payload_json, '$.localDelivery') IN ('liveOnly', 'live_only', 'resumeAndTrigger', 'resume_and_trigger')
+          OR json_extract(payload_json, '$.dispatch.mode') IN ('liveOnly', 'live_only', 'resumeAndTrigger', 'resume_and_trigger')
+      )
       AND NOT EXISTS (
           SELECT 1
           FROM local_active_sessions AS active

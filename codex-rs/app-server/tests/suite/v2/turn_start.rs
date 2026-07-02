@@ -468,6 +468,7 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
                 AdditionalContextEntry {
                     value: "source value".to_string(),
                     kind: AdditionalContextKind::Untrusted,
+                    source: None,
                 },
             )])),
             ..Default::default()

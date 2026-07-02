@@ -342,6 +342,8 @@ impl ChatWidget {
         self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
         self.refreshing_status_outputs.clear();
         self.refreshing_minimax_usage_status_outputs.clear();
+        self.usage_panel_rate_limit_state = UsagePanelRateLimitState::default();
+        self.usage_panel_minimax_usage_state = UsagePanelMiniMaxUsageState::default();
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
@@ -702,6 +704,7 @@ impl ChatWidget {
         self.set_approvals_reviewer(settings.approvals_reviewer.to_core());
         self.set_auth_profile(settings.auth_profile.clone());
         self.config.personality = settings.personality;
+        self.set_session_prompt_from_settings(settings.session_prompt.clone());
         self.set_auth_profile(settings.auth_profile.clone());
 
         let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
@@ -1004,6 +1007,7 @@ impl ChatWidget {
                 /*summary*/ None,
                 /*service_tier*/ None,
                 Some(self.effective_collaboration_mode()),
+                /*session_prompt*/ None,
                 /*personality*/ None,
             ),
         });

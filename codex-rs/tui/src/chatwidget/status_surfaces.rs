@@ -36,6 +36,29 @@ const TERMINAL_TITLE_ACTION_REQUIRED_INTERVAL: Duration = Duration::from_secs(1)
 const TERMINAL_TITLE_ACTION_REQUIRED_PREFIX: &str = "[ ! ] Action Required";
 const TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN: &str = "[ . ] Action Required";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunStateStatus {
+    Starting,
+    WaitingOnHuman,
+    WaitingOnBackground,
+    Idle,
+    Working,
+    Thinking,
+}
+
+impl RunStateStatus {
+    fn label(self) -> &'static str {
+        match self {
+            RunStateStatus::Starting => "Starting",
+            RunStateStatus::WaitingOnHuman => "Waiting on human",
+            RunStateStatus::WaitingOnBackground => "Waiting on background",
+            RunStateStatus::Idle => "Idle",
+            RunStateStatus::Working => "Working",
+            RunStateStatus::Thinking => "Thinking",
+        }
+    }
+}
+
 #[derive(Debug)]
 /// Parsed status-surface configuration for one refresh pass.
 ///
@@ -216,8 +239,7 @@ impl ChatWidget {
     /// When the `activity` item is present in an animated running state, this also
     /// schedules the next frame so the title animation keeps advancing.
     fn refresh_terminal_title_from_selections(&mut self, selections: &StatusSurfaceSelections) {
-        self.last_terminal_title_requires_action =
-            self.terminal_title_shows_action_required_with_selections(selections);
+        self.last_terminal_title_requires_action = self.terminal_title_requires_action();
         if selections.terminal_title_items.is_empty() {
             if let Err(err) = self.clear_managed_terminal_title() {
                 tracing::debug!(error = %err, "failed to clear terminal title");
@@ -666,7 +688,9 @@ impl ChatWidget {
                     .insert(run.schedule_id.clone());
                 self.status_line_schedules_by_id.remove(&run.schedule_id);
             }
-            ThreadScheduleRunStatus::Completed | ThreadScheduleRunStatus::Failed => {
+            ThreadScheduleRunStatus::Completed
+            | ThreadScheduleRunStatus::Failed
+            | ThreadScheduleRunStatus::Deferred => {
                 self.status_line_running_schedule_ids
                     .remove(&run.schedule_id);
                 self.status_line_schedules_by_id.remove(&run.schedule_id);
@@ -767,7 +791,7 @@ impl ChatWidget {
                         format!("+{} -{}", stats.additions, stats.deletions)
                     }
                 }),
-            StatusLineItem::Status => Some(self.run_state_status_text()),
+            StatusLineItem::Status => Some(self.status_line_run_state_status_text()),
             StatusLineItem::ScheduleCountdown => {
                 let value = self.status_line_schedule_countdown_text();
                 if value.is_some() {
@@ -864,7 +888,9 @@ impl ChatWidget {
             StatusSurfacePreviewItem::AppName => return Some("codex".to_string()),
             StatusSurfacePreviewItem::ProjectName => return self.terminal_title_project_name(),
             StatusSurfacePreviewItem::ProjectRoot => StatusLineItem::ProjectRoot,
-            StatusSurfacePreviewItem::Status => return Some(self.run_state_status_text()),
+            StatusSurfacePreviewItem::Status => {
+                return Some(self.status_line_run_state_status_text());
+            }
             StatusSurfacePreviewItem::ScheduleCountdown => {
                 return self.status_line_schedule_countdown_text();
             }
@@ -987,30 +1013,49 @@ impl ChatWidget {
         format!("{} {label}{service_tier_label}", self.model_display_name())
     }
 
-    /// Computes the compact runtime status label used by word-based status items.
+    /// Computes the compact runtime status label used by the status-line
+    /// run-state item.
     ///
-    /// Startup takes precedence over normal task states, and idle state renders
-    /// as `Ready` regardless of the last active status bucket.
+    /// Action-required prompts and startup take precedence over normal task
+    /// states. Model-authored text is display-only and only renders while a task
+    /// is running, so it cannot mask human prompts or leave stale idle state.
+    pub(super) fn status_line_run_state_status_text(&self) -> String {
+        let status = self.run_state_status();
+        match status {
+            RunStateStatus::Working | RunStateStatus::Thinking => self
+                .status_state
+                .agent_statusline
+                .clone()
+                .unwrap_or_else(|| status.label().to_string()),
+            status => status.label().to_string(),
+        }
+    }
+
+    /// Computes the built-in compact runtime status label for non-statusline
+    /// surfaces such as the terminal title.
     pub(super) fn run_state_status_text(&self) -> String {
+        self.run_state_status().label().to_string()
+    }
+
+    fn run_state_status(&self) -> RunStateStatus {
+        if self.terminal_title_requires_action() {
+            return RunStateStatus::WaitingOnHuman;
+        }
+
         if self.mcp_startup_status.is_some() {
-            return "Starting".to_string();
+            return RunStateStatus::Starting;
+        }
+
+        if !self.bottom_pane.is_task_running() {
+            return RunStateStatus::Idle;
         }
 
         match self.status_state.terminal_title_status_kind {
-            TerminalTitleStatusKind::Working if !self.bottom_pane.is_task_running() => {
-                "Ready".to_string()
+            TerminalTitleStatusKind::Working => RunStateStatus::Working,
+            TerminalTitleStatusKind::WaitingForBackgroundTerminal => {
+                RunStateStatus::WaitingOnBackground
             }
-            TerminalTitleStatusKind::WaitingForBackgroundTerminal
-                if !self.bottom_pane.is_task_running() =>
-            {
-                "Ready".to_string()
-            }
-            TerminalTitleStatusKind::Thinking if !self.bottom_pane.is_task_running() => {
-                "Ready".to_string()
-            }
-            TerminalTitleStatusKind::Working => "Working".to_string(),
-            TerminalTitleStatusKind::WaitingForBackgroundTerminal => "Waiting".to_string(),
-            TerminalTitleStatusKind::Thinking => "Thinking".to_string(),
+            TerminalTitleStatusKind::Thinking => RunStateStatus::Thinking,
         }
     }
 

@@ -62,5 +62,15 @@ mod tests {
                 .as_ref()
                 .is_some_and(|properties| properties.contains_key("profile"))
         );
+        let action = tool
+            .parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("action"))
+            .expect("action property");
+        assert_eq!(
+            action.enum_values.as_ref(),
+            Some(&vec![json!("list"), json!("current"), json!("switch")])
+        );
     }
 }

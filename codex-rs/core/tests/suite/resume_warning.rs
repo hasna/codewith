@@ -9,6 +9,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -43,6 +44,8 @@ fn resume_history(
         model_provider_id: None,
         personality: None,
         collaboration_mode: None,
+        session_prompt: None,
+        worktree_mode: SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: None,
