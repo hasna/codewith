@@ -888,24 +888,34 @@ INSERT INTO thread_goal_plan_nodes (
     node_id,
     plan_id,
     thread_id,
+    assigned_thread_id,
     key,
     sequence,
     priority,
     objective,
+    title,
     status,
     token_budget,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&node_id)
         .bind(&params.plan_id)
         .bind(params.thread_id.to_string())
+        .bind(
+            node.assigned_thread_id
+                .unwrap_or(params.thread_id)
+                .to_string(),
+        )
         .bind(&node.key)
         .bind(next_sequence + i64::try_from(index)?)
         .bind(node.priority)
         .bind(&node.objective)
+        .bind(
+            normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?,
+        )
         .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
         .bind(node.token_budget)
         .bind(now_ms)

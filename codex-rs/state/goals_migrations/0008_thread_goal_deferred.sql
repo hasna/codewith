@@ -19,7 +19,8 @@ CREATE TABLE thread_goals_new (
     tokens_used INTEGER NOT NULL DEFAULT 0,
     time_used_seconds INTEGER NOT NULL DEFAULT 0,
     created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL
+    updated_at_ms INTEGER NOT NULL,
+    title TEXT
 );
 
 INSERT INTO thread_goals_new (
@@ -31,7 +32,8 @@ INSERT INTO thread_goals_new (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
+    updated_at_ms,
+    title
 )
 SELECT
     thread_id,
@@ -42,7 +44,8 @@ SELECT
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
+    updated_at_ms,
+    title
 FROM thread_goals;
 
 DROP TABLE thread_goals;
@@ -73,6 +76,8 @@ CREATE TABLE thread_goal_plan_nodes_new (
     projected_goal_id TEXT,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
+    assigned_thread_id TEXT,
+    title TEXT,
     FOREIGN KEY(plan_id) REFERENCES thread_goal_plans(plan_id) ON DELETE CASCADE,
     UNIQUE(plan_id, key)
 );
@@ -91,7 +96,9 @@ INSERT INTO thread_goal_plan_nodes_new (
     time_used_seconds,
     projected_goal_id,
     created_at_ms,
-    updated_at_ms
+    updated_at_ms,
+    assigned_thread_id,
+    title
 )
 SELECT
     node_id,
@@ -107,7 +114,9 @@ SELECT
     time_used_seconds,
     projected_goal_id,
     created_at_ms,
-    updated_at_ms
+    updated_at_ms,
+    assigned_thread_id,
+    title
 FROM thread_goal_plan_nodes;
 
 DROP TABLE thread_goal_plan_nodes;
@@ -121,5 +130,8 @@ CREATE INDEX idx_thread_goal_plan_nodes_thread_status
 
 CREATE INDEX idx_thread_goal_plan_nodes_projected_goal
     ON thread_goal_plan_nodes(projected_goal_id);
+
+CREATE INDEX idx_thread_goal_plan_nodes_assigned_status
+    ON thread_goal_plan_nodes(assigned_thread_id, status, sequence);
 
 PRAGMA foreign_keys=ON;
