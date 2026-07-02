@@ -685,7 +685,7 @@ impl ChatWidget {
             .send(AppEvent::RawOutputModeChanged { enabled });
     }
 
-    fn next_status_request_id(&mut self) -> u64 {
+    pub(super) fn next_status_request_id(&mut self) -> u64 {
         let request_id = self.next_status_refresh_request_id;
         self.next_status_refresh_request_id = self.next_status_refresh_request_id.wrapping_add(1);
         request_id
@@ -1400,6 +1400,9 @@ impl ChatWidget {
             }
             SlashCommand::Status | SlashCommand::Stats => {
                 self.open_status_panel();
+            }
+            SlashCommand::Usage => {
+                self.open_usage_panel();
             }
             SlashCommand::Changelog => {
                 self.add_changelog_output();
@@ -2705,6 +2708,7 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig

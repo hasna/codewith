@@ -342,6 +342,8 @@ impl ChatWidget {
         self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
         self.refreshing_status_outputs.clear();
         self.refreshing_minimax_usage_status_outputs.clear();
+        self.usage_panel_rate_limit_state = UsagePanelRateLimitState::default();
+        self.usage_panel_minimax_usage_state = UsagePanelMiniMaxUsageState::default();
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
