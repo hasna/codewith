@@ -210,9 +210,16 @@ fn known_openrouter_glm_5_1_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(202_752));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, None);
-    assert!(model.supported_reasoning_levels.is_empty());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
@@ -265,14 +272,21 @@ fn known_openrouter_current_models_use_local_metadata() {
 }
 
 #[test]
-fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
+fn known_openrouter_glm_4_7_model_advertises_reasoning_effort() {
     let model = model_info_from_slug_for_provider("z-ai/glm-4.7", Some("openrouter"));
 
     assert_eq!(model.display_name, "Z.ai GLM 4.7");
     assert_eq!(model.context_window, Some(202_752));
-    assert_eq!(model.default_reasoning_level, None);
-    assert_eq!(model.supported_reasoning_levels, Vec::new());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
