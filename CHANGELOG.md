@@ -38,6 +38,18 @@ Known evidence gaps:
 
 - No unreleased product changes are recorded here yet.
 
+## [0.1.54] - 2026-07-02
+
+Tag: `rust-v0.1.54`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.54>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.53...rust-v0.1.54>
+
+### Fixed
+
+- Tuned macOS primary release builds to override the workspace release
+  `codegen-units = 1` setting, preventing the full CLI release build from
+  timing out before npm publishing can run.
+
 ## [0.1.53] - 2026-07-01
 
 Tag: `rust-v0.1.53`

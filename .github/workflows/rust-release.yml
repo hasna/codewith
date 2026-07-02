@@ -325,12 +325,20 @@ jobs:
           if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *linux* ]]; then
             export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
           fi
+          if [[ "${{ matrix.bundle }}" == "primary" && "${{ matrix.target }}" == *apple* ]]; then
+            # macOS primary release builds compile the full CLI and have repeatedly
+            # timed out with the workspace release profile's codegen-units = 1.
+            # Use Cargo's env override here instead of changing the profile for
+            # every release target.
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
+          fi
 
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             build_args+=(--bin "$binary")
           done
           echo "CARGO_PROFILE_RELEASE_LTO: ${CARGO_PROFILE_RELEASE_LTO}"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-Cargo.toml default}"
           echo "CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-default}"
           cargo build --target ${{ matrix.target }} --release --timings "${build_args[@]}"
 
