@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(models[0].model, "z-ai/glm-5.2");
         assert_eq!(models[0].display_name, "Z.ai GLM 5.2");
         assert!(models[0].is_default);
-        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::High);
         assert_eq!(models[1].model, "openai/gpt-oss-120b");
         assert_eq!(models[1].display_name, "OpenAI GPT OSS 120B");
         assert!(!models[1].is_default);

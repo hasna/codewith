@@ -526,12 +526,12 @@ mod tests {
     fn openrouter_fallback_models_keep_default_and_include_glm52() {
         let models = fallback_models_for_provider("openrouter");
 
-        assert_eq!(models[0].id, "openai/gpt-oss-120b");
+        assert_eq!(models[0].id, "z-ai/glm-5.2");
         assert!(models[0].is_default);
         assert!(
             models
                 .iter()
-                .any(|model| model.id == "z-ai/glm-5.2" && !model.is_default)
+                .any(|model| model.id == "openai/gpt-oss-120b" && !model.is_default)
         );
     }
 

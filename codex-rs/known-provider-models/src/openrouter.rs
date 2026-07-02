@@ -120,10 +120,11 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_parallel_tool_calls*/ true,
             /*supports_reasoning*/ true,
         )),
-        "z-ai/glm-5.2" | "z-ai/glm-5.2-20260616" => Some(model(
+        "z-ai/glm-5.2" | "z-ai/glm-5.2-20260616" => Some(KnownProviderModelMetadata::new(
             "Z.ai GLM 5.2",
             /*context_window*/ 1_048_576,
             /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
             /*supports_reasoning*/ true,
         )),
         "deepseek/deepseek-v4-flash" => Some(model(
@@ -223,6 +224,13 @@ pub(crate) fn reasoning_levels(
             vec![
                 reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
                 reasoning_preset(ReasoningEffort::Medium, "Reasoning enabled"),
+            ],
+        ),
+        "z-ai/glm-5.2" | "z-ai/glm-5.2-20260616" => (
+            Some(ReasoningEffort::High),
+            vec![
+                reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                reasoning_preset(ReasoningEffort::XHigh, "Extra high reasoning"),
             ],
         ),
         _ => (None, Vec::new()),

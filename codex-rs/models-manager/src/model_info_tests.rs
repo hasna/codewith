@@ -227,12 +227,6 @@ fn known_openrouter_glm_5_1_model_uses_local_metadata() {
 fn known_openrouter_current_models_use_local_metadata() {
     let cases = [
         (
-            "z-ai/glm-5.2",
-            "Z.ai GLM 5.2",
-            1_048_576,
-            vec![InputModality::Text],
-        ),
-        (
             "qwen/qwen3.7-plus",
             "Qwen3.7 Plus",
             1_000_000,
@@ -285,6 +279,32 @@ fn known_openrouter_glm_4_7_model_advertises_reasoning_effort() {
             .map(|preset| preset.effort.clone())
             .collect::<Vec<_>>(),
         vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_openrouter_glm_5_2_model_advertises_high_reasoning_effort() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.2", Some("openrouter"));
+
+    assert_eq!(model.display_name, "Z.ai GLM 5.2");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::High, ReasoningEffort::XHigh]
     );
     assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);

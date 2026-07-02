@@ -694,6 +694,14 @@ experimental_bearer_token = "test-token"
             .collect::<Vec<_>>(),
         vec![
             (
+                "z-ai/glm-5.2",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::High,
+            ),
+            (
                 "z-ai/glm-4.7",
                 OPENROUTER_PROVIDER_ID,
                 OPENROUTER_PROVIDER_ID,
@@ -708,14 +716,6 @@ experimental_bearer_token = "test-token"
                 ModelGatewayKind::Aggregator,
                 Some("z-ai"),
                 ReasoningEffort::Medium,
-            ),
-            (
-                "z-ai/glm-5.2",
-                OPENROUTER_PROVIDER_ID,
-                OPENROUTER_PROVIDER_ID,
-                ModelGatewayKind::Aggregator,
-                Some("z-ai"),
-                ReasoningEffort::High,
             ),
         ]
     );
