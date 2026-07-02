@@ -649,7 +649,28 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         /*show_fast_status*/ false,
     );
 
-    let rendered = render_transcript(&cell).join("\n");
+    let rendered = render_transcript(&cell)
+        .into_iter()
+        .map(|mut line| {
+            let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            let version_placeholder = "v<VERSION>";
+            if let Some(version_pos) = line.find(&version) {
+                let old_len = version.len();
+                line.replace_range(version_pos..version_pos + old_len, version_placeholder);
+                if let Some(pipe_idx) = line.rfind('│')
+                    && version_placeholder.len() > old_len
+                {
+                    let extra_width = version_placeholder.len() - old_len;
+                    let padding_start = line[..pipe_idx].trim_end_matches(' ').len();
+                    let removable_padding = pipe_idx.saturating_sub(padding_start);
+                    let remove_width = extra_width.min(removable_padding);
+                    line.replace_range(pipe_idx - remove_width..pipe_idx, "");
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     insta::assert_snapshot!(rendered);
 }
 

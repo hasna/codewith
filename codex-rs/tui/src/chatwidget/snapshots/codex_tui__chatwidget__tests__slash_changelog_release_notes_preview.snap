@@ -6,11 +6,11 @@ expression: preview
 
   ## [Unreleased]
 
-  ### Added
+  ### Notes
 
-  - Added /tmux --session <name> --window <name> handoff support so an active
-    Codewith TUI can move into a specific existing tmux session and window,
-    while
-    preserving the existing automatic session creation behavior when no target
-    is
-    supplied.
+  - No unreleased product changes are recorded here yet.
+
+  ## [0.1.54] - 2026-07-02
+
+  Tag: rust-v0.1.54
+  npm: https://www.npmjs.com/package/@hasna/codewith/v/0.1.54
