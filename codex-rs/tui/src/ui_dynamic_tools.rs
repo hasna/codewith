@@ -137,7 +137,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: BACKGROUND_AGENTS_TOOL.to_string(),
-            description: "Open or inspect durable background agents owned by the current thread. Starting, attaching, detaching, stopping, deleting, or reading global diagnostics requires the interactive /agent UI.".to_string(),
+            description: "Open or inspect durable background agents owned by the current thread. List, read, and logs output is compact by default; use verbose=true only when raw records are needed. Starting, attaching, detaching, stopping, deleting, or reading global diagnostics requires the interactive /agent UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -148,6 +148,18 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "agent_id": {
                         "type": "string",
                         "description": "Required for action=read or action=logs. The agent must belong to the current thread."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw agent records, snapshots, or event payloads instead of compact summaries."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=logs call."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact rows/events to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],
@@ -196,7 +208,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: SCHEDULES_TOOL.to_string(),
-            description: "Open or inspect one-time schedules and recurring /loop schedules for the current session. Creating, pausing, resuming, deleting, and running schedules require the interactive /schedule or /loop UI.".to_string(),
+            description: "Open or inspect one-time schedules and recurring /loop schedules for the current session. List output is compact by default; use verbose=true only when raw schedule records are needed. Creating, pausing, resuming, deleting, and running schedules require the interactive /schedule or /loop UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -207,6 +219,14 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "kind": {
                         "type": "string",
                         "description": "For action=open/list: one of once, loop, all. Defaults to all for list and once for open."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw schedule records instead of compact summaries."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact schedule rows to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],
@@ -217,7 +237,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: MONITORS_TOOL.to_string(),
-            description: "Open, list, or read monitors for the current session. Stopping, restarting, or deleting a monitor requires the interactive /monitor UI.".to_string(),
+            description: "Open, list, or read monitors for the current session. List and read output is compact by default; use verbose=true only when raw monitor records or full event text are needed. Stopping, restarting, or deleting a monitor requires the interactive /monitor UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -228,6 +248,18 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "monitor_id": {
                         "type": "string",
                         "description": "Required for action=read."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw monitor records and full event text instead of compact summaries."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=read call."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact monitor/event rows to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],

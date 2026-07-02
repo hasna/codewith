@@ -346,6 +346,12 @@ impl MissionControlToolKind {
                     "include_live_sessions".to_string(),
                     nullable_boolean("Whether to include live thread ids from the local process."),
                 ),
+                (
+                    "include_payloads".to_string(),
+                    nullable_boolean(
+                        "Whether to include full pending-interaction payloads and schedule prompts instead of compact previews.",
+                    ),
+                ),
             ])),
             Self::EnqueueInstruction => strict_object(BTreeMap::from([
                 (
@@ -435,6 +441,7 @@ impl MissionControlRuntime {
         args: OverviewArgs,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let include_live_sessions = args.include_live_sessions.unwrap_or(true);
+        let include_payloads = args.include_payloads.unwrap_or(false);
         let live_thread_ids = if include_live_sessions {
             match self.thread_manager.upgrade() {
                 Some(thread_manager) => thread_manager
@@ -505,7 +512,12 @@ impl MissionControlRuntime {
             } else {
                 Vec::new()
             };
-            local_session_values.push(local_session_json(metadata, &live_thread_ids, schedules));
+            local_session_values.push(local_session_json(
+                metadata,
+                &live_thread_ids,
+                schedules,
+                include_payloads,
+            ));
         }
 
         Ok(json_output(json!({
@@ -518,7 +530,7 @@ impl MissionControlRuntime {
             "pendingInteractions": page
                 .data
                 .into_iter()
-                .map(pending_interaction_json)
+                .map(|interaction| pending_interaction_json(interaction, include_payloads))
                 .collect::<Vec<_>>(),
             "nextPendingInteractionCursor": page.next_cursor,
             "capabilities": mission_control_capabilities_json(include_schedules),
@@ -674,7 +686,7 @@ impl MissionControlRuntime {
             return Ok(json_output(json!({
                 "dryRun": true,
                 "updated": false,
-                "interaction": pending_interaction_json(interaction),
+                "interaction": pending_interaction_json(interaction, /*include_payloads*/ false),
                 "responsePreview": response_preview,
             })));
         }
@@ -701,7 +713,8 @@ impl MissionControlRuntime {
         Ok(json_output(json!({
             "dryRun": false,
             "updated": updated,
-            "interaction": interaction.map(pending_interaction_json),
+            "interaction": interaction
+                .map(|interaction| pending_interaction_json(interaction, /*include_payloads*/ false)),
             "responsePreview": response_preview,
         })))
     }
@@ -715,6 +728,7 @@ struct OverviewArgs {
     local_cursor: Option<String>,
     local_limit: Option<u32>,
     include_live_sessions: Option<bool>,
+    include_payloads: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -932,9 +946,11 @@ fn local_session_json(
     metadata: codex_state::ThreadMetadata,
     live_thread_ids: &[String],
     schedules: Vec<codex_state::ThreadSchedule>,
+    include_payloads: bool,
 ) -> Value {
     let thread_id = metadata.id.to_string();
     let live = live_thread_ids.contains(&thread_id);
+    let schedule_count = schedules.len();
     json!({
         "threadId": thread_id,
         "live": live,
@@ -953,15 +969,26 @@ fn local_session_json(
         "createdAt": metadata.created_at.timestamp(),
         "updatedAt": metadata.updated_at.timestamp(),
         "path": metadata.rollout_path.display().to_string(),
-        "schedules": schedules.into_iter().map(schedule_json).collect::<Vec<_>>(),
+        "scheduleCount": schedule_count,
+        "schedules": schedules
+            .into_iter()
+            .map(|schedule| schedule_summary_json(schedule, include_payloads))
+            .collect::<Vec<_>>(),
     })
 }
 
-fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
+fn schedule_summary_json(schedule: codex_state::ThreadSchedule, include_payloads: bool) -> Value {
+    let prompt = if include_payloads {
+        json!(&schedule.prompt)
+    } else {
+        Value::Null
+    };
     json!({
         "threadId": schedule.thread_id.to_string(),
         "scheduleId": schedule.schedule_id,
-        "prompt": schedule.prompt,
+        "promptPreview": truncate_preview(&schedule.prompt),
+        "promptChars": schedule.prompt.chars().count(),
+        "prompt": prompt,
         "promptSource": schedule.prompt_source.as_str(),
         "schedule": schedule_spec_json(schedule.schedule),
         "timezone": schedule.timezone,
@@ -992,7 +1019,22 @@ fn schedule_spec_json(schedule: codex_state::ThreadScheduleSpec) -> Value {
     }
 }
 
-fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Value {
+fn pending_interaction_json(
+    interaction: codex_state::PendingInteraction,
+    include_payloads: bool,
+) -> Value {
+    let request_payload = if include_payloads {
+        interaction.request_payload_json
+    } else {
+        Value::Null
+    };
+    let response_payload = if include_payloads {
+        interaction
+            .response_payload_json
+            .map_or(Value::Null, |payload| payload)
+    } else {
+        Value::Null
+    };
     json!({
         "interactionId": interaction.interaction_id,
         "threadId": interaction.thread_id.to_string(),
@@ -1002,11 +1044,11 @@ fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Val
         "workerRequestId": interaction.worker_request_id,
         "kind": interaction.kind.as_str(),
         "status": interaction.status.as_str(),
-        "requestPayload": interaction.request_payload_json,
+        "requestPayload": request_payload,
         "requestPayloadSha256": interaction.request_payload_sha256,
         "requestPayloadPreview": interaction.request_payload_preview,
         "requestRedactions": interaction.request_redactions_json,
-        "responsePayload": interaction.response_payload_json,
+        "responsePayload": response_payload,
         "responsePayloadSha256": interaction.response_payload_sha256,
         "responsePayloadPreview": interaction.response_payload_preview,
         "responseRedactions": interaction.response_redactions_json,
@@ -1302,6 +1344,7 @@ mod tests {
                     local_cursor: None,
                     local_limit: None,
                     include_live_sessions: Some(false),
+                    include_payloads: None,
                 })
                 .await
                 .expect("overview should return output"),
@@ -1318,11 +1361,58 @@ mod tests {
             interaction_id
         );
         assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadPreview"],
+            "needs user decision"
+        );
+        assert!(
+            overview["pendingInteractions"][0]["requestPayload"].is_null(),
+            "mission-control overview should not include full request payloads by default"
+        );
+        assert!(
+            overview["pendingInteractions"][0]["responsePayload"].is_null(),
+            "mission-control overview should not include full response payloads by default"
+        );
+        let payload_overview = output_json(
+            runtime
+                .handle_overview(OverviewArgs {
+                    pending_cursor: None,
+                    pending_limit: None,
+                    local_cursor: None,
+                    local_limit: None,
+                    include_live_sessions: Some(false),
+                    include_payloads: Some(true),
+                })
+                .await
+                .expect("overview should return payloads when requested"),
+        )
+        .await;
+        assert_eq!(
+            payload_overview["pendingInteractions"][0]["requestPayload"],
+            json!({ "reason": "needs user decision" })
+        );
+        assert_eq!(
+            payload_overview["localSessions"][0]["schedules"][0]["prompt"],
+            "Check schedule visibility"
+        );
+        assert_eq!(
             overview["localSessions"][0]["schedules"]
                 .as_array()
                 .expect("schedules")
                 .len(),
             1
+        );
+        assert_eq!(overview["localSessions"][0]["scheduleCount"], 1);
+        assert_eq!(
+            overview["localSessions"][0]["schedules"][0]["promptPreview"],
+            "Check schedule visibility"
+        );
+        assert_eq!(
+            overview["localSessions"][0]["schedules"][0]["promptChars"],
+            25
+        );
+        assert!(
+            overview["localSessions"][0]["schedules"][0]["prompt"].is_null(),
+            "mission-control overview should not include full schedule prompts by default"
         );
         assert_eq!(overview["capabilities"]["scheduledTasks"], true);
         assert_eq!(overview["capabilities"]["workflowMutation"], false);
@@ -1338,6 +1428,7 @@ mod tests {
                     local_cursor: None,
                     local_limit: None,
                     include_live_sessions: Some(false),
+                    include_payloads: None,
                 })
                 .await
                 .expect("overview should return output when schedules are disabled"),
@@ -1816,6 +1907,7 @@ mod tests {
                     tool_json.pointer("/parameters/required"),
                     Some(&json!([
                         "include_live_sessions",
+                        "include_payloads",
                         "local_cursor",
                         "local_limit",
                         "pending_cursor",
@@ -1823,6 +1915,7 @@ mod tests {
                     ]))
                 );
                 assert_nullable_property(tool_json, "include_live_sessions");
+                assert_nullable_property(tool_json, "include_payloads");
             }
             MissionControlToolKind::EnqueueInstruction => {
                 assert_nullable_property(tool_json, "resume");

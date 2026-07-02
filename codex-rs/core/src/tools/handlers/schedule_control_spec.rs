@@ -65,12 +65,20 @@ pub fn create_manage_schedule_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "verbose".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. When true, return full prompts and lease timestamps instead of the compact summary."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_SCHEDULE_TOOL_NAME.to_string(),
         description: r#"Manage scheduled prompts for the current thread.
 Use `list` before mutating when the user did not name a specific schedule.
+List and mutation responses are compact by default: they include ids, timing, status, prompt previews, and counts. Set `verbose=true` only when full prompts or lease details are needed.
 `create` adds a one-time scheduled prompt. For requests such as "in 3 minutes", "tomorrow at 9", or "at 10:30", use schedule type `once` and set `next_run_at`.
 Do not create recurring interval, cron, or dynamic schedules with this tool. Recurring work belongs in `/loop`.
 `pause` stops future scheduled runs without aborting an already running turn.

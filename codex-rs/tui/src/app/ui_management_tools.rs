@@ -16,6 +16,14 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 
+use super::ui_management_tool_summaries::COMPACT_LIST_LIMIT;
+use super::ui_management_tool_summaries::compact_agent_logs_response;
+use super::ui_management_tool_summaries::compact_agent_read_response;
+use super::ui_management_tool_summaries::compact_agent_value;
+use super::ui_management_tool_summaries::compact_monitor_read_response;
+use super::ui_management_tool_summaries::compact_monitor_value;
+use super::ui_management_tool_summaries::compact_schedule_value;
+
 #[derive(Debug, Deserialize)]
 pub(super) struct BackgroundTerminalsArgs {
     pub(super) action: String,
@@ -30,6 +38,9 @@ pub(super) struct McpArgs {
 pub(super) struct BackgroundAgentsArgs {
     pub(super) action: String,
     pub(super) agent_id: Option<String>,
+    pub(super) cursor: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,12 +57,24 @@ pub(super) struct ActiveSessionsArgs {
 pub(super) struct SchedulesArgs {
     pub(super) action: String,
     pub(super) kind: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct MonitorsArgs {
     pub(super) action: String,
     pub(super) monitor_id: Option<String>,
+    pub(super) cursor: Option<String>,
+    pub(super) verbose: Option<bool>,
+    pub(super) limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduleKind {
+    All,
+    Once,
+    Loop,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,12 +173,26 @@ impl App {
                     .agent_list()
                     .await
                     .map(|response| {
+                        let agents = response
+                            .data
+                            .into_iter()
+                            .filter(|agent| {
+                                agent.parent_thread_id.as_deref() == Some(thread_id.as_str())
+                            })
+                            .collect::<Vec<_>>();
+                        if args.verbose.unwrap_or(false) {
+                            return json!({ "agents": agents });
+                        }
+                        let total = agents.len();
+                        let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
                         json!({
-                            "agents": response
-                                .data
-                                .into_iter()
-                                .filter(|agent| agent.parent_thread_id.as_deref() == Some(thread_id.as_str()))
-                                .collect::<Vec<_>>()
+                            "count": total,
+                            "agents": agents
+                                .iter()
+                                .take(limit)
+                                .map(compact_agent_value)
+                                .collect::<Vec<_>>(),
+                            "hint": "Default agent output is compact. Pass verbose=true for raw agent records, or use action=read/logs with agent_id for details.",
                         })
                     })
                     .map_err(|err| format!("failed to list background agents: {err}"))
@@ -177,12 +214,22 @@ impl App {
                     ));
                 }
                 if args.action == "read" {
-                    Ok(json!(response))
+                    if args.verbose.unwrap_or(false) {
+                        Ok(json!(response))
+                    } else {
+                        Ok(compact_agent_read_response(&response, args.limit))
+                    }
                 } else {
                     app_server
-                        .agent_events_list(agent_id)
+                        .agent_events_list(agent_id, args.cursor, args.limit)
                         .await
-                        .map(|response| json!(response))
+                        .map(|response| {
+                            if args.verbose.unwrap_or(false) {
+                                json!(response)
+                            } else {
+                                compact_agent_logs_response(&response, args.limit)
+                            }
+                        })
                         .map_err(|err| format!("failed to list background agent logs: {err}"))
                 }
             }
@@ -285,7 +332,12 @@ impl App {
                 )),
             },
             "list" => {
-                let kind = args.kind.unwrap_or_else(|| "all".to_string());
+                let kind = args
+                    .kind
+                    .as_deref()
+                    .map(ScheduleKind::try_from)
+                    .transpose()?
+                    .unwrap_or(ScheduleKind::All);
                 let response = app_server
                     .thread_schedule_list(thread_id)
                     .await
@@ -293,9 +345,23 @@ impl App {
                 let data = response
                     .data
                     .into_iter()
-                    .filter(|schedule| schedule_matches_kind(schedule, &kind))
+                    .filter(|schedule| kind.matches(schedule))
                     .collect::<Vec<_>>();
-                Ok(json!({ "kind": kind, "schedules": data }))
+                if args.verbose.unwrap_or(false) {
+                    return Ok(json!({ "kind": kind.as_str(), "schedules": data }));
+                }
+                let total = data.len();
+                let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                Ok(json!({
+                    "kind": kind.as_str(),
+                    "count": total,
+                    "schedules": data
+                        .iter()
+                        .take(limit)
+                        .map(compact_schedule_value)
+                        .collect::<Vec<_>>(),
+                    "hint": "Default schedule output is compact. Pass verbose=true for raw schedule records, or open the /schedule or /loop UI for mutations.",
+                }))
             }
             "create" | "pause" | "resume" | "delete" | "run_now" => {
                 Err(interactive_user_confirmation_required(args.action.as_str()))
@@ -322,15 +388,37 @@ impl App {
             "list" => app_server
                 .thread_monitor_list(thread_id)
                 .await
-                .map(|response| json!({ "monitors": response.data }))
+                .map(|response| {
+                    if args.verbose.unwrap_or(false) {
+                        return json!({ "monitors": response.data });
+                    }
+                    let total = response.data.len();
+                    let limit = args.limit.unwrap_or(COMPACT_LIST_LIMIT);
+                    json!({
+                        "count": total,
+                        "monitors": response
+                            .data
+                            .iter()
+                            .take(limit)
+                            .map(compact_monitor_value)
+                            .collect::<Vec<_>>(),
+                        "hint": "Default monitor output is compact. Pass verbose=true for raw monitor records, or action=read with monitor_id for recent events.",
+                    })
+                })
                 .map_err(|err| format!("failed to list monitors: {err}")),
             "read" => {
                 let monitor_id =
                     required_string(args.monitor_id, "action=read requires monitor_id")?;
                 app_server
-                    .thread_monitor_read(thread_id, monitor_id)
+                    .thread_monitor_read(thread_id, monitor_id, args.cursor, args.limit)
                     .await
-                    .map(|response| json!(response))
+                    .map(|response| {
+                        if args.verbose.unwrap_or(false) {
+                            json!(response)
+                        } else {
+                            compact_monitor_read_response(&response, args.limit)
+                        }
+                    })
                     .map_err(|err| format!("failed to read monitor: {err}"))
             }
             "stop" | "restart" | "delete" => {
@@ -648,12 +736,36 @@ fn background_terminal_processes_json(
         .collect()
 }
 
-fn schedule_matches_kind(schedule: &codex_app_server_protocol::ThreadSchedule, kind: &str) -> bool {
-    match kind {
-        "all" => true,
-        "once" | "schedule" => matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        "loop" | "loops" => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
-        _ => false,
+impl ScheduleKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Once => "once",
+            Self::Loop => "loop",
+        }
+    }
+
+    fn matches(self, schedule: &codex_app_server_protocol::ThreadSchedule) -> bool {
+        match self {
+            Self::All => true,
+            Self::Once => matches!(schedule.schedule, ThreadScheduleSpec::Once),
+            Self::Loop => !matches!(schedule.schedule, ThreadScheduleSpec::Once),
+        }
+    }
+}
+
+impl TryFrom<&str> for ScheduleKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "all" => Ok(Self::All),
+            "once" | "schedule" => Ok(Self::Once),
+            "loop" | "loops" => Ok(Self::Loop),
+            kind => Err(format!(
+                "unknown schedule kind `{kind}`; expected once, loop, or all"
+            )),
+        }
     }
 }
 
@@ -734,6 +846,16 @@ mod tests {
         assert_eq!(output[0]["recent_output_available"], true);
         assert_eq!(output[0]["recent_output_chunk_count"], 1);
         assert!(!output[0].to_string().contains("TOKEN=secret"));
+    }
+
+    #[test]
+    fn schedule_kind_rejects_unknown_values() {
+        let err = ScheduleKind::try_from("daily").expect_err("kind should be rejected");
+
+        assert_eq!(
+            err,
+            "unknown schedule kind `daily`; expected once, loop, or all"
+        );
     }
 
     #[test]

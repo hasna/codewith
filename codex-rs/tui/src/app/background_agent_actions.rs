@@ -252,7 +252,10 @@ impl App {
         else {
             return;
         };
-        match app_server.agent_events_list(agent_id.clone()).await {
+        match app_server
+            .agent_events_list(agent_id.clone(), /*cursor*/ None, /*limit*/ None)
+            .await
+        {
             Ok(response) => self
                 .chat_widget
                 .show_background_agent_logs(agent_id, response),

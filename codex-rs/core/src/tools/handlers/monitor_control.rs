@@ -15,6 +15,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::sync::Arc;
 
 const MAX_THREAD_MONITOR_NAME_CHARS: usize = 120;
@@ -22,8 +24,11 @@ const MAX_THREAD_MONITOR_PROMPT_CHARS: usize = 4_000;
 const MAX_THREAD_MONITOR_COMMAND_CHARS: usize = 8_000;
 const MAX_THREAD_MONITOR_PATH_CHARS: usize = 1_000;
 const MAX_THREAD_MONITORS: usize = 50;
-const DEFAULT_MONITOR_EVENT_LIMIT: usize = 50;
+const DEFAULT_MONITOR_EVENT_LIMIT: usize = 20;
+const DEFAULT_VERBOSE_MONITOR_EVENT_LIMIT: usize = 50;
 const MAX_MONITOR_EVENT_LIMIT: usize = 200;
+const COMPACT_TEXT_PREVIEW_CHARS: usize = 160;
+const COMPACT_EVENT_PREVIEW_CHARS: usize = 240;
 
 pub struct ManageMonitorHandler;
 
@@ -38,7 +43,9 @@ struct ManageMonitorArgs {
     cwd: Option<String>,
     routing: Option<MonitorRoutingArg>,
     output_file: Option<String>,
+    cursor: Option<String>,
     limit: Option<usize>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -69,6 +76,7 @@ struct ManageMonitorResponse {
     affected_monitor: Option<MonitorSnapshot>,
     monitors: Vec<MonitorSnapshot>,
     events: Vec<MonitorEventSnapshot>,
+    next_cursor: Option<String>,
     deleted: Option<bool>,
     message: String,
 }
@@ -132,11 +140,12 @@ impl ToolExecutor<ToolInvocation> for ManageMonitorHandler {
         };
 
         let args: ManageMonitorArgs = parse_arguments(&arguments)?;
+        let verbose = args.verbose.unwrap_or(false);
         let state_db = session.state_db().ok_or_else(|| {
             FunctionCallError::Fatal("sqlite state db is unavailable for this session".to_string())
         })?;
         let response = manage_monitor(state_db, session.thread_id(), args).await?;
-        monitor_response(response).map(boxed_tool_output)
+        monitor_response(response, verbose).map(boxed_tool_output)
     }
 }
 
@@ -157,6 +166,7 @@ async fn manage_monitor(
                 affected_monitor: None,
                 monitors,
                 events: Vec::new(),
+                next_cursor: None,
                 deleted: None,
                 message: "Listed monitors for this thread.".to_string(),
             })
@@ -225,6 +235,7 @@ async fn create_monitor(
         affected_monitor: Some(snapshot.clone()),
         monitors: vec![snapshot],
         events: Vec::new(),
+        next_cursor: None,
         deleted: None,
         message: "Created monitor. The app-server runtime will start the command shortly."
             .to_string(),
@@ -238,15 +249,50 @@ async fn read_monitor(
 ) -> Result<ManageMonitorResponse, FunctionCallError> {
     let monitor_id = resolve_monitor_id(&state_db, thread_id, args.monitor_id.as_deref()).await?;
     let monitor = load_monitor_for_thread(&state_db, thread_id, monitor_id.as_str()).await?;
+    let default_limit = if args.verbose.unwrap_or(false) {
+        DEFAULT_VERBOSE_MONITOR_EVENT_LIMIT
+    } else {
+        DEFAULT_MONITOR_EVENT_LIMIT
+    };
     let limit = args
         .limit
-        .unwrap_or(DEFAULT_MONITOR_EVENT_LIMIT)
-        .min(MAX_MONITOR_EVENT_LIMIT);
-    let events = state_db
+        .unwrap_or(default_limit)
+        .clamp(1, MAX_MONITOR_EVENT_LIMIT);
+    let cursor_requested = args.cursor.is_some();
+    let offset = match args.cursor.as_deref() {
+        Some(cursor) => cursor
+            .parse::<usize>()
+            .map_err(|_| model_error("cursor must be a non-negative integer offset"))?,
+        None => {
+            let event_count = state_db
+                .thread_monitors()
+                .count_thread_monitor_events(monitor_id.as_str())
+                .await
+                .map_err(|err| {
+                    FunctionCallError::Fatal(format!("failed to count monitor events: {err}"))
+                })?;
+            event_count.saturating_sub(limit)
+        }
+    };
+    let fetch_limit = if cursor_requested {
+        limit.saturating_add(1)
+    } else {
+        limit
+    };
+    let mut events = state_db
         .thread_monitors()
-        .list_thread_monitor_events(monitor_id.as_str(), /*offset*/ 0, limit)
+        .list_thread_monitor_events(monitor_id.as_str(), offset, fetch_limit)
         .await
         .map_err(|err| FunctionCallError::Fatal(format!("failed to read monitor events: {err}")))?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let next_cursor = if cursor_requested && events.len() > limit {
+        events.truncate(limit);
+        Some(offset.saturating_add(limit).to_string())
+    } else {
+        None
+    };
+    let events = events
         .into_iter()
         .map(MonitorEventSnapshot::from)
         .collect::<Vec<_>>();
@@ -257,6 +303,7 @@ async fn read_monitor(
         affected_monitor: Some(snapshot.clone()),
         monitors: vec![snapshot],
         events,
+        next_cursor,
         deleted: None,
         message: "Read monitor output events.".to_string(),
     })
@@ -286,6 +333,7 @@ async fn set_monitor_stopped(
         affected_monitor: Some(snapshot.clone()),
         monitors: vec![snapshot],
         events: Vec::new(),
+        next_cursor: None,
         deleted: None,
         message: "Stopped monitor.".to_string(),
     })
@@ -311,6 +359,7 @@ async fn restart_monitor(
         affected_monitor: Some(snapshot.clone()),
         monitors: vec![snapshot],
         events: Vec::new(),
+        next_cursor: None,
         deleted: None,
         message: "Restarted monitor. The app-server runtime will rerun the command shortly."
             .to_string(),
@@ -335,6 +384,7 @@ async fn delete_monitor(
         affected_monitor: None,
         monitors: Vec::new(),
         events: Vec::new(),
+        next_cursor: None,
         deleted: Some(deleted),
         message: "Deleted monitor.".to_string(),
     })
@@ -486,10 +536,89 @@ fn monitor_routing_arg_to_state(routing: MonitorRoutingArg) -> codex_state::Thre
 
 fn monitor_response(
     response: ManageMonitorResponse,
+    verbose: bool,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let content = serde_json::to_string_pretty(&response)
-        .map_err(|err| FunctionCallError::Fatal(format!("failed to serialize response: {err}")))?;
+    let content = if verbose {
+        serde_json::to_string_pretty(&response)
+    } else {
+        serde_json::to_string_pretty(&compact_monitor_response(&response))
+    }
+    .map_err(|err| FunctionCallError::Fatal(format!("failed to serialize response: {err}")))?;
     Ok(FunctionToolOutput::from_text(content, Some(true)))
+}
+
+fn compact_monitor_response(response: &ManageMonitorResponse) -> JsonValue {
+    json!({
+        "action": response.action,
+        "monitorId": response.monitor_id,
+        "message": response.message,
+        "deleted": response.deleted,
+        "count": response.monitors.len(),
+        "eventCount": response.events.len(),
+        "nextCursor": response.next_cursor,
+        "affectedMonitor": response
+            .affected_monitor
+            .as_ref()
+            .map(compact_monitor),
+        "monitors": response
+            .monitors
+            .iter()
+            .map(compact_monitor)
+            .collect::<Vec<_>>(),
+        "events": response
+            .events
+            .iter()
+            .map(compact_monitor_event)
+            .collect::<Vec<_>>(),
+        "hint": "Default monitor output is compact. Pass verbose=true for full prompts, commands, paths, errors, and event text; omit cursor for the newest events or pass cursor=\"0\" to page from the oldest events.",
+    })
+}
+
+fn compact_monitor(monitor: &MonitorSnapshot) -> JsonValue {
+    json!({
+        "monitorId": monitor.monitor_id,
+        "name": monitor.name,
+        "status": monitor.status,
+        "routing": monitor.routing,
+        "generation": monitor.generation,
+        "processId": monitor.process_id,
+        "lastEventAt": monitor.last_event_at,
+        "promptPreview": compact_text_preview(&monitor.prompt, COMPACT_TEXT_PREVIEW_CHARS),
+        "promptChars": monitor.prompt.chars().count(),
+        "commandPreview": compact_text_preview(&monitor.command, COMPACT_TEXT_PREVIEW_CHARS),
+        "commandChars": monitor.command.chars().count(),
+        "cwdConfigured": monitor.cwd.is_some(),
+        "outputFileConfigured": monitor.output_file.is_some(),
+        "lastErrorPreview": monitor.last_error.as_deref().map(|error| {
+            compact_text_preview(error, COMPACT_TEXT_PREVIEW_CHARS)
+        }),
+    })
+}
+
+fn compact_monitor_event(event: &MonitorEventSnapshot) -> JsonValue {
+    json!({
+        "monitorId": event.monitor_id,
+        "eventId": event.event_id,
+        "stream": event.stream,
+        "createdAt": event.created_at,
+        "textPreview": compact_text_preview(&event.text, COMPACT_EVENT_PREVIEW_CHARS),
+        "textChars": event.text.chars().count(),
+    })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn model_error(message: impl Into<String>) -> FunctionCallError {
@@ -528,5 +657,203 @@ impl From<codex_state::ThreadMonitorEvent> for MonitorEventSnapshot {
             text: event.text,
             created_at: event.created_at.timestamp(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::DateTime;
+    use chrono::TimeZone;
+    use chrono::Utc;
+    use codex_protocol::protocol::SessionSource;
+    use codex_state::ThreadMetadataBuilder;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    async fn test_runtime() -> (TempDir, Arc<codex_state::StateRuntime>) {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let runtime =
+            codex_state::StateRuntime::init(temp_dir.path().to_path_buf(), "test-provider".into())
+                .await
+                .expect("state db should initialize");
+        (temp_dir, runtime)
+    }
+
+    fn test_thread_id(id: u32) -> ThreadId {
+        ThreadId::from_string(&format!("00000000-0000-0000-0000-{id:012}"))
+            .expect("valid thread id")
+    }
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(seconds, 0)
+            .single()
+            .expect("valid timestamp")
+    }
+
+    async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            runtime.codex_home().join(format!("{thread_id}.jsonl")),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = runtime.codex_home().join("workspace");
+        runtime
+            .upsert_thread(&builder.build("test-provider"))
+            .await
+            .expect("test thread should be upserted");
+    }
+
+    async fn create_test_monitor(
+        runtime: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+    ) -> codex_state::ThreadMonitor {
+        runtime
+            .thread_monitors()
+            .create_thread_monitor(codex_state::ThreadMonitorCreateParams {
+                thread_id,
+                name: "CI watcher".to_string(),
+                prompt: "watch CI".to_string(),
+                command: "while true; do echo ok; sleep 60; done".to_string(),
+                cwd: None,
+                routing: codex_state::ThreadMonitorRouting::Stream,
+                output_file: None,
+                status: codex_state::ThreadMonitorStatus::Running,
+            })
+            .await
+            .expect("monitor should be created")
+    }
+
+    #[test]
+    fn compact_monitor_response_uses_previews_without_full_text() {
+        let response = ManageMonitorResponse {
+            action: MonitorAction::Read,
+            monitor_id: Some("monitor-1".to_string()),
+            affected_monitor: Some(MonitorSnapshot {
+                thread_id: "thread-1".to_string(),
+                monitor_id: "monitor-1".to_string(),
+                name: "server".to_string(),
+                prompt: "watch logs ".repeat(30),
+                command: "tail -f /tmp/server.log && ".repeat(20),
+                cwd: Some("/very/long/path".to_string()),
+                routing: "stream".to_string(),
+                output_file: None,
+                status: "running".to_string(),
+                generation: 1,
+                process_id: Some(123),
+                last_event_at: Some(1_700_000_000),
+                last_error: Some("last error ".repeat(40)),
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_100,
+            }),
+            monitors: Vec::new(),
+            events: vec![MonitorEventSnapshot {
+                thread_id: "thread-1".to_string(),
+                monitor_id: "monitor-1".to_string(),
+                event_id: "event-1".to_string(),
+                stream: "stdout".to_string(),
+                text: "line ".repeat(100),
+                created_at: 1_700_000_200,
+            }],
+            next_cursor: Some("cursor-1".to_string()),
+            deleted: None,
+            message: "Read monitor.".to_string(),
+        };
+
+        let compact = compact_monitor_response(&response);
+
+        assert_eq!(compact["eventCount"], 1);
+        assert_eq!(compact["nextCursor"], "cursor-1");
+        assert_eq!(compact["affectedMonitor"]["monitorId"], "monitor-1");
+        assert!(compact["affectedMonitor"]["prompt"].is_null());
+        assert!(compact["affectedMonitor"]["command"].is_null());
+        assert!(compact["affectedMonitor"]["cwd"].is_null());
+        assert!(
+            compact["events"][0]["textPreview"]
+                .as_str()
+                .expect("event preview")
+                .ends_with("...")
+        );
+        assert!(compact["events"][0]["text"].is_null());
+    }
+
+    #[tokio::test]
+    async fn read_monitor_defaults_to_newest_events_and_pages_from_cursor() {
+        let (_temp_dir, runtime) = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 1);
+        upsert_test_thread(runtime.as_ref(), thread_id).await;
+        let monitor = create_test_monitor(runtime.as_ref(), thread_id).await;
+        for index in 0..21 {
+            runtime
+                .thread_monitors()
+                .create_thread_monitor_event(codex_state::ThreadMonitorEventCreateParams {
+                    thread_id,
+                    monitor_id: monitor.monitor_id.clone(),
+                    stream: codex_state::ThreadMonitorEventStream::Stdout,
+                    text: format!("event-{index:02}"),
+                })
+                .await
+                .expect("event should be created");
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        let latest = read_monitor(
+            runtime.clone(),
+            thread_id,
+            ManageMonitorArgs {
+                action: MonitorAction::Read,
+                monitor_id: Some(monitor.monitor_id.clone()),
+                name: None,
+                prompt: None,
+                command: None,
+                cwd: None,
+                routing: None,
+                output_file: None,
+                cursor: None,
+                limit: None,
+                verbose: None,
+            },
+        )
+        .await
+        .expect("latest events should read");
+        let latest_text = latest
+            .events
+            .iter()
+            .map(|event| event.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(latest.events.len(), DEFAULT_MONITOR_EVENT_LIMIT);
+        assert_eq!(latest.next_cursor, None);
+        assert!(!latest_text.contains(&"event-00"));
+        assert!(latest_text.contains(&"event-20"));
+
+        let oldest = read_monitor(
+            runtime.clone(),
+            thread_id,
+            ManageMonitorArgs {
+                action: MonitorAction::Read,
+                monitor_id: Some(monitor.monitor_id),
+                name: None,
+                prompt: None,
+                command: None,
+                cwd: None,
+                routing: None,
+                output_file: None,
+                cursor: Some("0".to_string()),
+                limit: Some(5),
+                verbose: None,
+            },
+        )
+        .await
+        .expect("oldest events should read");
+        assert_eq!(oldest.next_cursor, Some("5".to_string()));
+        assert_eq!(
+            oldest
+                .events
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-00", "event-01", "event-02", "event-03", "event-04"]
+        );
     }
 }
