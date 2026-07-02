@@ -1756,10 +1756,10 @@ fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
             .await;
         assert!(delete_response.deleted);
         harness
-            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
             .await;
         harness
-            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
             .await;
 
         let request_id = harness.request_id();
@@ -2658,7 +2658,7 @@ fn thread_schedule_run_now_executes_goal_command_as_scheduled_goal_turn() -> Res
                 .contains("You are running one new scheduled Codewith goal objective")
                 && body.contains(run_now.run.run_id.as_str())
                 && body.contains("The active thread goal has already been persisted")
-                && body.contains("Do not create new goals, loops, schedules")
+                && body.contains("Do not create new goals, schedules, monitors, timers")
                 && body.contains(objective)),
             "scheduled goal prompt should be wrapped as a schedule-owned goal turn: {response_request_bodies:#?}"
         );

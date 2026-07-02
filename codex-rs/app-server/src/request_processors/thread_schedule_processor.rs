@@ -129,18 +129,7 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
-        let parent_schedule_id = params
-            .parent_schedule_id
-            .as_deref()
-            .map(str::trim)
-            .map(|value| {
-                if value.is_empty() {
-                    Err(invalid_request("parentScheduleId cannot be empty"))
-                } else {
-                    Ok(value.to_string())
-                }
-            })
-            .transpose()?;
+        let parent_schedule_id = normalize_parent_schedule_id(params.parent_schedule_id)?;
         let prompt_source = params
             .prompt_source
             .unwrap_or(ThreadSchedulePromptSource::Inline);
