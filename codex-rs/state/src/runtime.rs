@@ -126,6 +126,13 @@ mod workflows;
 const STATE_RUNTIME_STARTUP_LOCK_FILENAME: &str = ".state-runtime-startup.lock";
 const STATE_RUNTIME_STARTUP_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 const STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Truncate the WAL back down to (at most) this size whenever a checkpoint
+/// resets it, and escalate opportunistic checkpoints to TRUNCATE once the
+/// WAL grows past it.
+const WAL_JOURNAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// How often long-lived processes opportunistically checkpoint the state DB
+/// WAL so that checkpoint starvation cannot let it grow without bound.
+const STATE_WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(300);
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
@@ -525,6 +532,13 @@ impl StateRuntime {
                 logs_path.display(),
             );
         }
+        if let Err(err) = runtime.run_state_wal_checkpoint_maintenance().await {
+            warn!(
+                "failed to run WAL checkpoint maintenance for state db at {}: {err}",
+                state_path.display(),
+            );
+        }
+        spawn_state_wal_checkpoint_task(&runtime);
         Ok(runtime)
     }
 
@@ -594,6 +608,64 @@ impl StateRuntime {
         pool.close().await;
         Ok(true)
     }
+
+    /// Opportunistically checkpoints the state DB WAL so that checkpoint
+    /// starvation across many concurrent processes cannot let the WAL grow
+    /// without bound (which in turn inflates busy/snapshot contention).
+    ///
+    /// Uses a non-blocking PASSIVE checkpoint by default and escalates to
+    /// TRUNCATE once the WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`].
+    pub async fn run_state_wal_checkpoint_maintenance(&self) -> anyhow::Result<()> {
+        let state_path = STATE_DB.path(self.codex_home.as_path());
+        checkpoint_wal_in_pool(self.pool.as_ref(), state_path.as_path()).await
+    }
+}
+
+fn wal_path_for_db(db_path: &Path) -> PathBuf {
+    let mut wal = db_path.as_os_str().to_os_string();
+    wal.push("-wal");
+    PathBuf::from(wal)
+}
+
+async fn checkpoint_wal_in_pool(pool: &SqlitePool, db_path: &Path) -> anyhow::Result<()> {
+    let wal_len = tokio::fs::metadata(wal_path_for_db(db_path))
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    // PASSIVE checkpoints copy whatever is immediately available without
+    // waiting on readers or writers. Once the WAL exceeds the journal size
+    // limit, escalate to TRUNCATE (bounded by the connection busy_timeout)
+    // so the file is actually reset instead of growing without bound.
+    let statement = if wal_len > WAL_JOURNAL_SIZE_LIMIT_BYTES {
+        "PRAGMA wal_checkpoint(TRUNCATE)"
+    } else {
+        "PRAGMA wal_checkpoint(PASSIVE)"
+    };
+    sqlx::query(statement).execute(pool).await?;
+    Ok(())
+}
+
+/// Spawns a background task that periodically runs WAL checkpoint
+/// maintenance for as long as the runtime is alive. Short-lived CLI
+/// processes exit before the first tick; long-lived daemons get a periodic
+/// checkpoint even when foreground write traffic starves automatic ones.
+fn spawn_state_wal_checkpoint_task(runtime: &Arc<StateRuntime>) {
+    let weak = Arc::downgrade(runtime);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(STATE_WAL_CHECKPOINT_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consume the immediate first tick; startup maintenance already ran.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Some(runtime) = weak.upgrade() else {
+                return;
+            };
+            if let Err(err) = runtime.run_state_wal_checkpoint_maintenance().await {
+                tracing::debug!("state db WAL checkpoint maintenance failed: {err}");
+            }
+        }
+    });
 }
 
 fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
@@ -603,6 +675,14 @@ fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .busy_timeout(Duration::from_secs(30))
+        // Cap how large the WAL file may remain after a checkpoint resets
+        // it. Without this, a WAL that ballooned under checkpoint starvation
+        // stays huge on disk forever and keeps checkpoint latencies (and
+        // busy contention) high.
+        .pragma(
+            "journal_size_limit",
+            WAL_JOURNAL_SIZE_LIMIT_BYTES.to_string(),
+        )
         .log_statements(LevelFilter::Off)
 }
 
