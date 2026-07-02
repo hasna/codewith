@@ -26,7 +26,9 @@ enum SnapshotCatalog {
             framed("13-profiles") { RootView(model: m) { ProfilesView(profiles: m.authProfiles, activeEmail: m.account.email) } },
             framed("14-apps") { RootView(model: m) { AppsView(apps: m.apps) } },
             framed("15-loops") { RootView(model: m) { LoopsView(loops: m.loops) } },
+            framed("16-goals") { RootView(model: m) { GoalsView(states: m.goalStates, threads: m.machineScopedThreads) } },
             framed("17-search") { RootView(model: search) { SearchView(model: search) } },
+            framed("18-workflows") { RootView(model: m) { WorkflowsView(workflows: m.workflows, threads: m.machineScopedThreads) } },
             SnapshotItem(name: "11-login", size: WindowSize.framed, view: AnyView(
                 WindowFrame(showTrafficLights: false) { LoginView(model: m) }
             )),

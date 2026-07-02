@@ -7,12 +7,31 @@ struct AppShell: View {
 
     var body: some View {
         Group {
-            if model.connection == .connected && !model.isSignedIn {
+            if model.connection == .connecting {
+                ConnectionStatusView(
+                    icon: "hourglass",
+                    title: "Connecting to CodeWith",
+                    message: "Starting the local app-server.",
+                    actionTitle: nil,
+                    action: nil)
+            } else if case .unavailable(let message) = model.connection {
+                ConnectionStatusView(
+                    icon: "exclamationmark.triangle",
+                    title: "CodeWith is unavailable",
+                    message: message,
+                    actionTitle: "Retry",
+                    action: { Task { await model.reconnectAppServer() } })
+            } else if model.connection == .connected && !model.isSignedIn {
                 LoginView(model: model)
             } else if model.showSettings {
                 SettingsShell(
                     selected: model.settingsPage,
-                    onSelect: { model.settingsPage = $0 },
+                    onSelect: {
+                        model.settingsPage = $0
+                        if $0 == "Machines" {
+                            Task { await model.loadMachines() }
+                        }
+                    },
                     onBack: { model.showSettings = false }
                 ) { settingsPage(model.settingsPage) }
             } else {
@@ -70,6 +89,18 @@ struct AppShell: View {
                         onCreate: { draft in Task { await model.createLoop(draft) } },
                         onRunNow: { l in Task { await model.runLoopNow(l) } },
                         onDelete: { l in Task { await model.deleteLoop(l) } })
+                case .goals:
+                    GoalsView(
+                        states: model.goalStates,
+                        threads: model.machineScopedThreads,
+                        error: model.goalsError,
+                        onOpenThread: { t in Task { await model.openThread(t) } })
+                case .workflows:
+                    WorkflowsView(
+                        workflows: model.workflows,
+                        threads: model.machineScopedThreads,
+                        error: model.workflowsError,
+                        onOpenThread: { t in Task { await model.openThread(t) } })
                 case .project(let key):
                     ProjectSessionsView(model: model, projectKey: key,
                                         onThread: { t in Task { await model.openThread(t) } })
@@ -99,11 +130,13 @@ struct AppShell: View {
 
     private func handleTap(_ title: String) {
         switch title {
+        case "Home":     model.openHome()
         case "New chat": model.newChat()
         case "Search":   model.open(.search, label: title)
         case "Apps":     model.open(.apps, label: title)
         case "Loops":    model.open(.loops, label: title); Task { await model.loadLoops() }
-        case "Machines": model.open(.machines, label: title); Task { await model.loadMachines() }
+        case "Goals":    model.open(.goals, label: title); Task { await model.loadGoals() }
+        case "Workflows": model.open(.workflows, label: title); Task { await model.loadWorkflows() }
         case "Settings": model.openSettings()
         default:         break
         }
@@ -135,6 +168,13 @@ struct AppShell: View {
                 onSetChronicleResearch: { model.setChronicleResearch($0) },
                 onSetSkipToolAssistedChats: { model.setSkipToolAssistedChats($0) },
                 onResetMemories: { model.resetMemories() })
+        case "Machines":
+            MachinesView(
+                machines: model.machines,
+                error: model.machinesError,
+                pairing: model.machinePairing,
+                onStartPairing: { Task { await model.startMachinePairing() } },
+                onCheckPairing: { Task { await model.refreshMachinePairingStatus() } })
         default:
             SettingsGeneral(
                 fullAccess: model.fullAccess,
@@ -148,5 +188,39 @@ struct AppShell: View {
                 onSetShowMenuBar: { model.setShowMenuBar($0) },
                 onSetBottomPanel: { model.setBottomPanel($0) })
         }
+    }
+}
+
+private struct ConnectionStatusView: View {
+    var icon: String
+    var title: String
+    var message: String
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(message)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .frame(height: 30)
+                    .background(Capsule().fill(Color(hex: 0x202020)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

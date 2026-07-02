@@ -88,6 +88,8 @@ final class AppServerClient: @unchecked Sendable {
     // Rebuilt on each start() so reconnect works.
     private var process: Process?
     private var stdinHandle: FileHandle?
+    private var stdoutHandle: FileHandle?
+    private var processGeneration = 0
 
     private var nextId = 0
     private var pending: [Int: (Result<JSONValue, Error>) -> Void] = [:]
@@ -132,17 +134,23 @@ final class AppServerClient: @unchecked Sendable {
         env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin"
         proc.environment = env
 
+        lock.lock()
+        processGeneration += 1
+        let generation = processGeneration
+        lock.unlock()
+
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             guard let self else { return }
             let data = h.availableData
-            if data.isEmpty { self.parseQueue.async { self.handleEOF() } }
-            else { self.parseQueue.async { self.ingest(data) } }
+            if data.isEmpty { self.parseQueue.async { self.handleEOF(generation: generation) } }
+            else { self.parseQueue.async { self.ingest(data, generation: generation) } }
         }
         proc.terminationHandler = { [weak self] p in
             guard let self else { return }
-            guard self.markStopped(process: p) else { return }
-            self.failAllPending(AppServerError.notRunning)
-            self.onExit?(p.terminationStatus)
+            if self.markStopped(generation: generation) {
+                self.failAllPending(AppServerError.notRunning)
+                self.onExit?(p.terminationStatus)
+            }
         }
 
         try proc.run()
@@ -151,10 +159,12 @@ final class AppServerClient: @unchecked Sendable {
         if started {
             process = proc
             stdinHandle = inPipe.fileHandleForWriting
+            stdoutHandle = outPipe.fileHandleForReading
             running = true
         } else {
             process = nil
             stdinHandle = nil
+            stdoutHandle = nil
             running = false
         }
         buffer.removeAll(keepingCapacity: false)
@@ -169,37 +179,49 @@ final class AppServerClient: @unchecked Sendable {
         lock.lock()
         let proc = process
         let sin = stdinHandle
+        let sout = stdoutHandle
+        processGeneration += 1
         running = false
         process = nil
         stdinHandle = nil
+        stdoutHandle = nil
         lock.unlock()
+        sout?.readabilityHandler = nil
         try? sin?.close()
         if proc?.isRunning == true { proc?.terminate() }
         failAllPending(AppServerError.notRunning)
     }
 
-    @discardableResult
-    private func markStopped(process stoppedProcess: Process? = nil) -> Bool {
+    private func markStopped(generation: Int) -> Bool {
         lock.lock()
-        if let stoppedProcess, let process, process !== stoppedProcess {
+        guard generation == processGeneration else {
             lock.unlock()
             return false
         }
         running = false
         process = nil
         stdinHandle = nil
+        stdoutHandle?.readabilityHandler = nil
+        stdoutHandle = nil
         lock.unlock()
         return true
     }
 
-    private func handleEOF() {
-        lock.lock(); let r = running; lock.unlock()
-        if r { markStopped(); failAllPending(AppServerError.notRunning) }
+    private func handleEOF(generation: Int) {
+        lock.lock()
+        let shouldStop = running && generation == processGeneration
+        lock.unlock()
+        if shouldStop {
+            if markStopped(generation: generation) {
+                failAllPending(AppServerError.notRunning)
+            }
+        }
     }
 
     // MARK: Ingest (parseQueue only)
 
-    private func ingest(_ data: Data) {
+    private func ingest(_ data: Data, generation: Int? = nil) {
+        if let generation, !isCurrentGeneration(generation) { return }
         buffer.append(data)
         if buffer.count > maxBuffer {
             buffer.removeAll(keepingCapacity: false)
@@ -207,10 +229,21 @@ final class AppServerClient: @unchecked Sendable {
             return
         }
         while let nl = buffer.firstIndex(of: 0x0A) {
+            if let generation, !isCurrentGeneration(generation) {
+                buffer.removeAll(keepingCapacity: false)
+                return
+            }
             let line = buffer.subdata(in: buffer.startIndex..<nl)
             buffer.removeSubrange(buffer.startIndex...nl)
             if !line.isEmpty { route(line) }
         }
+    }
+
+    private func isCurrentGeneration(_ generation: Int) -> Bool {
+        lock.lock()
+        let current = running && generation == processGeneration
+        lock.unlock()
+        return current
     }
 
     /// Pure classification of one JSON-RPC frame (no lock, no dispatch) — testable.
@@ -279,7 +312,10 @@ final class AppServerClient: @unchecked Sendable {
     }
 
     func request(_ method: String, _ params: JSONValue = .null, timeout: TimeInterval = 30) async throws -> JSONValue {
-        lock.lock(); nextId += 1; let id = nextId; lock.unlock()
+        let id = lock.withLock {
+            nextId += 1
+            return nextId
+        }
         let env = JSONValue.object(["id": .number(Double(id)), "method": .string(method), "params": params])
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in

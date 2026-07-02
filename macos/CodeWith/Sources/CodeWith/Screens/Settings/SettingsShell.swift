@@ -18,8 +18,13 @@ struct SettingsShell<Content: View>: View {
         [
             ("Personal", [
                 .init(icon: "gearshape", title: "General"),
+                .init(icon: "person.crop.circle", title: "Profile"),
+                .init(icon: "sun.max", title: "Appearance"),
                 .init(icon: "slider.horizontal.3", title: "Configuration"),
                 .init(icon: "sparkles", title: "Personalization"),
+            ]),
+            ("Coding", [
+                .init(icon: "server.rack", title: "Machines"),
             ]),
         ]
     }

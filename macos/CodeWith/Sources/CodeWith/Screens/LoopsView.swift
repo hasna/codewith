@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Loops — recurring schedules + monitors running across all sessions (live data).
+/// Loops: recurring schedules and monitors running across all sessions.
 struct LoopsView: View {
     var loops: [LoopInfo] = []
     var error: String? = nil
@@ -330,7 +330,7 @@ struct LoopsView: View {
             Button(loop.toggleLabel) { onToggle(loop) }
                 .disabled(!loop.canToggle)
             Divider()
-            Button("Delete") { pendingDeleteLoop = loop }
+            Button("Delete", role: .destructive) { pendingDeleteLoop = loop }
         }
     }
 }

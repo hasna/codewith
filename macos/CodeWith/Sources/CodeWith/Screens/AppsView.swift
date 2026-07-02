@@ -90,13 +90,13 @@ struct AppsView: View {
             if installed {
                 Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold))
             }
-            Text(installed ? "Installed" : "Install").font(.system(size: 11, weight: .medium))
+            Text(installed ? "Installed" : "Available").font(.system(size: 11, weight: .medium))
         }
-        .foregroundStyle(installed ? Theme.textSecondary : .white)
+        .foregroundStyle(installed ? Theme.textSecondary : Theme.textPrimary)
         .padding(.horizontal, 12).frame(height: 24)
         .background(
-            Capsule().fill(installed ? Theme.fieldFill : Theme.accent)
-                .overlay(installed ? Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1) : nil)
+            Capsule().fill(Theme.fieldFill)
+                .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }

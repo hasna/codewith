@@ -9,7 +9,7 @@ enum AddMenuAction: Equatable {
     case agentRun(String)
 }
 
-/// The "+" composer popover (reference screenshot 03).
+/// Legacy add-action popover retained for non-composer callers.
 struct AddMenu: View {
     var onAction: (AddMenuAction) -> Void = { _ in }
     var activePeers: [ActiveSessionPeerInfo] = []
@@ -53,7 +53,7 @@ struct AddMenu: View {
                 if let icon {
                     Image(systemName: icon).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).frame(width: 18)
                 } else {
-                    // Agents have no avatar in the reference — reserve the slot so
+                    // Agents have no avatar in the reference; reserve the slot so
                     // names align with the labeled items above.
                     Color.clear.frame(width: 18, height: 18)
                 }

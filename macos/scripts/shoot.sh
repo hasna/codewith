@@ -52,8 +52,13 @@ if ! ./.build/release/CodeWith > /tmp/codewith-snapshot.log 2>&1; then
 fi
 tail -20 /tmp/codewith-snapshot.log
 count=\$(find "$REMOTE_SHOTS" -type f -name '*.png' -size +0c | wc -l | tr -d ' ')
-if [ "\$count" -eq 0 ]; then
-  echo "no non-empty PNG snapshots rendered" >&2
+expected=\$(sed -n 's/.*snapshot: wrote \([0-9][0-9]*\) screens.*/\1/p' /tmp/codewith-snapshot.log | tail -1)
+if [ -z "\$expected" ]; then
+  echo "snapshot runner did not report expected screen count" >&2
+  exit 1
+fi
+if [ "\$count" -ne "\$expected" ]; then
+  echo "expected \$expected non-empty PNG snapshots, rendered \$count" >&2
   exit 1
 fi
 ls -1 "$REMOTE_SHOTS"

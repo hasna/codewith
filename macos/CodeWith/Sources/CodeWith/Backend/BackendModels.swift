@@ -10,6 +10,7 @@ struct ThreadInfo: Identifiable, Hashable {
     var createdAt: String?
     var modelProvider: String?
     var status: String?
+    var machineId: String?
     var gitOriginUrl: String?
     var gitBranch: String?
     var gitSha: String?
@@ -27,6 +28,11 @@ struct ThreadInfo: Identifiable, Hashable {
         modelProvider = v["modelProvider"]?.string
         // status is an object {type: "idle"|"active"|...} on the wire.
         status = v["status"]?["type"]?.string ?? v["status"]?.string
+        machineId = v["machineId"]?.string
+            ?? v["sourceMachineId"]?.string
+            ?? v["targetMachineId"]?.string
+            ?? v["machine"]?["machineId"]?.string
+            ?? v["machine"]?["id"]?.string
         gitOriginUrl = v["gitInfo"]?["originUrl"]?.string
         gitBranch = v["gitInfo"]?["branch"]?.string
         gitSha = v["gitInfo"]?["sha"]?.string
@@ -59,6 +65,57 @@ struct ThreadInfo: Identifiable, Hashable {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return iso.date(from: s) ?? ISO8601DateFormatter().date(from: s)
     }
+}
+
+/// Thread-scoped settings returned by thread read/resume/update RPCs.
+struct ThreadSessionSettings: Hashable {
+    var model: String?
+    var provider: String?
+    var effort: String?
+    var permissionProfileId: String?
+    var authProfile: String?
+    var clearsAuthProfile: Bool
+
+    init(
+        model: String? = nil,
+        provider: String? = nil,
+        effort: String? = nil,
+        permissionProfileId: String? = nil,
+        authProfile: String? = nil,
+        clearsAuthProfile: Bool = false
+    ) {
+        self.model = model
+        self.provider = provider
+        self.effort = effort
+        self.permissionProfileId = permissionProfileId
+        self.authProfile = authProfile
+        self.clearsAuthProfile = clearsAuthProfile
+    }
+
+    init?(from v: JSONValue) {
+        let settings = v["threadSettings"] ?? v["settings"] ?? v["thread"]?["threadSettings"] ?? v["thread"]?["settings"] ?? v
+        let authProfileValue = settings["authProfile"] ?? settings["auth_profile"]
+        self.init(
+            model: settings["model"]?.string,
+            provider: settings["modelProvider"]?.string ?? settings["model_provider"]?.string,
+            effort: settings["effort"]?.string
+                ?? settings["reasoningEffort"]?.string
+                ?? settings["reasoning_effort"]?.string,
+            permissionProfileId: settings["activePermissionProfile"]?["id"]?.string
+                ?? settings["active_permission_profile"]?["id"]?.string
+                ?? settings["permissions"]?.string,
+            authProfile: authProfileValue?.string,
+            clearsAuthProfile: authProfileValue?.isNull == true
+        )
+        if model == nil, provider == nil, effort == nil, permissionProfileId == nil, authProfile == nil, !clearsAuthProfile {
+            return nil
+        }
+    }
+}
+
+struct ThreadReadResult: Hashable {
+    var messages: [ChatMessage]
+    var settings: ThreadSessionSettings?
 }
 
 /// A project = a repo / working directory that has sessions. Grouped by git
@@ -249,15 +306,35 @@ struct DesktopSettingsInfo: Hashable {
 struct ConfigRequirementsInfo: Hashable {
     var allowedApprovalPolicies: [String]?
     var allowedSandboxModes: [String]?
+    var allowedPermissionProfiles: [String]?
+    var defaultPermissions: String?
 
     init(from v: JSONValue) {
-        allowedApprovalPolicies = Self.stringArray(v["allowedApprovalPolicies"])
+        allowedApprovalPolicies = Self.approvalPolicyArray(v["allowedApprovalPolicies"])
         allowedSandboxModes = Self.stringArray(v["allowedSandboxModes"])
+        allowedPermissionProfiles = Self.permissionProfileArray(v["allowedPermissionProfiles"])
+        defaultPermissions = v["defaultPermissions"]?.string
+    }
+
+    static func approvalPolicyArray(_ value: JSONValue?) -> [String]? {
+        guard let array = value?.array else { return nil }
+        return array.compactMap { item in
+            if let string = item.string { return string }
+            if item["granular"] != nil { return "granular" }
+            return nil
+        }
     }
 
     static func stringArray(_ value: JSONValue?) -> [String]? {
         guard let array = value?.array else { return nil }
         return array.compactMap(\.string)
+    }
+
+    static func permissionProfileArray(_ value: JSONValue?) -> [String]? {
+        guard let object = value?.object else { return nil }
+        return object.compactMap { key, enabled in
+            enabled.bool == false ? nil : key
+        }.sorted()
     }
 
     func approvalOptions(defaults: [String]) -> [String] {
@@ -270,6 +347,11 @@ struct ConfigRequirementsInfo: Hashable {
 
     func allowsSandbox(_ mode: String) -> Bool {
         allowedSandboxModes?.contains(mode) ?? true
+    }
+
+    func permissionProfileOptions(defaults: [String]) -> [String] {
+        guard let allowedPermissionProfiles else { return defaults }
+        return defaults.filter { allowedPermissionProfiles.contains($0) }
     }
 }
 
@@ -528,10 +610,53 @@ struct GoalPlanNodeInfo: Identifiable, Hashable {
     }
 }
 
-struct ThreadGoalState: Hashable {
+struct ThreadGoalState: Identifiable, Hashable {
+    var id: String { threadId }
     var threadId: String
     var goal: GoalInfo?
     var goalPlans: [GoalPlanInfo]
+}
+
+/// A workflow spec or run attached to a thread.
+struct WorkflowInfo: Identifiable, Hashable {
+    enum Kind: String, Hashable {
+        case workflow, run
+    }
+
+    var id: String
+    var threadId: String
+    var title: String
+    var subtitle: String
+    var status: String
+    var kind: Kind
+    var updatedAt: Int
+
+    init(workflow v: JSONValue, fallbackThreadId: String) {
+        let recordId = v["workflowRecordId"]?.string ?? v["id"]?.string ?? UUID().uuidString
+        id = "workflow:\(recordId)"
+        threadId = v["threadId"]?.string ?? fallbackThreadId
+        title = v["displayName"]?.string ?? v["specWorkflowId"]?.string ?? "Workflow"
+        status = v["status"]?.string ?? "draft"
+        kind = .workflow
+        updatedAt = v["updatedAt"]?.int ?? 0
+        let steps = v["stepCount"]?.int ?? 0
+        let agents = v["agentCount"]?.int ?? 0
+        subtitle = "\(steps) step\(steps == 1 ? "" : "s") · \(agents) agent\(agents == 1 ? "" : "s")"
+    }
+
+    init(run v: JSONValue, fallbackThreadId: String) {
+        let runId = v["runId"]?.string ?? v["id"]?.string ?? UUID().uuidString
+        id = "run:\(runId)"
+        threadId = v["threadId"]?.string ?? fallbackThreadId
+        title = "Run \(runId.prefix(8))"
+        status = v["status"]?.string ?? "pending"
+        kind = .run
+        updatedAt = v["updatedAt"]?.int ?? 0
+        let succeeded = v["succeededStepCount"]?.int ?? 0
+        let failed = v["failedStepCount"]?.int ?? 0
+        let active = v["activeStepCount"]?.int ?? 0
+        subtitle = "\(succeeded) succeeded · \(failed) failed · \(active) active"
+    }
 }
 
 /// A currently loaded app-server peer that can receive active-session messages.

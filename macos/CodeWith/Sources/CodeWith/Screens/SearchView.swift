@@ -48,7 +48,7 @@ struct SearchView: View {
                         if !model.searchApps.isEmpty {
                             section("Apps")
                             ForEach(model.searchApps) { a in
-                                resultRow(icon: "square.grid.2x2", title: a.name, subtitle: a.detail) { }
+                                resultLabel(icon: "square.grid.2x2", title: a.name, subtitle: a.detail)
                             }
                         }
                     }
@@ -69,20 +69,26 @@ struct SearchView: View {
     }
     private func resultRow(icon: String, title: String, subtitle: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).frame(width: 16)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                    if !subtitle.isEmpty {
-                        Text(subtitle).font(.system(size: 11)).foregroundStyle(Theme.textTertiary).lineLimit(1)
-                    }
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 8).padding(.vertical, 7).contentShape(Rectangle())
-            .background(RoundedRectangle(cornerRadius: 7).fill(Theme.rowHover))
+            resultContent(icon: icon, title: title, subtitle: subtitle)
         }
         .buttonStyle(.plain)
+    }
+    private func resultLabel(icon: String, title: String, subtitle: String) -> some View {
+        resultContent(icon: icon, title: title, subtitle: subtitle)
+    }
+    private func resultContent(icon: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                if !subtitle.isEmpty {
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(Theme.textTertiary).lineLimit(1)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.rowHover))
     }
     private func empty(_ title: String, _ sub: String) -> some View {
         VStack(spacing: 6) {

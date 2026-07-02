@@ -6,7 +6,7 @@ app, adapted for the fork:
 
 - **Apps** (the Codex "Plugins" entry, renamed)
 - **Machines** — a new sidebar entry for multi-machine fleet sessions
-- **Loops / Goals**, **Profiles** switching — fork capabilities
+- **Loops / Goals / Workflows**, **Profiles** switching — fork capabilities
 - CodeWith branding throughout
 
 ## Layout
@@ -35,11 +35,12 @@ permission-free, deterministic.
 ```bash
 bash macos/scripts/shoot.sh                   # renders every screen → design-refs/renders/
 bash macos/scripts/run-on-apple03.sh          # builds the .app bundle on apple03
+bash macos/scripts/run-on-apple03.sh --cli-path /path/to/codewith
 bash macos/scripts/run-on-apple03.sh --launch # opens the windowed app on apple03
 ```
 
 `run-on-apple03.sh` requires a `codewith` CLI on the build host, or an explicit
-`CODEWITH_CLI_PATH`. It copies that CLI into `CodeWith.app/Contents/Resources/codewith`
+`CODEWITH_CLI_PATH` / `--cli-path`. It copies that CLI into `CodeWith.app/Contents/Resources/codewith`
 so the Swift app talks to the existing `codewith app-server` harness instead of
 depending on whichever external install happens to be first on `PATH`.
 
@@ -59,3 +60,10 @@ the `ScrollColumn`/`snapshotMode` fallback for `ImageRenderer`).
 | 05–09 | Settings: General, Profile, Appearance, Configuration, Personalization | 05–09 |
 | 10 | Task result + Cloud-changes diff (3-pane) | 10 |
 | 11 | Login — "Get started with CodeWith" | 11 |
+| 12 | Machines | fork |
+| 13 | Profiles | fork |
+| 14 | Apps | fork |
+| 15 | Loops | fork |
+| 16 | Goals | fork |
+| 17 | Search | fork |
+| 18 | Workflows | fork |
