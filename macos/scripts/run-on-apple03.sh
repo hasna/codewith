@@ -39,7 +39,9 @@ ssh -o ConnectTimeout=15 "$HOST" "bash -s" <<REMOTE
 set -euo pipefail
 APP="$APP"
 BIN="$REMOTE_DIR/.build/release/CodeWith"
-CLI_SRC="\${CODEWITH_CLI_PATH:-}"
+# CODEWITH_CLI_PATH is read from the *invoking* host's environment and
+# forwarded here; it names a path on the build host.
+CLI_SRC="${CODEWITH_CLI_PATH:-}"
 if [ -z "\$CLI_SRC" ]; then
   CLI_SRC="\$(command -v codewith || true)"
 fi
