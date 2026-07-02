@@ -108,20 +108,70 @@ impl AccountRequestProcessor {
 
     pub(crate) async fn list_auth_profiles(
         &self,
-        _params: AuthProfileListParams,
+        params: AuthProfileListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let profiles = codex_login::list_auth_profiles(
+        let AuthProfileListParams { cursor, limit } = params;
+        let mut profiles = codex_login::list_auth_profiles(
             &self.config.codex_home,
             self.config.cli_auth_credentials_store_mode,
         )
         .map_err(|err| invalid_request(format!("failed to list auth profiles: {err}")))?;
+        if let Some(selected_auth_profile) = self.auth_manager.selected_auth_profile() {
+            for profile in &mut profiles {
+                profile.active = profile.name == selected_auth_profile;
+            }
+        }
+
+        let total = profiles.len();
+        let start = match cursor {
+            Some(cursor) => cursor
+                .parse::<usize>()
+                .map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))?,
+            None => 0,
+        };
+        if start > total {
+            return Err(invalid_request(format!(
+                "cursor {start} exceeds total auth profiles {total}"
+            )));
+        }
+        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
+        let end = start.saturating_add(effective_limit).min(total);
+        let next_cursor = (end < total).then_some(end.to_string());
 
         Ok(Some(
             AuthProfileListResponse {
-                data: profiles
-                    .into_iter()
+                data: profiles[start..end]
+                    .iter()
+                    .cloned()
                     .map(Self::auth_profile_summary)
                     .collect(),
+                next_cursor,
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn save_current_auth_profile(
+        &self,
+        params: AuthProfileSaveCurrentParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let profile = codex_login::save_current_auth_profile(
+            &self.config.codex_home,
+            self.config.cli_auth_credentials_store_mode,
+            &params.name,
+        )
+        .map_err(|err| invalid_request(format!("failed to save auth profile: {err}")))?;
+
+        self.auth_manager
+            .switch_auth_profile(Some(profile.name.clone()))
+            .await
+            .map_err(|err| invalid_request(format!("failed to reload auth profile: {err}")))?;
+
+        self.finish_auth_profile_change().await;
+
+        Ok(Some(
+            AuthProfileSaveCurrentResponse {
+                profile: Self::auth_profile_summary(profile),
             }
             .into(),
         ))
@@ -143,11 +193,7 @@ impl AccountRequestProcessor {
             .await
             .map_err(|err| invalid_request(format!("failed to reload auth profile: {err}")))?;
 
-        self.outgoing
-            .send_server_notification(ServerNotification::AccountUpdated(
-                self.current_account_updated_notification(),
-            ))
-            .await;
+        self.finish_auth_profile_change().await;
 
         Ok(Some(
             AuthProfileSwitchResponse {
@@ -223,13 +269,49 @@ impl AccountRequestProcessor {
     fn auth_profile_summary(profile: codex_login::AuthProfile) -> AuthProfileSummary {
         AuthProfileSummary {
             name: profile.name,
-            subscription_provider: profile.subscription_provider.to_string(),
+            subscription_provider: match profile.subscription_provider {
+                codex_login::AuthProfileSubscriptionProvider::ChatGpt => {
+                    AuthProfileSubscriptionProvider::Chatgpt
+                }
+                codex_login::AuthProfileSubscriptionProvider::ClaudeAi => {
+                    AuthProfileSubscriptionProvider::ClaudeAi
+                }
+                codex_login::AuthProfileSubscriptionProvider::Cursor => {
+                    AuthProfileSubscriptionProvider::Cursor
+                }
+                codex_login::AuthProfileSubscriptionProvider::Grok => {
+                    AuthProfileSubscriptionProvider::Grok
+                }
+            },
             auth_mode: profile.auth_mode,
             email: profile.email,
             account_id: profile.account_id,
             plan: profile.plan,
             active: profile.active,
         }
+    }
+
+    async fn finish_auth_profile_change(&self) {
+        self.config_manager.replace_cloud_config_bundle_loader(
+            self.auth_manager.clone(),
+            self.config.chatgpt_base_url.clone(),
+        );
+        self.config_manager
+            .sync_default_client_residency_requirement()
+            .await;
+
+        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+            &self.config_manager,
+            &self.thread_manager,
+            self.auth_manager.auth_cached(),
+        )
+        .await;
+
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountUpdated(
+                self.current_account_updated_notification(),
+            ))
+            .await;
     }
 
     async fn maybe_refresh_remote_installed_plugins_cache_for_current_config(

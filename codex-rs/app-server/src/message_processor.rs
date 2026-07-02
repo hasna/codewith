@@ -1831,6 +1831,11 @@ impl MessageProcessor {
             ClientRequest::AuthProfileList { params, .. } => {
                 self.account_processor.list_auth_profiles(params).await
             }
+            ClientRequest::AuthProfileSaveCurrent { params, .. } => {
+                self.account_processor
+                    .save_current_auth_profile(params)
+                    .await
+            }
             ClientRequest::AuthProfileSwitch { params, .. } => {
                 self.account_processor.switch_auth_profile(params).await
             }

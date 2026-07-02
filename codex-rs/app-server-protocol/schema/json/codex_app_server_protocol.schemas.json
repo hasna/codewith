@@ -2802,6 +2802,30 @@
             },
             "method": {
               "enum": [
+                "authProfile/saveCurrent"
+              ],
+              "title": "AuthProfile/saveCurrentRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileSaveCurrentParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/saveCurrentRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "authProfile/switch"
               ],
               "title": "AuthProfile/switchRequestMethod",
@@ -8604,6 +8628,22 @@
       },
       "AuthProfileListParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "title": "AuthProfileListParams",
         "type": "object"
       },
@@ -8615,6 +8655,12 @@
               "$ref": "#/definitions/v2/AuthProfileSummary"
             },
             "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -8622,6 +8668,41 @@
         ],
         "title": "AuthProfileListResponse",
         "type": "object"
+      },
+      "AuthProfileSaveCurrentParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AuthProfileSaveCurrentParams",
+        "type": "object"
+      },
+      "AuthProfileSaveCurrentResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "profile": {
+            "$ref": "#/definitions/v2/AuthProfileSummary"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "AuthProfileSaveCurrentResponse",
+        "type": "object"
+      },
+      "AuthProfileSubscriptionProvider": {
+        "enum": [
+          "chatgpt",
+          "claudeAi",
+          "cursor",
+          "grok"
+        ],
+        "type": "string"
       },
       "AuthProfileSummary": {
         "properties": {
@@ -8660,7 +8741,7 @@
             ]
           },
           "subscriptionProvider": {
-            "type": "string"
+            "$ref": "#/definitions/v2/AuthProfileSubscriptionProvider"
           }
         },
         "required": [

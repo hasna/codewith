@@ -2408,6 +2408,9 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `authProfile/switch` — switch to a saved ChatGPT auth profile by name; triggers `account/updated`.
 - `account/logout` — sign out; triggers `account/updated`.
 - `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
+- `authProfile/list` — list saved CLI auth profiles and indicate the active profile.
+- `authProfile/saveCurrent` — save current root auth credentials as a named auth profile, switch to it, and trigger `account/updated`.
+- `authProfile/switch` — switch the selected auth profile, refresh account-scoped app-server state, and trigger `account/updated`.
 - `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
@@ -2491,34 +2494,63 @@ Field notes:
 { "method": "account/login/completed", "params": { "loginId": "<uuid>", "success": false, "error": "…" } }
 ```
 
-### 6) Logout
+### 6) Manage auth profiles
+
+List saved profiles:
 
 ```json
-{ "method": "account/logout", "id": 6 }
-{ "id": 6, "result": {} }
-{ "method": "account/updated", "params": { "authMode": null, "planType": null } }
+{ "method": "authProfile/list", "id": 6, "params": { "cursor": null, "limit": null } }
 ```
-
-### 7) Auth profiles
 
 ```json
-{ "method": "authProfile/list", "id": 7, "params": {} }
-{ "id": 7, "result": { "data": [{ "name": "work", "subscriptionProvider": "ChatGPT", "authMode": "chatgpt", "email": "user@example.com", "accountId": null, "plan": "pro", "active": true }] } }
+{
+  "id": 6,
+  "result": {
+    "data": [
+      {
+        "name": "work",
+        "subscriptionProvider": "chatgpt",
+        "authMode": "chatgpt",
+        "email": "user@example.com",
+        "accountId": "acct_123",
+        "plan": "pro",
+        "active": true
+      }
+    ],
+    "nextCursor": null
+  }
+}
 ```
+
+Save the current root credentials as a named profile:
+
+```json
+{ "method": "authProfile/saveCurrent", "id": 7, "params": { "name": "work" } }
+```
+
+Switch to an existing profile:
 
 ```json
 { "method": "authProfile/switch", "id": 8, "params": { "name": "work" } }
-{ "id": 8, "result": { "profile": { "name": "work", "subscriptionProvider": "ChatGPT", "authMode": "chatgpt", "email": "user@example.com", "accountId": null, "plan": "pro", "active": true } } }
-{ "method": "account/updated", "params": { "authMode": "chatgpt", "planType": "pro" } }
+```
+
+Both save and switch return `{ "profile": { ... } }` and emit `account/updated` after the app-server reloads auth-scoped state.
+
+### 7) Logout
+
+```json
+{ "method": "account/logout", "id": 9 }
+{ "id": 9, "result": {} }
+{ "method": "account/updated", "params": { "authMode": null, "planType": null } }
 ```
 
 ### 8) Rate limits (ChatGPT)
 
 ```json
-{ "method": "account/rateLimits/read", "id": 9 }
-{ "method": "account/rateLimits/read", "id": 10, "params": { "authProfile": "work" } }
-{ "method": "account/rateLimits/read", "id": 11, "params": { "authProfile": null } }
-{ "id": 9, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
+{ "method": "account/rateLimits/read", "id": 10 }
+{ "method": "account/rateLimits/read", "id": 11, "params": { "authProfile": "work" } }
+{ "method": "account/rateLimits/read", "id": 12, "params": { "authProfile": null } }
+{ "id": 10, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 
@@ -2530,11 +2562,11 @@ Field notes:
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 
-### 8) Notify a workspace owner about a limit
+### 9) Notify a workspace owner about a limit
 
 ```json
-{ "method": "account/sendAddCreditsNudgeEmail", "id": 8, "params": { "creditType": "credits" } }
-{ "id": 8, "result": { "status": "sent" } }
+{ "method": "account/sendAddCreditsNudgeEmail", "id": 13, "params": { "creditType": "credits" } }
+{ "id": 13, "result": { "status": "sent" } }
 ```
 
 Use `creditType: "credits"` when workspace credits are depleted, or `creditType: "usage_limit"` when the workspace usage limit has been reached. If the owner was already notified recently, the response status is `cooldown_active`.

@@ -106,6 +106,6 @@
   "required": [
     "profile"
   ],
-  "title": "AuthProfileSwitchResponse",
+  "title": "AuthProfileSaveCurrentResponse",
   "type": "object"
 }

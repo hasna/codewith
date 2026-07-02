@@ -375,9 +375,19 @@ struct AuthProfileInfo: Identifiable, Hashable {
     init(from v: JSONValue) {
         name = v["name"]?.string ?? "profile"
         email = v["email"]?.string ?? v["accountId"]?.string ?? ""
-        provider = v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? ""
+        provider = Self.providerDisplayName(v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? "")
         plan = v["plan"]?.string ?? v["authMode"]?.string ?? ""
         active = v["active"]?.bool ?? false
+    }
+
+    private static func providerDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "chatgpt": return "ChatGPT"
+        case "claudeAi": return "Claude.ai"
+        case "cursor": return "Cursor"
+        case "grok": return "Grok"
+        default: return provider
+        }
     }
 }
 
@@ -783,6 +793,113 @@ struct AgentAttachmentInfo {
 
     var pendingCount: Int {
         pendingInteractions.count
+    }
+}
+
+struct AccountUsageInfo: Hashable {
+    var lifetimeTokens: Int?
+    var peakDailyTokens: Int?
+    var longestRunningTurnSec: Int?
+    var currentStreakDays: Int?
+    var longestStreakDays: Int?
+    var dailyBuckets: [AccountUsageBucket]
+
+    init(from v: JSONValue) {
+        let summary = v["summary"] ?? .null
+        lifetimeTokens = summary["lifetimeTokens"]?.int
+        peakDailyTokens = summary["peakDailyTokens"]?.int
+        longestRunningTurnSec = summary["longestRunningTurnSec"]?.int
+        currentStreakDays = summary["currentStreakDays"]?.int
+        longestStreakDays = summary["longestStreakDays"]?.int
+        dailyBuckets = (v["dailyUsageBuckets"]?.array ?? []).map(AccountUsageBucket.init(from:))
+    }
+}
+
+struct AccountUsageBucket: Identifiable, Hashable {
+    var id: String { startDate }
+    var startDate: String
+    var tokens: Int
+
+    init(from v: JSONValue) {
+        startDate = v["startDate"]?.string ?? ""
+        tokens = v["tokens"]?.int ?? 0
+    }
+}
+
+struct McpServerStatusInfo: Identifiable, Hashable {
+    var id: String { name }
+    var name: String
+    var authStatus: String
+    var toolCount: Int
+    var resourceCount: Int
+
+    init(from v: JSONValue) {
+        name = v["name"]?.string ?? "server"
+        authStatus = v["authStatus"]?["type"]?.string ?? v["authStatus"]?.string ?? "unknown"
+        toolCount = v["tools"]?.object?.count ?? 0
+        resourceCount = (v["resources"]?.array ?? []).count
+            + (v["resourceTemplates"]?.array ?? []).count
+    }
+}
+
+struct HookEntryInfo: Identifiable, Hashable {
+    var id: String { cwd }
+    var cwd: String
+    var hooks: [HookInfo]
+    var warnings: [String]
+    var errors: [String]
+
+    init(from v: JSONValue) {
+        cwd = v["cwd"]?.string ?? ""
+        hooks = (v["hooks"]?.array ?? []).map(HookInfo.init(from:))
+        warnings = (v["warnings"]?.array ?? []).compactMap(\.string)
+        errors = (v["errors"]?.array ?? []).compactMap { error in
+            error["message"]?.string
+        }
+    }
+}
+
+struct HookInfo: Identifiable, Hashable {
+    var id: String { key }
+    var key: String
+    var eventName: String
+    var handlerType: String
+    var matcher: String?
+    var command: String?
+    var enabled: Bool
+    var trustStatus: String
+
+    init(from v: JSONValue) {
+        key = v["key"]?.string ?? UUID().uuidString
+        eventName = v["eventName"]?.string ?? ""
+        handlerType = v["handlerType"]?.string ?? ""
+        matcher = v["matcher"]?.string
+        command = v["command"]?.string
+        enabled = v["enabled"]?.bool ?? false
+        trustStatus = v["trustStatus"]?.string ?? "unknown"
+    }
+}
+
+struct WorktreeInfo: Identifiable, Hashable {
+    var id: String { worktreeId }
+    var worktreeId: String
+    var baseRepoPath: String
+    var worktreePath: String
+    var branch: String?
+    var lifecycleStatus: String
+    var dirty: Bool
+    var ownerKind: String
+    var updatedAt: Int
+
+    init(from v: JSONValue) {
+        worktreeId = v["worktreeId"]?.string ?? UUID().uuidString
+        baseRepoPath = v["baseRepoPath"]?.string ?? ""
+        worktreePath = v["worktreePath"]?.string ?? ""
+        branch = v["branch"]?.string
+        lifecycleStatus = v["lifecycleStatus"]?.string ?? "unknown"
+        dirty = v["dirty"]?.bool ?? false
+        ownerKind = v["ownerKind"]?.string ?? ""
+        updatedAt = v["updatedAt"]?.int ?? 0
     }
 }
 

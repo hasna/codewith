@@ -26,12 +26,7 @@ struct AppShell: View {
             } else if model.showSettings {
                 SettingsShell(
                     selected: model.settingsPage,
-                    onSelect: {
-                        model.settingsPage = $0
-                        if $0 == "Machines" {
-                            Task { await model.loadMachines() }
-                        }
-                    },
+                    onSelect: { model.selectSettingsPage($0) },
                     onBack: { model.showSettings = false }
                 ) { settingsPage(model.settingsPage) }
             } else {
@@ -113,7 +108,12 @@ struct AppShell: View {
                         onCheckPairing: { Task { await model.refreshMachinePairingStatus() } })
                 case .profiles: ProfilesView(profiles: model.authProfiles,
                                              activeEmail: model.account.email,
-                                             onSwitch: { name in Task { await model.switchAuthProfile(name) } })
+                                             profileError: model.profileError,
+                                             loginInProgress: model.loginInProgress,
+                                             loginError: model.loginError,
+                                             onSwitch: { name in Task { await model.switchAuthProfile(name) } },
+                                             onCreateChatGPT: { name in Task { await model.createAuthProfileWithChatGPT(name: name) } },
+                                             onCreateApiKey: { name, key in Task { await model.createAuthProfileWithApiKey(name: name, apiKey: key) } })
                     .task { await model.loadProfiles() }
                 }
             }
@@ -144,8 +144,19 @@ struct AppShell: View {
 
     @ViewBuilder private func settingsPage(_ name: String) -> some View {
         switch name {
-        case "Profile":         SettingsProfile(account: model.account)
-        case "Appearance":      SettingsAppearance()
+        case "Profile":
+            SettingsProfile(
+                account: model.account,
+                activeProfile: model.currentAuthProfile,
+                profiles: model.authProfiles,
+                profileError: model.profileError,
+                onManageProfiles: {
+                    model.showSettings = false
+                    model.open(.profiles, label: "Profiles")
+                    Task { await model.loadProfiles() }
+                })
+        case "Appearance":
+            SettingsAppearance()
         case "Configuration":
             SettingsConfiguration(
                 version: model.serverVersion,
@@ -168,6 +179,36 @@ struct AppShell: View {
                 onSetChronicleResearch: { model.setChronicleResearch($0) },
                 onSetSkipToolAssistedChats: { model.setSkipToolAssistedChats($0) },
                 onResetMemories: { model.resetMemories() })
+        case "Keyboard shortcuts":
+            SettingsKeyboardShortcuts()
+        case "Usage & billing":
+            SettingsUsageBilling(
+                account: model.account,
+                activeProfile: model.currentAuthProfile,
+                usage: model.accountUsage,
+                error: model.accountUsageError,
+                onRefresh: { Task { await model.loadAccountUsage() } })
+        case "MCP servers":
+            SettingsMcpServers(
+                servers: model.mcpServers,
+                error: model.mcpServersError,
+                onRefresh: { Task { await model.loadMcpServers() } })
+        case "Hooks":
+            SettingsHooks(
+                entries: model.hookEntries,
+                error: model.hooksError,
+                onRefresh: { Task { await model.loadHooks() } })
+        case "Worktrees":
+            SettingsWorktrees(
+                worktrees: model.worktrees,
+                error: model.worktreesError,
+                onRefresh: { Task { await model.loadWorktrees() } })
+        case "Archived chats":
+            SettingsArchivedChats(
+                threads: model.archivedThreads,
+                error: model.archivedThreadsError,
+                onRefresh: { Task { await model.loadArchivedThreads() } },
+                onUnarchive: { thread in Task { await model.unarchiveThread(thread) } })
         case "Machines":
             MachinesView(
                 machines: model.machines,

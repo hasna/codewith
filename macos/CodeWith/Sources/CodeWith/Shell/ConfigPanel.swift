@@ -70,11 +70,13 @@ struct ConfigPanel: View {
                 Task { await model.loadProfiles() }
             } label: {
                 HStack(spacing: 8) {
-                    Circle().fill(Color(hex: model.currentProfile.colorHex)).frame(width: 22, height: 22)
-                        .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accentForeground))
+                    Circle().fill(Theme.accent).frame(width: 22, height: 22)
+                        .overlay(Text(profileInitials).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accentForeground))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(model.account.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                        if !model.account.plan.isEmpty {
+                        if let profile = model.currentAuthProfile {
+                            Text(profile.name).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                        } else if !model.account.plan.isEmpty {
                             Text(model.account.plan).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
                         }
                     }
@@ -129,6 +131,13 @@ struct ConfigPanel: View {
             ?? model.authProfiles.first(where: { $0.active })?.name
             ?? model.authProfiles.first?.name
             ?? "Profile"
+    }
+
+    private var profileInitials: String {
+        if let profile = model.currentAuthProfile {
+            return String(profile.name.prefix(2)).uppercased()
+        }
+        return model.account.initials
     }
 
     private static func isPermissionEscalation(_ profileId: String) -> Bool {

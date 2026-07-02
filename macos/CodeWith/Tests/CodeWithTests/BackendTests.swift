@@ -72,6 +72,20 @@ final class MessageRoutingTests: XCTestCase {
     func testMalformedIgnored() { XCTAssertEqual(classify("not json"), .ignored) }
     func testEmptyObjectIgnored() { XCTAssertEqual(classify("{}"), .ignored) }
     func testNullErrorIsSuccess() { XCTAssertEqual(classify("{\"id\":7,\"result\":1,\"error\":null}"), .response(id: 7, result: .number(1))) }
+
+    func testThreadStartParamsIncludeSelectedAuthProfile() {
+        XCTAssertEqual(
+            AppServerClient.threadStartParams(cwd: "/tmp/project", authProfile: "work"),
+            .object([
+                "cwd": .string("/tmp/project"),
+                "authProfile": .string("work"),
+            ])
+        )
+        XCTAssertEqual(
+            AppServerClient.threadStartParams(cwd: "/tmp/project", authProfile: ""),
+            .object(["cwd": .string("/tmp/project")])
+        )
+    }
 }
 
 // Regression: the app must never resolve its own GUI executable as the "codewith"
@@ -391,6 +405,21 @@ final class BackendModelsTests: XCTestCase {
                 config: obj(["file_opener": .string("cursor")]))
             .fileOpenDestination,
             "finder")
+    }
+    func testAuthProfileMapsStableProviderIdsToDisplayNames() {
+        let p = AuthProfileInfo(from: obj([
+            "name": .string("work"),
+            "subscriptionProvider": .string("chatgpt"),
+            "authMode": .string("apiKey"),
+            "active": .bool(true),
+        ]))
+        XCTAssertEqual(p.name, "work")
+        XCTAssertEqual(p.provider, "ChatGPT")
+        XCTAssertEqual(p.plan, "apiKey")
+        XCTAssertTrue(p.active)
+        XCTAssertEqual(
+            AuthProfileInfo(from: obj(["subscriptionProvider": .string("claudeAi")])).provider,
+            "Claude.ai")
     }
     func testGoalInfoDecodesThreadGoal() {
         let goal = GoalInfo(from: obj([

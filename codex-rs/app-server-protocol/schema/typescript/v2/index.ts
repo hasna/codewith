@@ -62,6 +62,9 @@ export type { AttestationGenerateResponse } from "./AttestationGenerateResponse"
 export type { AuthProfileKind } from "./AuthProfileKind";
 export type { AuthProfileListParams } from "./AuthProfileListParams";
 export type { AuthProfileListResponse } from "./AuthProfileListResponse";
+export type { AuthProfileSaveCurrentParams } from "./AuthProfileSaveCurrentParams";
+export type { AuthProfileSaveCurrentResponse } from "./AuthProfileSaveCurrentResponse";
+export type { AuthProfileSubscriptionProvider } from "./AuthProfileSubscriptionProvider";
 export type { AuthProfileSummary } from "./AuthProfileSummary";
 export type { AuthProfileSwitchParams } from "./AuthProfileSwitchParams";
 export type { AuthProfileSwitchResponse } from "./AuthProfileSwitchResponse";
