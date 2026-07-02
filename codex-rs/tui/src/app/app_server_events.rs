@@ -71,6 +71,7 @@ impl App {
                 {
                     self.chat_widget.dismiss_app_server_request(&request);
                 }
+                self.clear_pending_agent_mcp_mutation(&notification.request_id);
             }
             ServerNotification::McpServerStatusUpdated(_) => {
                 self.refresh_mcp_startup_expected_servers_from_config();

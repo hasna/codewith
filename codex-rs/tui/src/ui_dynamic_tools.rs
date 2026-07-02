@@ -142,13 +142,79 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: MCP_TOOL.to_string(),
-            description: "Inspect configured MCP servers and open the MCP manager. MCP mutations such as add, enable/disable, and reload require the interactive /mcp UI and are not executed by this AI-facing tool.".to_string(),
+            description: "Inspect MCP servers, reload loaded MCP connections, or request a safe persistent MCP config change. Persistent changes are approval-gated: the TUI shows the exact server name, transport, command/URL, env/header names, tool approval mode, and config scope before anything is saved.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "One of: open, list."
+                        "description": "One of: open, list, reload, add_stdio, add_streamable_http, set_server_enabled, set_tool_enabled. add/set actions require user approval before writing config."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "MCP server name for add_stdio, add_streamable_http, or set_server_enabled."
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Executable/path for action=add_stdio. Pass arguments separately in args; do not provide a shell command string."
+                    },
+                    "args": {
+                        "type": "array",
+                        "description": "Argv arguments for action=add_stdio.",
+                        "items": { "type": "string" }
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory for action=add_stdio."
+                    },
+                    "env_vars": {
+                        "type": "array",
+                        "description": "Environment variable names to pass through for action=add_stdio. Secret values are not accepted inline.",
+                        "items": { "type": "string" }
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "HTTP or HTTPS URL for action=add_streamable_http. Do not include credentials or secret query parameters."
+                    },
+                    "bearer_token_env_var": {
+                        "type": "string",
+                        "description": "Environment variable name containing the bearer token for action=add_streamable_http."
+                    },
+                    "http_headers": {
+                        "type": "object",
+                        "description": "Non-secret inline HTTP headers for action=add_streamable_http.",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "env_http_headers": {
+                        "type": "object",
+                        "description": "HTTP headers whose values come from environment variables, e.g. Authorization: MCP_TOKEN.",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "enabled_tools": {
+                        "type": "array",
+                        "description": "Optional tool allow-list for new servers.",
+                        "items": { "type": "string" }
+                    },
+                    "disabled_tools": {
+                        "type": "array",
+                        "description": "Optional tool deny-list for new servers.",
+                        "items": { "type": "string" }
+                    },
+                    "default_tools_approval_mode": {
+                        "type": "string",
+                        "description": "Optional default tool approval mode for new servers: auto, prompt, or approve."
+                    },
+                    "server": {
+                        "type": "string",
+                        "description": "MCP server name for action=set_tool_enabled."
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "MCP tool name for action=set_tool_enabled."
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Desired enabled state for set_server_enabled or set_tool_enabled."
                     }
                 },
                 "required": ["action"],
@@ -404,6 +470,16 @@ mod tests {
                 .expect("message description")
                 .contains("120 characters")
         );
+        let mcp = specs
+            .iter()
+            .find(|tool| tool.name == MCP_TOOL)
+            .expect("mcp tool spec");
+        assert!(mcp.description.contains("approval-gated"));
+        let mcp_action_description = mcp.input_schema["properties"]["action"]["description"]
+            .as_str()
+            .expect("action description");
+        assert!(mcp_action_description.contains("add_stdio"));
+        assert!(mcp_action_description.contains("set_tool_enabled"));
 
         for tool in [
             BACKGROUND_TERMINALS_TOOL,

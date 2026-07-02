@@ -11,6 +11,7 @@ use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
@@ -407,6 +408,73 @@ async fn mcp_control_center_popup_snapshot() {
         Ok(AppEvent::OpenMcpManager {
             detail: McpServerStatusDetail::Full,
         })
+    );
+}
+
+#[tokio::test]
+async fn mcp_agent_mutation_approval_popup_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let request_id = RequestId::String("mcp-request-1".to_string());
+
+    chat.open_mcp_agent_mutation_confirmation(
+        request_id.clone(),
+        McpAgentMutationApprovalSummary {
+            title: "Add MCP server `docs`".to_string(),
+            rows: vec![
+                ("Server".to_string(), "docs".to_string()),
+                (
+                    "Transport".to_string(),
+                    "stdio; command: npx".to_string(),
+                ),
+                (
+                    "Args / cwd".to_string(),
+                    "args: -y, @scope/docs-mcp, --project, docs; cwd: /workspace/docs"
+                        .to_string(),
+                ),
+                (
+                    "Env / headers".to_string(),
+                    "env vars: DOCS_API_KEY; headers: not applicable".to_string(),
+                ),
+                (
+                    "Tool config".to_string(),
+                    "default approval: prompt; enabled: none; disabled: none".to_string(),
+                ),
+                (
+                    "Scope / refresh".to_string(),
+                    "user config.toml mcp_servers.<name>; MCP refresh is queued for loaded threads; new tools are available before the next turn."
+                        .to_string(),
+                ),
+            ],
+        },
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 112);
+    assert!(popup.contains("Approve MCP Config Change"));
+    assert!(popup.contains("Approve and save"));
+    assert!(popup.contains("DOCS_API_KEY"));
+    assert_chatwidget_snapshot!("mcp_agent_mutation_approval_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::DenyAgentMcpMutation { request_id: id }) if id == request_id
+    );
+
+    chat.open_mcp_agent_mutation_confirmation(
+        request_id.clone(),
+        McpAgentMutationApprovalSummary {
+            title: "Enable MCP server `docs`".to_string(),
+            rows: vec![
+                ("Server".to_string(), "docs".to_string()),
+                ("Change".to_string(), "enabled = true".to_string()),
+            ],
+        },
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ConfirmAgentMcpMutation { request_id: id }) if id == request_id
     );
 }
 

@@ -10,7 +10,6 @@ use codex_app_server_protocol::ActiveSessionPeerKind;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
 use codex_app_server_protocol::ThreadScheduleSpec;
-use codex_config::types::McpServerTransportConfig;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -18,11 +17,6 @@ use serde_json::json;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct BackgroundTerminalsArgs {
-    pub(super) action: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct McpArgs {
     pub(super) action: String,
 }
 
@@ -92,44 +86,6 @@ impl App {
             action => Err(unknown_action_with_expected(
                 action,
                 "open, list, or stop_all (opens user confirmation)",
-            )),
-        }
-    }
-
-    pub(super) async fn handle_mcp_tool(
-        &mut self,
-        _app_server: &mut AppServerSession,
-        args: McpArgs,
-    ) -> Result<JsonValue, String> {
-        match args.action.as_str() {
-            "open" => {
-                self.chat_widget.open_mcp_control_center();
-                Ok(json!({ "opened": "mcp" }))
-            }
-            "list" => Ok(json!({
-                "servers": self
-                    .config
-                    .mcp_servers
-                    .get()
-                    .iter()
-                    .map(|(name, config)| json!({
-                        "name": name,
-                        "enabled": config.enabled,
-                        "required": config.required,
-                        "supports_parallel_tool_calls": config.supports_parallel_tool_calls,
-                        "enabled_tools": config.enabled_tools,
-                        "disabled_tools": config.disabled_tools,
-                        "transport": redacted_mcp_transport(&config.transport),
-                    }))
-                    .collect::<Vec<_>>(),
-            })),
-            "add" | "set_server_enabled" | "set_tool_enabled" | "reload" => {
-                self.chat_widget.open_mcp_control_center();
-                Err(interactive_user_confirmation_required(args.action.as_str()))
-            }
-            action => Err(unknown_action_with_expected(
-                action,
-                "open or list; MCP mutations require the interactive /mcp UI",
             )),
         }
     }
@@ -580,59 +536,6 @@ fn interactive_user_confirmation_required(action: &str) -> String {
     )
 }
 
-fn redacted_mcp_transport(transport: &McpServerTransportConfig) -> JsonValue {
-    match transport {
-        McpServerTransportConfig::Stdio {
-            command,
-            args,
-            env,
-            env_vars,
-            cwd,
-        } => json!({
-            "type": "stdio",
-            "command": command,
-            "args_count": args.len(),
-            "env": env
-                .as_ref()
-                .map(|env| redacted_keys(env.keys()))
-                .unwrap_or_default(),
-            "env_vars": env_vars
-                .iter()
-                .map(|env_var| env_var.name().to_string())
-                .collect::<Vec<_>>(),
-            "cwd_configured": cwd.is_some(),
-        }),
-        McpServerTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            http_headers,
-            env_http_headers,
-        } => json!({
-            "type": "streamable_http",
-            "url_configured": !url.is_empty(),
-            "bearer_token_env_var": bearer_token_env_var,
-            "http_headers": http_headers
-                .as_ref()
-                .map(|headers| redacted_keys(headers.keys()))
-                .unwrap_or_default(),
-            "env_http_headers": env_http_headers,
-        }),
-    }
-}
-
-fn redacted_keys<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<JsonValue> {
-    let mut keys = keys.collect::<Vec<_>>();
-    keys.sort();
-    keys.into_iter()
-        .map(|key| {
-            json!({
-                "name": key,
-                "value": "<redacted>",
-            })
-        })
-        .collect()
-}
-
 fn background_terminal_processes_json(
     processes: Vec<crate::history_cell::UnifiedExecProcessDetails>,
 ) -> Vec<JsonValue> {
@@ -661,7 +564,6 @@ fn schedule_matches_kind(schedule: &codex_app_server_protocol::ThreadSchedule, k
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::collections::HashMap;
 
     #[test]
     fn interactive_user_confirmation_message_is_explicit() {
@@ -669,57 +571,6 @@ mod tests {
             interactive_user_confirmation_required("delete"),
             "action=delete requires interactive user confirmation; open the matching manager UI instead"
         );
-    }
-
-    #[test]
-    fn mcp_transport_summary_redacts_raw_secret_values() {
-        let stdio = McpServerTransportConfig::Stdio {
-            command: "npx".to_string(),
-            args: vec![
-                "-y".to_string(),
-                "server".to_string(),
-                "--token=arg-secret".to_string(),
-            ],
-            env: Some(HashMap::from([(
-                "API_KEY".to_string(),
-                "sk-secret".to_string(),
-            )])),
-            env_vars: vec![codex_config::types::McpServerEnvVar::Name(
-                "SAFE_ENV_NAME".to_string(),
-            )],
-            cwd: Some(std::path::PathBuf::from("/tmp/secret-project")),
-        };
-        let summary = redacted_mcp_transport(&stdio);
-        assert_eq!(summary["args_count"], 3);
-        assert_eq!(summary["env"][0]["name"], "API_KEY");
-        assert_eq!(summary["env"][0]["value"], "<redacted>");
-        assert_eq!(summary["env_vars"][0], "SAFE_ENV_NAME");
-        assert_eq!(summary["cwd_configured"], true);
-        let rendered = summary.to_string();
-        assert!(!rendered.contains("sk-secret"));
-        assert!(!rendered.contains("arg-secret"));
-        assert!(!rendered.contains("secret-project"));
-
-        let http = McpServerTransportConfig::StreamableHttp {
-            url: "https://example.com/mcp?token=query-secret".to_string(),
-            bearer_token_env_var: Some("MCP_TOKEN".to_string()),
-            http_headers: Some(HashMap::from([(
-                "Authorization".to_string(),
-                "Bearer raw-secret".to_string(),
-            )])),
-            env_http_headers: Some(HashMap::from([(
-                "X-Api-Key".to_string(),
-                "MCP_API_KEY".to_string(),
-            )])),
-        };
-        let summary = redacted_mcp_transport(&http);
-        assert_eq!(summary["http_headers"][0]["name"], "Authorization");
-        assert_eq!(summary["http_headers"][0]["value"], "<redacted>");
-        assert_eq!(summary["url_configured"], true);
-        assert_eq!(summary["bearer_token_env_var"], "MCP_TOKEN");
-        let rendered = summary.to_string();
-        assert!(!rendered.contains("raw-secret"));
-        assert!(!rendered.contains("query-secret"));
     }
 
     #[test]

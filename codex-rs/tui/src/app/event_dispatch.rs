@@ -840,6 +840,13 @@ impl App {
                     tracing::warn!("failed to set MCP tool enabled from TUI action: {err}");
                 }
             }
+            AppEvent::ConfirmAgentMcpMutation { request_id } => {
+                self.confirm_agent_mcp_mutation(app_server, request_id)
+                    .await;
+            }
+            AppEvent::DenyAgentMcpMutation { request_id } => {
+                self.deny_agent_mcp_mutation(app_server, request_id).await;
+            }
             AppEvent::StartMcpServerOauthLogin { name } => {
                 self.start_mcp_server_oauth_login(app_server, name);
             }

@@ -24,6 +24,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadGoalPlan;
@@ -609,6 +610,16 @@ pub(crate) enum AppEvent {
         server: String,
         tool: String,
         enabled: bool,
+    },
+
+    /// Approve an agent-requested MCP config mutation.
+    ConfirmAgentMcpMutation {
+        request_id: AppServerRequestId,
+    },
+
+    /// Deny an agent-requested MCP config mutation.
+    DenyAgentMcpMutation {
+        request_id: AppServerRequestId,
     },
 
     /// Start OAuth login for a configured MCP server.

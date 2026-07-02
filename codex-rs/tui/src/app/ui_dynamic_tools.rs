@@ -3,10 +3,10 @@ use super::ui_management_tools::ActiveSessionsArgs;
 use super::ui_management_tools::BackgroundAgentsArgs;
 use super::ui_management_tools::BackgroundTerminalsArgs;
 use super::ui_management_tools::CapabilitiesArgs;
-use super::ui_management_tools::McpArgs;
 use super::ui_management_tools::MonitorsArgs;
 use super::ui_management_tools::SchedulesArgs;
 use super::ui_management_tools::SessionControlArgs;
+use super::ui_mcp_tool::McpArgs;
 use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
@@ -87,6 +87,11 @@ struct ConfigOptionOutput {
     disabled_reason: Option<&'static str>,
 }
 
+pub(super) enum UiDynamicToolOutcome {
+    Respond(JsonValue),
+    Pending,
+}
+
 impl App {
     pub(super) async fn try_handle_ui_dynamic_tool_request(
         &mut self,
@@ -101,11 +106,17 @@ impl App {
         }
 
         let result = match self.validate_ui_dynamic_tool_thread(params) {
-            Ok(()) => self.handle_ui_dynamic_tool_call(app_server, params).await,
+            Ok(()) => {
+                self.handle_ui_dynamic_tool_call(app_server, request_id.clone(), params)
+                    .await
+            }
             Err(err) => Err(err),
         };
         let response = match result {
-            Ok(output) => dynamic_tool_response(output, /*success*/ true),
+            Ok(UiDynamicToolOutcome::Respond(output)) => {
+                dynamic_tool_response(output, /*success*/ true)
+            }
+            Ok(UiDynamicToolOutcome::Pending) => return true,
             Err(message) => {
                 self.chat_widget.add_error_message(message.clone());
                 dynamic_tool_response(json!({ "error": message }), /*success*/ false)
@@ -119,60 +130,85 @@ impl App {
     async fn handle_ui_dynamic_tool_call(
         &mut self,
         app_server: &mut AppServerSession,
+        request_id: AppServerRequestId,
         params: &DynamicToolCallParams,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<UiDynamicToolOutcome, String> {
         match params.tool.as_str() {
             crate::ui_dynamic_tools::STATUSLINE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
-                self.handle_statusline_tool(args).await
+                self.handle_statusline_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::STATUSLINE_MESSAGE_TOOL => {
                 let args: StatuslineMessageArgs = parse_arguments(&params.arguments)?;
-                self.handle_statusline_message_tool(args).await
+                self.handle_statusline_message_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::TERMINAL_TITLE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
-                self.handle_terminal_title_tool(args).await
+                self.handle_terminal_title_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::CONFIG_TOOL => {
                 let args: ConfigArgs = parse_arguments(&params.arguments)?;
-                self.handle_config_tool(app_server, args).await
+                self.handle_config_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::TMUX_TOOL => {
                 let args: TmuxArgs = parse_arguments(&params.arguments)?;
-                self.handle_tmux_tool(args).await
+                self.handle_tmux_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::BACKGROUND_TERMINALS_TOOL => {
                 let args: BackgroundTerminalsArgs = parse_arguments(&params.arguments)?;
-                self.handle_background_terminals_tool(args).await
+                self.handle_background_terminals_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::MCP_TOOL => {
                 let args: McpArgs = parse_arguments(&params.arguments)?;
-                self.handle_mcp_tool(app_server, args).await
+                self.handle_mcp_tool(app_server, request_id, args).await
             }
             crate::ui_dynamic_tools::BACKGROUND_AGENTS_TOOL => {
                 let args: BackgroundAgentsArgs = parse_arguments(&params.arguments)?;
-                self.handle_background_agents_tool(app_server, args).await
+                self.handle_background_agents_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::ACTIVE_SESSIONS_TOOL => {
                 let args: ActiveSessionsArgs = parse_arguments(&params.arguments)?;
-                self.handle_active_sessions_tool(app_server, args).await
+                self.handle_active_sessions_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::SCHEDULES_TOOL => {
                 let args: SchedulesArgs = parse_arguments(&params.arguments)?;
-                self.handle_schedules_tool(app_server, args).await
+                self.handle_schedules_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::MONITORS_TOOL => {
                 let args: MonitorsArgs = parse_arguments(&params.arguments)?;
-                self.handle_monitors_tool(app_server, args).await
+                self.handle_monitors_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::SESSION_CONTROL_TOOL => {
                 let args: SessionControlArgs = parse_arguments(&params.arguments)?;
-                self.handle_session_control_tool(args).await
+                self.handle_session_control_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::CAPABILITIES_TOOL => {
                 let args: CapabilitiesArgs = parse_arguments(&params.arguments)?;
-                self.handle_capabilities_tool(args).await
+                self.handle_capabilities_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             _ => Err(format!("unsupported Codewith UI tool `{}`", params.tool)),
         }
@@ -418,7 +454,7 @@ impl App {
         }))
     }
 
-    async fn resolve_ui_dynamic_tool_request(
+    pub(super) async fn resolve_ui_dynamic_tool_request(
         &mut self,
         app_server: &AppServerSession,
         request_id: AppServerRequestId,
@@ -481,7 +517,7 @@ fn non_empty_trimmed(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn dynamic_tool_response(output: JsonValue, success: bool) -> DynamicToolCallResponse {
+pub(super) fn dynamic_tool_response(output: JsonValue, success: bool) -> DynamicToolCallResponse {
     DynamicToolCallResponse {
         content_items: vec![DynamicToolCallOutputContentItem::InputText {
             text: serde_json::to_string_pretty(&output)
