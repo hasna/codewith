@@ -1915,6 +1915,89 @@ async fn worktree_slash_command_emits_manage_events() {
 }
 
 #[tokio::test]
+async fn variant_slash_command_emits_start_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(
+        &mut chat,
+        "/variant --count 3 --name parser --start-point main improve parser errors",
+    );
+
+    let event = rx.try_recv().expect("expected variant event");
+    match event {
+        AppEvent::StartVariants {
+            count,
+            name,
+            start_point,
+            prompt,
+        } => {
+            assert_eq!(count, 3);
+            assert_eq!(name.as_deref(), Some("parser"));
+            assert_eq!(start_point.as_deref(), Some("main"));
+            assert_eq!(prompt, "improve parser errors");
+        }
+        other => panic!("expected StartVariants event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        recall_latest_after_clearing(&mut chat),
+        "/variant --count 3 --name parser --start-point main improve parser errors"
+    );
+}
+
+#[tokio::test]
+async fn variant_slash_command_preserves_flag_prompt_after_terminator() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/variant -n 2 -- --audit logging variants");
+
+    let event = rx.try_recv().expect("expected variant event");
+    match event {
+        AppEvent::StartVariants { count, prompt, .. } => {
+            assert_eq!(count, 2);
+            assert_eq!(prompt, "--audit logging variants");
+        }
+        other => panic!("expected StartVariants event, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn variant_slash_command_reports_invalid_args_without_event() {
+    let cases = [
+        "/variant build alternatives",
+        "/variant --count 1 build alternatives",
+        "/variant --count 6 build alternatives",
+        "/variant --count nope build alternatives",
+        "/variant --count 2",
+    ];
+
+    for command in cases {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+        submit_composer_text(&mut chat, command);
+
+        let event = rx.try_recv().expect("expected usage error");
+        match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 100));
+                assert!(
+                    rendered.contains("/variant") || rendered.contains("Variant"),
+                    "expected /variant usage error, got {rendered:?}"
+                );
+            }
+            other => panic!("expected InsertHistoryCell error, got {other:?}"),
+        }
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, AppEvent::StartVariants { .. }) {
+                panic!("expected no variant start event, got {event:?}");
+            }
+        }
+        assert_no_submit_op(&mut op_rx);
+    }
+}
+
+#[tokio::test]
 async fn background_agent_manager_grouped_roster_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_background_agent_manager(vec![
@@ -3428,6 +3511,31 @@ async fn slash_tmux_is_disabled_while_task_running() {
             assert!(
                 rendered.contains("'/tmux' is disabled while a task is in progress."),
                 "expected /tmux task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+}
+
+#[tokio::test]
+async fn slash_variant_is_disabled_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.handle_slash_command_with_args_dispatch(
+        SlashCommand::Variant,
+        "--count 2 build alternatives".to_string(),
+        Vec::new(),
+    );
+
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(
+                rendered.contains("'/variant' is disabled while a task is in progress."),
+                "expected /variant task-running error, got {rendered:?}"
             );
         }
         other => panic!("expected InsertHistoryCell error, got {other:?}"),

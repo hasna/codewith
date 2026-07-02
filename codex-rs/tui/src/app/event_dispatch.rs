@@ -1269,6 +1269,15 @@ impl App {
                 self.start_pull_request_mode(app_server, name, branch, start_point)
                     .await;
             }
+            AppEvent::StartVariants {
+                count,
+                name,
+                start_point,
+                prompt,
+            } => {
+                self.start_variants(app_server, count, name, start_point, prompt)
+                    .await;
+            }
             AppEvent::OpenWorktreeActions {
                 worktree_id,
                 base_repo_path,

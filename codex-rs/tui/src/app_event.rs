@@ -750,6 +750,14 @@ pub(crate) enum AppEvent {
         start_point: Option<String>,
     },
 
+    /// Create implementation variants in managed worktrees and start one background agent each.
+    StartVariants {
+        count: u8,
+        name: Option<String>,
+        start_point: Option<String>,
+        prompt: String,
+    },
+
     /// Open actions for one Codewith-managed worktree.
     OpenWorktreeActions {
         worktree_id: String,
