@@ -9,6 +9,7 @@ use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
+use crate::tools::handlers::GetUsageHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
@@ -663,6 +664,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     planned_tools.add(PlanHandler);
     planned_tools.add(RenameSessionHandler);
     planned_tools.add(ManageAuthProfilesHandler);
+    planned_tools.add(GetUsageHandler);
     if loop_tools_enabled(turn_context) {
         planned_tools.add(ManageLoopHandler);
         planned_tools.add(ManageMonitorHandler);
