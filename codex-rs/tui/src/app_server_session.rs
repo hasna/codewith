@@ -96,6 +96,8 @@ use codex_app_server_protocol::ThreadGoalListParams;
 use codex_app_server_protocol::ThreadGoalListResponse;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeParams;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeResponse;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalParams;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalResponse;
 use codex_app_server_protocol::ThreadGoalSetParams;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -1255,6 +1257,24 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/goalPlan/activateNode failed in TUI")
+    }
+
+    pub(crate) async fn thread_goal_plan_add_goal(
+        &mut self,
+        thread_id: ThreadId,
+        objective: String,
+    ) -> Result<ThreadGoalPlanAddGoalResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadGoalPlanAddGoal {
+                request_id,
+                params: ThreadGoalPlanAddGoalParams {
+                    thread_id: thread_id.to_string(),
+                    objective,
+                },
+            })
+            .await
+            .wrap_err("thread/goalPlan/addGoal failed in TUI")
     }
 
     pub(crate) async fn thread_workflow_list(

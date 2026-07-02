@@ -69,7 +69,11 @@ pub(crate) enum RealtimeAudioDeviceKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
+    // Kept for explicit replace-confirmation flows; plain `/goal <objective>`
+    // now uses QueueIfExists so it cannot overwrite existing work by default.
+    #[allow(dead_code)]
     ConfirmIfExists,
+    QueueIfExists,
     ReplaceExisting,
     UpdateExisting {
         status: ThreadGoalStatus,
