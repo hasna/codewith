@@ -2649,6 +2649,42 @@ async fn unavailable_slash_command_is_available_from_local_recall() {
 }
 
 #[tokio::test]
+async fn slash_usage_opens_panel_while_task_running_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ChatGpt {
+            email: Some("dev@example.com".to_string()),
+            plan: Some("Pro".to_string()),
+        }),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+    );
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    submit_composer_text(&mut chat, "/usage");
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        popup.contains("Usage"),
+        "expected /usage popup, got:\n{popup}"
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { .. },
+            target: RateLimitRefreshTarget::Selected,
+        })
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),
+        "/usage should not append chat history"
+    );
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn slash_quit_requests_exit() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

@@ -84,6 +84,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Usage,
     Stats,
     Changelog,
     DebugConfig,
@@ -138,6 +139,7 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codewith performs specific tasks",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Usage => "show usage, context, and rate limits",
             SlashCommand::Stats => "show session stats and provider usage",
             SlashCommand::Changelog => "show what changed in Codewith releases",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
@@ -239,6 +241,7 @@ impl SlashCommand {
                 | SlashCommand::Diff
                 | SlashCommand::Mention
                 | SlashCommand::Status
+                | SlashCommand::Usage
                 | SlashCommand::Stats
                 | SlashCommand::Changelog
                 | SlashCommand::Ide
@@ -281,6 +284,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
@@ -469,6 +473,19 @@ mod tests {
         assert!(SlashCommand::Queued.available_during_task());
         assert!(SlashCommand::Queued.supports_inline_args());
         assert!(SlashCommand::Ide.available_during_task());
+        assert_eq!(SlashCommand::from_str("usage"), Ok(SlashCommand::Usage));
+        assert_eq!(
+            SlashCommand::Usage.description(),
+            "show usage, context, and rate limits"
+        );
+        assert!(SlashCommand::Usage.available_during_task());
+        assert!(SlashCommand::Usage.available_in_side_conversation());
+        assert!(!SlashCommand::Usage.supports_inline_args());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "usage" && *command == SlashCommand::Usage)
+        );
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
         assert!(SlashCommand::Changelog.available_during_task());
@@ -496,6 +513,7 @@ mod tests {
             SlashCommand::Pr,
             SlashCommand::Worktree,
             SlashCommand::Status,
+            SlashCommand::Usage,
             SlashCommand::Statusline,
             SlashCommand::Summary,
             SlashCommand::Changelog,

@@ -1,0 +1,18 @@
+---
+source: tui/src/chatwidget/tests/status_command_tests.rs
+expression: popup
+---
+  dev@example.com · 0% context used · 0 total tokens
+
+  [Usage]
+
+     Account         dev@example.com
+     Plan            Pro
+     Model           gpt-5.5
+     Provider        openai
+     Context         0% used
+     Tokens          0 total · 0 input · 0 output
+     Account limits  unavailable (temporary outage)
+› 1. Refresh         refresh usage data
+
+  Press enter to confirm or esc to go back

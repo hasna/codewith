@@ -4556,6 +4556,88 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
 }
 
 #[tokio::test]
+async fn usage_panel_usage_refresh_completion_requests_frame() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+    app.chat_widget.open_usage_panel();
+    let request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected usage-panel refresh request, got {other:?}"),
+    };
+
+    let rate_limit_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel { request_id },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![]),
+    );
+
+    assert_eq!(
+        rate_limit_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::ScheduleFrame
+    );
+    assert!(app.apply_minimax_usage_loaded(
+        crate::app_event::MiniMaxUsageRefreshOrigin::UsagePanel { request_id: 1 },
+        app.config.selected_auth_profile.clone(),
+        Err("temporarily unavailable".to_string()),
+    ));
+}
+
+#[tokio::test]
+async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+
+    app.chat_widget.open_usage_panel();
+    let first_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected first usage-panel refresh request, got {other:?}"),
+    };
+    app.chat_widget.open_usage_panel();
+    let second_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected second usage-panel refresh request, got {other:?}"),
+    };
+    assert_ne!(first_request_id, second_request_id);
+
+    let stale_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel {
+            request_id: first_request_id,
+        },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
+        )]),
+    );
+    assert_eq!(
+        stale_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+
+    app.chat_widget.show_status_report();
+    let rendered = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected status output, got {other:?}"),
+    };
+    assert!(
+        !rendered.contains("60m limit"),
+        "superseded /usage refresh must not update cached limits, got: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn auth_profile_switch_waits_for_settings_update_before_visible_state_changes() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     app.config.selected_auth_profile = Some("personal".to_string());
