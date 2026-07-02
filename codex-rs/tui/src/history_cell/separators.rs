@@ -84,15 +84,21 @@ pub struct FinalMessageSeparator {
 }
 impl FinalMessageSeparator {
     /// Creates a separator; completed turns should pass protocol turn duration when available.
+    ///
+    /// Uses the historical default label order (WebSocket send, Streams,
+    /// events received interleaved), which item-based ordering cannot
+    /// reproduce because the WebSocket item renders its send and received
+    /// labels adjacently. Explicitly configured summary items go through
+    /// [`Self::new_with_items`].
     pub(crate) fn new(
         elapsed_seconds: Option<u64>,
         runtime_metrics: Option<RuntimeMetricsSummary>,
     ) -> Self {
-        Self::new_with_items(
+        Self {
             elapsed_seconds,
             runtime_metrics,
-            DEFAULT_MESSAGE_SUMMARY_ITEMS.iter().copied(),
-        )
+            summary_items: None,
+        }
     }
 
     pub(crate) fn new_with_items(
