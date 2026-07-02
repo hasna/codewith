@@ -1044,13 +1044,27 @@ mod tests {
 
         let source_env = external_agent_source_env(&policy, ExternalAgentRuntimeId::CLAUDE);
 
+        // Policy-set agent SDK auth values survive with their policy values.
         assert_eq!(
-            source_env,
-            BTreeMap::from([
-                ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
-                ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
-            ])
+            source_env.get("ANTHROPIC_API_KEY"),
+            Some(&"test-value".to_string())
         );
+        assert_eq!(
+            source_env.get("CLAUDE_CODE_USE_BEDROCK"),
+            Some(&"1".to_string())
+        );
+        // Beyond the policy values, only the stable config path variables may
+        // be inherited from the ambient process environment (whose contents
+        // this test cannot pin); auth env vars never leak in from the
+        // process environment.
+        for key in source_env.keys() {
+            assert!(
+                key == "ANTHROPIC_API_KEY"
+                    || key == "CLAUDE_CODE_USE_BEDROCK"
+                    || CLAUDE_STABLE_CONFIG_ENV_VARS.contains(&key.as_str()),
+                "unexpected env var {key} in claude source env"
+            );
+        }
     }
 
     #[test]
