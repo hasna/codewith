@@ -232,6 +232,7 @@ pub fn provider_supports_reasoning_effort(provider_id: Option<&str>) -> bool {
         || provider_id_matches(provider_id, "cerebras")
         || provider_id_matches(provider_id, "google")
         || provider_id_matches(provider_id, "minimax")
+        || provider_id_matches(provider_id, "openrouter")
         || provider_id_matches(provider_id, "zai")
 }
 
@@ -248,6 +249,12 @@ pub fn openai_compatible_provider_supports_reasoning_effort(
         )
         || provider_matches(provider_id, provider_base_url, "google", GOOGLE_BASE_URL)
         || provider_matches(provider_id, provider_base_url, "minimax", MINIMAX_BASE_URL)
+        || provider_matches(
+            provider_id,
+            provider_base_url,
+            "openrouter",
+            OPENROUTER_BASE_URL,
+        )
         || provider_matches(provider_id, provider_base_url, "zai", ZAI_BASE_URL)
 }
 
@@ -325,7 +332,7 @@ pub fn reasoning_levels_for_local_fallback(
             minimax::reasoning_levels(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
-            no_reasoning_levels()
+            openrouter::reasoning_levels(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
             no_reasoning_levels()
@@ -463,6 +470,69 @@ mod tests {
         assert_eq!(models[1].id, "claude-opus-4-8");
         assert_eq!(models[2].id, "claude-sonnet-4-6");
         assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn openrouter_glm52_metadata_matches_models_api() {
+        let expected_metadata = Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.2",
+            /*context_window*/ 1_048_576,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        ));
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("openrouter"), "z-ai/glm-5.2"),
+            expected_metadata
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                Some("openrouter"),
+                None,
+                None,
+                "z-ai/glm-5.2-20260616",
+            ),
+            expected_metadata
+        );
+
+        assert!(provider_supports_reasoning_effort(Some("openrouter")));
+        assert!(openai_compatible_provider_supports_reasoning_effort(
+            Some("openrouter"),
+            None
+        ));
+
+        let (default_reasoning, presets) = reasoning_levels_for_openai_compatible_response(
+            Some("openrouter"),
+            None,
+            None,
+            "z-ai/glm-5.2",
+        );
+        assert_eq!(default_reasoning, Some(ReasoningEffort::High));
+        assert_eq!(
+            presets,
+            vec![
+                reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                reasoning_preset(ReasoningEffort::XHigh, "Extra high reasoning"),
+            ]
+        );
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("openrouter"), "z-ai/glm-5.2"),
+            (default_reasoning, presets)
+        );
+    }
+
+    #[test]
+    fn openrouter_fallback_models_keep_default_and_include_glm52() {
+        let models = fallback_models_for_provider("openrouter");
+
+        assert_eq!(models[0].id, "openai/gpt-oss-120b");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "z-ai/glm-5.2" && !model.is_default)
+        );
     }
 
     #[test]

@@ -120,7 +120,7 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_parallel_tool_calls*/ true,
             /*supports_reasoning*/ true,
         )),
-        "z-ai/glm-5.2" => Some(model(
+        "z-ai/glm-5.2" | "z-ai/glm-5.2-20260616" => Some(model(
             "Z.ai GLM 5.2",
             /*context_window*/ 1_048_576,
             /*supports_tools*/ true,
