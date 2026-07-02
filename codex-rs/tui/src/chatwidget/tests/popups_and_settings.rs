@@ -2952,7 +2952,8 @@ async fn profile_login_prompt_snapshot_and_submit() {
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_prompt", popup);
     assert!(popup.contains("ChatGPT"));
-    assert!(popup.contains("Claude.ai / Claude Code"));
+    assert!(!popup.contains("Claude.ai"));
+    assert!(!popup.contains("Claude Code"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let subscription_provider = match rx.try_recv() {

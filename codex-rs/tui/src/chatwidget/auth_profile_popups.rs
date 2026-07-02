@@ -642,11 +642,6 @@ fn auth_profile_subscription_provider_items() -> Vec<SelectionItem> {
             "Use Codewith browser login with your ChatGPT plan.",
         ),
         (
-            AuthProfileSubscriptionProvider::ClaudeAi,
-            "Claude.ai / Claude Code",
-            "Tie this profile to your local Claude Code subscription login.",
-        ),
-        (
             AuthProfileSubscriptionProvider::Cursor,
             "Cursor",
             "Tie this profile to your Cursor subscription login.",

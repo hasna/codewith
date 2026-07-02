@@ -198,6 +198,9 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
   effort estimates when planning work.
 - Improved loop and schedule manager rows so prompts are the primary label and
   status/spec details stay in row descriptions.
+- Aligned Claude external-agent auth with Claude Agent SDK guidance by using
+  API-key/provider environment auth for launches and hiding Claude.ai from the
+  generic new subscription-profile picker.
 
 ### Fixed
 

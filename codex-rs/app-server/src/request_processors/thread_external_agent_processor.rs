@@ -464,7 +464,7 @@ fn subscription_provider_for_runtime(runtime_id: &str) -> Option<AuthProfileSubs
     match runtime_id {
         ExternalAgentRuntimeId::CURSOR => Some(AuthProfileSubscriptionProvider::Cursor),
         ExternalAgentRuntimeId::GROK_BUILD => Some(AuthProfileSubscriptionProvider::Grok),
-        ExternalAgentRuntimeId::CLAUDE => Some(AuthProfileSubscriptionProvider::ClaudeAi),
+        ExternalAgentRuntimeId::CLAUDE => None,
         _ => None,
     }
 }
@@ -859,11 +859,29 @@ mod tests {
         let workspace =
             AbsolutePathBuf::from_absolute_path(workspace.path()).expect("absolute workspace");
         let claude_config = home.path().join(".claude");
+        let aws_credentials = home.path().join(".aws").join("credentials");
+        let google_credentials = home.path().join("gcp.json");
+        let azure_dir = home.path().join(".azure");
         let source_env = BTreeMap::from([
             ("HOME".to_string(), home.path().display().to_string()),
             (
                 "CLAUDE_CONFIG_DIR".to_string(),
                 claude_config.display().to_string(),
+            ),
+            ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE".to_string(),
+                aws_credentials.display().to_string(),
+            ),
+            ("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string()),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                google_credentials.display().to_string(),
+            ),
+            ("CLAUDE_CODE_USE_FOUNDRY".to_string(), "1".to_string()),
+            (
+                "AZURE_CONFIG_DIR".to_string(),
+                azure_dir.display().to_string(),
             ),
         ]);
 
@@ -897,6 +915,24 @@ mod tests {
         assert!(read_paths.contains(
             &AbsolutePathBuf::from_absolute_path(claude_config).expect("absolute claude config")
         ));
+        assert!(
+            !read_paths.contains(
+                &AbsolutePathBuf::from_absolute_path(aws_credentials).expect("aws credentials")
+            ),
+            "external-agent readable roots must not expose cloud credential files"
+        );
+        assert!(
+            !read_paths.contains(
+                &AbsolutePathBuf::from_absolute_path(google_credentials)
+                    .expect("google credentials")
+            ),
+            "external-agent readable roots must not expose cloud credential files"
+        );
+        assert!(
+            !read_paths
+                .contains(&AbsolutePathBuf::from_absolute_path(azure_dir).expect("azure dir")),
+            "external-agent readable roots must not expose cloud credential directories"
+        );
     }
 
     #[test]
@@ -939,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_source_env_preserves_stable_config_paths_without_provider_keys() {
+    fn claude_source_env_preserves_stable_config_paths_without_process_auth_env() {
         let mut source_env = BTreeMap::from([("PATH".to_string(), "/bin".to_string())]);
 
         add_provider_stable_config_env(
@@ -996,7 +1032,29 @@ mod tests {
     }
 
     #[test]
-    fn external_agent_runtime_requires_matching_subscription_profile() {
+    fn claude_source_env_keeps_agent_sdk_auth_policy_values() {
+        let policy = codex_protocol::config_types::ShellEnvironmentPolicy {
+            inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::None,
+            r#set: HashMap::from([
+                ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+                ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            ]),
+            ..codex_protocol::config_types::ShellEnvironmentPolicy::default()
+        };
+
+        let source_env = external_agent_source_env(&policy, ExternalAgentRuntimeId::CLAUDE);
+
+        assert_eq!(
+            source_env,
+            BTreeMap::from([
+                ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+                ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn external_agent_runtime_requires_matching_subscription_profile_except_claude() {
         let codex_home = tempfile::TempDir::new().expect("tempdir");
         codex_login::save_auth_profile_metadata(
             codex_home.path(),
@@ -1038,7 +1096,15 @@ mod tests {
         assert!(
             validate_external_agent_subscription_profile(
                 codex_home.path(),
-                Some("claude-work"),
+                /*selected_auth_profile*/ None,
+                ExternalAgentRuntimeId::CLAUDE,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_external_agent_subscription_profile(
+                codex_home.path(),
+                Some("cursor-work"),
                 ExternalAgentRuntimeId::CLAUDE,
             )
             .is_ok()
@@ -1090,24 +1156,6 @@ mod tests {
                 ExternalAgentRuntimeId::GROK_BUILD,
             )
             .is_ok()
-        );
-        assert_eq!(
-            validate_external_agent_subscription_profile(
-                codex_home.path(),
-                Some("cursor-work"),
-                ExternalAgentRuntimeId::CLAUDE,
-            )
-            .expect_err("mismatch should fail"),
-            "external-agent runtime `claude` requires an active Claude.ai auth profile, but `cursor-work` is tied to Cursor"
-        );
-        assert_eq!(
-            validate_external_agent_subscription_profile(
-                codex_home.path(),
-                /*selected_auth_profile*/ None,
-                ExternalAgentRuntimeId::CLAUDE,
-            )
-            .expect_err("missing profile should fail"),
-            "external-agent runtime `claude` requires an active Claude.ai auth profile"
         );
         assert_eq!(
             validate_external_agent_subscription_profile(
