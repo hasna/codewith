@@ -9,7 +9,7 @@ use std::path::Path;
 use tempfile::tempdir;
 
 fn git_blob_sha1_hex(data: &str) -> String {
-    format!("{:x}", git_blob_sha1_hex_bytes(data.as_bytes()))
+    sha1_output_to_hex(&git_blob_sha1_hex_bytes(data.as_bytes()))
 }
 
 async fn apply_verified_patch(root: &Path, patch: &str) -> AppliedPatchDelta {

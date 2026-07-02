@@ -88,7 +88,15 @@ pub fn fingerprint_hash(domain: &str, value: &str) -> String {
     hasher.update(domain.as_bytes());
     hasher.update(b"\0");
     hasher.update(value.as_bytes());
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    let bytes: &[u8] = digest.as_ref();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    hex
 }
 
 pub(crate) fn accepted_line_fingerprint_event_requests(
