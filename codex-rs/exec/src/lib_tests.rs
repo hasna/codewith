@@ -322,6 +322,8 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: codex_app_server_protocol::AuthProfileKind::Unknown,
         name: None,
         turns: vec![
             codex_app_server_protocol::Turn {
@@ -935,6 +937,8 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: codex_app_server_protocol::AuthProfileKind::Unknown,
             name: Some("thread".to_string()),
             turns: vec![],
         },

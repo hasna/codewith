@@ -6964,6 +6964,23 @@
               "null"
             ]
           },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this active peer, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is the default root profile or a named profile."
+          },
           "capabilities": {
             "default": [],
             "items": {
@@ -8555,6 +8572,31 @@
             "description": "Programmatic Codex auth backed by a personal access token.",
             "enum": [
               "personalAccessToken"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "AuthProfileKind": {
+        "oneOf": [
+          {
+            "description": "The source did not record auth profile selection.",
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The default root auth profile was selected explicitly or by runtime default.",
+            "enum": [
+              "default"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A named auth profile was selected.",
+            "enum": [
+              "named"
             ],
             "type": "string"
           }
@@ -12823,6 +12865,14 @@
       },
       "LocalSession": {
         "properties": {
+          "accountLabel": {
+            "default": null,
+            "description": "Redacted account label for the selected auth profile, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "activeFlags": {
             "description": "Active-status flags from the thread runtime. Empty for non-active sessions.",
             "items": {
@@ -12835,6 +12885,23 @@
               "string",
               "null"
             ]
+          },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this session, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
           },
           "createdAt": {
             "format": "int64",
@@ -18713,6 +18780,23 @@
               "string",
               "null"
             ]
+          },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this thread, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
           },
           "cliVersion": {
             "description": "Version of the CLI that created the thread.",

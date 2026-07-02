@@ -144,6 +144,7 @@ pub(super) fn stored_thread_from_rollout_item(
         agent_role: item.agent_role,
         agent_path: None,
         git_info,
+        auth_profile: item.auth_profile,
         approval_mode: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,

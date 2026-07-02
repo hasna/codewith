@@ -157,6 +157,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: Vec::new(),
         },

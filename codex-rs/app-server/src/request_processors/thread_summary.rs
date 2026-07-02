@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 
 #[cfg(test)]
 use chrono::DateTime;
@@ -323,6 +325,8 @@ pub(crate) fn summary_to_thread(
         source: source.into(),
         thread_source: None,
         git_info,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: None,
         turns: Vec::new(),
     }

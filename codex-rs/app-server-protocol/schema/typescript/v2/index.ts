@@ -59,6 +59,7 @@ export type { AppsListResponse } from "./AppsListResponse";
 export type { AskForApproval } from "./AskForApproval";
 export type { AttestationGenerateParams } from "./AttestationGenerateParams";
 export type { AttestationGenerateResponse } from "./AttestationGenerateResponse";
+export type { AuthProfileKind } from "./AuthProfileKind";
 export type { AuthProfileListParams } from "./AuthProfileListParams";
 export type { AuthProfileListResponse } from "./AuthProfileListResponse";
 export type { AuthProfileSummary } from "./AuthProfileSummary";

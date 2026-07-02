@@ -9,6 +9,8 @@ use codex_app_server_protocol::ActiveSessionPeer;
 use codex_app_server_protocol::ActiveSessionPeerKind;
 use codex_app_server_protocol::ActiveSessionSendResponse;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
@@ -724,6 +726,8 @@ mod tests {
             .expect("absolute cwd"),
             display_name: Some("reviewer".to_string()),
             agent_path: Some("/root/reviewer".to_string()),
+            auth_profile: Some("work".to_string()),
+            auth_profile_kind: AuthProfileKind::Named,
             capabilities: vec![
                 ActiveSessionCapability::ReceiveMessage,
                 ActiveSessionCapability::QueueMessage,

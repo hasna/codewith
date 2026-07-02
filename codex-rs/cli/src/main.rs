@@ -617,7 +617,11 @@ struct ProfileCommand {
 enum ProfileSubcommand {
     /// List saved authentication profiles.
     #[clap(visible_alias = "ls")]
-    List,
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long = "json")]
+        json: bool,
+    },
 
     /// Save the current login as a named authentication profile.
     Save {
@@ -1682,8 +1686,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_config_overrides.clone(),
             );
             match profile_cli.action {
-                ProfileSubcommand::List => {
-                    profile_cmd::run_profile_list(profile_cli.config_overrides).await;
+                ProfileSubcommand::List { json } => {
+                    profile_cmd::run_profile_list(profile_cli.config_overrides, json).await;
                 }
                 ProfileSubcommand::Save { name } => {
                     profile_cmd::run_profile_save(profile_cli.config_overrides, name).await;
@@ -3063,6 +3067,20 @@ mod tests {
         let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work"]).expect("parse");
 
         assert_eq!(cli.interactive.auth_profile.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn profile_list_json_flag_parses() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "profile", "list", "--json"]).expect("parse");
+
+        let Some(Subcommand::Profile(profile)) = cli.subcommand else {
+            panic!("expected profile subcommand");
+        };
+        assert!(matches!(
+            profile.action,
+            ProfileSubcommand::List { json: true }
+        ));
     }
 
     #[test]

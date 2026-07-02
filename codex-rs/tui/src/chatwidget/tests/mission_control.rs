@@ -1,6 +1,7 @@
 use super::*;
 use codex_app_server_protocol::ActiveSessionCapability;
 use codex_app_server_protocol::ActiveSessionPeerKind;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::LocalSession;
 use codex_app_server_protocol::LocalSessionGitInfo;
 use codex_app_server_protocol::LocalSessionPeer;
@@ -541,6 +542,9 @@ fn test_local_session(
         agent_path: None,
         model_provider: "openai".to_string(),
         model: model.map(ToString::to_string),
+        auth_profile: Some("work".to_string()),
+        auth_profile_kind: AuthProfileKind::Named,
+        account_label: Some("work@example.com".to_string()),
         source: SessionSource::Cli,
         thread_source: Some(ThreadSource::User),
         created_at: 1_700,

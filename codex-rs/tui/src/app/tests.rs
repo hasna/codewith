@@ -38,6 +38,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
@@ -2935,6 +2936,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3026,6 +3029,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3085,6 +3090,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: Some("read thread".to_string()),
         turns: Vec::new(),
     };
@@ -5948,6 +5955,8 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: None,
                 turns: Vec::new(),
             },

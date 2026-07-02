@@ -3,6 +3,8 @@ use crate::outgoing_message::OutgoingEnvelope;
 #[cfg(test)]
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadActiveFlag;
@@ -906,6 +908,8 @@ mod tests {
             source,
             thread_source: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: Vec::new(),
         }
