@@ -1,6 +1,13 @@
 //! Status indicator and terminal-title state for `ChatWidget`.
 
 use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
+use std::collections::VecDeque;
+use std::time::Duration;
+use std::time::Instant;
+
+pub(super) const AGENT_STATUSLINE_MAX_CHARS: usize = 120;
+const AGENT_STATUSLINE_MAX_UPDATES_PER_WINDOW: usize = 8;
+const AGENT_STATUSLINE_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct StatusIndicatorState {
@@ -109,6 +116,8 @@ pub(super) struct StatusState {
     pub(super) current_status: StatusIndicatorState,
     pub(super) pending_guardian_review_status: PendingGuardianReviewStatus,
     pub(super) terminal_title_status_kind: TerminalTitleStatusKind,
+    pub(super) agent_statusline: Option<String>,
+    agent_statusline_tool_updates: VecDeque<Instant>,
     pub(super) retry_status_header: Option<String>,
     pub(super) pending_status_indicator_restore: bool,
 }
@@ -119,6 +128,8 @@ impl Default for StatusState {
             current_status: StatusIndicatorState::working(),
             pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             terminal_title_status_kind: TerminalTitleStatusKind::Working,
+            agent_statusline: None,
+            agent_statusline_tool_updates: VecDeque::new(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
         }
@@ -138,6 +149,30 @@ impl StatusState {
         if self.retry_status_header.is_none() {
             self.retry_status_header = Some(self.current_status.header.clone());
         }
+    }
+
+    pub(super) fn record_agent_statusline_tool_update(
+        &mut self,
+        now: Instant,
+    ) -> Result<(), String> {
+        while self
+            .agent_statusline_tool_updates
+            .front()
+            .is_some_and(|updated_at| {
+                now.saturating_duration_since(*updated_at) >= AGENT_STATUSLINE_RATE_LIMIT_WINDOW
+            })
+        {
+            self.agent_statusline_tool_updates.pop_front();
+        }
+
+        if self.agent_statusline_tool_updates.len() >= AGENT_STATUSLINE_MAX_UPDATES_PER_WINDOW {
+            return Err(format!(
+                "update_statusline is rate limited to {AGENT_STATUSLINE_MAX_UPDATES_PER_WINDOW} updates per minute"
+            ));
+        }
+
+        self.agent_statusline_tool_updates.push_back(now);
+        Ok(())
     }
 }
 

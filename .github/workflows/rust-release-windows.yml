@@ -37,6 +37,14 @@ jobs:
         working-directory: codex-rs
     env:
       CARGO_PROFILE_RELEASE_LTO: ${{ inputs.release_lto }}
+      # Compiler caching. SCCACHE_IGNORE_SERVER_IO_ERROR keeps builds fail-open:
+      # a broken or unreachable cache backend must never fail a release build.
+      # RUSTC_WRAPPER is set by the "Enable sccache" step only when the
+      # (continue-on-error) install actually produced a runnable sccache, so
+      # an install failure degrades to an uncached build instead of aborting
+      # the release.
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
     strategy:
       fail-fast: false
@@ -95,9 +103,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install sccache
+        # Fail-open: a GitHub API outage or a bad latest sccache release must
+        # not block the release; the build then runs without the cache.
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable sccache if available
+        shell: bash
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache unavailable; building without compiler cache"
+          fi
+
       - name: Cargo build (Windows binaries)
         shell: bash
         run: |
+          # Match rust-release.yml: override the workspace release profile's
+          # codegen-units = 1 to cut compile times on the slowest (Windows)
+          # jobs as well, instead of shipping divergent optimization profiles.
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}"
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             build_args+=(--bin "$binary")
@@ -105,7 +133,7 @@ jobs:
           cargo build --target ${{ matrix.target }} --release --timings "${build_args[@]}"
 
       - name: Upload Cargo timings
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cargo-timings-rust-release-windows-${{ matrix.target }}-${{ matrix.bundle }}
           path: codex-rs/target/**/cargo-timings/cargo-timing.html
@@ -121,7 +149,7 @@ jobs:
           done
 
       - name: Upload Windows binaries
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-binaries-${{ matrix.target }}-${{ matrix.bundle }}
           path: |
@@ -299,7 +327,7 @@ jobs:
             "${GITHUB_WORKSPACE}/.github/workflows/zstd" -T0 -3 "$dest/$base"
           done
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
           path: |

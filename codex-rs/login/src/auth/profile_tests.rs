@@ -121,6 +121,34 @@ fn saves_lists_switches_and_removes_auth_profiles() -> anyhow::Result<()> {
 }
 
 #[test]
+fn lists_metadata_only_auth_profiles() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    save_auth_profile_metadata(
+        codex_home.path(),
+        "work",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+            last_permissions: None,
+        },
+    )?;
+
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| (profile.name.as_str(), profile.active))
+            .collect::<Vec<_>>(),
+        vec![("work", false)]
+    );
+    assert_eq!(
+        profiles.first().map(|profile| profile.auth_mode),
+        Some(None)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn removing_active_auth_profile_clears_active_marker() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let active_storage = create_auth_storage(

@@ -538,6 +538,10 @@ fn test_plan(
         .iter()
         .filter(|node| node.status == ThreadGoalPlanNodeStatus::BudgetLimited)
         .count() as i64;
+    let deferred_node_count = nodes
+        .iter()
+        .filter(|node| node.status == ThreadGoalPlanNodeStatus::Deferred)
+        .count() as i64;
     let cancelled_node_count = nodes
         .iter()
         .filter(|node| node.status == ThreadGoalPlanNodeStatus::Cancelled)
@@ -563,6 +567,7 @@ fn test_plan(
         blocked_node_count,
         usage_limited_node_count,
         budget_limited_node_count,
+        deferred_node_count,
         cancelled_node_count,
         created_at: 1_776_272_300,
         updated_at: 1_776_272_460,

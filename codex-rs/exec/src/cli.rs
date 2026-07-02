@@ -32,6 +32,16 @@ pub struct Cli {
     #[arg(long = "ephemeral", global = true, default_value_t = false)]
     pub ephemeral: bool,
 
+    /// Persist session files to disk so the run can be resumed later.
+    #[arg(
+        long = "durable",
+        alias = "persist",
+        global = true,
+        default_value_t = false,
+        conflicts_with = "ephemeral"
+    )]
+    pub durable: bool,
+
     /// Do not load `/config.toml`; auth still uses the Codewith home.
     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
     pub ignore_user_config: bool,
@@ -161,10 +171,17 @@ impl FromArgMatches for ExecSharedCliOptions {
 
 fn mark_exec_global_args(cmd: clap::Command) -> clap::Command {
     cmd.mut_arg("model", |arg| arg.global(true))
+        .mut_arg("oss", |arg| arg.global(true))
+        .mut_arg("oss_provider", |arg| arg.global(true))
+        .mut_arg("config_profile_v2", |arg| arg.global(true))
+        .mut_arg("auth_profile", |arg| arg.global(true))
+        .mut_arg("sandbox_mode", |arg| arg.global(true))
         .mut_arg("dangerously_bypass_approvals_and_sandbox", |arg| {
             arg.global(true)
         })
         .mut_arg("bypass_hook_trust", |arg| arg.global(true))
+        .mut_arg("cwd", |arg| arg.global(true))
+        .mut_arg("add_dir", |arg| arg.global(true))
 }
 
 #[derive(Debug, clap::Subcommand)]

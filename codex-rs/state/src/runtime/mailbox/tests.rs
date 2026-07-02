@@ -253,6 +253,62 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn dispatch_claim_skips_manual_claim_messages_without_delivery_policy() -> anyhow::Result<()>
+{
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let manual = runtime
+        .mailbox_messages()
+        .enqueue_message(MailboxEnqueueParams {
+            target_thread_id: thread_id,
+            sender_thread_id: None,
+            sender_label: Some("coordinator".to_string()),
+            idempotency_key: Some("manual-claim-only".to_string()),
+            kind: crate::MailboxMessageKind::UserInstruction,
+            payload_json: serde_json::json!({ "text": "hello" }),
+            payload_preview: "hello".to_string(),
+            priority: 10,
+            max_attempts: 3,
+            next_attempt_at: Some(now),
+            expires_at: None,
+        })
+        .await?;
+    let automatic = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "automatic-claim",
+        /*max_attempts*/ 3,
+        /*priority*/ 0,
+        Some(now),
+    )
+    .await?;
+
+    let dispatch_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "global-dispatcher".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("automatic message should be eligible for dispatch claim");
+    assert_eq!(
+        dispatch_claim.message.message_id,
+        automatic.message.message_id
+    );
+
+    let manual_claim = claim_next(runtime.as_ref(), thread_id)
+        .await?
+        .expect("plain mailbox message should remain available for manual claim");
+    assert_eq!(manual_claim.message.message_id, manual.message.message_id);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dispatch_claim_skips_due_message_fresh_owned_by_another_local_session()
 -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
@@ -931,7 +987,7 @@ async fn enqueue_test_message_with_options(
             sender_label: Some("coordinator".to_string()),
             idempotency_key: Some(idempotency_key.to_string()),
             kind: crate::MailboxMessageKind::UserInstruction,
-            payload_json: serde_json::json!({ "text": "hello" }),
+            payload_json: serde_json::json!({ "text": "hello", "delivery": "liveOnly" }),
             payload_preview: "hello".to_string(),
             priority,
             max_attempts,

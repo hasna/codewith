@@ -1,3 +1,4 @@
+use super::thread_mailbox_context::validate_mailbox_payload_context_size;
 use super::*;
 use codex_app_server_protocol::ThreadMailboxAckParams;
 use codex_app_server_protocol::ThreadMailboxAckResponse;
@@ -105,6 +106,7 @@ impl ThreadRequestProcessor {
             .as_deref()
             .map(parse_mailbox_thread_id)
             .transpose()?;
+        validate_mailbox_payload_context_size(&params.message).map_err(invalid_request)?;
         let sender_label = normalize_optional_label(params.sender_label)?;
         let idempotency_key = normalize_optional_token("idempotencyKey", params.idempotency_key)?;
         let preview = normalize_mailbox_preview(params.preview, &params.message)?;

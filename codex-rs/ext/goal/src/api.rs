@@ -102,6 +102,41 @@ impl GoalPlanActivateOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GoalPlanAddRequest<'a> {
+    pub thread_id: ThreadId,
+    pub objective: &'a str,
+    pub title: Option<&'a str>,
+    pub token_budget: Option<i64>,
+    pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
+}
+
+#[derive(Clone, Debug)]
+pub struct GoalPlanAddOutcome {
+    pub goal: Option<ThreadGoal>,
+    pub activated_goal: Option<ThreadGoal>,
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    pub added_node: codex_state::ThreadGoalPlanNode,
+    pub created_plan: bool,
+    state_goal: Option<codex_state::ThreadGoal>,
+    previous_goal: Option<PreviousGoalSnapshot>,
+}
+
+impl GoalPlanAddOutcome {
+    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
+        let Some(state_goal) = self.state_goal.clone() else {
+            return;
+        };
+        if let Some(runtime) = goal_service.runtime_for_thread(state_goal.thread_id)
+            && let Err(err) = runtime
+                .apply_external_goal_set(state_goal, self.previous_goal.clone())
+                .await
+        {
+            tracing::warn!("failed to apply external goal plan add runtime effects: {err}");
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GoalClearOutcome {
     pub cleared: bool,
@@ -362,6 +397,76 @@ impl GoalService {
         })
     }
 
+    pub async fn add_thread_goal_to_plan(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        request: GoalPlanAddRequest<'_>,
+    ) -> Result<GoalPlanAddOutcome, GoalServiceError> {
+        let GoalPlanAddRequest {
+            thread_id,
+            objective,
+            title,
+            token_budget,
+            auto_execute,
+        } = request;
+        let objective = objective.trim();
+        validate_thread_goal_objective(objective).map_err(GoalServiceError::InvalidRequest)?;
+        let title = normalize_thread_goal_title(title).map_err(GoalServiceError::InvalidRequest)?;
+        validate_goal_budget(token_budget).map_err(GoalServiceError::InvalidRequest)?;
+
+        let runtime = self.runtime_for_thread(thread_id);
+        let _goal_state_permit = match runtime.as_ref() {
+            Some(runtime) => Some(
+                runtime
+                    .goal_state_permit()
+                    .await
+                    .map_err(GoalServiceError::Internal)?,
+            ),
+            None => None,
+        };
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal plan add: {err}");
+        }
+
+        let existing_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        let previous_goal = existing_goal.as_ref().map(PreviousGoalSnapshot::from);
+        let outcome = state_db
+            .thread_goals()
+            .add_thread_goal_to_plan(codex_state::ThreadGoalPlanAddParams {
+                thread_id,
+                objective: objective.to_string(),
+                title,
+                token_budget,
+                auto_execute,
+            })
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to add thread goal to plan: {err}"))
+            })?;
+
+        if let Some(activated_goal) = outcome.activated_goal.as_ref() {
+            fill_empty_thread_preview_if_possible(state_db, thread_id, activated_goal).await;
+        }
+
+        Ok(GoalPlanAddOutcome {
+            goal: outcome.goal.map(protocol_goal_from_state),
+            activated_goal: outcome.activated_goal.clone().map(protocol_goal_from_state),
+            plan: outcome.snapshot,
+            added_node: outcome.added_node,
+            created_plan: outcome.created_plan,
+            state_goal: outcome.activated_goal,
+            previous_goal,
+        })
+    }
+
     pub fn suppress_next_idle_continuation(&self, thread_id: ThreadId, goal_id: &str) {
         if let Some(runtime) = self.runtime_for_thread(thread_id) {
             runtime.suppress_next_idle_continuation(goal_id);
@@ -409,6 +514,7 @@ impl GoalService {
                 goal.status,
                 codex_state::ThreadGoalStatus::Complete
                     | codex_state::ThreadGoalStatus::BudgetLimited
+                    | codex_state::ThreadGoalStatus::Deferred
                     | codex_state::ThreadGoalStatus::Cancelled
             )
         }) {
@@ -486,7 +592,9 @@ async fn sync_external_goal_without_runtime(
 ) -> Result<Option<codex_state::ThreadGoalPlanAdvanceOutcome>, GoalServiceError> {
     if matches!(
         goal.status,
-        codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::Complete
+        codex_state::ThreadGoalStatus::Active
+            | codex_state::ThreadGoalStatus::Deferred
+            | codex_state::ThreadGoalStatus::Complete
     ) && let Some(previous_goal) = previous_goal
         && matches!(
             previous_goal.status,
@@ -514,6 +622,7 @@ async fn sync_external_goal_without_runtime(
             codex_state::ThreadGoalStatus::Active
             | codex_state::ThreadGoalStatus::Paused
             | codex_state::ThreadGoalStatus::BudgetLimited
+            | codex_state::ThreadGoalStatus::Deferred
             | codex_state::ThreadGoalStatus::Complete
             | codex_state::ThreadGoalStatus::Cancelled => unreachable!("status matched above"),
         };
@@ -526,16 +635,27 @@ async fn sync_external_goal_without_runtime(
         }
     }
 
-    let plan_update = if goal.status == codex_state::ThreadGoalStatus::Complete {
-        state_db
+    let plan_update = match goal.status {
+        codex_state::ThreadGoalStatus::Complete => state_db
             .thread_goals()
             .complete_goal_plan_node_and_maybe_advance(thread_id, goal, auto_execute)
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to advance goal plan: {err}"))
-            })?
-    } else {
-        state_db
+            })?,
+        codex_state::ThreadGoalStatus::Deferred => state_db
+            .thread_goals()
+            .defer_goal_plan_node_and_maybe_advance(thread_id, goal, auto_execute)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to advance deferred goal plan: {err}"))
+            })?,
+        codex_state::ThreadGoalStatus::Active
+        | codex_state::ThreadGoalStatus::Paused
+        | codex_state::ThreadGoalStatus::Blocked
+        | codex_state::ThreadGoalStatus::UsageLimited
+        | codex_state::ThreadGoalStatus::BudgetLimited
+        | codex_state::ThreadGoalStatus::Cancelled => state_db
             .thread_goals()
             .sync_goal_plan_node_for_goal(thread_id, goal)
             .await
@@ -543,7 +663,7 @@ async fn sync_external_goal_without_runtime(
             .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
                 snapshot,
                 activated_goal: None,
-            })
+            }),
     };
     Ok(plan_update)
 }

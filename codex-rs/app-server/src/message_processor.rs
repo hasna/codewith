@@ -45,6 +45,7 @@ use crate::request_processors::ThreadScheduleRequestProcessor;
 use crate::request_processors::ThreadScheduleRuntime;
 use crate::request_processors::ThreadWorkflowRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
+use crate::request_processors::WebhookRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
@@ -53,6 +54,7 @@ use crate::skills_watcher::SkillsWatcher;
 use crate::thread_state::ConnectionCapabilities;
 use crate::thread_state::ThreadStateManager;
 use crate::transport::AppServerTransport;
+use crate::transport::ConnectionOrigin;
 use crate::transport::RemoteControlHandle;
 use async_trait::async_trait;
 use codex_analytics::AnalyticsEventsClient;
@@ -201,6 +203,7 @@ pub(crate) struct MessageProcessor {
     thread_schedule_runtime: ThreadScheduleRuntime,
     thread_workflow_processor: ThreadWorkflowRequestProcessor,
     turn_processor: TurnRequestProcessor,
+    webhook_processor: WebhookRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
@@ -208,6 +211,7 @@ pub(crate) struct MessageProcessor {
 #[derive(Debug)]
 pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
+    origin: ConnectionOrigin,
     initialized: OnceLock<InitializedConnectionSessionState>,
 }
 
@@ -222,16 +226,21 @@ pub(crate) struct InitializedConnectionSessionState {
 
 impl Default for ConnectionSessionState {
     fn default() -> Self {
-        Self::new()
+        Self::new(ConnectionOrigin::InProcess)
     }
 }
 
 impl ConnectionSessionState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(origin: ConnectionOrigin) -> Self {
         Self {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
+            origin,
             initialized: OnceLock::new(),
         }
+    }
+
+    pub(crate) fn origin(&self) -> ConnectionOrigin {
+        self.origin
     }
 
     pub(crate) fn initialized(&self) -> bool {
@@ -271,6 +280,44 @@ impl ConnectionSessionState {
 
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
         self.initialized.set(session).map_err(|_| ())
+    }
+}
+
+fn enforce_origin_request_access(
+    origin: ConnectionOrigin,
+    request: &ClientRequest,
+) -> Result<(), JSONRPCErrorError> {
+    match origin {
+        ConnectionOrigin::RemoteControl if !remote_control_origin_request_allowed(request) => {
+            Err(invalid_request(format!(
+                "method `{}` is not available from remote control connections",
+                request.method()
+            )))
+        }
+        ConnectionOrigin::Stdio
+        | ConnectionOrigin::InProcess
+        | ConnectionOrigin::WebSocket
+        | ConnectionOrigin::RemoteControl => Ok(()),
+    }
+}
+
+fn remote_control_origin_request_allowed(request: &ClientRequest) -> bool {
+    matches!(
+        request,
+        ClientRequest::MissionControlOverview { .. }
+            | ClientRequest::MissionControlEnqueueInstruction { .. }
+            | ClientRequest::MissionControlMailboxReceipts { .. }
+            | ClientRequest::MissionControlRespondInteraction { .. }
+            | ClientRequest::RemoteDispatchNegotiate { .. }
+            | ClientRequest::RemoteDispatchSubmit { .. }
+            | ClientRequest::RemoteDispatchReceiptRead { .. }
+    )
+}
+
+fn origin_allows_client_server_request_response(origin: ConnectionOrigin) -> bool {
+    match origin {
+        ConnectionOrigin::Stdio | ConnectionOrigin::InProcess | ConnectionOrigin::WebSocket => true,
+        ConnectionOrigin::RemoteControl => false,
     }
 }
 
@@ -517,6 +564,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             state_db.clone(),
         );
+        let webhook_processor = WebhookRequestProcessor::new(state_db.clone());
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -628,6 +676,7 @@ impl MessageProcessor {
             thread_schedule_runtime,
             thread_workflow_processor,
             turn_processor,
+            webhook_processor,
             windows_sandbox_processor,
             request_serialization_queues: RequestSerializationQueues::default(),
         }
@@ -874,14 +923,32 @@ impl MessageProcessor {
     }
 
     /// Handle a standalone JSON-RPC response originating from the peer.
-    pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
+    pub(crate) async fn process_response(
+        &self,
+        origin: ConnectionOrigin,
+        response: JSONRPCResponse,
+    ) {
+        if !origin_allows_client_server_request_response(origin) {
+            tracing::warn!(
+                request_id = ?response.id,
+                "dropping JSON-RPC response from remote control connection"
+            );
+            return;
+        }
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
         self.outgoing.notify_client_response(id, result).await;
     }
 
     /// Handle an error object received from the peer.
-    pub(crate) async fn process_error(&self, err: JSONRPCError) {
+    pub(crate) async fn process_error(&self, origin: ConnectionOrigin, err: JSONRPCError) {
+        if !origin_allows_client_server_request_response(origin) {
+            tracing::warn!(
+                request_id = ?err.id,
+                "dropping JSON-RPC error from remote control connection"
+            );
+            return;
+        }
         tracing::error!("<- error: {:?}", err);
         self.outgoing.notify_client_error(err.id, err.error).await;
     }
@@ -941,6 +1008,8 @@ impl MessageProcessor {
         if !session.initialized() {
             return Err(invalid_request("Not initialized"));
         }
+
+        enforce_origin_request_access(session.origin(), &codex_request)?;
 
         if let Some(reason) = codex_request.experimental_reason()
             && !session.experimental_api_enabled()
@@ -1214,6 +1283,11 @@ impl MessageProcessor {
                     .thread_goal_plan_activate_node(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadGoalPlanAddGoal { params, .. } => {
+                self.thread_goal_processor
+                    .thread_goal_plan_add_goal(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadGoalClear { params, .. } => {
                 self.thread_goal_processor
                     .thread_goal_clear(request_id.clone(), params)
@@ -1288,6 +1362,18 @@ impl MessageProcessor {
                 self.thread_monitor_processor
                     .thread_monitor_delete(request_id.clone(), params)
                     .await
+            }
+            ClientRequest::WebhookEventList { params, .. } => {
+                self.webhook_processor.list(params).await
+            }
+            ClientRequest::WebhookEventRead { params, .. } => {
+                self.webhook_processor.read(params).await
+            }
+            ClientRequest::WebhookEventMark { params, .. } => {
+                self.webhook_processor.mark(params).await
+            }
+            ClientRequest::WebhookEventIngest { params, .. } => {
+                self.webhook_processor.ingest(params).await
             }
             ClientRequest::ThreadWorkflowCreate { params, .. } => {
                 self.thread_workflow_processor
@@ -1758,6 +1844,17 @@ impl MessageProcessor {
             ClientRequest::CancelLoginAccount { params, .. } => {
                 self.account_processor.cancel_login_account(params).await
             }
+            ClientRequest::AuthProfileList { params, .. } => {
+                self.account_processor.list_auth_profiles(params).await
+            }
+            ClientRequest::AuthProfileSaveCurrent { params, .. } => {
+                self.account_processor
+                    .save_current_auth_profile(params)
+                    .await
+            }
+            ClientRequest::AuthProfileSwitch { params, .. } => {
+                self.account_processor.switch_auth_profile(params).await
+            }
             ClientRequest::GetAccount { params, .. } => {
                 self.account_processor.get_account(params).await
             }
@@ -1860,6 +1957,104 @@ impl MessageProcessor {
 
 fn local_active_owner_id() -> String {
     format!("app-server:{}:{}", std::process::id(), uuid::Uuid::now_v7())
+}
+
+#[cfg(test)]
+mod remote_control_origin_policy_tests {
+    use super::*;
+    use codex_app_server_protocol::CommandExecParams;
+    use codex_app_server_protocol::MissionControlOverviewParams;
+    use codex_app_server_protocol::RemoteDispatchNegotiateParams;
+    use codex_app_server_protocol::RequestId;
+    use pretty_assertions::assert_eq;
+
+    fn command_exec_request() -> ClientRequest {
+        ClientRequest::OneOffCommandExec {
+            request_id: RequestId::Integer(1),
+            params: CommandExecParams {
+                command: vec!["true".to_string()],
+                process_id: None,
+                tty: false,
+                stream_stdin: false,
+                stream_stdout_stderr: false,
+                output_bytes_cap: None,
+                disable_output_cap: false,
+                disable_timeout: false,
+                timeout_ms: None,
+                cwd: None,
+                env: None,
+                size: None,
+                sandbox_policy: None,
+                permission_profile: None,
+            },
+        }
+    }
+
+    fn remote_control_disable_request() -> ClientRequest {
+        ClientRequest::RemoteControlDisable {
+            request_id: RequestId::Integer(2),
+            params: None,
+        }
+    }
+
+    #[test]
+    fn remote_control_origin_denies_privileged_app_server_requests() {
+        for request in [command_exec_request(), remote_control_disable_request()] {
+            let err = enforce_origin_request_access(ConnectionOrigin::RemoteControl, &request)
+                .expect_err("remote control origin should be denied");
+
+            assert_eq!(
+                format!(
+                    "method `{}` is not available from remote control connections",
+                    request.method()
+                ),
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn remote_control_origin_allows_constrained_remote_surfaces() {
+        for request in [
+            ClientRequest::MissionControlOverview {
+                request_id: RequestId::Integer(3),
+                params: MissionControlOverviewParams::default(),
+            },
+            ClientRequest::RemoteDispatchNegotiate {
+                request_id: RequestId::Integer(4),
+                params: RemoteDispatchNegotiateParams::default(),
+            },
+        ] {
+            enforce_origin_request_access(ConnectionOrigin::RemoteControl, &request)
+                .expect("constrained remote surface should be allowed");
+        }
+    }
+
+    #[test]
+    fn local_origins_keep_full_app_server_surface() {
+        for origin in [
+            ConnectionOrigin::Stdio,
+            ConnectionOrigin::InProcess,
+            ConnectionOrigin::WebSocket,
+        ] {
+            enforce_origin_request_access(origin, &command_exec_request())
+                .expect("local origin should keep full access");
+        }
+    }
+
+    #[test]
+    fn remote_control_origin_cannot_answer_server_requests() {
+        assert!(!origin_allows_client_server_request_response(
+            ConnectionOrigin::RemoteControl
+        ));
+        for origin in [
+            ConnectionOrigin::Stdio,
+            ConnectionOrigin::InProcess,
+            ConnectionOrigin::WebSocket,
+        ] {
+            assert!(origin_allows_client_server_request_response(origin));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -535,6 +535,31 @@
         }
       ]
     },
+    "AuthProfileKind": {
+      "oneOf": [
+        {
+          "description": "The source did not record auth profile selection.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The default root auth profile was selected explicitly or by runtime default.",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A named auth profile was selected.",
+          "enum": [
+            "named"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "AutoReviewDecisionSource": {
       "description": "[UNSTABLE] Source that produced a terminal approval auto-review decision.",
       "enum": [
@@ -996,6 +1021,8 @@
         }
       },
       "required": [
+        "path",
+        "range",
         "summary"
       ],
       "type": "object"
@@ -3120,6 +3147,32 @@
         }
       ]
     },
+    "SessionWorktreeMode": {
+      "description": "Session-level managed worktree behavior.",
+      "oneOf": [
+        {
+          "description": "Use the current shared checkout and disallow session-managed worktree create/attach operations for this thread.",
+          "enum": [
+            "shared"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Allow this session to manually create or attach managed worktrees.",
+          "enum": [
+            "manual"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Pull-request mode. The session must work inside an attached isolated managed worktree before model turns can continue.",
+          "enum": [
+            "pullRequest"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Settings": {
       "description": "Settings for a collaboration mode.",
       "properties": {
@@ -3354,6 +3407,23 @@
             "string",
             "null"
           ]
+        },
+        "authProfile": {
+          "default": null,
+          "description": "Auth profile selected for model requests in this thread, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authProfileKind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthProfileKind"
+            }
+          ],
+          "default": "unknown",
+          "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
         },
         "cliVersion": {
           "description": "Version of the CLI that created the thread.",
@@ -3900,6 +3970,10 @@
           "format": "int64",
           "type": "integer"
         },
+        "deferredNodeCount": {
+          "format": "int64",
+          "type": "integer"
+        },
         "maxTokens": {
           "format": "int64",
           "type": [
@@ -3970,6 +4044,7 @@
         "cancelledNodeCount",
         "completedNodeCount",
         "createdAt",
+        "deferredNodeCount",
         "nodeCount",
         "nodes",
         "pausedNodeCount",
@@ -4096,6 +4171,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],
@@ -4140,6 +4216,7 @@
         "blocked",
         "usageLimited",
         "budgetLimited",
+        "deferred",
         "complete",
         "cancelled"
       ],
@@ -5041,7 +5118,8 @@
         }
       },
       "required": [
-        "threadId"
+        "threadId",
+        "threadName"
       ],
       "type": "object"
     },
@@ -5258,10 +5336,20 @@
             "null"
           ]
         },
+        "nestingDepth": {
+          "format": "int64",
+          "type": "integer"
+        },
         "nextRunAt": {
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "parentScheduleId": {
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -5294,6 +5382,7 @@
       "required": [
         "createdAt",
         "failureCount",
+        "nestingDepth",
         "prompt",
         "promptSource",
         "schedule",
@@ -5397,6 +5486,7 @@
       "enum": [
         "leased",
         "running",
+        "deferred",
         "completed",
         "failed"
       ],
@@ -5586,6 +5676,12 @@
             "null"
           ]
         },
+        "sessionPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "summary": {
           "anyOf": [
             {
@@ -5595,6 +5691,9 @@
               "type": "null"
             }
           ]
+        },
+        "worktreeMode": {
+          "$ref": "#/definitions/SessionWorktreeMode"
         }
       },
       "required": [
@@ -5604,7 +5703,8 @@
         "cwd",
         "model",
         "modelProvider",
-        "sandboxPolicy"
+        "sandboxPolicy",
+        "worktreeMode"
       ],
       "type": "object"
     },

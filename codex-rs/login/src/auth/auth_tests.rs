@@ -436,6 +436,89 @@ async fn auth_manager_with_selected_profile_loads_profile_auth_without_touching_
 }
 
 #[tokio::test]
+#[serial(codex_auth_env)]
+async fn auth_manager_with_selected_profile_ignores_codex_api_key_env() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::set(CODEX_API_KEY_ENV_VAR, "sk-env");
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("work"));
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("profile auth should load")
+            .api_key(),
+        Some("sk-work")
+    );
+    assert_eq!(
+        manager
+            .auth()
+            .await
+            .expect("profile auth should load")
+            .api_key(),
+        Some("sk-work")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_manager_with_selected_profile_ignores_external_api_key_auth() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root_auth = api_key_auth_dot_json("sk-root");
+    let work_auth = api_key_auth_dot_json("sk-work");
+
+    super::save_auth(dir.path(), &root_auth, AuthCredentialsStoreMode::File)?;
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &work_auth,
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        Some("work".to_string()),
+    )
+    .await;
+    manager.set_external_auth(Arc::new(TestExternalAuth));
+
+    assert_eq!(manager.selected_auth_profile().as_deref(), Some("work"));
+    assert_eq!(
+        manager
+            .auth()
+            .await
+            .expect("profile auth should load")
+            .api_key(),
+        Some("sk-work")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn auth_managers_with_different_selected_profiles_stay_isolated() -> anyhow::Result<()> {
     let dir = tempdir()?;
     let root_auth = api_key_auth_dot_json("sk-root");

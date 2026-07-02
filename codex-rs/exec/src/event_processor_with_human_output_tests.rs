@@ -6,6 +6,7 @@ use codex_core::config::ConfigBuilder;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -222,6 +223,7 @@ async fn config_summary_entries_include_runtime_workspace_roots() {
         permission_profile: config.permissions.effective_permission_profile(),
         active_permission_profile: None,
         cwd,
+        workspace_roots: Some(config.workspace_roots.clone()),
         reasoning_effort: None,
         initial_messages: None,
         network_proxy: None,
@@ -237,6 +239,195 @@ async fn config_summary_entries_include_runtime_workspace_roots() {
         sandbox_summary.starts_with("workspace-write [workdir, ")
             && sandbox_summary.contains(&expected_extra_root_name),
         "expected runtime workspace root in sandbox summary: {summary_entries:?}"
+    );
+}
+
+#[tokio::test]
+async fn config_summary_entries_use_session_values_for_resumed_thread() {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let ambient_cwd = tempfile::tempdir().expect("create ambient cwd");
+    let session_cwd = tempfile::tempdir().expect("create session cwd");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(ambient_cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build default config");
+    config.cwd = ambient_cwd.path().to_path_buf().abs();
+    config
+        .permissions
+        .set_permission_profile(PermissionProfile::Disabled)
+        .expect("set ambient permission profile");
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+
+    let session_cwd = session_cwd.path().to_path_buf().abs();
+    let session_extra_root = tempfile::tempdir().expect("create session extra root");
+    let session_extra_root = session_extra_root.path().to_path_buf().abs();
+    let session_configured_event = SessionConfiguredEvent {
+        session_id: SessionId::new(),
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        thread_source: None,
+        thread_name: None,
+        model: "gpt-5.5".to_string(),
+        model_provider_id: config.model_provider_id.clone(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: config.approvals_reviewer,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: session_cwd.clone(),
+        workspace_roots: Some(vec![session_cwd.clone(), session_extra_root]),
+        reasoning_effort: Some(ReasoningEffort::Low),
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    let summary_entries = config_summary_entries(&config, &session_configured_event);
+    let entry = |key: &str| {
+        summary_entries
+            .iter()
+            .find_map(|(entry_key, value)| (*entry_key == key).then_some(value.as_str()))
+            .expect("summary entry exists")
+    };
+
+    assert_eq!(entry("workdir"), session_cwd.display().to_string());
+    assert_eq!(entry("approval"), "never");
+    assert_eq!(entry("sandbox"), "read-only");
+    assert_eq!(entry("reasoning effort"), "low");
+}
+
+#[tokio::test]
+async fn config_summary_entries_use_session_workspace_roots_when_cwd_matches_ambient() {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let cwd = tempfile::tempdir().expect("create cwd");
+    let ambient_extra_root = tempfile::tempdir().expect("create ambient extra root");
+    let session_extra_root = tempfile::tempdir().expect("create session extra root");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build default config");
+    let cwd = cwd.path().to_path_buf().abs();
+    let ambient_extra_root = ambient_extra_root.path().to_path_buf().abs();
+    let session_extra_root = session_extra_root.path().to_path_buf().abs();
+    let ambient_extra_root_name = ambient_extra_root
+        .file_name()
+        .expect("ambient extra root should have file name")
+        .to_string_lossy()
+        .to_string();
+    let session_extra_root_name = session_extra_root
+        .file_name()
+        .expect("session extra root should have file name")
+        .to_string_lossy()
+        .to_string();
+    config.cwd = cwd.clone();
+    config.workspace_roots = vec![cwd.clone(), ambient_extra_root];
+
+    let session_configured_event = SessionConfiguredEvent {
+        session_id: SessionId::new(),
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        thread_source: None,
+        thread_name: None,
+        model: "gpt-5.5".to_string(),
+        model_provider_id: config.model_provider_id.clone(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: config.approvals_reviewer,
+        permission_profile: PermissionProfile::workspace_write_with(
+            &[],
+            NetworkSandboxPolicy::Restricted,
+            /*exclude_tmpdir_env_var*/ true,
+            /*exclude_slash_tmp*/ true,
+        ),
+        active_permission_profile: None,
+        cwd: cwd.clone(),
+        workspace_roots: Some(vec![cwd, session_extra_root]),
+        reasoning_effort: None,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    let summary_entries = config_summary_entries(&config, &session_configured_event);
+    let sandbox_summary = summary_entries
+        .iter()
+        .find_map(|(key, value)| (*key == "sandbox").then_some(value))
+        .expect("sandbox summary entry");
+
+    assert!(
+        sandbox_summary.contains(&session_extra_root_name),
+        "expected session workspace root in sandbox summary: {summary_entries:?}"
+    );
+    assert!(
+        !sandbox_summary.contains(&ambient_extra_root_name),
+        "ambient workspace root leaked into resumed sandbox summary: {summary_entries:?}"
+    );
+}
+
+#[tokio::test]
+async fn config_summary_entries_do_not_use_ambient_workspace_roots_for_old_events() {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let cwd = tempfile::tempdir().expect("create cwd");
+    let ambient_extra_root = tempfile::tempdir().expect("create ambient extra root");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build default config");
+    let cwd = cwd.path().to_path_buf().abs();
+    let ambient_extra_root = ambient_extra_root.path().to_path_buf().abs();
+    let ambient_extra_root_name = ambient_extra_root
+        .file_name()
+        .expect("ambient extra root should have file name")
+        .to_string_lossy()
+        .to_string();
+    config.cwd = cwd.clone();
+    config.workspace_roots = vec![cwd.clone(), ambient_extra_root];
+
+    let session_configured_event = SessionConfiguredEvent {
+        session_id: SessionId::new(),
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        thread_source: None,
+        thread_name: None,
+        model: "gpt-5.5".to_string(),
+        model_provider_id: config.model_provider_id.clone(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: config.approvals_reviewer,
+        permission_profile: PermissionProfile::workspace_write_with(
+            &[],
+            NetworkSandboxPolicy::Restricted,
+            /*exclude_tmpdir_env_var*/ true,
+            /*exclude_slash_tmp*/ true,
+        ),
+        active_permission_profile: None,
+        cwd,
+        workspace_roots: None,
+        reasoning_effort: None,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    let summary_entries = config_summary_entries(&config, &session_configured_event);
+    let sandbox_summary = summary_entries
+        .iter()
+        .find_map(|(key, value)| (*key == "sandbox").then_some(value))
+        .expect("sandbox summary entry");
+
+    assert_eq!(sandbox_summary, "workspace-write [workdir]");
+    assert!(
+        !sandbox_summary.contains(&ambient_extra_root_name),
+        "ambient workspace root leaked into old rollout summary: {summary_entries:?}"
     );
 }
 

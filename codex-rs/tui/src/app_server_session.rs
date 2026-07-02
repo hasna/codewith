@@ -22,6 +22,7 @@ use codex_app_server_protocol::ActiveSessionListResponse;
 use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionSendParams;
 use codex_app_server_protocol::ActiveSessionSendResponse;
+use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AgentAttachParams;
 use codex_app_server_protocol::AgentAttachResponse;
 use codex_app_server_protocol::AgentDaemonDiagnosticsParams;
@@ -95,6 +96,8 @@ use codex_app_server_protocol::ThreadGoalListParams;
 use codex_app_server_protocol::ThreadGoalListResponse;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeParams;
 use codex_app_server_protocol::ThreadGoalPlanActivateNodeResponse;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalParams;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalResponse;
 use codex_app_server_protocol::ThreadGoalSetParams;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -104,6 +107,9 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMailboxEnqueueParams;
+use codex_app_server_protocol::ThreadMailboxEnqueueResponse;
+use codex_app_server_protocol::ThreadMailboxMessageKind;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMemoryModeSetResponse;
@@ -200,6 +206,13 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WebhookEventListParams;
+use codex_app_server_protocol::WebhookEventListResponse;
+use codex_app_server_protocol::WebhookEventMarkParams;
+use codex_app_server_protocol::WebhookEventMarkResponse;
+use codex_app_server_protocol::WebhookEventReadParams;
+use codex_app_server_protocol::WebhookEventReadResponse;
+use codex_app_server_protocol::WebhookEventStatus;
 use codex_app_server_protocol::WorktreeAttachParams;
 use codex_app_server_protocol::WorktreeAttachResponse;
 use codex_app_server_protocol::WorktreeCleanupParams;
@@ -822,6 +835,41 @@ impl AppServerSession {
             .wrap_err("failed to list queued thread messages")
     }
 
+    pub(crate) async fn thread_mailbox_enqueue_webhook_event(
+        &mut self,
+        thread_id: ThreadId,
+        event_id: String,
+        mut message: serde_json::Value,
+        preview: String,
+    ) -> Result<ThreadMailboxEnqueueResponse> {
+        let request_id = self.next_request_id();
+        if let Some(object) = message.as_object_mut() {
+            object.insert(
+                "delivery".to_string(),
+                serde_json::Value::String("queueOnly".to_string()),
+            );
+        }
+        self.client
+            .request_typed(ClientRequest::ThreadMailboxEnqueue {
+                request_id,
+                params: ThreadMailboxEnqueueParams {
+                    target_thread_id: thread_id.to_string(),
+                    sender_thread_id: None,
+                    sender_label: Some("Webhook inbox".to_string()),
+                    idempotency_key: Some(format!("webhook:{event_id}:queue")),
+                    kind: ThreadMailboxMessageKind::UserInstruction,
+                    message,
+                    preview: Some(preview),
+                    priority: None,
+                    max_attempts: None,
+                    next_attempt_at: None,
+                    expires_at: None,
+                },
+            })
+            .await
+            .wrap_err("thread/mailbox/enqueue failed for webhook event")
+    }
+
     pub(crate) async fn thread_queued_message_update(
         &mut self,
         thread_id: ThreadId,
@@ -986,6 +1034,7 @@ impl AppServerSession {
         effort: Option<codex_protocol::openai_models::ReasoningEffort>,
         summary: Option<codex_protocol::config_types::ReasoningSummary>,
         service_tier: Option<Option<String>>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
         collaboration_mode: Option<codex_protocol::config_types::CollaborationMode>,
         personality: Option<codex_protocol::config_types::Personality>,
         output_schema: Option<serde_json::Value>,
@@ -1001,7 +1050,7 @@ impl AppServerSession {
                     client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context,
                     environments: None,
                     cwd: Some(cwd),
                     runtime_workspace_roots: Some(workspace_roots.to_vec()),
@@ -1052,6 +1101,7 @@ impl AppServerSession {
         thread_id: ThreadId,
         turn_id: String,
         items: Vec<UserInput>,
+        additional_context: Option<HashMap<String, AdditionalContextEntry>>,
     ) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
         let request_id = self.next_request_id();
         self.client
@@ -1062,7 +1112,7 @@ impl AppServerSession {
                     client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context,
                     expected_turn_id: turn_id,
                 },
             })
@@ -1254,6 +1304,24 @@ impl AppServerSession {
             .wrap_err("thread/goalPlan/activateNode failed in TUI")
     }
 
+    pub(crate) async fn thread_goal_plan_add_goal(
+        &mut self,
+        thread_id: ThreadId,
+        objective: String,
+    ) -> Result<ThreadGoalPlanAddGoalResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadGoalPlanAddGoal {
+                request_id,
+                params: ThreadGoalPlanAddGoalParams {
+                    thread_id: thread_id.to_string(),
+                    objective,
+                },
+            })
+            .await
+            .wrap_err("thread/goalPlan/addGoal failed in TUI")
+    }
+
     pub(crate) async fn thread_workflow_list(
         &mut self,
         thread_id: ThreadId,
@@ -1415,6 +1483,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadScheduleCreateParams {
                     thread_id: thread_id.to_string(),
+                    parent_schedule_id: None,
                     prompt,
                     prompt_source: Some(prompt_source),
                     schedule,
@@ -1463,9 +1532,75 @@ impl AppServerSession {
             .wrap_err("thread/monitor/list failed in TUI")
     }
 
+    pub(crate) async fn webhook_event_list(
+        &mut self,
+        target_thread_id: Option<ThreadId>,
+        statuses: Option<Vec<WebhookEventStatus>>,
+    ) -> Result<WebhookEventListResponse> {
+        let mut data = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request_id = self.next_request_id();
+            let response: WebhookEventListResponse = self
+                .client
+                .request_typed(ClientRequest::WebhookEventList {
+                    request_id,
+                    params: WebhookEventListParams {
+                        source_app_id: None,
+                        target_thread_id: target_thread_id
+                            .as_ref()
+                            .map(std::string::ToString::to_string),
+                        statuses: statuses.clone(),
+                        cursor: cursor.clone(),
+                        limit: Some(200),
+                    },
+                })
+                .await
+                .wrap_err("webhook/event/list failed in TUI")?;
+            data.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                return Ok(WebhookEventListResponse {
+                    data,
+                    next_cursor: None,
+                });
+            };
+            cursor = Some(next_cursor);
+        }
+    }
+
+    pub(crate) async fn webhook_event_read(
+        &mut self,
+        event_id: String,
+    ) -> Result<WebhookEventReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WebhookEventRead {
+                request_id,
+                params: WebhookEventReadParams { event_id },
+            })
+            .await
+            .wrap_err("webhook/event/read failed in TUI")
+    }
+
+    pub(crate) async fn webhook_event_mark(
+        &mut self,
+        event_id: String,
+        status: WebhookEventStatus,
+    ) -> Result<WebhookEventMarkResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WebhookEventMark {
+                request_id,
+                params: WebhookEventMarkParams { event_id, status },
+            })
+            .await
+            .wrap_err("webhook/event/mark failed in TUI")
+    }
+
     pub(crate) async fn agent_start(
         &mut self,
         prompt: String,
+        initial_goal_objective: Option<String>,
         cwd: Option<String>,
         workspace_roots: Option<Vec<String>>,
         parent_thread_id: Option<ThreadId>,
@@ -1477,6 +1612,7 @@ impl AppServerSession {
                 request_id,
                 params: AgentStartParams {
                     prompt,
+                    initial_goal_objective,
                     cwd,
                     idempotency_key: None,
                     request_id: None,
@@ -1578,6 +1714,8 @@ impl AppServerSession {
     pub(crate) async fn agent_events_list(
         &mut self,
         agent_id: String,
+        cursor: Option<String>,
+        limit: Option<usize>,
     ) -> Result<AgentEventsListResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1585,8 +1723,8 @@ impl AppServerSession {
                 request_id,
                 params: AgentEventsListParams {
                     agent_id,
-                    cursor: None,
-                    limit: Some(100),
+                    cursor,
+                    limit: limit.map(|limit| limit as u32).or(Some(100)),
                 },
             })
             .await
@@ -1716,6 +1854,7 @@ impl AppServerSession {
         branch: Option<String>,
         start_point: Option<String>,
         cleanup_policy: Option<WorktreeCleanupPolicy>,
+        thread_id: Option<String>,
     ) -> Result<WorktreeCreateResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1727,7 +1866,7 @@ impl AppServerSession {
                     branch,
                     start_point,
                     cleanup_policy,
-                    thread_id: None,
+                    thread_id,
                 },
             })
             .await
@@ -1866,6 +2005,8 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         monitor_id: String,
+        cursor: Option<String>,
+        limit: Option<usize>,
     ) -> Result<ThreadMonitorReadResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1874,8 +2015,8 @@ impl AppServerSession {
                 params: ThreadMonitorReadParams {
                     thread_id: thread_id.to_string(),
                     monitor_id,
-                    cursor: None,
-                    limit: Some(50),
+                    cursor,
+                    limit: limit.map(|limit| limit as u32).or(Some(50)),
                 },
             })
             .await
@@ -3689,6 +3830,8 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: codex_app_server_protocol::AuthProfileKind::Unknown,
                 name: None,
                 turns: vec![Turn {
                     id: "turn-1".to_string(),
@@ -3724,6 +3867,7 @@ mod tests {
                 test_path_buf("/tmp/project").abs(),
                 test_path_buf("/tmp/project/extra").abs(),
             ],
+            profile_workspace_roots: Vec::new(),
             instruction_sources: vec![test_path_buf("/tmp/project/CODEWITH.md").abs()],
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,

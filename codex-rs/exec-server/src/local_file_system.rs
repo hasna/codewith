@@ -7,16 +7,19 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::io;
+use tokio::io::AsyncReadExt;
 
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerRuntimePaths;
 use crate::ExecutorFileSystem;
+use crate::FILE_CHANGED_DURING_OPEN_ERROR;
 use crate::FileMetadata;
 use crate::FileSystemResult;
 use crate::FileSystemSandboxContext;
 use crate::ReadDirectoryEntry;
 use crate::RemoveOptions;
+use crate::SYMLINKED_FILE_ERROR;
 use crate::sandboxed_file_system::SandboxedFileSystem;
 
 const MAX_READ_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -107,6 +110,17 @@ impl ExecutorFileSystem for LocalFileSystem {
     ) -> FileSystemResult<Vec<u8>> {
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.read_file(path, sandbox).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        let (file_system, sandbox) = self.file_system_for(sandbox)?;
+        file_system
+            .read_file_without_following_symlinks(path, sandbox)
+            .await
     }
 
     async fn write_file(
@@ -201,6 +215,17 @@ impl ExecutorFileSystem for UnsandboxedFileSystem {
     ) -> FileSystemResult<Vec<u8>> {
         reject_platform_sandbox_context(sandbox)?;
         self.file_system.read_file(path, /*sandbox*/ None).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        reject_platform_sandbox_context(sandbox)?;
+        self.file_system
+            .read_file_without_following_symlinks(path, /*sandbox*/ None)
+            .await
     }
 
     async fn write_file(
@@ -315,6 +340,41 @@ impl ExecutorFileSystem for DirectFileSystem {
             ));
         }
         tokio::fs::read(path.as_path()).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        reject_sandbox_context(sandbox)?;
+        let path = path.as_path();
+        let initial_path_metadata = tokio::fs::symlink_metadata(path).await?;
+        reject_non_regular_or_symlink(&initial_path_metadata)?;
+
+        let mut file = tokio::fs::File::open(path).await?;
+        let file_metadata = file.metadata().await?;
+        let current_path_metadata = tokio::fs::symlink_metadata(path).await?;
+        reject_non_regular_or_symlink(&current_path_metadata)?;
+
+        if !file_metadata.is_file() {
+            return Err(not_regular_file_error());
+        }
+        if !same_file_identity(&initial_path_metadata, &file_metadata)
+            || !same_file_identity(&file_metadata, &current_path_metadata)
+        {
+            return Err(file_changed_during_open_error());
+        }
+        if file_metadata.len() > MAX_READ_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
+            ));
+        }
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).await?;
+        Ok(data)
     }
 
     async fn write_file(
@@ -468,6 +528,59 @@ fn reject_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Res
         ));
     }
     Ok(())
+}
+
+fn reject_non_regular_or_symlink(metadata: &std::fs::Metadata) -> io::Result<()> {
+    if metadata.file_type().is_symlink() {
+        return Err(symlinked_file_error());
+    }
+    if !metadata.is_file() {
+        return Err(not_regular_file_error());
+    }
+    Ok(())
+}
+
+fn symlinked_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, SYMLINKED_FILE_ERROR)
+}
+
+fn not_regular_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "not a regular file")
+}
+
+fn file_changed_during_open_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, FILE_CHANGED_DURING_OPEN_ERROR)
+}
+
+#[cfg(unix)]
+fn same_file_identity(
+    file_metadata: &std::fs::Metadata,
+    path_metadata: &std::fs::Metadata,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    file_metadata.dev() == path_metadata.dev() && file_metadata.ino() == path_metadata.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(
+    file_metadata: &std::fs::Metadata,
+    path_metadata: &std::fs::Metadata,
+) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    file_metadata.volume_serial_number().is_some()
+        && file_metadata.volume_serial_number() == path_metadata.volume_serial_number()
+        && file_metadata.file_index().is_some()
+        && file_metadata.file_index() == path_metadata.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(
+    _file_metadata: &std::fs::Metadata,
+    _path_metadata: &std::fs::Metadata,
+) -> bool {
+    false
 }
 
 fn reject_platform_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Result<()> {

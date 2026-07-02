@@ -236,12 +236,14 @@ mod plan_mode;
 mod popups_and_settings;
 mod pull_request_display;
 mod review_mode;
+mod session_prompt;
 mod side;
 mod slash_commands;
 mod status_and_layout;
 mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
+mod webhook;
 mod worktree_display;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;

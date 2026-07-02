@@ -542,6 +542,8 @@ mod tests {
                 "params": {
                     "summary": "queued",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 },
             })
         );

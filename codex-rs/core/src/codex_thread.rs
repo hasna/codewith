@@ -1,8 +1,8 @@
-use crate::QueuedMailboxMessage;
-use crate::QueuedMailboxMoveDirection;
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
+use crate::session::QueuedMailboxMessage;
+use crate::session::QueuedMailboxMoveDirection;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
@@ -71,6 +71,8 @@ pub struct ThreadConfigSnapshot {
     pub reasoning_summary: Option<ReasoningSummary>,
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    pub session_prompt: Option<String>,
+    pub worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
     pub selected_auth_profile: Option<String>,
     pub session_source: SessionSource,
     pub forked_from_thread_id: Option<ThreadId>,
@@ -179,7 +181,9 @@ pub struct CodexThreadSettingsOverrides {
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
     pub service_tier: Option<Option<String>>,
+    pub session_prompt: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
+    pub worktree_mode: Option<codex_protocol::protocol::SessionWorktreeMode>,
     pub personality: Option<Personality>,
 }
 
@@ -242,7 +246,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -264,7 +268,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -342,6 +346,11 @@ impl CodexThread {
     #[doc(hidden)]
     pub async fn ensure_rollout_materialized(&self) {
         self.codex.session.ensure_rollout_materialized().await;
+    }
+
+    #[doc(hidden)]
+    pub async fn try_ensure_rollout_materialized(&self) -> std::io::Result<()> {
+        self.codex.session.try_ensure_rollout_materialized().await
     }
 
     #[doc(hidden)]
@@ -493,7 +502,9 @@ impl CodexThread {
             effort,
             summary,
             service_tier,
+            session_prompt,
             collaboration_mode,
+            worktree_mode,
             personality,
         } = overrides;
         let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
@@ -519,8 +530,10 @@ impl CodexThread {
             windows_sandbox_level,
             model_provider_id: model_provider,
             collaboration_mode: Some(collaboration_mode),
+            worktree_mode,
             reasoning_summary: summary,
             service_tier,
+            session_prompt,
             personality,
             ..Default::default()
         }

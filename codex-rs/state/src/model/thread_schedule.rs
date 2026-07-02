@@ -113,6 +113,7 @@ impl TryFrom<&str> for ThreadScheduleIntervalUnit {
 pub enum ThreadScheduleRunStatus {
     Leased,
     Running,
+    Deferred,
     Completed,
     Failed,
 }
@@ -122,6 +123,7 @@ impl ThreadScheduleRunStatus {
         match self {
             Self::Leased => "leased",
             Self::Running => "running",
+            Self::Deferred => "deferred",
             Self::Completed => "completed",
             Self::Failed => "failed",
         }
@@ -135,6 +137,7 @@ impl TryFrom<&str> for ThreadScheduleRunStatus {
         match value {
             "leased" => Ok(Self::Leased),
             "running" => Ok(Self::Running),
+            "deferred" => Ok(Self::Deferred),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             other => Err(anyhow!("unknown thread schedule run status `{other}`")),
@@ -146,6 +149,8 @@ impl TryFrom<&str> for ThreadScheduleRunStatus {
 pub struct ThreadSchedule {
     pub thread_id: ThreadId,
     pub schedule_id: String,
+    pub parent_schedule_id: Option<String>,
+    pub nesting_depth: i64,
     /// Selected auth profile captured when the schedule was created.
     /// `None` means legacy/unknown; `Some(None)` means the root profile.
     pub auth_profile: Option<Option<String>>,
@@ -183,6 +188,7 @@ pub struct ThreadScheduleStats {
     pub total_runs: i64,
     pub leased_runs: i64,
     pub running_runs: i64,
+    pub deferred_runs: i64,
     pub completed_runs: i64,
     pub failed_runs: i64,
     pub last_started_at: Option<DateTime<Utc>>,
@@ -193,6 +199,8 @@ pub struct ThreadScheduleStats {
 pub(crate) struct ThreadScheduleRow {
     pub thread_id: String,
     pub schedule_id: String,
+    pub parent_schedule_id: Option<String>,
+    pub nesting_depth: i64,
     pub prompt_source: String,
     pub prompt: String,
     pub schedule_kind: String,
@@ -218,6 +226,8 @@ impl ThreadScheduleRow {
         Ok(Self {
             thread_id: row.try_get("thread_id")?,
             schedule_id: row.try_get("schedule_id")?,
+            parent_schedule_id: row.try_get("parent_schedule_id")?,
+            nesting_depth: row.try_get("nesting_depth")?,
             prompt_source: row.try_get("prompt_source")?,
             prompt: row.try_get("prompt")?,
             schedule_kind: row.try_get("schedule_kind")?,
@@ -247,6 +257,8 @@ impl TryFrom<ThreadScheduleRow> for ThreadSchedule {
         Ok(Self {
             thread_id: ThreadId::try_from(row.thread_id)?,
             schedule_id: row.schedule_id,
+            parent_schedule_id: row.parent_schedule_id,
+            nesting_depth: row.nesting_depth,
             auth_profile: match row.auth_profile_recorded {
                 0 => None,
                 1 => Some(row.auth_profile),

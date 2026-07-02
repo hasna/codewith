@@ -56,6 +56,29 @@ pub enum AdditionalContextKind {
 pub struct AdditionalContextEntry {
     pub value: String,
     pub kind: AdditionalContextKind,
+    /// Optional provenance for client-supplied context from a local app store.
+    ///
+    /// This metadata is for clients and auditability. It does not change
+    /// model-visible content or trust: `kind` remains the authority for whether
+    /// `value` is injected as untrusted user context or application context.
+    #[serde(default)]
+    pub source: Option<AdditionalContextSource>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AdditionalContextSource {
+    /// Stable source namespace, for example `open-projects`, `open-todos`,
+    /// `open-conversations`, or `open-mementos`.
+    pub namespace: String,
+    /// Stable record id inside the source namespace.
+    pub id: String,
+    /// Optional source record kind, for example `project`, `task`,
+    /// `conversation`, or `memento`.
+    pub record_type: Option<String>,
+    /// Optional user-facing label for rendering/editing the context source.
+    pub label: Option<String>,
 }
 
 #[derive(

@@ -458,8 +458,32 @@ pub struct ThreadSettingsOverrides {
     /// Takes precedence over model, effort, and developer instructions if set.
     pub collaboration_mode: Option<CollaborationMode>,
 
+    /// Session-scoped extra prompt for future turns.
+    ///
+    /// Use `Some(Some(_))` to set a prompt, `Some(None)` to clear it, or `None`
+    /// to leave the current prompt unchanged.
+    pub session_prompt: Option<Option<String>>,
+    /// Updated session-level managed worktree behavior.
+    pub worktree_mode: Option<SessionWorktreeMode>,
+
     /// Updated personality preference.
     pub personality: Option<Personality>,
+}
+
+/// Session-level managed worktree behavior.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum SessionWorktreeMode {
+    /// Use the current shared checkout and disallow session-managed worktree
+    /// create/attach operations for this thread.
+    Shared,
+    /// Allow this session to manually create or attach managed worktrees.
+    #[default]
+    Manual,
+    /// Pull-request mode. The session must work inside an attached isolated
+    /// managed worktree before model turns can continue.
+    PullRequest,
 }
 
 /// Source classification for client-supplied context.
@@ -1945,6 +1969,11 @@ pub struct ThreadSettingsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    #[serde(default)]
+    pub worktree_mode: SessionWorktreeMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub selected_auth_profile: Option<String>,
@@ -2997,6 +3026,10 @@ pub struct TurnContextItem {
     pub personality: Option<Personality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collaboration_mode: Option<CollaborationMode>,
+    #[serde(default)]
+    pub worktree_mode: SessionWorktreeMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Auth profile selected for model requests in this turn.
@@ -3632,6 +3665,14 @@ pub struct SessionConfiguredEvent {
     /// session.
     pub cwd: AbsolutePathBuf,
 
+    /// Effective user-visible workspace roots for this session, including
+    /// runtime roots and profile-defined roots. Older rollouts may omit this,
+    /// in which case clients should avoid borrowing roots from the ambient
+    /// process config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_roots: Option<Vec<AbsolutePathBuf>>,
+
     /// The effort the model is putting into reasoning about the user's request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
@@ -3681,6 +3722,8 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             #[serde(default)]
             active_permission_profile: Option<ActivePermissionProfile>,
             cwd: AbsolutePathBuf,
+            #[serde(default)]
+            workspace_roots: Option<Vec<AbsolutePathBuf>>,
             reasoning_effort: Option<ReasoningEffortConfig>,
             initial_messages: Option<Vec<EventMsg>>,
             network_proxy: Option<SessionNetworkProxyRuntime>,
@@ -3714,6 +3757,7 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             permission_profile,
             active_permission_profile: wire.active_permission_profile,
             cwd: wire.cwd,
+            workspace_roots: wire.workspace_roots,
             reasoning_effort: wire.reasoning_effort,
             initial_messages: wire.initial_messages,
             network_proxy: wire.network_proxy,
@@ -3731,6 +3775,7 @@ pub enum ThreadGoalStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -3925,6 +3970,7 @@ pub enum ThreadGoalPlanNodeStatus {
     Blocked,
     UsageLimited,
     BudgetLimited,
+    Deferred,
     Complete,
     Cancelled,
 }
@@ -3986,6 +4032,7 @@ pub struct ThreadGoalPlan {
     pub blocked_node_count: i64,
     pub usage_limited_node_count: i64,
     pub budget_limited_node_count: i64,
+    pub deferred_node_count: i64,
     pub cancelled_node_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -5552,6 +5599,8 @@ mod tests {
             model_provider_id: None,
             personality: None,
             collaboration_mode: None,
+            session_prompt: None,
+            worktree_mode: SessionWorktreeMode::Manual,
             multi_agent_version: None,
             auth_profile: None,
             realtime_active: None,
@@ -5609,6 +5658,7 @@ mod tests {
                 permission_profile: permission_profile.clone(),
                 active_permission_profile: None,
                 cwd: test_path_buf("/home/user/project").abs(),
+                workspace_roots: None,
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 initial_messages: None,
                 network_proxy: None,

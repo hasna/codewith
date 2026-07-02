@@ -161,6 +161,33 @@ fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
     render_lines(&cell.transcript_lines(u16::MAX))
 }
 
+fn sanitize_codewith_version(lines: Vec<String>) -> Vec<String> {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version_placeholder = "v<VERSION>";
+    lines
+        .into_iter()
+        .map(|mut line| {
+            if let Some(version_pos) = line.find(&version) {
+                let old_len = version.len();
+                line.replace_range(version_pos..version_pos + old_len, version_placeholder);
+                if let Some(pipe_idx) = line.rfind('│') {
+                    if version_placeholder.len() > old_len {
+                        let extra_width = version_placeholder.len() - old_len;
+                        let padding_start = line[..pipe_idx].trim_end_matches(' ').len();
+                        let removable_padding = pipe_idx.saturating_sub(padding_start);
+                        let remove_width = extra_width.min(removable_padding);
+                        line.replace_range(pipe_idx - remove_width..pipe_idx, "");
+                    } else if old_len > version_placeholder.len() {
+                        let extra_width = old_len - version_placeholder.len();
+                        line.insert_str(pipe_idx, &" ".repeat(extra_width));
+                    }
+                }
+            }
+            line
+        })
+        .collect()
+}
+
 fn assert_unstyled_lines(lines: &[Line<'static>]) {
     for line in lines {
         assert_eq!(line.style, Style::default());
@@ -649,7 +676,7 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         /*show_fast_status*/ false,
     );
 
-    let rendered = render_transcript(&cell).join("\n");
+    let rendered = sanitize_codewith_version(render_transcript(&cell)).join("\n");
     insta::assert_snapshot!(rendered);
 }
 

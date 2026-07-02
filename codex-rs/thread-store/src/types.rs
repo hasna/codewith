@@ -397,6 +397,12 @@ pub struct StoredThread {
     pub agent_path: Option<String>,
     /// Optional Git metadata captured for the thread.
     pub git_info: Option<GitInfo>,
+    /// Auth profile selected for model requests in the thread.
+    ///
+    /// `None` means unknown, `Some(None)` means root/default auth, and
+    /// `Some(Some(_))` means a named auth profile.
+    #[serde(default)]
+    pub auth_profile: Option<Option<String>>,
     /// Approval mode captured for the thread.
     pub approval_mode: AskForApproval,
     /// Canonical runtime permissions captured for the thread.

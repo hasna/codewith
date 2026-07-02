@@ -362,6 +362,9 @@ impl ChatWidget {
         }
 
         self.maybe_apply_ide_context(&mut items);
+        let additional_context = self
+            .teaching_mode_enabled
+            .then(teaching_mode::teaching_mode_additional_context);
 
         let collaboration_mode = if self.collaboration_modes_enabled() {
             self.active_collaboration_mask
@@ -399,6 +402,7 @@ impl ChatWidget {
             /*summary*/ None,
             service_tier,
             /*final_output_json_schema*/ None,
+            additional_context,
             collaboration_mode,
             personality,
         );

@@ -443,6 +443,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn adapter_sourced_rows_read_and_list_with_public_redaction() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let state_db = codex_state::StateRuntime::init(tempdir.keep(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let machine = state_db
+            .machine_registry()
+            .upsert_machine(codex_state::MachineRegistryUpsertParams {
+                machine_id: None,
+                installation_id: Some("adapter-install".to_string()),
+                display_name: Some("Adapter machine".to_string()),
+                trust_state: codex_state::MachineTrustState::Untrusted,
+                enrollment_state: codex_state::MachineEnrollmentState::Discovered,
+                health_state: codex_state::MachineHealthState::Online,
+                source_kind: codex_state::MachineSourceKind::Adapter,
+                adapter_name: Some("generic-network-discovery".to_string()),
+                capabilities_json: serde_json::json!({"appServer": true}),
+                endpoints: vec![codex_state::MachineEndpointUpsertParams {
+                    endpoint_id: None,
+                    transport: codex_state::MachineEndpointTransport::Adapter,
+                    address: "adapter://spark02".to_string(),
+                    display_address: None,
+                    priority: 0,
+                    capabilities_json: serde_json::json!({"dispatch": true}),
+                    last_success_at: Some(Utc::now()),
+                    last_error: None,
+                }],
+                last_seen_at: Some(Utc::now()),
+            })
+            .await
+            .expect("adapter-sourced machine should persist");
+        let processor = MachineRegistryRequestProcessor::new(Some(state_db));
+
+        let list = processor
+            .list(MachineRegistryListParams::default())
+            .await
+            .expect("list should succeed")
+            .expect("response should be present");
+        let list = expect_list_response(list);
+        assert_eq!(1, list.data.len());
+        assert_adapter_machine(&list.data[0], machine.machine_id.as_str());
+        let list_payload = serde_json::to_value(&list).expect("list response should serialize");
+        assert_endpoint_addresses_redacted(&list_payload["data"][0]["endpoints"][0]);
+
+        let read = processor
+            .read(MachineRegistryReadParams {
+                machine_id: machine.machine_id.clone(),
+            })
+            .await
+            .expect("read should succeed")
+            .expect("response should be present");
+        let read = expect_read_response(read);
+        let read_machine = read.machine.as_ref().expect("machine should be returned");
+        assert_adapter_machine(read_machine, machine.machine_id.as_str());
+        let read_payload = serde_json::to_value(&read).expect("read response should serialize");
+        assert_endpoint_addresses_redacted(&read_payload["machine"]["endpoints"][0]);
+    }
+
+    #[tokio::test]
     async fn update_trust_is_explicit_and_local_is_internal_only() {
         let tempdir = TempDir::new().expect("tempdir");
         let state_db = codex_state::StateRuntime::init(tempdir.keep(), "test-provider".to_string())
@@ -538,6 +597,13 @@ mod tests {
         response
     }
 
+    fn expect_read_response(payload: ClientResponsePayload) -> MachineRegistryReadResponse {
+        let ClientResponsePayload::MachineRegistryRead(response) = payload else {
+            panic!("expected machine registry read response");
+        };
+        response
+    }
+
     fn expect_list_response(payload: ClientResponsePayload) -> MachineRegistryListResponse {
         let ClientResponsePayload::MachineRegistryList(response) = payload else {
             panic!("expected machine registry list response");
@@ -552,5 +618,44 @@ mod tests {
             panic!("expected machine registry update trust response");
         };
         response
+    }
+
+    fn assert_adapter_machine(machine: &MachineRegistryMachine, machine_id: &str) {
+        assert_eq!(machine_id, machine.machine_id.as_str());
+        assert_eq!(Some("adapter-install"), machine.installation_id.as_deref());
+        assert_eq!(Some("Adapter machine"), machine.display_name.as_deref());
+        assert_eq!(MachineRegistryTrustState::Untrusted, machine.trust_state);
+        assert_eq!(
+            MachineRegistryEnrollmentState::Discovered,
+            machine.enrollment_state
+        );
+        assert_eq!(MachineRegistryHealthState::Online, machine.health_state);
+        assert_eq!(MachineRegistrySourceKind::Adapter, machine.source_kind);
+        assert_eq!(
+            Some("generic-network-discovery"),
+            machine.adapter_name.as_deref()
+        );
+        assert_eq!(serde_json::json!({"appServer": true}), machine.capabilities);
+        assert_eq!(1, machine.endpoints.len());
+        let endpoint = &machine.endpoints[0];
+        assert_eq!(
+            MachineRegistryEndpointTransport::Adapter,
+            endpoint.transport
+        );
+        assert_eq!("Adapter endpoint", endpoint.display_address);
+        assert_eq!(
+            vec![MachineRegistryRedaction::EndpointAddress],
+            endpoint.redactions
+        );
+        assert_eq!(0, endpoint.priority);
+        assert_eq!(serde_json::json!({"dispatch": true}), endpoint.capabilities);
+    }
+
+    fn assert_endpoint_addresses_redacted(endpoint: &serde_json::Value) {
+        let endpoint = endpoint
+            .as_object()
+            .expect("endpoint should serialize as object");
+        assert!(!endpoint.contains_key("normalizedAddress"));
+        assert!(!endpoint.contains_key("address"));
     }
 }

@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/status_command_tests.rs
+expression: popup
+---
+  API key · 26% context used · 42K total tokens
+
+  [Usage]
+
+›    Account         API key
+     Model           gpt-5.5
+     Provider        openai
+     Context         26% used · 42K / 128K
+     Tokens          42K total · 35K input · 7K output
+     Account limits  account limits unavailable for this provider
+     Refresh         no refreshable usage source
+
+  Press enter to confirm or esc to go back

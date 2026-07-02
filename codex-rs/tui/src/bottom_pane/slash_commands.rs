@@ -127,14 +127,7 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
     if cmd == SlashCommand::Workflow && !flags.workflow_command_enabled {
         return Some(cmd);
     }
-    let visible_cmd = match cmd {
-        SlashCommand::BackgroundAgent => SlashCommand::Agent,
-        SlashCommand::MultiAgents => SlashCommand::Session,
-        SlashCommand::Exit => SlashCommand::Quit,
-        SlashCommand::Btw => SlashCommand::Side,
-        SlashCommand::Stats => SlashCommand::Status,
-        _ => cmd,
-    };
+    let visible_cmd = cmd.hidden_alias_target().unwrap_or(cmd);
     builtins_for_input(BuiltinCommandFlags {
         side_conversation_active: false,
         ..flags
@@ -221,26 +214,14 @@ mod tests {
     #[test]
     fn hidden_aliases_resolve_for_dispatch_but_stay_out_of_completion() {
         let flags = all_enabled_flags();
-        assert_eq!(
-            find_builtin_command("subagents", flags),
-            Some(SlashCommand::MultiAgents)
-        );
-        assert_eq!(
-            find_builtin_command("background-agent", flags),
-            Some(SlashCommand::BackgroundAgent)
-        );
-        // Debloat: `/exit`, `/btw`, `/stats` are hidden duplicates that still
-        // dispatch via exact lookup but never appear in the completion list.
-        assert_eq!(
-            find_builtin_command("exit", flags),
-            Some(SlashCommand::Exit)
-        );
-        assert_eq!(find_builtin_command("btw", flags), Some(SlashCommand::Btw));
-        assert_eq!(
-            find_builtin_command("stats", flags),
-            Some(SlashCommand::Stats)
-        );
-        for hidden in ["exit", "btw", "stats"] {
+        for (hidden, command) in [
+            ("subagents", SlashCommand::MultiAgents),
+            ("background-agent", SlashCommand::BackgroundAgent),
+            ("exit", SlashCommand::Exit),
+            ("btw", SlashCommand::Btw),
+            ("stats", SlashCommand::Stats),
+        ] {
+            assert_eq!(find_builtin_command(hidden, flags), Some(command));
             assert!(
                 !builtins_for_input(flags)
                     .iter()
@@ -248,16 +229,6 @@ mod tests {
                 "/{hidden} should be hidden from completion"
             );
         }
-        assert!(
-            !builtins_for_input(flags)
-                .iter()
-                .any(|(name, _)| *name == "subagents")
-        );
-        assert!(
-            !builtins_for_input(flags)
-                .iter()
-                .any(|(name, _)| *name == "background-agent")
-        );
         assert!(
             builtins_for_input(flags)
                 .iter()
@@ -393,6 +364,7 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
+                SlashCommand::Usage,
                 SlashCommand::Changelog,
             ]
         );

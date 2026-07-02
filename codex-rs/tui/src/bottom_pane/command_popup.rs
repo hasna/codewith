@@ -265,6 +265,7 @@ impl CommandItem {
 
     fn aliases(&self) -> &'static [&'static str] {
         match self {
+            Self::Builtin(SlashCommand::Compact) => &["ac"],
             Self::Builtin(SlashCommand::Pets) => &["pet"],
             Self::Builtin(_) | Self::ServiceTier(_) => &[],
         }
@@ -635,6 +636,24 @@ mod tests {
     }
 
     #[test]
+    fn pair_command_popup_snapshot() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/pa".to_string());
+
+        let width = 84;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+
+        insta::assert_snapshot!("command_popup_pair", format!("{buf:?}"));
+    }
+
+    #[test]
     fn changing_filter_resets_selection_after_scrolling() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
@@ -679,18 +698,35 @@ mod tests {
     }
 
     #[test]
-    fn btw_is_hidden_but_side_is_shown() {
-        // Debloat: `/btw` is a hidden duplicate of `/side`; it should never
-        // surface in the completion popup, even on its own prefix.
+    fn hidden_duplicate_aliases_do_not_surface() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/".to_string());
         let items = popup.filtered_items();
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
-        assert!(items.contains(&CommandItem::Builtin(SlashCommand::Side)));
+        for (alias, canonical) in [
+            (SlashCommand::BackgroundAgent, SlashCommand::Agent),
+            (SlashCommand::MultiAgents, SlashCommand::Session),
+            (SlashCommand::Exit, SlashCommand::Quit),
+            (SlashCommand::Btw, SlashCommand::Side),
+            (SlashCommand::Stats, SlashCommand::Status),
+        ] {
+            assert!(!items.contains(&CommandItem::Builtin(alias)));
+            assert!(items.contains(&CommandItem::Builtin(canonical)));
+        }
 
-        popup.on_composer_text_change("/bt".to_string());
-        let items = popup.filtered_items();
-        assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Btw)));
+        for (text, alias) in [
+            ("/background-agent", SlashCommand::BackgroundAgent),
+            ("/subagents", SlashCommand::MultiAgents),
+            ("/exit", SlashCommand::Exit),
+            ("/bt", SlashCommand::Btw),
+            ("/stats", SlashCommand::Stats),
+        ] {
+            popup.on_composer_text_change(text.to_string());
+            assert!(
+                !popup
+                    .filtered_items()
+                    .contains(&CommandItem::Builtin(alias))
+            );
+        }
     }
 
     #[test]

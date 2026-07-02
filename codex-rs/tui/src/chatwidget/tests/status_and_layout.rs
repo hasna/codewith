@@ -75,6 +75,8 @@ fn status_line_test_schedule(
     ThreadSchedule {
         thread_id: thread_id.to_string(),
         schedule_id: schedule_id.to_string(),
+        parent_schedule_id: None,
+        nesting_depth: 1,
         prompt: "check whether CI is green and write the next action".to_string(),
         prompt_source: ThreadSchedulePromptSource::Inline,
         schedule,
@@ -3033,6 +3035,180 @@ async fn status_line_goal_title_updates_and_clears_with_goal_state() {
 }
 
 #[tokio::test]
+async fn status_line_run_state_maps_deterministic_task_states() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+
+    handle_turn_started(&mut chat, "turn-1");
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+
+    handle_agent_reasoning_delta(&mut chat, "**Thinking**");
+    assert_eq!(status_line_text(&chat), Some("Thinking".to_string()));
+
+    begin_unified_exec_startup(&mut chat, "call-wait-state", "proc-state", "just test");
+    terminal_interaction(&mut chat, "call-wait-state-poll", "proc-state", "");
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Waiting on background".to_string())
+    );
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_tool_updates_display_only_while_running() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    handle_turn_started(&mut chat, "turn-agent-status");
+    let updated = chat
+        .set_agent_statusline_from_tool(Some("  Reviewing\npatch  ".to_string()))
+        .expect("safe statusline message should update");
+
+    assert_eq!(updated, Some("Reviewing patch".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+
+    handle_agent_reasoning_delta(&mut chat, "**Thinking**");
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+
+    handle_turn_completed(&mut chat, "turn-agent-status", /*duration_ms*/ None);
+    assert_eq!(status_line_text(&chat), Some("Idle".to_string()));
+
+    handle_turn_started(&mut chat, "turn-agent-status-next");
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_tool_does_not_update_terminal_title_run_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["run-state".to_string()]);
+
+    handle_turn_started(&mut chat, "turn-agent-status-title");
+    assert_eq!(chat.last_terminal_title, Some("Working".to_string()));
+
+    chat.set_agent_statusline_from_tool(Some("Reviewing patch".to_string()))
+        .expect("safe statusline message should update");
+
+    assert_eq!(status_line_text(&chat), Some("Reviewing patch".to_string()));
+    assert_eq!(chat.last_terminal_title, Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-agent-status-snapshot");
+    chat.set_agent_statusline_from_tool(Some("Reviewing patch".to_string()))
+        .expect("safe statusline message should update");
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw agent statusline footer");
+    assert_chatwidget_snapshot!(
+        "status_line_agent_statusline_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
+async fn status_line_agent_statusline_tool_rejects_unsafe_bounds_and_rate() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+
+    let control_err = chat
+        .set_agent_statusline_from_tool(Some("safe \u{1b}]2;bad\u{7}".to_string()))
+        .expect_err("terminal control sequences should fail");
+    assert!(control_err.contains("control"));
+
+    let oversized_err = chat
+        .set_agent_statusline_from_tool(Some("x".repeat(121)))
+        .expect_err("oversized message should fail");
+    assert!(oversized_err.contains("at most 120 characters"));
+
+    for idx in 0..8 {
+        chat.set_agent_statusline_from_tool(Some(format!("step {idx}")))
+            .expect("update under rate limit should pass");
+    }
+    let rate_err = chat
+        .set_agent_statusline_from_tool(Some("one more".to_string()))
+        .expect_err("too many updates should fail");
+    assert!(rate_err.contains("rate limited"));
+}
+
+#[tokio::test]
+async fn status_line_run_state_updates_for_human_feedback() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-action-required");
+
+    let request = ExecApprovalRequestEvent {
+        call_id: "call-action-required".into(),
+        approval_id: Some("call-action-required".into()),
+        turn_id: "turn-action-required".into(),
+        command: vec!["bash".into(), "-lc".into(), "echo hello".into()],
+        cwd: test_path_buf("/tmp").abs(),
+        reason: Some("need confirmation".into()),
+        network_approval_context: None,
+        proposed_execpolicy_amendment: None,
+        proposed_network_policy_amendments: None,
+        additional_permissions: None,
+        available_decisions: None,
+    };
+    handle_exec_approval_request(&mut chat, "sub-action-required", request);
+
+    chat.pre_draw_tick();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Waiting on human".to_string())
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    chat.pre_draw_tick();
+    assert_eq!(status_line_text(&chat), Some("Working".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_run_state_background_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
+    handle_turn_started(&mut chat, "turn-background");
+    begin_unified_exec_startup(
+        &mut chat,
+        "call-background",
+        "proc-background",
+        "cargo test -p codex-tui",
+    );
+    terminal_interaction(&mut chat, "call-background-poll", "proc-background", "");
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw run-state footer");
+    assert_chatwidget_snapshot!(
+        "status_line_run_state_background_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -3710,7 +3886,8 @@ async fn session_configured_clears_goal_status_footer() {
     assert_eq!(
         chat.current_goal_status_indicator,
         Some(GoalStatusIndicator::Active {
-            usage: Some("40K / 50K".to_string())
+            usage: Some("40K / 50K".to_string()),
+            elapsed_seconds: 30 * 60,
         })
     );
     chat.turn_lifecycle
@@ -3785,6 +3962,7 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
         )),
         Some(GoalStatusIndicator::Active {
             usage: Some("40K / 50K".to_string()),
+            elapsed_seconds: 30 * 60,
         })
     );
     assert_eq!(
@@ -3794,7 +3972,8 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
             /*tokens_used*/ 0,
         )),
         Some(GoalStatusIndicator::Active {
-            usage: Some("30m".to_string()),
+            usage: None,
+            elapsed_seconds: 30 * 60,
         })
     );
     assert_eq!(
@@ -3812,6 +3991,14 @@ fn goal_status_indicator_formats_statuses_and_budgets() {
             /*tokens_used*/ 0,
         )),
         Some(GoalStatusIndicator::UsageLimited)
+    );
+    assert_eq!(
+        goal_status_indicator_from_app_goal(&test_thread_goal(
+            codex_app_server_protocol::ThreadGoalStatus::Deferred,
+            /*token_budget*/ None,
+            /*tokens_used*/ 0,
+        )),
+        Some(GoalStatusIndicator::Deferred)
     );
     assert_eq!(
         goal_status_indicator_from_app_goal(&test_thread_goal(
@@ -3849,8 +4036,19 @@ fn goal_status_indicator_line_formats_goal_text() {
         (
             GoalStatusIndicator::Active {
                 usage: Some("4K / 5K".to_string()),
+                elapsed_seconds: 8 * 60,
             },
-            "Pursuing goal (4K / 5K)",
+            "Pursuing goal (8m, 4K / 5K)",
+        ),
+        (
+            GoalStatusIndicator::ActivePlan {
+                usage: None,
+                current_goal: 9,
+                total_goals: 11,
+                current_elapsed_seconds: 8 * 60,
+                total_elapsed_seconds: 42 * 60,
+            },
+            "Pursuing goal 9/11 (8m current, 42m total)",
         ),
         (
             GoalStatusIndicator::BudgetLimited {
@@ -3860,6 +4058,10 @@ fn goal_status_indicator_line_formats_goal_text() {
         ),
         (GoalStatusIndicator::Paused, "Goal paused (/goal resume)"),
         (GoalStatusIndicator::Blocked, "Goal blocked (/goal resume)"),
+        (
+            GoalStatusIndicator::Deferred,
+            "Goal deferred (/goal resume)",
+        ),
         (
             GoalStatusIndicator::UsageLimited,
             "Goal hit usage limits (/goal resume)",

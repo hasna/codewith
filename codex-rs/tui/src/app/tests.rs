@@ -38,6 +38,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
@@ -1849,6 +1850,7 @@ default_permissions = "locked-down"
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         }
     );
@@ -1945,6 +1947,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2042,6 +2045,7 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2125,6 +2129,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2187,6 +2192,7 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -2930,6 +2936,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3021,6 +3029,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3080,6 +3090,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: Some("read thread".to_string()),
         turns: Vec::new(),
     };
@@ -4234,6 +4246,7 @@ async fn make_test_app() -> App {
         pending_startup_thread_start: false,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
+        pending_mcp_dynamic_tool_mutations: HashMap::new(),
     }
 }
 
@@ -4300,6 +4313,7 @@ async fn make_test_app_with_channels() -> (
             pending_startup_thread_start: false,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_dynamic_tool_mutations: HashMap::new(),
         },
         rx,
         op_rx,
@@ -4472,6 +4486,7 @@ async fn auth_profile_switch_includes_saved_profile_permissions() -> Result<()> 
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         })
     );
@@ -4556,6 +4571,88 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
 }
 
 #[tokio::test]
+async fn usage_panel_usage_refresh_completion_requests_frame() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+    app.chat_widget.open_usage_panel();
+    let request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected usage-panel refresh request, got {other:?}"),
+    };
+
+    let rate_limit_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel { request_id },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![]),
+    );
+
+    assert_eq!(
+        rate_limit_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::ScheduleFrame
+    );
+    assert!(app.apply_minimax_usage_loaded(
+        crate::app_event::MiniMaxUsageRefreshOrigin::UsagePanel { request_id: 1 },
+        app.config.selected_auth_profile.clone(),
+        Err("temporarily unavailable".to_string()),
+    ));
+}
+
+#[tokio::test]
+async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+
+    app.chat_widget.open_usage_panel();
+    let first_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected first usage-panel refresh request, got {other:?}"),
+    };
+    app.chat_widget.open_usage_panel();
+    let second_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected second usage-panel refresh request, got {other:?}"),
+    };
+    assert_ne!(first_request_id, second_request_id);
+
+    let stale_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel {
+            request_id: first_request_id,
+        },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
+        )]),
+    );
+    assert_eq!(
+        stale_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+
+    app.chat_widget.show_status_report();
+    let rendered = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected status output, got {other:?}"),
+    };
+    assert!(
+        !rendered.contains("60m limit"),
+        "superseded /usage refresh must not update cached limits, got: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn auth_profile_switch_waits_for_settings_update_before_visible_state_changes() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     app.config.selected_auth_profile = Some("personal".to_string());
@@ -4598,6 +4695,7 @@ async fn auth_profile_switch_waits_for_settings_update_before_visible_state_chan
             summary: None,
             service_tier: None,
             collaboration_mode: None,
+            session_prompt: None,
             personality: None,
         }
     );
@@ -5857,6 +5955,8 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: None,
                 turns: Vec::new(),
             },
@@ -6099,6 +6199,7 @@ async fn override_turn_context_sends_thread_settings_update() {
         let thread_id = started.session.thread_id;
         let initial_model = started.session.model.clone();
         let initial_effort = started.session.reasoning_effort.clone();
+        let session_prompt = "Prefer short diffs.".to_string();
         app.enqueue_primary_thread_session(started.session, started.turns)
             .await
             .expect("primary thread should be registered");
@@ -6125,6 +6226,7 @@ async fn override_turn_context_sends_thread_settings_update() {
             /*summary*/ None,
             Some(Some(service_tier.clone())),
             Some(collaboration_mode.clone()),
+            Some(Some(session_prompt.clone())),
             Some(Personality::Pragmatic),
         );
 
@@ -6175,6 +6277,10 @@ async fn override_turn_context_sends_thread_settings_update() {
             notification.thread_settings.personality,
             Some(Personality::Pragmatic)
         );
+        assert_eq!(
+            notification.thread_settings.session_prompt,
+            Some(session_prompt.clone())
+        );
 
         app.handle_app_server_event(
             &mut app_server,
@@ -6217,6 +6323,38 @@ async fn override_turn_context_sends_thread_settings_update() {
                 .id,
             codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE
         );
+
+        let clear_op = AppCommand::override_turn_context(
+            /*cwd*/ None,
+            /*approval_policy*/ None,
+            /*approvals_reviewer*/ None,
+            /*permission_profile*/ None,
+            /*active_permission_profile*/ None,
+            /*windows_sandbox_level*/ None,
+            /*model*/ None,
+            /*effort*/ None,
+            /*summary*/ None,
+            /*service_tier*/ None,
+            /*collaboration_mode*/ None,
+            Some(None),
+            /*personality*/ None,
+        );
+
+        let handled = app
+            .try_submit_active_thread_op_via_app_server(&mut app_server, thread_id, &clear_op)
+            .await
+            .expect("session prompt clear should not fail");
+
+        assert_eq!(handled, true);
+        let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
+        assert_eq!(notification.thread_settings.session_prompt, None);
+        app.handle_app_server_event(
+            &mut app_server,
+            codex_app_server_client::AppServerEvent::ServerNotification(
+                ServerNotification::ThreadSettingsUpdated(notification),
+            ),
+        )
+        .await;
     })
     .await;
 }
@@ -6362,6 +6500,8 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
+            session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         },
     };
     app.enqueue_thread_notification(

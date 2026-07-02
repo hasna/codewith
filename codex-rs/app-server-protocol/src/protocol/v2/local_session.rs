@@ -1,5 +1,6 @@
 use super::ActiveSessionCapability;
 use super::ActiveSessionPeerKind;
+use super::AuthProfileKind;
 use super::SessionSource;
 use super::SortDirection;
 use super::ThreadActiveFlag;
@@ -82,6 +83,15 @@ pub struct LocalSession {
     pub agent_path: Option<String>,
     pub model_provider: String,
     pub model: Option<String>,
+    /// Auth profile selected for model requests in this session, if known.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
+    /// Whether `authProfile` is unknown, the default root profile, or a named profile.
+    #[serde(default)]
+    pub auth_profile_kind: AuthProfileKind,
+    /// Redacted account label for the selected auth profile, when available.
+    #[serde(default)]
+    pub account_label: Option<String>,
     pub source: SessionSource,
     pub thread_source: Option<ThreadSource>,
     #[ts(type = "number")]

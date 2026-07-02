@@ -337,6 +337,31 @@ pub struct ToolSuggestConfig {
     pub disabled_tools: Vec<ToolSuggestDisabledTool>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SmartSuggestConfigToml {
+    /// Enables the experimental pre-tool advisory pass. Defaults to false.
+    pub enabled: Option<bool>,
+
+    /// Optional configured model provider id used for the advisory pass.
+    pub model_provider: Option<String>,
+
+    /// Required model id for the advisory pass when enabled.
+    pub model: Option<String>,
+
+    /// Optional service tier forwarded only to the advisory model request.
+    pub service_tier: Option<String>,
+
+    /// Maximum time to wait for advisory output, in milliseconds.
+    pub timeout_ms: Option<u64>,
+
+    /// Maximum serialized tool input characters exposed to the advisory model.
+    pub max_input_chars: Option<usize>,
+
+    /// Maximum advisory text characters injected back into the main context.
+    pub max_suggestion_chars: Option<usize>,
+}
+
 /// Memories settings loaded from config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]

@@ -5,6 +5,9 @@ use crate::MAX_WORKFLOW_PROMPT_FIELD_CHARS;
 use crate::WorkflowBranchPrompt;
 use crate::WorkflowLoopIntervalUnit;
 use crate::WorkflowLoopSchedule;
+use crate::WorkflowModelRouter;
+use crate::WorkflowModelRoutingCapability;
+use crate::WorkflowModelRoutingDecisionStatus;
 use crate::WorkflowSpecError;
 use crate::WorkflowStatus;
 use crate::WorkflowStopCondition;
@@ -14,6 +17,14 @@ use crate::render_workflow_branch_prompt;
 fn yaml_key<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
     let key = serde_yaml::Value::String(key.to_string());
     value.as_mapping()?.get(&key)
+}
+
+fn workflow_with_execution_defaults_routing(routing_yaml: &str) -> String {
+    DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replacen(
+        "  permission_profile: \"workspace-write\"\nlimits:",
+        &format!("  permission_profile: \"workspace-write\"\n{routing_yaml}limits:"),
+        1,
+    )
 }
 
 #[test]
@@ -269,6 +280,149 @@ fn rejects_placeholder_model_routes() {
     assert!(
         err.to_string().contains("model_gateway")
             && err.to_string().contains("placeholder `inherit`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn parses_open_router_model_routing_contract() {
+    let yaml = workflow_with_execution_defaults_routing(
+        r#"  routing:
+    contract_version: "open-router.codewith/v0"
+    router: "open_router"
+    request:
+      requested_capability: "code_edit"
+      context:
+        task_id: "cc912869-361e-4277-9608-65c0f5a05b38"
+        task_title: "Prepare Codewith integration point for smart model routing"
+        project_path: "/home/hasna/workspace/hasna/opensource/open-codewith"
+        tags:
+          - "model-routing"
+          - "task-lifecycle"
+        auth_profile: "codewith-worker"
+        approval_policy: "never"
+        permission_profile: "workspace-write"
+        worktree_mode: "required"
+      constraints:
+        allowed_model_gateways:
+          - "hasna"
+          - "openrouter"
+        preferred_model_gateways:
+          - "openrouter"
+        allowed_providers:
+          - "openai"
+          - "anthropic"
+          - "openrouter"
+        allowed_models:
+          - "gpt-5.4"
+          - "anthropic/claude-sonnet-4.5"
+        preferred_reasoning:
+          - "medium"
+          - "high"
+        allowed_service_tiers:
+          - "priority"
+        allowed_auth_profiles:
+          - "codewith-worker"
+        allowed_approval_policies:
+          - "never"
+          - "on-request"
+        allowed_permission_profiles:
+          - "workspace-write"
+        allowed_worktree_modes:
+          - "required"
+        max_context_tokens: 200000
+        budget_usd: "1.25"
+        fallback_required: true
+    decision:
+      status: "selected"
+      model_gateway: "openrouter"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "high"
+      service_tier: "priority"
+      auth_profile: "codewith-worker"
+      explanation: "Open-router selected a code-edit-capable model inside constraints."
+      fallback:
+        used: false
+      warnings: []
+      errors: []
+"#,
+    );
+
+    let spec = parse_workflow_yaml(&yaml).expect("routing contract should parse");
+    let routing = spec
+        .execution_defaults
+        .routing
+        .expect("execution defaults should include routing contract");
+
+    assert_eq!("open-router.codewith/v0", routing.contract_version);
+    assert_eq!(WorkflowModelRouter::OpenRouter, routing.router);
+    assert_eq!(
+        WorkflowModelRoutingCapability::CodeEdit,
+        routing.request.requested_capability
+    );
+    assert_eq!(
+        vec!["hasna".to_string(), "openrouter".to_string()],
+        routing.request.constraints.allowed_model_gateways
+    );
+    let decision = routing.decision.expect("decision should parse");
+    assert_eq!(
+        WorkflowModelRoutingDecisionStatus::Selected,
+        decision.status
+    );
+    assert_eq!(Some("openrouter".to_string()), decision.model_gateway);
+    assert_eq!(
+        Some("anthropic/claude-sonnet-4.5".to_string()),
+        decision.model
+    );
+}
+
+#[test]
+fn rejects_open_router_decision_without_exact_route() {
+    let yaml = workflow_with_execution_defaults_routing(
+        r#"  routing:
+    contract_version: "open-router.codewith/v0"
+    router: "open_router"
+    request:
+      requested_capability: "verification"
+    decision:
+      status: "selected"
+      model_gateway: "inherit"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4.5"
+      reasoning: "high"
+      explanation: "This should not parse because the route is not exact."
+"#,
+    );
+
+    let err = parse_workflow_yaml(&yaml).expect_err("placeholder decision route should fail");
+
+    assert!(
+        err.to_string().contains("decision.model_gateway")
+            && err.to_string().contains("placeholder `inherit`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_open_router_error_decision_without_errors() {
+    let yaml = workflow_with_execution_defaults_routing(
+        r#"  routing:
+    contract_version: "open-router.codewith/v0"
+    router: "open_router"
+    request:
+      requested_capability: "verification"
+    decision:
+      status: "error"
+      explanation: "No available model matched the constraints."
+"#,
+    );
+
+    let err = parse_workflow_yaml(&yaml).expect_err("error decision should explain failures");
+
+    assert!(
+        err.to_string()
+            .contains("decision.errors must describe why routing failed"),
         "unexpected error: {err}"
     );
 }

@@ -4,6 +4,8 @@ use crate::realtime_conversation::handle_start as handle_realtime_conversation_s
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use async_channel::Receiver;
 use codex_otel::set_parent_from_w3c_trace_context;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Submission;
 use tracing::Instrument;
 use tracing::debug_span;
@@ -157,6 +159,8 @@ async fn thread_settings_update(
         summary,
         service_tier,
         collaboration_mode,
+        session_prompt,
+        worktree_mode,
         personality,
     } = thread_settings;
     let collaboration_mode = match collaboration_mode {
@@ -189,7 +193,9 @@ async fn thread_settings_update(
         collaboration_mode,
         reasoning_summary: summary,
         service_tier,
+        session_prompt,
         personality,
+        worktree_mode,
         ..Default::default()
     }
 }
@@ -214,6 +220,8 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             reasoning_summary: snapshot.reasoning_summary,
             personality: snapshot.personality,
             collaboration_mode: snapshot.collaboration_mode,
+            session_prompt: snapshot.session_prompt,
+            worktree_mode: snapshot.worktree_mode,
             selected_auth_profile: snapshot.selected_auth_profile,
         },
     })
@@ -351,20 +359,36 @@ pub async fn inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
     communication: InterAgentCommunication,
-) {
+) -> CodexResult<()> {
     let trigger_turn = communication.trigger_turn;
-    if trigger_turn {
+    // Defer before enqueueing so the running turn cannot drain the trigger
+    // message into the current turn between the two steps.
+    let deferred_delivery = if trigger_turn {
         sess.input_queue
             .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
-            .await;
-    }
-    sess.input_queue
+            .await
+    } else {
+        None
+    };
+    if let Err(err) = sess
+        .input_queue
         .enqueue_mailbox_communication_with_id(sub_id.clone(), communication)
-        .await;
+        .await
+    {
+        // Nothing was enqueued; undo the defer so the rejected send does not
+        // postpone already-queued mail to the next turn.
+        if let Some((turn_state, previous_phase)) = deferred_delivery {
+            sess.input_queue
+                .restore_mailbox_delivery_phase(turn_state.as_ref(), previous_phase)
+                .await;
+        }
+        return Err(CodexErr::InvalidRequest(err.to_string()));
+    }
     if trigger_turn {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }
+    Ok(())
 }
 
 /// Records an inter-agent assistant envelope without synchronously waking pending work.
@@ -372,15 +396,29 @@ pub async fn enqueue_inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
     communication: InterAgentCommunication,
-) {
-    if communication.trigger_turn {
+) -> CodexResult<()> {
+    let deferred_delivery = if communication.trigger_turn {
         sess.input_queue
             .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
-            .await;
-    }
-    sess.input_queue
+            .await
+    } else {
+        None
+    };
+    if let Err(err) = sess
+        .input_queue
         .enqueue_mailbox_communication_with_id(sub_id, communication)
-        .await;
+        .await
+    {
+        // Nothing was enqueued; undo the defer so the rejected send does not
+        // postpone already-queued mail to the next turn.
+        if let Some((turn_state, previous_phase)) = deferred_delivery {
+            sess.input_queue
+                .restore_mailbox_delivery_phase(turn_state.as_ref(), previous_phase)
+                .await;
+        }
+        return Err(CodexErr::InvalidRequest(err.to_string()));
+    }
+    Ok(())
 }
 
 pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command: String) {
@@ -856,7 +894,18 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::InterAgentCommunication { communication } => {
-                    inter_agent_communication(&sess, sub.id.clone(), communication).await;
+                    if let Err(err) =
+                        inter_agent_communication(&sess, sub.id.clone(), communication).await
+                    {
+                        sess.send_event_raw(Event {
+                            id: sub.id.clone(),
+                            msg: EventMsg::Error(ErrorEvent {
+                                message: err.to_string(),
+                                codex_error_info: Some(CodexErrorInfo::BadRequest),
+                            }),
+                        })
+                        .await;
+                    }
                     false
                 }
                 Op::ExecApproval {

@@ -32,6 +32,8 @@ fn thread_settings_for_test(
                 },
             },
             personality: Some(Personality::Pragmatic),
+            session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         },
     }
 }
@@ -109,6 +111,7 @@ async fn thread_settings_updated_updates_visible_state_without_transcript() {
 
     let mut notification = thread_settings_for_test("gpt-5.4", thread_id);
     notification.thread_settings.auth_profile = Some("work".to_string());
+    notification.thread_settings.session_prompt = Some("Prefer direct answers.".to_string());
     chat.handle_server_notification(
         ServerNotification::ThreadSettingsUpdated(notification),
         /*replay_kind*/ None,
@@ -145,10 +148,21 @@ async fn thread_settings_updated_updates_visible_state_without_transcript() {
         Some("work")
     );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(
+        chat.current_session_prompt(),
+        Some("Prefer direct answers.")
+    );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "ThreadSettingsUpdated should not render transcript history"
     );
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadSettingsUpdated(thread_settings_for_test("gpt-5.4", thread_id)),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.current_session_prompt(), None);
 
     chat.handle_server_notification(
         ServerNotification::ThreadSettingsUpdated(thread_settings_for_test(

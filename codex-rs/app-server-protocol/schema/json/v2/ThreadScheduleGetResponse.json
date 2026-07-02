@@ -32,10 +32,20 @@
             "null"
           ]
         },
+        "nestingDepth": {
+          "format": "int64",
+          "type": "integer"
+        },
         "nextRunAt": {
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "parentScheduleId": {
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -68,6 +78,7 @@
       "required": [
         "createdAt",
         "failureCount",
+        "nestingDepth",
         "prompt",
         "promptSource",
         "schedule",
@@ -181,6 +192,10 @@
           "format": "int64",
           "type": "integer"
         },
+        "deferredRuns": {
+          "format": "int64",
+          "type": "integer"
+        },
         "failedRuns": {
           "format": "int64",
           "type": "integer"
@@ -220,6 +235,7 @@
       },
       "required": [
         "completedRuns",
+        "deferredRuns",
         "failedRuns",
         "leasedRuns",
         "runningRuns",

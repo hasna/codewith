@@ -363,9 +363,7 @@ async fn init_state_db_for_app_server_target(
                 err.to_string(),
             ))
         }),
-        AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
-            Ok(state_db::get_state_db(config).await)
-        }
+        AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => Ok(None),
     }
 }
 

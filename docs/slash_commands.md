@@ -15,16 +15,21 @@ to open the command picker.
 - `/review` reviews current changes.
 - `/diff` shows the current git diff, including untracked files.
 - `/mention` inserts a file mention.
-- `/status` shows session configuration and token usage.
+- `/status` opens an interactive status panel (Overview, Usage, Tools, Session)
+  with token usage, rate limits, and quick links to settings.
 - `/resume`, `/fork`, `/new`, and `/archive` manage sessions.
 - `/plan` switches to Plan mode.
 - `/goal` sets or views the current long-running task goal.
 - `/loop`, `/schedule`, and `/monitor` manage recurring prompts and monitors.
-- `/agent`, `/subagents`, `/side`, and `/btw` manage parallel or side conversations.
+- `/agent`, `/session`, and `/side` manage parallel or side conversations.
 - `/skills` opens skill management.
 - `/mcp` lists configured MCP tools.
 - `/plugins` browses plugins.
-- `/quit` and `/exit` leave Codewith.
+- `/quit` leaves Codewith.
+
+Legacy duplicate aliases such as `/background-agent`, `/subagents`, `/btw`,
+`/stats`, and `/exit` still dispatch for compatibility, but the command picker
+only advertises their canonical forms.
 
 Some commands accept inline arguments. Examples:
 

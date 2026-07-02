@@ -171,7 +171,9 @@ impl StatusLineItem {
             StatusLineItem::BranchChanges => {
                 "Committed branch changes against the default branch (omitted when unavailable)"
             }
-            StatusLineItem::Status => "Compact session run-state text (Ready, Working, Thinking)",
+            StatusLineItem::Status => {
+                "Compact session run-state text (Idle, Working, Thinking, Waiting)"
+            }
             StatusLineItem::ScheduleCountdown => {
                 "Time until the next active native loop or schedule (omitted when none is scheduled)"
             }

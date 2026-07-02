@@ -475,6 +475,30 @@
             },
             "method": {
               "enum": [
+                "thread/goalPlan/addGoal"
+              ],
+              "title": "Thread/goalPlan/addGoalRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalPlanAddGoalParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/goalPlan/addGoalRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/goal/clear"
               ],
               "title": "Thread/goal/clearRequestMethod",
@@ -826,6 +850,102 @@
             "params"
           ],
           "title": "Thread/monitor/deleteRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "webhook/event/list"
+              ],
+              "title": "Webhook/event/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WebhookEventListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Webhook/event/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "webhook/event/read"
+              ],
+              "title": "Webhook/event/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WebhookEventReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Webhook/event/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "webhook/event/mark"
+              ],
+              "title": "Webhook/event/markRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WebhookEventMarkParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Webhook/event/markRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "webhook/event/ingest"
+              ],
+              "title": "Webhook/event/ingestRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WebhookEventIngestParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Webhook/event/ingestRequest",
           "type": "object"
         },
         {
@@ -2745,6 +2865,78 @@
             "params"
           ],
           "title": "Account/login/cancelRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "authProfile/list"
+              ],
+              "title": "AuthProfile/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "authProfile/saveCurrent"
+              ],
+              "title": "AuthProfile/saveCurrentRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileSaveCurrentParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/saveCurrentRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "authProfile/switch"
+              ],
+              "title": "AuthProfile/switchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthProfileSwitchParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "AuthProfile/switchRequest",
           "type": "object"
         },
         {
@@ -6892,6 +7084,23 @@
               "null"
             ]
           },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this active peer, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is the default root profile or a named profile."
+          },
           "capabilities": {
             "default": [],
             "items": {
@@ -7069,6 +7278,18 @@
           "kind": {
             "$ref": "#/definitions/v2/AdditionalContextKind"
           },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AdditionalContextSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional provenance for client-supplied context from a local app store.\n\nThis metadata is for clients and auditability. It does not change model-visible content or trust: `kind` remains the authority for whether `value` is injected as untrusted user context or application context."
+          },
           "value": {
             "type": "string"
           }
@@ -7085,6 +7306,37 @@
           "application"
         ],
         "type": "string"
+      },
+      "AdditionalContextSource": {
+        "properties": {
+          "id": {
+            "description": "Stable record id inside the source namespace.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Optional user-facing label for rendering/editing the context source.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Stable source namespace, for example `open-projects`, `open-todos`, `open-conversations`, or `open-mementos`.",
+            "type": "string"
+          },
+          "recordType": {
+            "description": "Optional source record kind, for example `project`, `task`, `conversation`, or `memento`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "namespace"
+        ],
+        "type": "object"
       },
       "AdditionalFileSystemPermissions": {
         "properties": {
@@ -8444,6 +8696,182 @@
             "type": "string"
           }
         ]
+      },
+      "AuthProfileKind": {
+        "oneOf": [
+          {
+            "description": "The source did not record auth profile selection.",
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The default root auth profile was selected explicitly or by runtime default.",
+            "enum": [
+              "default"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A named auth profile was selected.",
+            "enum": [
+              "named"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "AuthProfileListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "AuthProfileListParams",
+        "type": "object"
+      },
+      "AuthProfileListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/AuthProfileSummary"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "AuthProfileListResponse",
+        "type": "object"
+      },
+      "AuthProfileSaveCurrentParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AuthProfileSaveCurrentParams",
+        "type": "object"
+      },
+      "AuthProfileSaveCurrentResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "profile": {
+            "$ref": "#/definitions/v2/AuthProfileSummary"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "AuthProfileSaveCurrentResponse",
+        "type": "object"
+      },
+      "AuthProfileSubscriptionProvider": {
+        "enum": [
+          "chatgpt",
+          "claudeAi",
+          "cursor",
+          "grok"
+        ],
+        "type": "string"
+      },
+      "AuthProfileSummary": {
+        "properties": {
+          "accountId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "authMode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AuthMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "plan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subscriptionProvider": {
+            "$ref": "#/definitions/v2/AuthProfileSubscriptionProvider"
+          }
+        },
+        "required": [
+          "active",
+          "name",
+          "subscriptionProvider"
+        ],
+        "type": "object"
+      },
+      "AuthProfileSwitchParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AuthProfileSwitchParams",
+        "type": "object"
+      },
+      "AuthProfileSwitchResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "profile": {
+            "$ref": "#/definitions/v2/AuthProfileSummary"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "AuthProfileSwitchResponse",
+        "type": "object"
       },
       "AutoCompactTokenLimitScope": {
         "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
@@ -10015,6 +10443,8 @@
           }
         },
         "required": [
+          "path",
+          "range",
           "summary"
         ],
         "title": "ConfigWarningNotification",
@@ -12612,6 +13042,14 @@
       },
       "LocalSession": {
         "properties": {
+          "accountLabel": {
+            "default": null,
+            "description": "Redacted account label for the selected auth profile, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "activeFlags": {
             "description": "Active-status flags from the thread runtime. Empty for non-active sessions.",
             "items": {
@@ -12624,6 +13062,23 @@
               "string",
               "null"
             ]
+          },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this session, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
           },
           "createdAt": {
             "format": "int64",
@@ -17871,6 +18326,32 @@
           }
         ]
       },
+      "SessionWorktreeMode": {
+        "description": "Session-level managed worktree behavior.",
+        "oneOf": [
+          {
+            "description": "Use the current shared checkout and disallow session-managed worktree create/attach operations for this thread.",
+            "enum": [
+              "shared"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Allow this session to manually create or attach managed worktrees.",
+            "enum": [
+              "manual"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Pull-request mode. The session must work inside an attached isolated managed worktree before model turns can continue.",
+            "enum": [
+              "pullRequest"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "Settings": {
         "description": "Settings for a collaboration mode.",
         "properties": {
@@ -18476,6 +18957,23 @@
               "string",
               "null"
             ]
+          },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile selected for model requests in this thread, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfileKind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AuthProfileKind"
+              }
+            ],
+            "default": "unknown",
+            "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
           },
           "cliVersion": {
             "description": "Version of the CLI that created the thread.",
@@ -19399,6 +19897,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "deferredNodeCount": {
+            "format": "int64",
+            "type": "integer"
+          },
           "maxTokens": {
             "format": "int64",
             "type": [
@@ -19469,6 +19971,7 @@
           "cancelledNodeCount",
           "completedNodeCount",
           "createdAt",
+          "deferredNodeCount",
           "nodeCount",
           "nodes",
           "pausedNodeCount",
@@ -19516,6 +20019,54 @@
           "plan"
         ],
         "title": "ThreadGoalPlanActivateNodeResponse",
+        "type": "object"
+      },
+      "ThreadGoalPlanAddGoalParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "objective": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective",
+          "threadId"
+        ],
+        "title": "ThreadGoalPlanAddGoalParams",
+        "type": "object"
+      },
+      "ThreadGoalPlanAddGoalResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "addedNode": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNode"
+          },
+          "createdPlan": {
+            "type": "boolean"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {
+            "$ref": "#/definitions/v2/ThreadGoalPlan"
+          }
+        },
+        "required": [
+          "addedNode",
+          "createdPlan",
+          "plan"
+        ],
+        "title": "ThreadGoalPlanAddGoalResponse",
         "type": "object"
       },
       "ThreadGoalPlanAutoExecute": {
@@ -19629,6 +20180,7 @@
           "blocked",
           "usageLimited",
           "budgetLimited",
+          "deferred",
           "complete",
           "cancelled"
         ],
@@ -19730,6 +20282,7 @@
           "blocked",
           "usageLimited",
           "budgetLimited",
+          "deferred",
           "complete",
           "cancelled"
         ],
@@ -20993,6 +21546,7 @@
             "type": "string"
           },
           "cwd": {
+            "description": "Optional working directory relative to the thread cwd. Parent directory traversal and absolute paths are rejected.",
             "type": [
               "string",
               "null"
@@ -21002,6 +21556,7 @@
             "type": "string"
           },
           "outputFile": {
+            "description": "Optional output file relative to the monitor cwd. Parent directory traversal, absolute paths, and symlink targets are rejected.",
             "type": [
               "string",
               "null"
@@ -21377,7 +21932,8 @@
           }
         },
         "required": [
-          "threadId"
+          "threadId",
+          "threadName"
         ],
         "title": "ThreadNameUpdatedNotification",
         "type": "object"
@@ -22510,10 +23066,20 @@
               "null"
             ]
           },
+          "nestingDepth": {
+            "format": "int64",
+            "type": "integer"
+          },
           "nextRunAt": {
             "format": "int64",
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "parentScheduleId": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -22546,6 +23112,7 @@
         "required": [
           "createdAt",
           "failureCount",
+          "nestingDepth",
           "prompt",
           "promptSource",
           "schedule",
@@ -22571,6 +23138,12 @@
             "format": "int64",
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "parentScheduleId": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -22924,6 +23497,7 @@
         "enum": [
           "leased",
           "running",
+          "deferred",
           "completed",
           "failed"
         ],
@@ -23033,6 +23607,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "deferredRuns": {
+            "format": "int64",
+            "type": "integer"
+          },
           "failedRuns": {
             "format": "int64",
             "type": "integer"
@@ -23072,6 +23650,7 @@
         },
         "required": [
           "completedRuns",
+          "deferredRuns",
           "failedRuns",
           "leasedRuns",
           "runningRuns",
@@ -23282,6 +23861,12 @@
               "null"
             ]
           },
+          "sessionPrompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "summary": {
             "anyOf": [
               {
@@ -23291,6 +23876,9 @@
                 "type": "null"
               }
             ]
+          },
+          "worktreeMode": {
+            "$ref": "#/definitions/v2/SessionWorktreeMode"
           }
         },
         "required": [
@@ -23300,7 +23888,8 @@
           "cwd",
           "model",
           "modelProvider",
-          "sandboxPolicy"
+          "sandboxPolicy",
+          "worktreeMode"
         ],
         "type": "object"
       },
@@ -25167,6 +25756,316 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "WebhookEventDetail": {
+        "properties": {
+          "payloadJson": true,
+          "summary": {
+            "$ref": "#/definitions/v2/WebhookEventSummary"
+          }
+        },
+        "required": [
+          "payloadJson",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "WebhookEventIngestParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "eventType": {
+            "type": "string"
+          },
+          "externalDeliveryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotencyKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payloadJson": true,
+          "sourceAppId": {
+            "type": "string"
+          },
+          "sourceAppName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subscriptionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "eventType",
+          "payloadJson",
+          "sourceAppId"
+        ],
+        "title": "WebhookEventIngestParams",
+        "type": "object"
+      },
+      "WebhookEventIngestResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "created": {
+            "type": "boolean"
+          },
+          "event": {
+            "$ref": "#/definitions/v2/WebhookEventDetail"
+          }
+        },
+        "required": [
+          "created",
+          "event"
+        ],
+        "title": "WebhookEventIngestResponse",
+        "type": "object"
+      },
+      "WebhookEventListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sourceAppId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "statuses": {
+            "items": {
+              "$ref": "#/definitions/v2/WebhookEventStatus"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "targetThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "WebhookEventListParams",
+        "type": "object"
+      },
+      "WebhookEventListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/WebhookEventSummary"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "WebhookEventListResponse",
+        "type": "object"
+      },
+      "WebhookEventMarkParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/WebhookEventStatus"
+          }
+        },
+        "required": [
+          "eventId",
+          "status"
+        ],
+        "title": "WebhookEventMarkParams",
+        "type": "object"
+      },
+      "WebhookEventMarkResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebhookEventSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WebhookEventMarkResponse",
+        "type": "object"
+      },
+      "WebhookEventReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventId"
+        ],
+        "title": "WebhookEventReadParams",
+        "type": "object"
+      },
+      "WebhookEventReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebhookEventDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WebhookEventReadResponse",
+        "type": "object"
+      },
+      "WebhookEventStatus": {
+        "enum": [
+          "unread",
+          "processed",
+          "archived",
+          "injected",
+          "queued"
+        ],
+        "type": "string"
+      },
+      "WebhookEventSummary": {
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "externalDeliveryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotencyKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payloadPreview": {
+            "type": "string"
+          },
+          "payloadSha256": {
+            "type": "string"
+          },
+          "receivedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "redactions": {
+            "items": {
+              "$ref": "#/definitions/v2/WebhookPayloadRedaction"
+            },
+            "type": "array"
+          },
+          "sourceAppId": {
+            "type": "string"
+          },
+          "sourceAppName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/v2/WebhookEventStatus"
+          },
+          "subscriptionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "eventId",
+          "eventType",
+          "payloadPreview",
+          "payloadSha256",
+          "receivedAt",
+          "redactions",
+          "sourceAppId",
+          "status",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "WebhookPayloadRedaction": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
         "type": "object"
       },
       "WindowsSandboxReadiness": {

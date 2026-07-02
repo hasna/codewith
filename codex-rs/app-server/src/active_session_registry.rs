@@ -50,6 +50,7 @@ pub(crate) struct ActivePeerRegistration {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) display_name: Option<String>,
     pub(crate) agent_path: Option<String>,
+    pub(crate) auth_profile: Option<String>,
     pub(crate) process: Option<ActivePeerProcess>,
     pub(crate) capabilities: ActivePeerCapabilities,
 }
@@ -64,6 +65,7 @@ pub(crate) struct ActivePeer {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) display_name: Option<String>,
     pub(crate) agent_path: Option<String>,
+    pub(crate) auth_profile: Option<String>,
     pub(crate) process: Option<ActivePeerProcess>,
     pub(crate) capabilities: ActivePeerCapabilities,
     pub(crate) last_seen_at: LastSeenAt,
@@ -80,6 +82,7 @@ impl ActivePeer {
             cwd: registration.cwd,
             display_name: registration.display_name,
             agent_path: registration.agent_path,
+            auth_profile: registration.auth_profile,
             process: registration.process,
             capabilities: registration.capabilities,
             last_seen_at,
@@ -374,6 +377,7 @@ fn active_peer_registration(
         cwd: config_snapshot.cwd.clone(),
         display_name,
         agent_path,
+        auth_profile: config_snapshot.selected_auth_profile.clone(),
         process: None,
         capabilities: ActivePeerCapabilities::codewith_session(),
     }
@@ -431,6 +435,7 @@ mod tests {
             cwd: test_cwd(),
             display_name: Some(format!("Peer {name}")),
             agent_path: None,
+            auth_profile: Some("work".to_string()),
             process: Some(ActivePeerProcess {
                 pid: 1234,
                 executable: Some(PathBuf::from("/usr/bin/codewith")),

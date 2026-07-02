@@ -196,19 +196,15 @@ fn parse_rate_limit_window(
 ) -> Option<RateLimitWindow> {
     let used_percent: Option<f64> = parse_header_f64(headers, used_percent_header);
 
-    used_percent.and_then(|used_percent| {
+    used_percent.map(|used_percent| {
         let window_minutes = parse_header_i64(headers, window_minutes_header);
         let resets_at = parse_header_i64(headers, resets_at_header);
 
-        let has_data = used_percent != 0.0
-            || window_minutes.is_some_and(|minutes| minutes != 0)
-            || resets_at.is_some();
-
-        has_data.then_some(RateLimitWindow {
+        RateLimitWindow {
             used_percent,
             window_minutes,
             resets_at,
-        })
+        }
     })
 }
 
@@ -299,6 +295,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_rate_limit_for_limit_preserves_explicit_zero_window() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-primary-used-percent",
+            HeaderValue::from_static("0"),
+        );
+
+        let snapshot = parse_rate_limit_for_limit(&headers, /*limit_id*/ None).expect("snapshot");
+        assert_eq!(
+            snapshot.primary,
+            Some(RateLimitWindow {
+                used_percent: 0.0,
+                window_minutes: None,
+                resets_at: None,
+            })
+        );
+    }
+
+    #[test]
     fn parse_rate_limit_for_limit_reads_secondary_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -361,6 +376,29 @@ mod tests {
         assert_eq!(updates[1].limit_id.as_deref(), Some("codex_secondary"));
         assert_eq!(updates[0].limit_name, None);
         assert_eq!(updates[1].limit_name, None);
+    }
+
+    #[test]
+    fn parse_all_rate_limits_includes_additional_explicit_zero_window() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-other-primary-used-percent",
+            HeaderValue::from_static("0"),
+        );
+
+        let updates = parse_all_rate_limits(&headers);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].limit_id.as_deref(), Some("codex"));
+        assert_eq!(updates[0].primary, None);
+        assert_eq!(updates[1].limit_id.as_deref(), Some("codex_other"));
+        assert_eq!(
+            updates[1].primary,
+            Some(RateLimitWindow {
+                used_percent: 0.0,
+                window_minutes: None,
+                resets_at: None,
+            })
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 import type { ActiveSessionCapability } from "./ActiveSessionCapability";
 import type { ActiveSessionPeerKind } from "./ActiveSessionPeerKind";
+import type { AuthProfileKind } from "./AuthProfileKind";
 
 export type ActiveSessionPeer = {
 /**
@@ -20,4 +21,12 @@ threadId: string,
  * Live session instance id for the loaded thread. This is not a durable
  * mailbox or remote machine id.
  */
-sessionId: string, cwd: AbsolutePathBuf, displayName: string | null, agentPath: string | null, capabilities: Array<ActiveSessionCapability>, lastSeenAt: bigint, };
+sessionId: string, cwd: AbsolutePathBuf, displayName: string | null, agentPath: string | null,
+/**
+ * Auth profile selected for model requests in this active peer, if known.
+ */
+authProfile: string | null,
+/**
+ * Whether `authProfile` is the default root profile or a named profile.
+ */
+authProfileKind: AuthProfileKind, capabilities: Array<ActiveSessionCapability>, lastSeenAt: bigint, };

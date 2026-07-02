@@ -7,6 +7,9 @@ use codex_shell_command::shell_detect::ShellType;
 use codex_shell_command::shell_detect::get_shell;
 #[cfg(not(target_os = "windows"))]
 use codex_shell_command::shell_detect::ultimate_fallback_shell;
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -209,9 +212,29 @@ impl ThreadMonitorRuntime {
         )
         .await;
 
+        let thread_cwd = match monitor_thread_cwd(&state_db, &monitor).await {
+            Ok(cwd) => cwd,
+            Err(err) => {
+                let error = monitor_error(format!("invalid monitor thread cwd: {err}"));
+                self.mark_monitor_failed(&state_db, &monitor, error).await;
+                self.remove_active_monitor(&monitor.monitor_id, monitor.generation)
+                    .await;
+                return;
+            }
+        };
+        let cwd = match resolve_monitor_cwd(&monitor, thread_cwd.as_path()).await {
+            Ok(cwd) => cwd,
+            Err(err) => {
+                let error = monitor_error(format!("invalid monitor cwd: {err}"));
+                self.mark_monitor_failed(&state_db, &monitor, error).await;
+                self.remove_active_monitor(&monitor.monitor_id, monitor.generation)
+                    .await;
+                return;
+            }
+        };
         let mut command = monitor_command(&monitor.command);
         command
-            .current_dir(monitor_cwd(&monitor, self.config.cwd.as_path()))
+            .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
@@ -248,6 +271,7 @@ impl ThreadMonitorRuntime {
             let runtime = self.clone();
             let state_db = state_db.clone();
             let monitor = monitor.clone();
+            let cwd = cwd.clone();
             let cancel_token = cancel_token.clone();
             self.tasks.spawn(async move {
                 runtime
@@ -255,6 +279,7 @@ impl ThreadMonitorRuntime {
                         state_db,
                         monitor,
                         codex_state::ThreadMonitorEventStream::Stdout,
+                        cwd,
                         stdout,
                         cancel_token,
                     )
@@ -266,6 +291,7 @@ impl ThreadMonitorRuntime {
             let runtime = self.clone();
             let state_db = state_db.clone();
             let monitor = monitor.clone();
+            let cwd = cwd.clone();
             let cancel_token = cancel_token.clone();
             self.tasks.spawn(async move {
                 runtime
@@ -273,6 +299,7 @@ impl ThreadMonitorRuntime {
                         state_db,
                         monitor,
                         codex_state::ThreadMonitorEventStream::Stderr,
+                        cwd,
                         stderr,
                         cancel_token,
                     )
@@ -320,6 +347,7 @@ impl ThreadMonitorRuntime {
         state_db: StateDbHandle,
         monitor: codex_state::ThreadMonitor,
         stream: codex_state::ThreadMonitorEventStream,
+        cwd: PathBuf,
         pipe: T,
         cancel_token: CancellationToken,
     ) where
@@ -342,7 +370,7 @@ impl ThreadMonitorRuntime {
             if line.trim().is_empty() {
                 continue;
             }
-            self.handle_monitor_output_line(&state_db, &monitor, stream, line)
+            self.handle_monitor_output_line(&state_db, &monitor, stream, cwd.as_path(), line)
                 .await;
         }
     }
@@ -352,6 +380,7 @@ impl ThreadMonitorRuntime {
         state_db: &StateDbHandle,
         monitor: &codex_state::ThreadMonitor,
         stream: codex_state::ThreadMonitorEventStream,
+        cwd: &Path,
         line: String,
     ) {
         let line = truncate_chars(line, MAX_MONITOR_EVENT_CHARS);
@@ -359,7 +388,7 @@ impl ThreadMonitorRuntime {
             .await;
         if monitor.routing.writes_to_file()
             && let Err(err) = self
-                .append_monitor_output_file(monitor, stream, &line)
+                .append_monitor_output_file(monitor, stream, cwd, &line)
                 .await
         {
             warn!(
@@ -378,21 +407,25 @@ impl ThreadMonitorRuntime {
         &self,
         monitor: &codex_state::ThreadMonitor,
         stream: codex_state::ThreadMonitorEventStream,
+        cwd: &Path,
         line: &str,
     ) -> anyhow::Result<()> {
         let Some(output_file) = monitor.output_file.as_deref() else {
             return Ok(());
         };
-        let output_path = {
-            let path = Path::new(output_file);
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                monitor_cwd(monitor, self.config.cwd.as_path()).join(path)
-            }
-        };
+        let output_path = resolve_monitor_relative_path("monitor outputFile", cwd, output_file)?;
         if let Some(parent) = output_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
+            let canonical_cwd = tokio::fs::canonicalize(cwd).await?;
+            let canonical_parent = tokio::fs::canonicalize(parent).await?;
+            if !canonical_parent.starts_with(canonical_cwd.as_path()) {
+                anyhow::bail!("monitor outputFile parent must stay within monitor cwd");
+            }
+        }
+        if let Ok(metadata) = tokio::fs::symlink_metadata(&output_path).await
+            && metadata.file_type().is_symlink()
+        {
+            anyhow::bail!("monitor outputFile must not be a symlink");
         }
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -578,6 +611,20 @@ Output:
     }
 }
 
+async fn monitor_thread_cwd(
+    state_db: &StateDbHandle,
+    monitor: &codex_state::ThreadMonitor,
+) -> anyhow::Result<PathBuf> {
+    let metadata = state_db
+        .get_thread(monitor.thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("monitor thread metadata not found"))?;
+    if metadata.cwd.as_os_str().is_empty() {
+        anyhow::bail!("monitor thread cwd is empty");
+    }
+    Ok(metadata.cwd)
+}
+
 fn monitor_command(command: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
@@ -598,12 +645,45 @@ fn monitor_command(command: &str) -> Command {
     }
 }
 
-fn monitor_cwd(monitor: &codex_state::ThreadMonitor, fallback: &Path) -> PathBuf {
-    monitor
-        .cwd
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| fallback.to_path_buf())
+async fn resolve_monitor_cwd(
+    monitor: &codex_state::ThreadMonitor,
+    fallback: &Path,
+) -> anyhow::Result<PathBuf> {
+    let cwd = match monitor.cwd.as_deref() {
+        Some(cwd) => resolve_monitor_relative_path("monitor cwd", fallback, cwd)?,
+        None => fallback.to_path_buf(),
+    };
+    let canonical_fallback = tokio::fs::canonicalize(fallback).await?;
+    let canonical_cwd = tokio::fs::canonicalize(&cwd).await?;
+    if !canonical_cwd.starts_with(canonical_fallback.as_path()) {
+        anyhow::bail!("monitor cwd must stay within the thread cwd");
+    }
+    Ok(canonical_cwd)
+}
+
+fn resolve_monitor_relative_path(
+    field_name: &str,
+    base: &Path,
+    value: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        anyhow::bail!("{field_name} must be a relative path within the thread cwd");
+    }
+    if !path
+        .components()
+        .any(|component| matches!(component, Component::Normal(_)))
+    {
+        anyhow::bail!("{field_name} must include a path component");
+    }
+    Ok(base.join(path))
 }
 
 fn monitor_error(error: String) -> String {
@@ -622,6 +702,83 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    #[test]
+    fn monitor_relative_path_resolver_stays_within_base() {
+        let base = Path::new("/workspace");
+        assert_eq!(
+            resolve_monitor_relative_path("monitor outputFile", base, "logs/out.log")
+                .expect("relative path should resolve"),
+            PathBuf::from("/workspace/logs/out.log")
+        );
+
+        assert!(resolve_monitor_relative_path("monitor outputFile", base, "/tmp/out.log").is_err());
+        assert!(resolve_monitor_relative_path("monitor outputFile", base, "../out.log").is_err());
+        assert!(resolve_monitor_relative_path("monitor outputFile", base, ".").is_err());
+    }
+
+    #[tokio::test]
+    async fn monitor_cwd_resolves_against_thread_cwd() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let app_server_cwd = tempdir.path().join("server");
+        let thread_cwd = tempdir.path().join("thread");
+        let thread_logs = thread_cwd.join("logs");
+        let server_logs = app_server_cwd.join("logs");
+        tokio::fs::create_dir_all(&thread_logs)
+            .await
+            .expect("thread logs dir");
+        tokio::fs::create_dir_all(&server_logs)
+            .await
+            .expect("server logs dir");
+        let monitor = test_monitor(Some("logs"));
+        let resolved = resolve_monitor_cwd(&monitor, thread_cwd.as_path())
+            .await
+            .expect("thread-relative cwd should resolve");
+
+        assert_eq!(
+            resolved,
+            tokio::fs::canonicalize(&thread_logs)
+                .await
+                .expect("canonical thread logs")
+        );
+        assert_ne!(
+            resolved,
+            tokio::fs::canonicalize(&server_logs)
+                .await
+                .expect("canonical server logs")
+        );
+    }
+
+    #[tokio::test]
+    async fn monitor_thread_cwd_reads_persisted_thread_metadata() -> anyhow::Result<()> {
+        let tempdir = tempfile::TempDir::new()?;
+        let app_server_cwd = tempdir.path().join("server");
+        let thread_cwd = tempdir.path().join("thread");
+        tokio::fs::create_dir_all(&app_server_cwd).await?;
+        tokio::fs::create_dir_all(&thread_cwd).await?;
+        let state_db =
+            codex_state::StateRuntime::init(tempdir.path().join("state"), "test-provider".into())
+                .await?;
+        let thread_id = codex_protocol::ThreadId::new();
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            tempdir.path().join("rollout.jsonl"),
+            chrono::Utc::now(),
+            codex_protocol::protocol::SessionSource::default(),
+        );
+        builder.cwd = thread_cwd.clone();
+        state_db
+            .upsert_thread(&builder.build("test-provider"))
+            .await?;
+        let monitor = test_monitor_for_thread(thread_id, None);
+
+        assert_eq!(monitor_thread_cwd(&state_db, &monitor).await?, thread_cwd);
+        assert_ne!(
+            monitor_thread_cwd(&state_db, &monitor).await?,
+            app_server_cwd
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn monitor_command_supports_bash_source_when_bash_is_available() {
         if get_shell(ShellType::Bash, /*path*/ None).is_none() {
@@ -639,5 +796,33 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+    }
+
+    fn test_monitor(cwd: Option<&str>) -> codex_state::ThreadMonitor {
+        test_monitor_for_thread(codex_protocol::ThreadId::new(), cwd)
+    }
+
+    fn test_monitor_for_thread(
+        thread_id: codex_protocol::ThreadId,
+        cwd: Option<&str>,
+    ) -> codex_state::ThreadMonitor {
+        let now = chrono::Utc::now();
+        codex_state::ThreadMonitor {
+            thread_id,
+            monitor_id: "monitor-id".to_string(),
+            name: "monitor".to_string(),
+            prompt: "watch".to_string(),
+            command: "printf ok".to_string(),
+            cwd: cwd.map(str::to_string),
+            routing: codex_state::ThreadMonitorRouting::File,
+            output_file: Some("monitor.log".to_string()),
+            status: codex_state::ThreadMonitorStatus::Running,
+            generation: 1,
+            process_id: None,
+            last_event_at: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
     }
 }
