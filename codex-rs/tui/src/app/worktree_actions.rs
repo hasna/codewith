@@ -510,7 +510,7 @@ impl App {
         }
     }
 
-    async fn current_worktree_base_repo_path(&self) -> Option<String> {
+    pub(super) async fn current_worktree_base_repo_path(&self) -> Option<String> {
         resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &self.config.cwd)
             .await
             .map(|path| path.to_string_lossy().to_string())

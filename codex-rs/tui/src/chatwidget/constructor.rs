@@ -136,6 +136,8 @@ impl ChatWidget {
             auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
             refreshing_minimax_usage_status_outputs: Vec::new(),
+            usage_panel_rate_limit_state: UsagePanelRateLimitState::default(),
+            usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState::default(),
             next_status_refresh_request_id: 0,
             plan_type: initial_plan_type,
             codex_rate_limit_reached_type: None,

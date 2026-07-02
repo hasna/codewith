@@ -137,7 +137,8 @@ pub(crate) struct ConnectorsSnapshot {
 /// A `StartupPrefetch` fires once, concurrently with the rest of TUI init, and
 /// only updates the cached snapshots (no status card to finalize). A `Heartbeat`
 /// is the same cache-only refresh path, but repeats at a low frequency so usage
-/// data does not go stale while the TUI remains open. A
+/// data does not go stale while the TUI remains open. A `UsagePanel` refresh is
+/// tied to the interactive `/usage` popup and should update that popup in place. A
 /// `StatusCommand` is tied to a specific `/status` invocation and must call
 /// `finish_status_rate_limit_refresh` when done so the card stops showing a
 /// "refreshing" state.
@@ -147,6 +148,9 @@ pub(crate) enum RateLimitRefreshOrigin {
     StartupPrefetch,
     /// Low-frequency background refresh for cached account usage.
     Heartbeat,
+    /// User-initiated via `/usage`; the `request_id` correlates with the
+    /// active usage popup state.
+    UsagePanel { request_id: u64 },
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -180,6 +184,9 @@ impl RateLimitRefreshTarget {
 /// Distinguishes why a MiniMax usage refresh was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MiniMaxUsageRefreshOrigin {
+    /// User-initiated via `/usage`; the `request_id` correlates with the
+    /// active usage popup state.
+    UsagePanel { request_id: u64 },
     /// User-initiated via `/status` or `/stats`; the `request_id` correlates with
     /// the status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -748,6 +755,14 @@ pub(crate) enum AppEvent {
         name: Option<String>,
         branch: Option<String>,
         start_point: Option<String>,
+    },
+
+    /// Create implementation variants in managed worktrees and start one background agent each.
+    StartVariants {
+        count: u8,
+        name: Option<String>,
+        start_point: Option<String>,
+        prompt: String,
     },
 
     /// Open actions for one Codewith-managed worktree.

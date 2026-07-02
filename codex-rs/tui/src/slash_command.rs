@@ -79,6 +79,7 @@ pub enum SlashCommand {
     )]
     BackgroundAgent,
     Worktree,
+    Variant,
     ExternalAgent,
     Side,
     Btw,
@@ -87,6 +88,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Usage,
     Stats,
     Changelog,
     DebugConfig,
@@ -142,6 +144,7 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codewith performs specific tasks",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Usage => "show usage, context, and rate limits",
             SlashCommand::Stats => "show session stats and provider usage",
             SlashCommand::Changelog => "show what changed in Codewith releases",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
@@ -176,6 +179,7 @@ impl SlashCommand {
             SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::BackgroundAgent => "manage durable background agents",
             SlashCommand::Worktree => "manage Codewith-managed worktrees",
+            SlashCommand::Variant => "spawn variants in managed worktrees",
             SlashCommand::ExternalAgent => "stage an external coding-agent task",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -225,6 +229,7 @@ impl SlashCommand {
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
                 | SlashCommand::Pr
+                | SlashCommand::Variant
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -249,6 +254,7 @@ impl SlashCommand {
                 | SlashCommand::Diff
                 | SlashCommand::Mention
                 | SlashCommand::Status
+                | SlashCommand::Usage
                 | SlashCommand::Stats
                 | SlashCommand::Changelog
                 | SlashCommand::Ide
@@ -279,6 +285,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Variant
             | SlashCommand::Clear
             | SlashCommand::Logout => false,
             SlashCommand::Diff
@@ -292,6 +299,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
@@ -543,7 +551,21 @@ mod tests {
         assert!(SlashCommand::Workflow.available_during_task());
         assert!(SlashCommand::Queued.available_during_task());
         assert!(SlashCommand::Queued.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
+        assert_eq!(SlashCommand::from_str("usage"), Ok(SlashCommand::Usage));
+        assert_eq!(
+            SlashCommand::Usage.description(),
+            "show usage, context, and rate limits"
+        );
+        assert!(SlashCommand::Usage.available_during_task());
+        assert!(SlashCommand::Usage.available_in_side_conversation());
+        assert!(!SlashCommand::Usage.supports_inline_args());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "usage" && *command == SlashCommand::Usage)
+        );
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
         assert!(SlashCommand::Changelog.available_during_task());
@@ -574,6 +596,7 @@ mod tests {
             SlashCommand::Teach,
             SlashCommand::Worktree,
             SlashCommand::Status,
+            SlashCommand::Usage,
             SlashCommand::Statusline,
             SlashCommand::Summary,
             SlashCommand::Changelog,
@@ -593,6 +616,7 @@ mod tests {
             SlashCommand::Config,
             SlashCommand::Resume,
             SlashCommand::Tmux,
+            SlashCommand::Variant,
         ];
         for command in unavailable {
             assert!(
@@ -651,6 +675,18 @@ mod tests {
         );
         assert!(SlashCommand::ExternalAgent.supports_inline_args());
         assert!(!SlashCommand::ExternalAgent.available_during_task());
+    }
+
+    #[test]
+    fn variant_command_supports_inline_args_and_waits_for_idle_session() {
+        assert_eq!(SlashCommand::Variant.command(), "variant");
+        assert_eq!(SlashCommand::from_str("variant"), Ok(SlashCommand::Variant));
+        assert_eq!(
+            SlashCommand::Variant.description(),
+            "spawn variants in managed worktrees"
+        );
+        assert!(SlashCommand::Variant.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
     }
 
     #[test]

@@ -74,7 +74,7 @@ impl ChatWidget {
         self.show_selection_view(build_status_panel_params(&data));
     }
 
-    fn status_panel_data(&self) -> StatusPanelData {
+    pub(super) fn status_panel_data(&self) -> StatusPanelData {
         let (account, account_plan) = match self.status_account_display.as_ref() {
             Some(StatusAccountDisplay::ChatGpt { email, plan }) => (
                 Some(email.clone().unwrap_or_else(|| "ChatGPT".to_string())),
