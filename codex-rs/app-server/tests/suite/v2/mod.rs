@@ -78,5 +78,6 @@ mod turn_start;
 mod turn_start_zsh_fork;
 mod turn_steer;
 mod web_search;
+mod webhook;
 mod windows_sandbox_setup;
 mod workflow;

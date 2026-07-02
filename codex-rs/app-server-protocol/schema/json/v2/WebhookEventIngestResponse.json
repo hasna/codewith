@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WebhookEventDetail": {
+      "properties": {
+        "payloadJson": true,
+        "summary": {
+          "$ref": "#/definitions/WebhookEventSummary"
+        }
+      },
+      "required": [
+        "payloadJson",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "WebhookEventStatus": {
+      "enum": [
+        "unread",
+        "processed",
+        "archived",
+        "injected",
+        "queued"
+      ],
+      "type": "string"
+    },
+    "WebhookEventSummary": {
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "externalDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payloadPreview": {
+          "type": "string"
+        },
+        "payloadSha256": {
+          "type": "string"
+        },
+        "receivedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "redactions": {
+          "items": {
+            "$ref": "#/definitions/WebhookPayloadRedaction"
+          },
+          "type": "array"
+        },
+        "sourceAppId": {
+          "type": "string"
+        },
+        "sourceAppName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/WebhookEventStatus"
+        },
+        "subscriptionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "eventId",
+        "eventType",
+        "payloadPreview",
+        "payloadSha256",
+        "receivedAt",
+        "redactions",
+        "sourceAppId",
+        "status",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "WebhookPayloadRedaction": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "created": {
+      "type": "boolean"
+    },
+    "event": {
+      "$ref": "#/definitions/WebhookEventDetail"
+    }
+  },
+  "required": [
+    "created",
+    "event"
+  ],
+  "title": "WebhookEventIngestResponse",
+  "type": "object"
+}

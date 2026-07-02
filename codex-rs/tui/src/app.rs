@@ -241,6 +241,7 @@ mod ui_management_tools;
 mod ui_mcp_tool;
 mod ui_mcp_tool_helpers;
 mod variant_actions;
+mod webhook_actions;
 mod worktree_actions;
 
 use self::agent_navigation::AgentNavigationDirection;

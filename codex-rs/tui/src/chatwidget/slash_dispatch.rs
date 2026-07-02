@@ -1437,6 +1437,12 @@ impl ChatWidget {
             SlashCommand::Apps => {
                 self.add_connectors_output();
             }
+            SlashCommand::Webhook => {
+                self.app_event_tx.send(AppEvent::OpenWebhookInbox {
+                    thread_id: self.thread_id,
+                });
+                self.append_message_history_entry("/webhook".to_string());
+            }
             SlashCommand::Plugins => {
                 self.add_plugins_output();
             }
@@ -2715,6 +2721,7 @@ impl ChatWidget {
             | SlashCommand::Ps
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::Webhook
             | SlashCommand::Plugins
             | SlashCommand::Rollout
             | SlashCommand::Copy

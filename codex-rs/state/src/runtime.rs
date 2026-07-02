@@ -116,6 +116,7 @@ mod schedules;
 #[cfg(test)]
 mod test_support;
 mod threads;
+mod webhooks;
 mod workflow_automation;
 mod workflow_goal_plan_projections;
 mod workflow_orchestrator;
@@ -195,6 +196,14 @@ pub use schedules::ThreadScheduleDueClaimParams;
 pub use schedules::ThreadScheduleNowClaimParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
+pub use webhooks::DEFAULT_WEBHOOK_EVENT_LIST_LIMIT;
+pub use webhooks::MAX_WEBHOOK_EVENT_LIST_LIMIT;
+pub use webhooks::WEBHOOK_EVENT_DEDUPE_CONFLICT_MESSAGE;
+pub use webhooks::WebhookEventIngestOutcome;
+pub use webhooks::WebhookEventIngestParams;
+pub use webhooks::WebhookEventListPage;
+pub use webhooks::WebhookEventListParams;
+pub use webhooks::WebhookEventStore;
 pub use workflow_automation::WorkflowAutomationStore;
 pub use workflow_automation::WorkflowMonitorObservationOutcome;
 pub use workflow_automation::WorkflowMonitorObservationParams;
@@ -308,6 +317,7 @@ pub struct StateRuntime {
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
     local_active_sessions: LocalActiveSessionStore,
+    webhook_events: WebhookEventStore,
     machine_registry: MachineRegistryStore,
     mailbox_messages: MailboxMessageStore,
     managed_worktrees: ManagedWorktreeStore,
@@ -496,6 +506,7 @@ impl StateRuntime {
             thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
             local_active_sessions: LocalActiveSessionStore::new(Arc::clone(&pool)),
+            webhook_events: WebhookEventStore::new(Arc::clone(&pool)),
             machine_registry: MachineRegistryStore::new(Arc::clone(&pool)),
             mailbox_messages: MailboxMessageStore::new(Arc::clone(&pool)),
             managed_worktrees: ManagedWorktreeStore::new(Arc::clone(&pool)),
@@ -536,6 +547,10 @@ impl StateRuntime {
 
     pub fn local_active_sessions(&self) -> &LocalActiveSessionStore {
         &self.local_active_sessions
+    }
+
+    pub fn webhook_events(&self) -> &WebhookEventStore {
+        &self.webhook_events
     }
 
     pub fn machine_registry(&self) -> &MachineRegistryStore {

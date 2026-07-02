@@ -35,6 +35,7 @@ use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
 use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::WebhookEventStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
@@ -676,6 +677,36 @@ pub(crate) enum AppEvent {
     ReadThreadMonitor {
         thread_id: ThreadId,
         monitor_id: Option<String>,
+    },
+
+    /// Open the app webhook/event inbox.
+    OpenWebhookInbox {
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Open actions for one app webhook/event.
+    OpenWebhookEventActions {
+        event_id: String,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Mark an app webhook/event status.
+    MarkWebhookEvent {
+        event_id: String,
+        status: WebhookEventStatus,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Inject an app webhook/event into the current chat.
+    InjectWebhookEvent {
+        event_id: String,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Queue an app webhook/event through the durable thread mailbox.
+    QueueWebhookEvent {
+        event_id: String,
+        thread_id: Option<ThreadId>,
     },
 
     /// Stop a thread monitor.

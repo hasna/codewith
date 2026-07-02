@@ -368,6 +368,7 @@ mod loop_display;
 mod loop_slash;
 mod mission_control_menu;
 mod monitor_display;
+mod webhook_display;
 mod workflow_display;
 mod workflow_slash;
 mod worktree_display;

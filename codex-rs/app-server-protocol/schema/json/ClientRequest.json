@@ -6217,6 +6217,129 @@
         }
       ]
     },
+    "WebhookEventIngestParams": {
+      "properties": {
+        "eventType": {
+          "type": "string"
+        },
+        "externalDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payloadJson": true,
+        "sourceAppId": {
+          "type": "string"
+        },
+        "sourceAppName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "eventType",
+        "payloadJson",
+        "sourceAppId"
+      ],
+      "type": "object"
+    },
+    "WebhookEventListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceAppId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statuses": {
+          "items": {
+            "$ref": "#/definitions/WebhookEventStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WebhookEventMarkParams": {
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/WebhookEventStatus"
+        }
+      },
+      "required": [
+        "eventId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "WebhookEventReadParams": {
+      "properties": {
+        "eventId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventId"
+      ],
+      "type": "object"
+    },
+    "WebhookEventStatus": {
+      "enum": [
+        "unread",
+        "processed",
+        "archived",
+        "injected",
+        "queued"
+      ],
+      "type": "string"
+    },
     "WindowsSandboxSetupMode": {
       "enum": [
         "elevated",
@@ -7174,6 +7297,102 @@
         "params"
       ],
       "title": "Thread/monitor/deleteRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/list"
+          ],
+          "title": "Webhook/event/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/read"
+          ],
+          "title": "Webhook/event/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/mark"
+          ],
+          "title": "Webhook/event/markRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventMarkParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/markRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/ingest"
+          ],
+          "title": "Webhook/event/ingestRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventIngestParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/ingestRequest",
       "type": "object"
     },
     {
