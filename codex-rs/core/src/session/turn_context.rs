@@ -102,6 +102,10 @@ pub struct TurnContext {
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
     pub(crate) enforce_context_window_before_sampling: bool,
+    /// When set (autonomous headless-style turns), historical tool outputs
+    /// are bounded to the headless budget in the sampling prompt built for
+    /// this turn, without mutating the session's stored history.
+    pub(crate) bound_headless_tool_outputs_for_prompt: bool,
     pub(crate) codex_self_exe: Option<PathBuf>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) truncation_policy: TruncationPolicy,
@@ -299,6 +303,7 @@ impl TurnContext {
             ghost_snapshot: self.ghost_snapshot.clone(),
             final_output_json_schema: self.final_output_json_schema.clone(),
             enforce_context_window_before_sampling: self.enforce_context_window_before_sampling,
+            bound_headless_tool_outputs_for_prompt: self.bound_headless_tool_outputs_for_prompt,
             codex_self_exe: self.codex_self_exe.clone(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             truncation_policy,
@@ -674,6 +679,7 @@ impl Session {
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
             enforce_context_window_before_sampling: false,
+            bound_headless_tool_outputs_for_prompt: false,
             codex_self_exe: per_turn_config.codex_self_exe.clone(),
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             truncation_policy: model_info.truncation_policy.into(),

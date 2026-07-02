@@ -93,6 +93,7 @@ impl Session {
             .await;
         if let Some(turn_context) = Arc::get_mut(&mut turn_context) {
             turn_context.enforce_context_window_before_sampling = true;
+            turn_context.bound_headless_tool_outputs_for_prompt = true;
         }
         if turn_context.collaboration_mode.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
@@ -126,7 +127,6 @@ impl Session {
             ));
         }
 
-        self.bound_history_for_headless_turn().await;
         self.input_queue
             .extend_pending_input_for_turn_state(
                 turn_state.as_ref(),
@@ -218,6 +218,7 @@ impl Session {
         };
         if let Some(turn_context) = Arc::get_mut(&mut turn_context) {
             turn_context.enforce_context_window_before_sampling = true;
+            turn_context.bound_headless_tool_outputs_for_prompt = true;
         }
         if turn_context.collaboration_mode.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
@@ -229,7 +230,6 @@ impl Session {
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
 
-        self.bound_history_for_headless_turn().await;
         let additional_context_input = {
             let mut state = self.state.lock().await;
             state.additional_context.merge(additional_context)
@@ -256,11 +256,6 @@ impl Session {
         {
             *active_turn_guard = None;
         }
-    }
-
-    async fn bound_history_for_headless_turn(&self) {
-        let mut state = self.state.lock().await;
-        state.history.bound_headless_turn_tool_outputs();
     }
 
     /// Injects items into active work, or records them without starting a turn.

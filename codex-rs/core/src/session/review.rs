@@ -150,6 +150,7 @@ pub(super) async fn spawn_review_thread(
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,
         enforce_context_window_before_sampling: false,
+        bound_headless_tool_outputs_for_prompt: false,
         codex_self_exe: parent_turn_context.codex_self_exe.clone(),
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),

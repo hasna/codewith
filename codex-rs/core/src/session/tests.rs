@@ -9766,7 +9766,7 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
 }
 
 #[tokio::test]
-async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() {
+async fn try_start_turn_if_idle_bounds_headless_prompt_without_mutating_history() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let call_id = "goal-headless-output";
     let long_output = "goal continuation historical stdout\n".repeat(2_500);
@@ -9782,22 +9782,39 @@ async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() 
     sess.try_start_turn_if_idle(vec![user_message("continue active goal")])
         .await
         .expect("idle goal continuation should start");
-    let prompt = sess
-        .clone_history()
+    let (turn_context, _cancellation_token) = sess
+        .active_turn_context_and_cancellation_token()
+        .await
+        .expect("goal continuation turn should be active");
+    assert!(
+        turn_context.bound_headless_tool_outputs_for_prompt,
+        "autonomous idle turns must bound tool outputs in their prompts"
+    );
+
+    // The sampling prompt for the autonomous turn is bounded...
+    let prompt = super::turn::sampling_prompt_history(&sess, &turn_context)
         .await
         .for_prompt(&tc.model_info.input_modalities);
     let output = function_call_output_text(&prompt, call_id);
     assert_ne!(long_output, output);
     assert!(
         output.contains("tokens truncated"),
-        "expected historical output to be truncated: {output}"
+        "expected historical output to be truncated in the prompt: {output}"
+    );
+
+    // ...while the session's stored history keeps the full tool output for
+    // later interactive turns and compaction.
+    let stored = sess.clone_history().await;
+    assert_eq!(
+        long_output,
+        function_call_output_text(stored.raw_items(), call_id)
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]
-async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled_turn() {
+async fn try_start_user_input_turn_if_idle_bounds_headless_prompt_without_mutating_history() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let call_id = "scheduled-headless-output";
     let long_output = "scheduled run historical web output\n".repeat(2_500);
@@ -9821,15 +9838,33 @@ async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled
     )
     .await
     .expect("idle scheduled turn should start");
-    let prompt = sess
-        .clone_history()
+    let (turn_context, _cancellation_token) = sess
+        .active_turn_context_and_cancellation_token()
+        .await
+        .expect("scheduled turn should be active");
+    assert!(
+        turn_context.bound_headless_tool_outputs_for_prompt,
+        "scheduled turns must bound tool outputs in their prompts"
+    );
+
+    // The sampling prompt for the scheduled turn is bounded...
+    let prompt = super::turn::sampling_prompt_history(&sess, &turn_context)
         .await
         .for_prompt(&tc.model_info.input_modalities);
     let output = function_call_output_text(&prompt, call_id);
     assert_ne!(long_output, output);
     assert!(
         output.contains("tokens truncated"),
-        "expected historical output to be truncated: {output}"
+        "expected historical output to be truncated in the prompt: {output}"
+    );
+
+    // ...while a live interactive session keeps its full history: a
+    // scheduled run claimed by the live session owner must not permanently
+    // truncate stored tool outputs.
+    let stored = sess.clone_history().await;
+    assert_eq!(
+        long_output,
+        function_call_output_text(stored.raw_items(), call_id)
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
