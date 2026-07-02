@@ -12,7 +12,7 @@ if [[ "${1:-}" == "--launch" ]]; then
 fi
 
 HOST="${1:-$(cat /tmp/a3 2>/dev/null || echo hasna@apple03)}"
-REMOTE_DIR="/Users/hasna/codewith-build"
+REMOTE_DIR="${CODEWITH_REMOTE_DIR:-/Users/hasna/codewith-build}"
 APP="/Users/hasna/Applications/CodeWith.app"
 DEV_DIR="/Applications/Xcode.app/Contents/Developer"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,15 +47,41 @@ if [ -z "\$CLI_SRC" ] || [ ! -x "\$CLI_SRC" ]; then
   echo "codewith CLI not found on build host; install it or set CODEWITH_CLI_PATH" >&2
   exit 1
 fi
+# Resolve symlinks. A bun/npm shim (bin/codex.js) cannot run standalone once
+# copied out of its node_modules tree, so bundle the platform vendor Mach-O
+# binary that the shim dispatches to instead.
+CLI_SRC="\$(readlink -f "\$CLI_SRC")"
+case "\$CLI_SRC" in
+  *.js|*.mjs|*.cjs)
+    PKG_DIR="\$(cd "\$(dirname "\$CLI_SRC")/.." && pwd)"   # …/@hasna/codewith
+    VENDOR=""
+    for cand in "\$PKG_DIR"/node_modules/@hasna/codewith-darwin-*/vendor/*/bin/codewith \
+                "\$PKG_DIR"/../codewith-darwin-*/vendor/*/bin/codewith; do
+      if [ -x "\$cand" ] && "\$cand" --version >/dev/null 2>&1; then VENDOR="\$cand"; break; fi
+    done
+    if [ -z "\$VENDOR" ]; then
+      echo "codewith CLI resolves to a JS shim (\$CLI_SRC) with no runnable vendor binary;" >&2
+      echo "set CODEWITH_CLI_PATH to a standalone codewith binary" >&2
+      exit 1
+    fi
+    CLI_SRC="\$VENDOR"
+    ;;
+esac
 if [ "\$CLI_SRC" -ef "\$BIN" ]; then
   echo "refusing to bundle the CodeWith GUI executable as the codewith CLI" >&2
   exit 1
 fi
+# Quit only the CodeWith GUI app (exact bundle path) before replacing its bundle.
+pkill -f "\$APP/Contents/MacOS/CodeWith" 2>/dev/null && sleep 1 || true
 rm -rf "\$APP"
 mkdir -p "\$APP/Contents/MacOS" "\$APP/Contents/Resources"
 cp "\$BIN" "\$APP/Contents/MacOS/CodeWith"
 cp "\$CLI_SRC" "\$APP/Contents/Resources/codewith"
 chmod 755 "\$APP/Contents/Resources/codewith"
+if ! "\$APP/Contents/Resources/codewith" --version >/dev/null 2>&1; then
+  echo "bundled codewith CLI does not execute standalone from the app bundle" >&2
+  exit 1
+fi
 cat > "\$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
