@@ -895,6 +895,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["event-00", "event-01", "event-02", "event-03", "event-04"]
         );
+    }
+
     #[test]
     fn validates_monitor_relative_paths() {
         assert_eq!(
@@ -906,7 +908,5 @@ mod tests {
         assert!(validate_optional_monitor_relative_path("output_file", Some("/tmp/out")).is_err());
         assert!(validate_optional_monitor_relative_path("output_file", Some("../out")).is_err());
         assert!(validate_optional_monitor_relative_path("output_file", Some(".")).is_err());
-    }
-
     }
 }
