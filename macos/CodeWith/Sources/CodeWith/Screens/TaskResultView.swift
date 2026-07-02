@@ -83,8 +83,8 @@ struct TaskResultView: View {
         if let code {
             var c = AttributedString(code)
             c.font = .system(size: 11, design: .monospaced)
-            c.foregroundColor = Color(hex: 0x1F2328)
-            c.backgroundColor = Color(hex: 0xF3F4F6)
+            c.foregroundColor = Theme.textPrimary
+            c.backgroundColor = Theme.controlFill
             s.append(c)
             var suf = AttributedString(suffix)
             suf.font = .system(size: 12.5)
@@ -101,9 +101,9 @@ struct TaskResultView: View {
     private func testRow(_ ok: Bool, _ cmd: String, _ note: String) -> some View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(ok ? Color(hex: 0x34C759) : Color(hex: 0xFF3B30))
+                .fill(ok ? Theme.success : Theme.danger)
                 .frame(width: 15, height: 15)
-                .overlay(Image(systemName: ok ? "checkmark" : "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white))
+                .overlay(Image(systemName: ok ? "checkmark" : "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.accentForeground))
             Text(cmd).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.textPrimary)
             Text(note).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
             Spacer()
@@ -128,7 +128,7 @@ struct TaskResultView: View {
             fileRow("implementation/folder_structure.md", "+2", "-1")
             fileRow("implementation/oauth_prep.md", "+43", "-0")
         }
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(Theme.fieldFill).overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)))
     }
     private func fileRow(_ name: String, _ add: String, _ del: String) -> some View {
         HStack {
@@ -152,7 +152,7 @@ struct TaskResultView: View {
                 .background(RoundedRectangle(cornerRadius: 7).strokeBorder(Theme.cardStroke, lineWidth: 1))
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0xFCFAF5)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.cardStroke, lineWidth: 1)))
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(Theme.controlFill).overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)))
     }
 }
 
@@ -188,7 +188,7 @@ struct DiffPanel: View {
                 Spacer(minLength: 0)
             }
         }
-        .background(Color(hex: 0xFAFAFA))
+        .background(Theme.sidebar)
     }
     private func diffFileHeader(_ name: String, _ stat: String) -> some View {
         HStack {
@@ -198,16 +198,16 @@ struct DiffPanel: View {
             Text(stat).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textSecondary)
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
-        .background(Color(hex: 0xF0F0F2))
+        .background(Theme.controlFill)
     }
     enum K { case plain, add, del }
     private func hunkHeader(_ text: String) -> some View {
         HStack(spacing: 0) {
-            Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(Color(hex: 0x6E8BB5))
+            Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textSecondary)
             Spacer()
         }
         .padding(.horizontal, 8).padding(.vertical, 2)
-        .background(Color(hex: 0xEAF0FB))
+        .background(Theme.controlFill)
     }
     private func diffLine(_ num: String, _ text: String, _ k: K) -> some View {
         HStack(spacing: 0) {
@@ -222,7 +222,7 @@ struct DiffPanel: View {
             Spacer(minLength: 0)
         }
         .padding(.trailing, 6).padding(.vertical, 1.0)
-        .background(k == .add ? Color(hex: 0xE6FFEC) : (k == .del ? Color(hex: 0xFFEBE9) : Color.clear))
-        .overlay(alignment: .leading) { Rectangle().fill(Color(hex: 0xEFEFEF)).frame(width: 1).padding(.leading, 20) }
+        .background(k == .add ? Theme.accent.opacity(0.08) : (k == .del ? Theme.danger.opacity(0.06) : Color.clear))
+        .overlay(alignment: .leading) { Rectangle().fill(Theme.cardStroke).frame(width: 1).padding(.leading, 20) }
     }
 }

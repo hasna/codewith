@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The prompt composer. Send button, microphone state, and inline config pills
-/// are all real, clickable controls.
+/// The prompt composer. The config pills are real controls; the trailing filled
+/// action swaps from microphone at rest to send/stop while active.
 struct Composer: View {
     var placeholder: String = "Do anything"
     var showSend: Bool = true
@@ -24,7 +24,7 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(alignment: .top) {
                 if let text, !snapshot {
                     TextField(placeholder, text: text, axis: .vertical)
                         .textFieldStyle(.plain)
@@ -38,11 +38,12 @@ struct Composer: View {
                     Text(text?.wrappedValue.isEmpty == false ? text!.wrappedValue : placeholder)
                         .font(.system(size: 13))
                         .foregroundStyle(text?.wrappedValue.isEmpty == false ? Theme.textPrimary : Theme.textTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
                 }
                 Spacer()
             }
             .frame(minHeight: 38, alignment: .topLeading)
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+            .padding(.horizontal, 14).padding(.top, 13).padding(.bottom, 13)
 
             HStack(spacing: 10) {
                 Button { onPlus?() } label: {
@@ -97,10 +98,10 @@ struct Composer: View {
                         }
                     } label: {
                         Circle()
-                            .fill(stopMode || hasText ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
-                            .frame(width: 22, height: 22)
+                            .fill(Theme.accent)
+                            .frame(width: 28, height: 28)
                             .overlay(Image(systemName: icon)
-                                .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
+                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.accentForeground))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -108,13 +109,14 @@ struct Composer: View {
                     .accessibilityLabel(stopMode ? "Stop" : (hasText ? "Send" : "Send unavailable"))
                 }
             }
-            .padding(.horizontal, 12).padding(.bottom, 10)
+            .padding(.horizontal, 12).padding(.bottom, 12)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
+        .shadow(color: Theme.accent.opacity(0.05), radius: 18, x: 0, y: 10)
         .confirmationDialog(
             "Allow full access?",
             isPresented: Binding(
@@ -135,76 +137,106 @@ struct Composer: View {
         }
     }
 
+    @ViewBuilder
     private func permissionMenu(_ model: AppModel) -> some View {
-        Menu {
-            ForEach(model.availablePermissionProfiles, id: \.self) { profile in
-                Button(AppModel.displayPermissionProfile(profile)) {
-                    if profile == ":danger-full-access" && model.permissionProfileId != ":danger-full-access" {
-                        pendingFullAccessProfile = profile
-                    } else {
-                        model.setPermissionProfile(profile)
+        let label = pill(AppModel.displayPermissionProfile(model.permissionProfileId), icon: "lock.shield")
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availablePermissionProfiles, id: \.self) { profile in
+                    Button(AppModel.displayPermissionProfile(profile)) {
+                        if profile == ":danger-full-access" && model.permissionProfileId != ":danger-full-access" {
+                            pendingFullAccessProfile = profile
+                        } else {
+                            model.setPermissionProfile(profile)
+                        }
                     }
                 }
+            } label: {
+                label
             }
-        } label: {
-            pill(AppModel.displayPermissionProfile(model.permissionProfileId), icon: "lock.shield")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Permissions")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .accessibilityLabel("Permissions")
     }
 
+    @ViewBuilder
     private func modelMenu(_ model: AppModel) -> some View {
-        Menu {
-            ForEach(model.availableModels, id: \.self) { option in
-                Button(AppModel.displayModel(option)) { model.setModel(option) }
+        let label = pill(AppModel.displayModel(model.model ?? modelLabel))
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableModels, id: \.self) { option in
+                    Button(AppModel.displayModel(option)) { model.setModel(option) }
+                }
+            } label: {
+                label
             }
-        } label: {
-            pill(AppModel.displayModel(model.model ?? modelLabel))
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
     }
 
+    @ViewBuilder
     private func providerMenu(_ model: AppModel) -> some View {
-        Menu {
-            ForEach(model.availableProviders, id: \.self) { option in
-                Button(AppModel.displayProvider(option)) { model.setProvider(option) }
+        let label = pill(AppModel.displayProvider(model.provider ?? "openai"))
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableProviders, id: \.self) { option in
+                    Button(AppModel.displayProvider(option)) { model.setProvider(option) }
+                }
+            } label: {
+                label
             }
-        } label: {
-            pill(AppModel.displayProvider(model.provider ?? "openai"))
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
     }
 
+    @ViewBuilder
     private func effortMenu(_ model: AppModel) -> some View {
-        Menu {
-            ForEach(model.availableEfforts, id: \.self) { option in
-                Button(option) { model.setEffort(option) }
+        let label = pill(model.effort)
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableEfforts, id: \.self) { option in
+                    Button(option) { model.setEffort(option) }
+                }
+            } label: {
+                label
             }
-        } label: {
-            pill(model.effort)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
     }
 
+    @ViewBuilder
     private func authProfileMenu(_ model: AppModel) -> some View {
-        Menu {
-            ForEach(model.authProfiles) { profile in
-                Button(profile.name) { model.setSessionAuthProfile(profile.name) }
+        let label = pill(activeProfileLabel(model), icon: "person.crop.circle")
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.authProfiles) { profile in
+                    Button(profile.name) { model.setSessionAuthProfile(profile.name) }
+                }
+            } label: {
+                label
             }
-        } label: {
-            pill(activeProfileLabel(model), icon: "person.crop.circle")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
     }
 
     private func compactSessionButton(_ model: AppModel) -> some View {

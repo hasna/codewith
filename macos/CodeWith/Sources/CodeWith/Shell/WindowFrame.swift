@@ -17,11 +17,11 @@ struct WindowFrame<Content: View>: View {
             }
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.windowRadius, style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.5)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 0.5)
             )
-            .shadow(color: .black.opacity(0.22), radius: 18, x: 0, y: 10)
+            .shadow(color: .black.opacity(0.12), radius: 18, x: 0, y: 10)
             .padding(22)
-            .background(Color(hex: 0xF2F2F2))
+            .background(Theme.controlFill)
     }
 }
 

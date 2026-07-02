@@ -11,12 +11,12 @@ enum WindowSize {
 enum SnapshotCatalog {
     static var items: [SnapshotItem] {
         let m = AppModel.sample()
-        let menu = AppModel.sample(); menu.showAddMenu = true   // for the "+" add-menu screen
+        let typing = AppModel.sample(); typing.composerText = "Ship the macOS visual pass"
         let search = AppModel.sample(); search.searchQuery = "auth"; search.sidebarSelection = "Search"
         return [
             framed("01-home") { RootView(model: m) { HomeView(model: m) } },
             framed("02-chat") { RootView(model: m) { ChatView(model: m, threadId: "t1") } },
-            framed("03-add-menu") { RootView(model: menu) { HomeView(model: menu) } },
+            framed("03-home-typing") { RootView(model: typing) { HomeView(model: typing) } },
             framed("05-settings-general") { SettingsShell(selected: "General") { SettingsGeneral() } },
             framed("06-settings-profile") { SettingsShell(selected: "Profile") { SettingsProfile(account: m.account) } },
             framed("07-settings-appearance") { SettingsShell(selected: "Appearance") { SettingsAppearance() } },

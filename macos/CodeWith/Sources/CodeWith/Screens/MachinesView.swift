@@ -76,9 +76,9 @@ struct MachinesView: View {
                 Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
                 Text("Add machine").font(.system(size: 11.5, weight: .medium))
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.accentForeground)
             .padding(.horizontal, 12).frame(height: 26)
-            .background(Capsule().fill(Color(hex: 0x202020)))
+            .background(Capsule().fill(Theme.accent))
         }
         .buttonStyle(.plain)
     }
@@ -141,10 +141,10 @@ struct MachinesView: View {
                 Button(action: onCheckPairing) {
                     Text("Check")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.accentForeground)
                         .padding(.horizontal, 14)
                         .frame(height: 28)
-                        .background(Capsule().fill(Color(hex: 0x202020)))
+                        .background(Capsule().fill(Theme.accent))
                 }
                 .buttonStyle(.plain)
                 .disabled(pairing == nil)

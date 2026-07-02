@@ -38,7 +38,7 @@ struct AddMenu: View {
         .frame(width: 380)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white)
+                .fill(Theme.fieldFill)
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
                 .shadow(color: .black.opacity(0.16), radius: 24, y: 12)
         )

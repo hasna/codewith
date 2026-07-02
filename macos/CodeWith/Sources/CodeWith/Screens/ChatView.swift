@@ -127,7 +127,7 @@ struct ChatView: View {
             HStack { Spacer()
                 Text(m.text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0xEDEDEF)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Theme.controlFill))
             }
             .padding(.bottom, 16)
         case .assistant:
@@ -340,7 +340,7 @@ struct PendingServerRequestPanel: View {
                 ForEach(prompt.actions) { action in
                     Button(action.title) { onAction(action) }
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(action.isPrimary ? .white : Theme.textSecondary)
+                        .foregroundStyle(action.isPrimary ? Theme.accentForeground : Theme.textSecondary)
                         .buttonStyle(.plain)
                         .padding(.horizontal, 10)
                         .frame(height: 26)

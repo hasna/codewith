@@ -7,7 +7,7 @@ struct ProfilesView: View {
     var activeEmail: String = ""
     var onSwitch: (String) -> Void = { _ in }
 
-    private let avatarColors: [UInt32] = [0x4AB58E, 0x3B82F6, 0xE9943B, 0x6E6BF2, 0xDB5B5B]
+    private let avatarColors: [UInt32] = [0x007595, 0x0092B8, 0x7C7C67, 0xE7000B, 0x2B2B22]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,7 +62,7 @@ struct ProfilesView: View {
             HStack(spacing: 12) {
                 Circle().fill(color)
                     .frame(width: 36, height: 36)
-                    .overlay(Text(initials).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white))
+                    .overlay(Text(initials).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.accentForeground))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)

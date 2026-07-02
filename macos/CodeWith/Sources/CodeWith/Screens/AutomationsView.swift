@@ -14,13 +14,13 @@ struct AutomationsView: View {
     }
 
     private let automations: [Automation] = [
-        Automation(icon: "checkmark.seal.fill", tint: Color(hex: 0x5856D6),
+        Automation(icon: "checkmark.seal.fill", tint: Theme.accent,
                    name: "Auto-review PRs", trigger: "When PR opened", lastRun: "12m ago", on: true),
-        Automation(icon: "sun.horizon.fill", tint: Color(hex: 0xFF9500),
+        Automation(icon: "sun.horizon.fill", tint: Theme.textSecondary,
                    name: "Morning briefing", trigger: "Every morning · 8:00", lastRun: "Today 8:00", on: true),
-        Automation(icon: "arrow.up.forward.app.fill", tint: Color(hex: 0x34C759),
+        Automation(icon: "arrow.up.forward.app.fill", tint: Theme.success,
                    name: "Deploy on green", trigger: "On push to main", lastRun: "1h ago", on: false),
-        Automation(icon: "tray.full.fill", tint: Color(hex: 0xFF3B30),
+        Automation(icon: "tray.full.fill", tint: Theme.danger,
                    name: "Triage new issues", trigger: "When issue created", lastRun: "Yesterday", on: true),
     ]
 
@@ -51,7 +51,7 @@ struct AutomationsView: View {
                 Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
                 Text("New automation").font(.system(size: 11.5, weight: .medium))
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.accentForeground)
             .padding(.horizontal, 12).frame(height: 26)
             .background(Capsule().fill(Theme.accent))
         }
@@ -62,7 +62,7 @@ struct AutomationsView: View {
 
     private func row(_ automation: Automation) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(automation.tint.opacity(0.14))
                 .frame(width: 32, height: 32)
                 .overlay(Image(systemName: automation.icon).font(.system(size: 14)).foregroundStyle(automation.tint))
@@ -76,9 +76,9 @@ struct AutomationsView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }

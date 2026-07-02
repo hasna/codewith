@@ -71,7 +71,7 @@ struct ConfigPanel: View {
             } label: {
                 HStack(spacing: 8) {
                     Circle().fill(Color(hex: model.currentProfile.colorHex)).frame(width: 22, height: 22)
-                        .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white))
+                        .overlay(Text(model.account.initials).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accentForeground))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(model.account.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                         if !model.account.plan.isEmpty {

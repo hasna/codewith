@@ -8,7 +8,7 @@ final class AppModelTests: XCTestCase {
     func testInitialState() {
         let m = AppModel()
         XCTAssertEqual(m.route, .home)
-        XCTAssertEqual(m.sidebarSelection, "New chat")
+        XCTAssertEqual(m.sidebarSelection, "Home")
         XCTAssertFalse(m.showSettings)
         XCTAssertEqual(m.connection, .connecting)
         XCTAssertFalse(m.turnInProgress)
