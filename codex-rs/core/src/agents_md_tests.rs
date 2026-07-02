@@ -432,6 +432,33 @@ async fn project_doc_read_uses_no_following_symlink_guard() {
 }
 
 #[tokio::test]
+async fn project_doc_read_loads_via_no_follow_capable_filesystem() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let instruction_path = config.cwd.join("AGENTS.md");
+    let contents = "remote agents doc";
+    let fs = GuardedInstructionFileSystem {
+        instruction_path: instruction_path.clone(),
+        secret_contents: contents.as_bytes().to_vec(),
+        guarded_read_failure: GuardedReadFailure::Succeeds,
+    };
+
+    let mut warnings = Vec::new();
+    let loaded = AgentsMdManager::new(&config)
+        .user_instructions_with_fs(&fs, &mut warnings)
+        .await;
+
+    assert_eq!(
+        loaded.map(|loaded| loaded.text()),
+        Some(contents.to_string())
+    );
+    assert!(
+        warnings.is_empty(),
+        "no warnings expected for a regular-file no-follow read, got: {warnings:?}"
+    );
+}
+
+#[tokio::test]
 async fn project_doc_read_skips_unsupported_no_following_filesystem() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
@@ -1548,6 +1575,10 @@ fn create_skill(codex_home: PathBuf, name: &str, description: &str) {
 enum GuardedReadFailure {
     Symlink,
     Unsupported,
+    /// The no-follow read succeeds, matching filesystems (such as the remote
+    /// exec-server filesystem) that emulate it with a symlink-metadata check
+    /// followed by a plain read.
+    Succeeds,
 }
 
 struct GuardedInstructionFileSystem {
@@ -1604,6 +1635,7 @@ impl ExecutorFileSystem for GuardedInstructionFileSystem {
                     io::ErrorKind::Unsupported,
                     SYMLINK_SAFE_READ_UNSUPPORTED_ERROR,
                 )),
+                GuardedReadFailure::Succeeds => Ok(self.secret_contents.clone()),
             };
         }
         Err(io::ErrorKind::NotFound.into())

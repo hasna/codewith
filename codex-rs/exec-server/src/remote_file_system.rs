@@ -15,6 +15,7 @@ use crate::FileSystemResult;
 use crate::FileSystemSandboxContext;
 use crate::ReadDirectoryEntry;
 use crate::RemoveOptions;
+use crate::SYMLINKED_FILE_ERROR;
 use crate::client::LazyRemoteExecServerClient;
 use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCopyParams;
@@ -107,6 +108,39 @@ impl ExecutorFileSystem for RemoteFileSystem {
                 format!("remote fs/readFile returned invalid base64 dataBase64: {err}"),
             )
         })
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        trace!("remote fs read_file_without_following_symlinks");
+        // Client-side emulation: the remote fs/getMetadata response carries
+        // `is_symlink` computed server-side from `symlink_metadata` (an
+        // lstat equivalent), so reject symlinks before issuing the read.
+        //
+        // Limitation: unlike the local `DirectFileSystem` implementation
+        // there is no O_NOFOLLOW-equivalent guarantee across RPCs, so a
+        // symlink swapped in between the metadata RPC and the read RPC is
+        // not detected. Closing that TOCTOU window needs a protocol-level
+        // no-follow read (e.g. an optional `no_follow` flag on
+        // `FsReadFileParams` served by the exec-server's `DirectFileSystem`)
+        // with graceful fallback against older exec-servers.
+        let metadata = self.get_metadata(path, sandbox).await?;
+        if metadata.is_symlink {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                SYMLINKED_FILE_ERROR,
+            ));
+        }
+        if !metadata.is_file {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        self.read_file(path, sandbox).await
     }
 
     async fn write_file(

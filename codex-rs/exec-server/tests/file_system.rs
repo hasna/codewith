@@ -22,6 +22,7 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::LocalFileSystem;
 use codex_exec_server::ReadDirectoryEntry;
 use codex_exec_server::RemoveOptions;
+use codex_exec_server::SYMLINKED_FILE_ERROR;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -320,6 +321,49 @@ async fn file_system_get_metadata_returns_expected_fields(use_remote: bool) -> R
     assert_eq!(dir_symlink_metadata.is_directory, true);
     assert_eq!(dir_symlink_metadata.is_file, false);
     assert_eq!(dir_symlink_metadata.is_symlink, true);
+
+    Ok(())
+}
+
+#[test_case(false ; "local")]
+#[test_case(true ; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_system_read_file_without_following_symlinks_guards_symlinks(
+    use_remote: bool,
+) -> Result<()> {
+    let context = create_file_system_context(use_remote).await?;
+    let file_system = context.file_system;
+
+    let tmp = TempDir::new()?;
+    let file_path = tmp.path().join("note.txt");
+    std::fs::write(&file_path, "no-follow contents")?;
+
+    let contents = file_system
+        .read_file_without_following_symlinks(
+            &absolute_path(file_path.clone()),
+            /*sandbox*/ None,
+        )
+        .await
+        .with_context(|| format!("mode={use_remote}"))?;
+    assert_eq!(contents, b"no-follow contents");
+
+    let symlink_path = tmp.path().join("note-link.txt");
+    symlink(&file_path, &symlink_path)?;
+    let symlink_error = file_system
+        .read_file_without_following_symlinks(&absolute_path(symlink_path), /*sandbox*/ None)
+        .await
+        .expect_err("symlinked file must be rejected");
+    assert_eq!(symlink_error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(symlink_error.to_string(), SYMLINKED_FILE_ERROR);
+
+    let dir_path = tmp.path().join("notes");
+    std::fs::create_dir(&dir_path)?;
+    let dir_error = file_system
+        .read_file_without_following_symlinks(&absolute_path(dir_path), /*sandbox*/ None)
+        .await
+        .expect_err("directory must be rejected");
+    assert_eq!(dir_error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(dir_error.to_string(), "not a regular file");
 
     Ok(())
 }
