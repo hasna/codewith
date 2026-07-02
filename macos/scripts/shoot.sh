@@ -9,7 +9,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"      # macos/
 REPO="$(cd "$HERE/.." && pwd)"
 HOST="${1:-$(cat /tmp/a3 2>/dev/null || echo hasna@apple03)}"
-REMOTE_DIR="/Users/hasna/codewith-build"
+REMOTE_DIR="${CODEWITH_REMOTE_DIR:-/Users/hasna/codewith-build}"
 REMOTE_SHOTS="/tmp/codewith-shots"
 LOCAL_RENDERS="$REPO/design-refs/renders"
 DEV_DIR="/Applications/Xcode.app/Contents/Developer"

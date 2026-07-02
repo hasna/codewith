@@ -23,14 +23,18 @@ macos/
   scripts/
     shoot.sh                    sync → build → ImageRenderer snapshots → pull PNGs
     run-on-apple03.sh           build → .app bundle + bundled CLI (pass --launch for GUI)
+    capture-display.sh          real screencapture of the running app over SSH
 ```
 
 ## Building & screenshotting
 
 Authored on spark01, built on **apple03** (the only fleet Mac with full Xcode 26).
-macOS apps can't be built on Linux, and `screencapture` can't run over SSH (no Aqua
-session), so screens are rendered **in-process** via `ImageRenderer` — pixel-exact,
-permission-free, deterministic.
+macOS apps can't be built on Linux, and plain `screencapture` over SSH is denied
+(no Aqua session + TCC Screen Recording), so screens are rendered **in-process**
+via `ImageRenderer` — pixel-exact, permission-free, deterministic. For real
+display pixels of the *running* app, `capture-display.sh` routes `screencapture`
+through the user's tmux server (`tmux run-shell -b`), whose TCC-responsible
+process is the GUI terminal that spawned it — that grant carries Screen Recording.
 
 ```bash
 bash macos/scripts/shoot.sh                   # renders every screen → design-refs/renders/

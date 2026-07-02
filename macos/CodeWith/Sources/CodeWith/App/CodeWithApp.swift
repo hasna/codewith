@@ -91,6 +91,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window = nil
     }
 
+    /// Reopen (Dock click, `open -a`, Finder relaunch) must restore the window:
+    /// closing it only orders it out while the app lives in the menu bar, and
+    /// without this AppKit silently does nothing on reopen.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showMainWindow() }
+        return true
+    }
+
     private func setMenuBarEnabled(_ enabled: Bool) {
         keepInMenuBar = enabled
         if enabled {
