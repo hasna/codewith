@@ -1,0 +1,16 @@
+# Gitleaks config for hasna/codewith.
+# Extends the default ruleset; allowlists below are deliberate test fixtures only.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake canary secrets used by redaction tests (asserted to be redacted in output)"
+regexes = [
+  '''sk-live-idempotency-secret''',
+  '''sk-live-secret''',
+  '''raw-secret-should-not-leak''',
+  '''Bearer another-secret''',
+  '''"idempotencyKey": "idempotency-\d+"''',
+  '''^idempotency-\d+$''',
+]
+paths = []
