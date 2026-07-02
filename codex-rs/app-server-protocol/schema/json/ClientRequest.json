@@ -4575,6 +4575,7 @@
           "type": "string"
         },
         "cwd": {
+          "description": "Optional working directory relative to the thread cwd. Parent directory traversal and absolute paths are rejected.",
           "type": [
             "string",
             "null"
@@ -4584,6 +4585,7 @@
           "type": "string"
         },
         "outputFile": {
+          "description": "Optional output file relative to the monitor cwd. Parent directory traversal, absolute paths, and symlink targets are rejected.",
           "type": [
             "string",
             "null"
