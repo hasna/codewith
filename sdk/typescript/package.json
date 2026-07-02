@@ -7,6 +7,10 @@
     "url": "git+https://github.com/hasna/codewith.git",
     "directory": "sdk/typescript"
   },
+  "bugs": {
+    "url": "https://github.com/hasna/codewith/issues"
+  },
+  "homepage": "https://github.com/hasna/codewith#readme",
   "keywords": [
     "hasna",
     "codewith",

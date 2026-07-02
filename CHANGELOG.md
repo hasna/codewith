@@ -11,23 +11,31 @@ The fork-specific history starts after upstream commit `20fedafff8` on
 loop tasks`.
 
 Sources used to rebuild this changelog: local git history and tags,
-`origin/main`, release branches for `0.1.27` and `0.1.28`, GitHub Releases for
-`rust-v0.1.26` through `rust-v0.1.29` and `rust-v0.1.33`, and npm metadata for
-`@hasna/codewith`.
+`origin/main`, release branches for `0.1.27`, `0.1.28`, and `0.1.46`,
+GitHub Releases, and npm metadata for `@hasna/codewith`.
 
 Known evidence gaps:
 
-- GitHub Releases currently exist only for `0.1.26`, `0.1.27`, `0.1.28`,
-  `0.1.29`, and `0.1.33`.
-- GitHub Releases were not found for `0.1.30`, `0.1.31`, `0.1.32`, or
-  `0.1.34`, though matching local tags and npm publications exist.
+- GitHub Releases currently exist for `0.1.26`, `0.1.27`, `0.1.28`,
+  `0.1.29`, `0.1.33`, `0.1.39`, `0.1.40`, `0.1.41`, `0.1.42`,
+  `0.1.43`, `0.1.45`, and `0.1.46`.
+- GitHub Releases were not found for `0.1.30`, `0.1.31`, `0.1.32`,
+  `0.1.34`, `0.1.35`, `0.1.36`, `0.1.37`, `0.1.38`, or `0.1.44`,
+  though matching local tags and/or npm publications exist for some of these
+  versions.
 - The GitHub Release bodies for `0.1.29` and `0.1.33` were generated from tag
   commit messages, not this changelog.
 - npm has published `0.1.4`, `0.1.6`, and `0.1.15`, but no matching local tag
   or committed release bump was found in the current refs.
 - npm metadata still has old timestamps for `0.1.0` and `0.1.1`, but
   `npm view @hasna/codewith versions` currently starts at `0.1.2`.
-- `0.1.27` and `0.1.28` live on release branches, not `origin/main`.
+- `0.1.27`, `0.1.28`, and `0.1.46` live on release branches, not
+  `origin/main`; `0.1.46` was cut from `fix/loops-runtime-0.1.46`.
+- `origin/main` remains at Codewith `0.1.45` until the `0.1.46` hotfix branch
+  is merged, cherry-picked, or superseded by a later release.
+- The `rust-v0.1.46` GitHub Release is metadata-only and is not marked latest;
+  use `rust-v0.1.45` for the latest asset-bearing platform binary release until
+  a later full asset release supersedes it.
 - This file intentionally excludes pre-fork alpha tags
   `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
   SDK tags, and `rusty-v8-v*` dependency artifact tags.
@@ -139,6 +147,38 @@ Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.47...rust-v0.1.49>
   and assistant messages, and submits a distinct model request.
 - Reapplied mailbox dispatcher fixes on the safe migration base, including
   queued mailbox input handling and local active-session migration stability.
+
+## [0.1.46] - 2026-06-24
+
+Tag: `rust-v0.1.46`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.46>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.45...rust-v0.1.46>
+
+### Fixed
+
+- Hardened scheduled Codewith runs so usage-profile handoff, auth-profile
+  fallback, and usage-exhaustion retry timing are resolved before a scheduled
+  turn starts.
+- Hardened scheduled-run turn bookkeeping so immediate approval, permission, or
+  startup failures do not lose the run mapping before the model-side wait can
+  resume.
+- Improved scheduled-run failure messages with contextual error reporting and
+  structured handling for turn errors.
+- Clarified the scheduled-run prompt so cadence text is treated as schedule
+  context and durable follow-up work uses native goal tools rather than
+  accidental nested schedules.
+
+### Release
+
+- Published `@hasna/codewith` `0.1.46` as a scheduled-run hotfix from the
+  `fix/loops-runtime-0.1.46` release branch.
+- Left `@hasna/codewith-sdk` and `@hasna/codewith-responses-api-proxy` at
+  `0.1.45`; those packages are staged by the release packaging script from
+  source manifests that intentionally keep template versions.
+- Reconciled the missing GitHub Release metadata for `rust-v0.1.46` as a
+  metadata-only, non-latest release during the 2026-06-24 release-compliance
+  follow-up; no platform binaries, installers, checksums, or DotSlash artifacts
+  were attached to this hotfix release.
 
 ## [0.1.45] - 2026-06-24
 
