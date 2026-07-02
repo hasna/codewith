@@ -1,16 +1,30 @@
 # Gitleaks config for hasna/codewith.
-# Extends the default ruleset; allowlists below are deliberate test fixtures only.
+# Extends the default ruleset; the allowlist below covers deliberate test
+# fixtures only.
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Fake canary secrets used by redaction tests (asserted to be redacted in output)"
+# Fake canary secrets used by the webhook redaction tests (the tests assert
+# these exact values are redacted from output). The allowlist is attached to
+# the one rule the canaries trip (generic-api-key) rather than declared
+# globally: global allowlist paths make gitleaks skip the whole file, which
+# would also hide a real credential accidentally added to these tests. With
+# condition = "AND" a finding is only suppressed when it is BOTH inside one of
+# the listed test files AND matches a canary pattern, so a real credential
+# that happens to embed one of these substrings (or an idempotency-<digits>
+# token) anywhere else in the repo still surfaces in scans.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+condition = "AND"
+paths = [
+  '''codex-rs/app-server/tests/suite/v2/webhook\.rs''',
+  '''codex-rs/state/src/runtime/webhooks\.rs''',
+]
 regexes = [
   '''sk-live-idempotency-secret''',
   '''sk-live-secret''',
   '''raw-secret-should-not-leak''',
   '''Bearer another-secret''',
-  '''"idempotencyKey": "idempotency-\d+"''',
-  '''^idempotency-\d+$''',
+  '''idempotency-\d+''',
 ]
-paths = []
