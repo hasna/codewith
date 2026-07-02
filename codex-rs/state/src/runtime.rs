@@ -1613,10 +1613,7 @@ INSERT INTO thread_goal_plan_nodes (
             .run(&strict_pool)
             .await
             .expect_err("current migrator must reject the unrepaired 0.1.48 stamp");
-        assert!(matches!(
-            unrepaired_err,
-            MigrateError::VersionMismatch(5)
-        ));
+        assert!(matches!(unrepaired_err, MigrateError::VersionMismatch(5)));
         strict_pool.close().await;
 
         // Full runtime init repairs the stamp and applies the missing
