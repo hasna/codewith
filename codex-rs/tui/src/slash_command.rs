@@ -654,7 +654,7 @@ mod tests {
         );
     }
 
-        #[test]
+    #[test]
     fn mission_control_command_uses_kebab_case_and_aliases() {
         assert_eq!(SlashCommand::MissionControl.command(), "mission-control");
         assert_eq!(

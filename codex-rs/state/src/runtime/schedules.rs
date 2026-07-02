@@ -1603,7 +1603,10 @@ mod tests {
             )
             .await
             .expect("fifth-level schedule should be created");
-        assert_eq!(Some(level_4.schedule_id.clone()), level_5.parent_schedule_id);
+        assert_eq!(
+            Some(level_4.schedule_id.clone()),
+            level_5.parent_schedule_id
+        );
         assert_eq!(5, level_5.nesting_depth);
 
         let err = runtime

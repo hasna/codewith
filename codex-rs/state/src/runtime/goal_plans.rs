@@ -1001,9 +1001,7 @@ INSERT INTO thread_goal_plan_nodes (
         .bind(next_sequence + i64::try_from(index)?)
         .bind(node.priority)
         .bind(&node.objective)
-        .bind(
-            normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?,
-        )
+        .bind(normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?)
         .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
         .bind(node.token_budget)
         .bind(now_ms)

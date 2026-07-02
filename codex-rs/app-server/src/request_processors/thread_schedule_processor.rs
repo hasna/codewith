@@ -996,4 +996,3 @@ impl ScheduleStatusResponseKind {
         }
     }
 }
-
