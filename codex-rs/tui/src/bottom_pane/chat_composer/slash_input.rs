@@ -227,6 +227,23 @@ impl ChatComposer {
         } else {
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
+
+        // When the typed token exactly matches a command name or hidden alias,
+        // Enter dispatches that exact command instead of the popup's highlighted
+        // fuzzy suggestion. For example `/exit` quits (its hidden alias resolves
+        // to `/quit`) rather than opening `/experimental`, the top fuzzy match.
+        if matches!(
+            key_event,
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }
+        ) && let Some(result) = self.try_dispatch_exact_slash_command()
+        {
+            return (result, true);
+        }
+
         let ActivePopup::Command(popup) = &mut self.popups.active else {
             unreachable!();
         };
@@ -381,6 +398,35 @@ impl ChatComposer {
             }
             input => self.handle_input_basic(input),
         }
+    }
+
+    /// If the composer currently holds a *bare* slash command whose typed token
+    /// exactly matches a command name or hidden alias, dispatch it directly.
+    ///
+    /// This takes precedence over the popup's highlighted fuzzy suggestion so an
+    /// exact match such as `/exit` dispatches its command (resolving the hidden
+    /// alias to its visible target, e.g. `Quit`) instead of the top fuzzy match
+    /// shown in the popup (e.g. `/experimental`). Inline-arg drafts and
+    /// service-tier commands keep their existing popup-driven handling.
+    fn try_dispatch_exact_slash_command(&mut self) -> Option<InputResult> {
+        let SlashCommandItem::Builtin(cmd) = self
+            .slash_input()
+            .bare_command(self.draft.textarea.text())?
+        else {
+            return None;
+        };
+        // Hidden aliases (e.g. `/exit`) dispatch as their visible target.
+        let resolved = cmd.hidden_alias_target().unwrap_or(cmd);
+        let command = SlashCommandItem::Builtin(resolved);
+        if self.reject_slash_command_if_unavailable(&command) {
+            self.stage_slash_command_history(&command);
+            self.record_pending_slash_command_history();
+            return Some(InputResult::None);
+        }
+        self.stage_slash_command_history(&command);
+        self.draft.textarea.set_text_clearing_elements("");
+        self.draft.is_bash_mode = false;
+        Some(InputResult::Command(resolved))
     }
 
     fn complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
@@ -670,5 +716,31 @@ mod tests {
         assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
         assert_eq!(composer.draft.textarea.text(), "/session ");
         assert_eq!(composer.draft.textarea.cursor(), "/session ".len());
+    }
+
+    #[test]
+    fn exact_exit_alias_enter_dispatches_quit_not_highlighted_experimental() {
+        // `/exit` is a hidden alias absent from the popup, whose sole fuzzy match
+        // is `/experimental`. Enter must dispatch the exact alias (resolved to
+        // Quit) rather than the highlighted `/experimental` suggestion.
+        let mut composer = composer_with_text_at_cursor("/exit", "/exit".len());
+        assert!(matches!(composer.popups.active, ActivePopup::Command(_)));
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Quit)
+        );
+        assert!(composer.draft.textarea.is_empty());
+    }
+
+    #[test]
+    fn exact_quit_enter_still_dispatches_quit() {
+        let mut composer = composer_with_text_at_cursor("/quit", "/quit".len());
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Quit)
+        );
+        assert!(composer.draft.textarea.is_empty());
     }
 }
