@@ -376,6 +376,14 @@ pub(crate) enum AppEvent {
         origin: MiniMaxUsageRefreshOrigin,
     },
 
+    /// Open the top-level changelog browser.
+    OpenChangelogBrowser,
+
+    /// Open one release in the changelog browser.
+    OpenChangelogRelease {
+        version: String,
+    },
+
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,

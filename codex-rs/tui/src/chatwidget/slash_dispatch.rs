@@ -1405,7 +1405,7 @@ impl ChatWidget {
                 self.open_usage_panel();
             }
             SlashCommand::Changelog => {
-                self.add_changelog_output();
+                self.open_changelog_browser();
             }
             SlashCommand::Ide => {
                 self.handle_ide_command();

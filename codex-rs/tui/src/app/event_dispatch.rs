@@ -853,6 +853,12 @@ impl App {
             AppEvent::ReloadMcpServers => {
                 self.reload_mcp_servers(app_server);
             }
+            AppEvent::OpenChangelogBrowser => {
+                self.chat_widget.open_changelog_browser();
+            }
+            AppEvent::OpenChangelogRelease { version } => {
+                self.chat_widget.open_changelog_release(version);
+            }
             AppEvent::OpenBackgroundTerminalManager => {
                 self.chat_widget.open_background_terminal_manager();
             }
