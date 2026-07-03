@@ -32,6 +32,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -340,17 +343,33 @@ fn chat_function_tool(
     })))
 }
 
+/// Maximum tool-name length accepted by the OpenAI chat-completions schema.
+const CHAT_TOOL_NAME_MAX_LEN: usize = 64;
+
 fn encode_chat_tool_name(namespace: Option<&str>, name: &str) -> Result<String, ApiError> {
     let encoded = namespace.map_or_else(
         || name.to_string(),
         |namespace| format!("{namespace}__{name}"),
     );
-    if encoded.len() > 64 {
-        return Err(ApiError::InvalidRequest {
-            message: format!("tool name `{encoded}` exceeds chat completions 64 character limit"),
-        });
+    Ok(truncate_chat_tool_name(encoded))
+}
+
+/// Chat-completions providers reject tool names longer than 64 characters, so
+/// deterministically fold overlong names into a `<prefix>_<hash>` form that
+/// stays within the limit. The mapping is a pure function of the input, so the
+/// same tool name always encodes identically (and round-trips via
+/// `tool_name_map`) whether it comes from the tool list or from replayed
+/// function-call history.
+fn truncate_chat_tool_name(encoded: String) -> String {
+    if encoded.chars().count() <= CHAT_TOOL_NAME_MAX_LEN {
+        return encoded;
     }
-    Ok(encoded)
+    let mut hasher = DefaultHasher::new();
+    encoded.hash(&mut hasher);
+    let suffix = format!("_{:016x}", hasher.finish());
+    let prefix_len = CHAT_TOOL_NAME_MAX_LEN.saturating_sub(suffix.chars().count());
+    let prefix: String = encoded.chars().take(prefix_len).collect();
+    format!("{prefix}{suffix}")
 }
 
 fn chat_messages_from_responses(
@@ -365,32 +384,41 @@ fn chat_messages_from_responses(
         }));
     }
 
+    // Buffer for consecutive function calls belonging to the same assistant
+    // turn. Chat-completions rejects two consecutive assistant messages that
+    // both carry `tool_calls` (HTTP 400), so parallel tool calls must be
+    // coalesced into a single assistant message with a `tool_calls` array.
+    let mut pending_tool_calls: Vec<Value> = Vec::new();
+
     for item in input {
+        if let ResponseItem::FunctionCall {
+            name,
+            namespace,
+            arguments,
+            call_id,
+            ..
+        } = item
+        {
+            pending_tool_calls.push(serde_json::json!({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": encode_chat_tool_name(namespace.as_deref(), name)?,
+                    "arguments": chat_tool_arguments(arguments),
+                }
+            }));
+            continue;
+        }
+
+        // Any non-function-call item ends the current run of tool calls, so
+        // flush them into one assistant message before emitting this item.
+        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+
         match item {
             ResponseItem::Message { role, content, .. } => {
                 messages.push(serde_json::json!({
                     "role": chat_message_role(role),
                     "content": text_from_content_items(content)?,
-                }));
-            }
-            ResponseItem::FunctionCall {
-                name,
-                namespace,
-                arguments,
-                call_id,
-                ..
-            } => {
-                messages.push(serde_json::json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": encode_chat_tool_name(namespace.as_deref(), name)?,
-                            "arguments": arguments,
-                        }
-                    }]
                 }));
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
@@ -400,7 +428,9 @@ fn chat_messages_from_responses(
                     "content": output_text(output),
                 }));
             }
-            ResponseItem::Reasoning { .. }
+            // Handled above; listed for exhaustiveness.
+            ResponseItem::FunctionCall { .. }
+            | ResponseItem::Reasoning { .. }
             | ResponseItem::AgentMessage { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::ToolSearchCall { .. }
@@ -416,6 +446,9 @@ fn chat_messages_from_responses(
         }
     }
 
+    // Flush any trailing tool calls that ended the input.
+    flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+
     if messages.is_empty() {
         messages.push(serde_json::json!({
             "role": "user",
@@ -424,6 +457,30 @@ fn chat_messages_from_responses(
     }
 
     Ok(messages)
+}
+
+/// Emit the buffered function calls (if any) as a single assistant message
+/// carrying a `tool_calls` array, so parallel calls form one valid message.
+fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+    if pending_tool_calls.is_empty() {
+        return;
+    }
+    messages.push(serde_json::json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": std::mem::take(pending_tool_calls),
+    }));
+}
+
+/// Chat-completions expects `arguments` to be a JSON object string. Zero-arg
+/// tool calls otherwise serialize as an empty string, which fails downstream
+/// JSON parsing, so normalize empty arguments to `"{}"`.
+fn chat_tool_arguments(arguments: &str) -> &str {
+    if arguments.trim().is_empty() {
+        "{}"
+    } else {
+        arguments
+    }
 }
 
 fn chat_message_role(role: &str) -> &str {
@@ -521,6 +578,10 @@ struct ChatCompletionDelta {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionToolCallDelta {
+    // Some compat providers omit `index` on tool-call deltas. Default it so the
+    // whole chunk still deserializes (and the delta is not silently dropped)
+    // rather than failing the entire chunk parse.
+    #[serde(default)]
     index: usize,
     id: Option<String>,
     function: Option<ChatCompletionFunctionDelta>,
@@ -534,14 +595,15 @@ struct ChatCompletionFunctionDelta {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionUsage {
-    #[serde(alias = "prompt_tokens")]
+    #[serde(default, alias = "prompt_tokens")]
     prompt_tokens: i64,
-    #[serde(alias = "completion_tokens")]
+    #[serde(default, alias = "completion_tokens")]
     completion_tokens: i64,
-    #[serde(alias = "prompt_tokens_details")]
+    #[serde(default, alias = "prompt_tokens_details")]
     prompt_tokens_details: Option<ChatCompletionPromptTokensDetails>,
-    #[serde(alias = "completion_tokens_details")]
+    #[serde(default, alias = "completion_tokens_details")]
     completion_tokens_details: Option<ChatCompletionCompletionTokensDetails>,
+    #[serde(default)]
     total_tokens: i64,
 }
 
@@ -650,7 +712,11 @@ async fn process_chat_sse(
         let chunk: ChatCompletionChunk = match serde_json::from_str(&sse.data) {
             Ok(chunk) => chunk,
             Err(err) => {
-                debug!("failed to parse chat completions SSE event: {err}");
+                debug!(
+                    error = %err,
+                    payload = %sse.data,
+                    "failed to parse chat completions SSE chunk; skipping",
+                );
                 continue;
             }
         };
@@ -787,7 +853,7 @@ async fn emit_chat_completion_finished(
     }
 
     let tool_calls = std::mem::take(&mut state.tool_calls);
-    for (_, tool_call) in tool_calls {
+    for (index, tool_call) in tool_calls {
         if tool_call.encoded_name.is_empty() {
             continue;
         }
@@ -802,10 +868,12 @@ async fn emit_chat_completion_finished(
             id: None,
             name: mapped_name.name,
             namespace: mapped_name.namespace,
-            arguments: tool_call.arguments,
+            arguments: chat_tool_arguments(&tool_call.arguments).to_string(),
+            // Include the tool-call index so id-less parallel calls to the same
+            // tool get distinct synthetic ids instead of colliding.
             call_id: tool_call.call_id.unwrap_or_else(|| {
                 format!(
-                    "{}_{}",
+                    "{}_{}_{index}",
                     state.response_id.as_deref().unwrap_or("chatcmpl"),
                     tool_call.encoded_name
                 )
@@ -1112,6 +1180,136 @@ mod tests {
             messages,
             vec![serde_json::json!({"role": "system", "content": "Follow policy"})]
         );
+    }
+
+    fn function_call(name: &str, args: &str, call_id: &str) -> ResponseItem {
+        ResponseItem::FunctionCall {
+            id: None,
+            name: name.to_string(),
+            namespace: None,
+            arguments: args.to_string(),
+            call_id: call_id.to_string(),
+        }
+    }
+
+    fn emitted_function_calls(
+        events: Vec<Result<ResponseEvent, ApiError>>,
+    ) -> Vec<(String, String)> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Ok(ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                    call_id,
+                    arguments,
+                    ..
+                })) => Some((call_id, arguments)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chat_request_coalesces_parallel_tool_calls_into_one_assistant_message() {
+        let messages = chat_messages_from_responses(
+            "",
+            &[
+                function_call("search", "{\"q\":\"a\"}", "call_a"),
+                function_call("search", "{\"q\":\"b\"}", "call_b"),
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_a".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ra".to_string()),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_b".to_string(),
+                    output: FunctionCallOutputPayload::from_text("rb".to_string()),
+                },
+            ],
+        )
+        .expect("messages should map");
+
+        // Exactly one assistant message, carrying both tool calls, followed by
+        // the two tool results.
+        assert_eq!(
+            messages,
+            vec![
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{\"q\":\"a\"}"}
+                        },
+                        {
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{\"q\":\"b\"}"}
+                        }
+                    ]
+                }),
+                serde_json::json!({"role": "tool", "tool_call_id": "call_a", "content": "ra"}),
+                serde_json::json!({"role": "tool", "tool_call_id": "call_b", "content": "rb"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_request_normalizes_empty_tool_arguments() {
+        let messages = chat_messages_from_responses("", &[function_call("noop", "", "call_1")])
+            .expect("messages should map");
+
+        assert_eq!(
+            messages[0]["tool_calls"][0]["function"]["arguments"],
+            "{}"
+        );
+    }
+
+    #[test]
+    fn encode_chat_tool_name_truncates_and_hashes_long_names() {
+        let long_name = "a".repeat(200);
+        let encoded = encode_chat_tool_name(Some("namespace"), &long_name)
+            .expect("long names should be truncated, not rejected");
+
+        assert!(encoded.chars().count() <= 64);
+        // Deterministic: same input encodes identically.
+        assert_eq!(
+            encoded,
+            encode_chat_tool_name(Some("namespace"), &long_name).unwrap()
+        );
+        // Distinct long names produce distinct encodings.
+        let other = encode_chat_tool_name(Some("namespace"), &"b".repeat(200)).unwrap();
+        assert_ne!(encoded, other);
+    }
+
+    #[tokio::test]
+    async fn chat_stream_tool_call_delta_without_index_is_not_dropped() {
+        // The tool-call delta omits the `index` field entirely; it must still
+        // parse and surface as a function call.
+        let events = collect_chat_events(
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_a\",\"function\":{\"name\":\"exec\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        )
+        .await;
+
+        let calls = emitted_function_calls(events);
+        // Present (not dropped) and empty args normalized to "{}".
+        assert_eq!(calls, vec![("call_a".to_string(), "{}".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn chat_stream_synthesizes_unique_ids_for_idless_parallel_calls() {
+        // Two parallel calls to the same tool, neither carrying an id.
+        let events = collect_chat_events(
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"exec\",\"arguments\":\"{}\"}},{\"index\":1,\"function\":{\"name\":\"exec\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        )
+        .await;
+
+        let ids: Vec<String> = emitted_function_calls(events)
+            .into_iter()
+            .map(|(call_id, _)| call_id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "synthetic call ids must be unique");
     }
 
     #[test]
