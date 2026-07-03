@@ -25,11 +25,15 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
 }
 
 const fn model(display_name: &'static str) -> KnownProviderModelMetadata {
+    // DeepSeek V4 flash/pro both support thinking mode, so they expose reasoning
+    // content. DeepSeek toggles thinking with a provider-specific parameter rather
+    // than the OpenAI-style reasoning-effort scale, so we advertise reasoning
+    // support (like Anthropic) without wiring reasoning-effort presets.
     KnownProviderModelMetadata::new(
         display_name,
         /*context_window*/ 1_048_576,
         /*supports_tools*/ true,
         /*supports_parallel_tool_calls*/ false,
-        /*supports_reasoning*/ false,
+        /*supports_reasoning*/ true,
     )
 }

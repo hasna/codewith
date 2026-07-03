@@ -468,8 +468,131 @@ mod tests {
         assert_eq!(models[0].id, "claude-fable-5");
         assert!(models[0].is_default);
         assert_eq!(models[1].id, "claude-opus-4-8");
-        assert_eq!(models[2].id, "claude-sonnet-4-6");
-        assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
+        assert_eq!(models[2].id, "claude-sonnet-5");
+        assert_eq!(models[3].id, "claude-sonnet-4-6");
+        assert_eq!(models[4].id, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn anthropic_exposes_claude_sonnet_5_metadata() {
+        assert_eq!(
+            metadata_for_local_fallback(Some("anthropic"), "claude-sonnet-5"),
+            Some(KnownProviderModelMetadata::new(
+                "Claude Sonnet 5",
+                /*context_window*/ 1_000_000,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ true,
+                /*supports_reasoning*/ true,
+            ))
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_models_advertise_reasoning_without_effort_presets() {
+        for slug in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+            let metadata = metadata_for_local_fallback(Some("deepseek"), slug)
+                .expect("deepseek metadata should exist");
+            assert!(
+                metadata.supports_reasoning,
+                "{slug} should advertise reasoning (thinking mode)"
+            );
+            assert!(metadata.supports_tools, "{slug} should support tools");
+        }
+
+        // DeepSeek toggles thinking with a provider-specific parameter, not the
+        // OpenAI-style reasoning-effort scale, so no effort presets are exposed.
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("deepseek"), "deepseek-v4-pro"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn cerebras_exposes_gemma_4_31b_preview_fallback() {
+        let models = fallback_models_for_provider("cerebras");
+
+        assert_eq!(models[0].id, "gpt-oss-120b");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "gemma-4-31b" && !model.is_default)
+        );
+        assert_eq!(
+            metadata_for_local_fallback(Some("cerebras"), "gemma-4-31b"),
+            Some(KnownProviderModelMetadata::new(
+                "Gemma 4 31B",
+                /*context_window*/ 131_072,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ false,
+                /*supports_reasoning*/ false,
+            ))
+        );
+    }
+
+    #[test]
+    fn qwen_fallback_models_expose_qwen36_flash() {
+        let models = fallback_models_for_provider("qwen");
+
+        assert_eq!(models[0].id, "qwen3.5-flash");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "qwen3.6-flash" && !model.is_default)
+        );
+        // The orphaned metadata entry is now reachable from the fallback list.
+        assert!(
+            metadata_for_local_fallback(Some("qwen"), "qwen3.6-flash")
+                .expect("qwen3.6-flash metadata should exist")
+                .supports_search_tool
+        );
+    }
+
+    #[test]
+    fn nvidia_deepseek_v4_models_support_tools() {
+        for slug in [
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+        ] {
+            assert!(
+                metadata_for_local_fallback(Some("nvidia"), slug)
+                    .expect("nvidia deepseek metadata should exist")
+                    .supports_tools,
+                "{slug} should support tools like the direct and OpenRouter catalogs"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_exposes_anthropic_claude_metadata() {
+        let expected = Some(KnownProviderModelMetadata::new(
+            "Claude Sonnet 5",
+            /*context_window*/ 1_000_000,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        ));
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-sonnet-5"),
+            expected
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                Some("openrouter"),
+                None,
+                None,
+                "anthropic/claude-sonnet-5",
+            ),
+            expected
+        );
+        assert!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-fable-5").is_some()
+        );
+        assert!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-opus-4-8").is_some()
+        );
     }
 
     #[test]

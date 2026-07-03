@@ -21,6 +21,12 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
+        "qwen3.6-flash",
+        "Qwen3.6 Flash",
+        "Alibaba Qwen3.6 fast model with native Model Studio web search support.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
         "qwen3.7-plus",
         "Qwen3.7 Plus",
         "Alibaba Qwen3.7 balanced model with native Model Studio web search support.",

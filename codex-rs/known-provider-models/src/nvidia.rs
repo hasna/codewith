@@ -56,14 +56,14 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
         "deepseek-ai/deepseek-v4-flash" => Some(KnownProviderModelMetadata::new(
             "DeepSeek V4 Flash",
             /*context_window*/ 1_048_576,
-            /*supports_tools*/ false,
+            /*supports_tools*/ true,
             /*supports_parallel_tool_calls*/ false,
             /*supports_reasoning*/ false,
         )),
         "deepseek-ai/deepseek-v4-pro" => Some(KnownProviderModelMetadata::new(
             "DeepSeek V4 Pro",
             /*context_window*/ 1_048_576,
-            /*supports_tools*/ false,
+            /*supports_tools*/ true,
             /*supports_parallel_tool_calls*/ false,
             /*supports_reasoning*/ false,
         )),
