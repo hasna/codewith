@@ -32,10 +32,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -46,6 +49,66 @@ use tracing::instrument;
 use tracing::trace;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Google Gemini (via its OpenAI-compatibility endpoint) returns an encrypted
+/// `thought_signature` on each function/tool call under
+/// `tool_calls[].extra_content.google.thought_signature`. Gemini 3 models
+/// reject multi-step tool loops with a 400 (`Function call is missing a
+/// thought_signature`) unless the signature from the previous response is
+/// echoed back on the corresponding tool call in every subsequent request.
+///
+/// The chat adapter is stateless across turns and a fresh client is built per
+/// turn, while conversation history round-trips through `ResponseItem`s that
+/// have no field to carry a signature. We therefore keep a small
+/// process-global, call-id-keyed cache: the signature is recorded when a tool
+/// call is received and re-attached when that same call is replayed in a later
+/// tool-turn request. Entries are keyed by the (globally unique) tool-call id,
+/// so there is no cross-request or cross-provider contamination.
+const THOUGHT_SIGNATURE_CACHE_CAP: usize = 4096;
+
+static THOUGHT_SIGNATURE_CACHE: LazyLock<Mutex<ThoughtSignatureCache>> =
+    LazyLock::new(|| Mutex::new(ThoughtSignatureCache::default()));
+
+#[derive(Default)]
+struct ThoughtSignatureCache {
+    map: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+/// Record the Gemini thought signature for `call_id`, evicting the oldest entry
+/// once the cache exceeds its capacity.
+fn store_thought_signature(call_id: &str, signature: String) {
+    if call_id.is_empty() || signature.is_empty() {
+        return;
+    }
+    let Ok(mut cache) = THOUGHT_SIGNATURE_CACHE.lock() else {
+        return;
+    };
+    if cache.map.insert(call_id.to_string(), signature).is_none() {
+        cache.order.push_back(call_id.to_string());
+        while cache.order.len() > THOUGHT_SIGNATURE_CACHE_CAP {
+            if let Some(evicted) = cache.order.pop_front() {
+                cache.map.remove(&evicted);
+            }
+        }
+    }
+}
+
+/// Look up a previously recorded Gemini thought signature for `call_id`.
+fn thought_signature_for(call_id: &str) -> Option<String> {
+    let cache = THOUGHT_SIGNATURE_CACHE.lock().ok()?;
+    cache.map.get(call_id).cloned()
+}
+
+/// Extract `google.thought_signature` from a tool call's `extra_content` object.
+fn thought_signature_from_extra_content(extra_content: &Value) -> Option<String> {
+    extra_content
+        .get("google")?
+        .get("thought_signature")?
+        .as_str()
+        .filter(|signature| !signature.is_empty())
+        .map(str::to_string)
+}
 
 pub struct ChatCompletionsClient<T: HttpTransport> {
     session: EndpointSession<T>,
@@ -416,14 +479,22 @@ fn chat_messages_from_responses(
             ..
         } = item
         {
-            pending_tool_calls.push(serde_json::json!({
+            let mut tool_call = serde_json::json!({
                 "id": call_id,
                 "type": "function",
                 "function": {
                     "name": encode_chat_tool_name(namespace.as_deref(), name)?,
                     "arguments": chat_tool_arguments(arguments),
                 }
-            }));
+            });
+            // Re-attach the Gemini thought signature (if any) recorded when this
+            // tool call was received, so Gemini 3 multi-step tool loops validate.
+            if let Some(signature) = thought_signature_for(call_id) {
+                tool_call["extra_content"] = serde_json::json!({
+                    "google": { "thought_signature": signature }
+                });
+            }
+            pending_tool_calls.push(tool_call);
             continue;
         }
 
@@ -602,6 +673,10 @@ struct ChatCompletionToolCallDelta {
     index: usize,
     id: Option<String>,
     function: Option<ChatCompletionFunctionDelta>,
+    // Gemini's OpenAI-compat endpoint attaches the encrypted thought signature
+    // for a tool call here as `{"google": {"thought_signature": "..."}}`.
+    #[serde(default)]
+    extra_content: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,6 +746,7 @@ struct AccumulatedToolCall {
     call_id: Option<String>,
     encoded_name: String,
     arguments: String,
+    thought_signature: Option<String>,
 }
 
 async fn process_chat_sse(
@@ -832,6 +908,11 @@ fn accumulate_tool_call_deltas(
         if let Some(call_id) = delta.id {
             tool_call.call_id = Some(call_id);
         }
+        if let Some(extra_content) = delta.extra_content.as_ref()
+            && let Some(signature) = thought_signature_from_extra_content(extra_content)
+        {
+            tool_call.thought_signature = Some(signature);
+        }
         if let Some(function) = delta.function {
             if let Some(name) = function.name {
                 tool_call.encoded_name.push_str(&name);
@@ -881,20 +962,26 @@ async fn emit_chat_completion_finished(
                 namespace: None,
                 name: tool_call.encoded_name.clone(),
             });
+        // Include the tool-call index so id-less parallel calls to the same
+        // tool get distinct synthetic ids instead of colliding.
+        let call_id = tool_call.call_id.unwrap_or_else(|| {
+            format!(
+                "{}_{}_{index}",
+                state.response_id.as_deref().unwrap_or("chatcmpl"),
+                tool_call.encoded_name
+            )
+        });
+        // Record Gemini's thought signature so it can be echoed back when this
+        // tool call is replayed on the next tool-turn request.
+        if let Some(signature) = tool_call.thought_signature {
+            store_thought_signature(&call_id, signature);
+        }
         let item = ResponseItem::FunctionCall {
             id: None,
             name: mapped_name.name,
             namespace: mapped_name.namespace,
             arguments: chat_tool_arguments(&tool_call.arguments).to_string(),
-            // Include the tool-call index so id-less parallel calls to the same
-            // tool get distinct synthetic ids instead of colliding.
-            call_id: tool_call.call_id.unwrap_or_else(|| {
-                format!(
-                    "{}_{}_{index}",
-                    state.response_id.as_deref().unwrap_or("chatcmpl"),
-                    tool_call.encoded_name
-                )
-            }),
+            call_id,
         };
         if tx_event
             .send(Ok(ResponseEvent::OutputItemDone(item)))
@@ -1415,6 +1502,7 @@ mod tests {
                         name: Some("exec_".to_string()),
                         arguments: Some("{\"cmd\"".to_string()),
                     }),
+                    extra_content: None,
                 },
                 ChatCompletionToolCallDelta {
                     index: 0,
@@ -1423,6 +1511,7 @@ mod tests {
                         name: Some("command".to_string()),
                         arguments: Some(":\"date\"}".to_string()),
                     }),
+                    extra_content: None,
                 },
             ],
         );
@@ -1431,5 +1520,82 @@ mod tests {
         assert_eq!(call.call_id.as_deref(), Some("call_1"));
         assert_eq!(call.encoded_name, "exec_command");
         assert_eq!(call.arguments, "{\"cmd\":\"date\"}");
+    }
+
+    #[test]
+    fn accumulate_captures_gemini_thought_signature_from_extra_content() {
+        let mut state = ChatStreamState::default();
+        accumulate_tool_call_deltas(
+            &mut state,
+            vec![ChatCompletionToolCallDelta {
+                index: 0,
+                id: Some("call_g".to_string()),
+                function: Some(ChatCompletionFunctionDelta {
+                    name: Some("search".to_string()),
+                    arguments: Some("{}".to_string()),
+                }),
+                extra_content: Some(serde_json::json!({
+                    "google": { "thought_signature": "SIG_ABC" }
+                })),
+            }],
+        );
+
+        let call = state.tool_calls.get(&0).expect("tool call accumulated");
+        assert_eq!(call.thought_signature.as_deref(), Some("SIG_ABC"));
+    }
+
+    #[test]
+    fn chat_request_roundtrips_gemini_thought_signature() {
+        // A signature recorded for a call id must be echoed back on that tool
+        // call under `extra_content.google.thought_signature` when the call is
+        // replayed on a subsequent tool-turn request.
+        let call_id = "call_roundtrip_signature_unit";
+        store_thought_signature(call_id, "SIG_ROUNDTRIP".to_string());
+
+        let messages =
+            chat_messages_from_responses("", &[function_call("search", "{\"q\":\"a\"}", call_id)])
+                .expect("messages should map");
+
+        assert_eq!(
+            messages[0]["tool_calls"][0]["extra_content"],
+            serde_json::json!({ "google": { "thought_signature": "SIG_ROUNDTRIP" } })
+        );
+    }
+
+    #[test]
+    fn chat_request_omits_extra_content_without_signature() {
+        // Tool calls with no recorded signature (e.g. non-Gemini providers)
+        // must not carry an `extra_content` field.
+        let messages =
+            chat_messages_from_responses("", &[function_call("search", "{}", "call_no_sig_unit")])
+                .expect("messages should map");
+
+        assert!(messages[0]["tool_calls"][0].get("extra_content").is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_captures_and_roundtrips_thought_signature() {
+        // End-to-end: a streamed Gemini tool call carrying a thought signature
+        // is recorded, then re-attached when the resulting function call is
+        // replayed on the next request.
+        let call_id = "call_stream_signature_unit";
+        let body = format!(
+            "data: {{\"id\":\"chatcmpl-sig\",\"model\":\"gemini-3.5-flash\",\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"tool_calls\":[{{\"index\":0,\"id\":\"{call_id}\",\"function\":{{\"name\":\"search\",\"arguments\":\"{{}}\"}},\"extra_content\":{{\"google\":{{\"thought_signature\":\"SIG_STREAM\"}}}}}}]}},\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"chatcmpl-sig\",\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+        );
+        let events = collect_chat_events(&body).await;
+
+        let calls = emitted_function_calls(events);
+        assert_eq!(calls, vec![(call_id.to_string(), "{}".to_string())]);
+        assert_eq!(
+            thought_signature_for(call_id).as_deref(),
+            Some("SIG_STREAM")
+        );
+
+        let messages = chat_messages_from_responses("", &[function_call("search", "{}", call_id)])
+            .expect("messages should map");
+        assert_eq!(
+            messages[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            "SIG_STREAM"
+        );
     }
 }
