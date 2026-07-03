@@ -1346,10 +1346,7 @@ mod tests {
         let messages = chat_messages_from_responses("", &[function_call("noop", "", "call_1")])
             .expect("messages should map");
 
-        assert_eq!(
-            messages[0]["tool_calls"][0]["function"]["arguments"],
-            "{}"
-        );
+        assert_eq!(messages[0]["tool_calls"][0]["function"]["arguments"], "{}");
     }
 
     #[test]
@@ -1462,11 +1459,9 @@ mod tests {
         let call_id = "call_roundtrip_signature_unit";
         store_thought_signature(call_id, "SIG_ROUNDTRIP".to_string());
 
-        let messages = chat_messages_from_responses(
-            "",
-            &[function_call("search", "{\"q\":\"a\"}", call_id)],
-        )
-        .expect("messages should map");
+        let messages =
+            chat_messages_from_responses("", &[function_call("search", "{\"q\":\"a\"}", call_id)])
+                .expect("messages should map");
 
         assert_eq!(
             messages[0]["tool_calls"][0]["extra_content"],
@@ -1503,9 +1498,8 @@ mod tests {
             Some("SIG_STREAM")
         );
 
-        let messages =
-            chat_messages_from_responses("", &[function_call("search", "{}", call_id)])
-                .expect("messages should map");
+        let messages = chat_messages_from_responses("", &[function_call("search", "{}", call_id)])
+            .expect("messages should map");
         assert_eq!(
             messages[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
             "SIG_STREAM"
