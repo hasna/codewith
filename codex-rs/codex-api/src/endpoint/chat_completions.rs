@@ -94,10 +94,18 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
             compression,
             turn_state,
         } = options;
+        // Some OpenAI-compatible providers (e.g. Cerebras, NVIDIA vLLM) reject
+        // `reasoning_effort: "none"` and only accept low/medium/high, which
+        // silently breaks tool calling. Map None -> "low" for those providers;
+        // OpenAI/OpenRouter tolerate "none" and keep it unchanged.
+        let map_none_reasoning_to_low = {
+            let provider = self.session.provider();
+            provider.is_cerebras_endpoint() || provider.is_nvidia_endpoint()
+        };
         let ChatRequestParts {
             body,
             tool_name_map,
-        } = chat_request_from_responses(request)?;
+        } = chat_request_from_responses(request, map_none_reasoning_to_low)?;
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
@@ -179,7 +187,10 @@ struct ChatToolName {
     name: String,
 }
 
-fn chat_request_from_responses(request: ResponsesApiRequest) -> Result<ChatRequestParts, ApiError> {
+fn chat_request_from_responses(
+    request: ResponsesApiRequest,
+    map_none_reasoning_to_low: bool,
+) -> Result<ChatRequestParts, ApiError> {
     let mut tool_name_map = HashMap::new();
     let tools = chat_tools_from_responses(&request.tools, &mut tool_name_map)?;
     let mut body = serde_json::json!({
@@ -193,7 +204,9 @@ fn chat_request_from_responses(request: ResponsesApiRequest) -> Result<ChatReque
         body["tools"] = Value::Array(tools);
         body["tool_choice"] = Value::String(request.tool_choice);
     }
-    if let Some(reasoning_effort) = chat_reasoning_effort(request.reasoning.as_ref()) {
+    if let Some(reasoning_effort) =
+        chat_reasoning_effort(request.reasoning.as_ref(), map_none_reasoning_to_low)
+    {
         body["reasoning_effort"] = Value::String(reasoning_effort);
     }
     if let Some(service_tier) = request.service_tier {
@@ -209,9 +222,13 @@ fn chat_request_from_responses(request: ResponsesApiRequest) -> Result<ChatReque
     })
 }
 
-fn chat_reasoning_effort(reasoning: Option<&crate::common::Reasoning>) -> Option<String> {
+fn chat_reasoning_effort(
+    reasoning: Option<&crate::common::Reasoning>,
+    map_none_reasoning_to_low: bool,
+) -> Option<String> {
     let effort = reasoning.and_then(|reasoning| reasoning.effort.as_ref())?;
     match effort {
+        ReasoningEffort::None if map_none_reasoning_to_low => Some("low".to_string()),
         ReasoningEffort::None => Some("none".to_string()),
         ReasoningEffort::Minimal | ReasoningEffort::Low => Some("low".to_string()),
         ReasoningEffort::Medium => Some("medium".to_string()),
@@ -974,7 +991,7 @@ mod tests {
             client_metadata: None,
         };
 
-        let parts = chat_request_from_responses(request).expect("request should map");
+        let parts = chat_request_from_responses(request, false).expect("request should map");
 
         assert_eq!(
             parts.body["messages"],
@@ -1007,6 +1024,82 @@ mod tests {
                 }
             })
         );
+    }
+
+    fn reasoning(effort: ReasoningEffort) -> Reasoning {
+        Reasoning {
+            effort: Some(effort),
+            summary: None,
+            context: None,
+        }
+    }
+
+    #[test]
+    fn chat_reasoning_effort_keeps_none_by_default() {
+        // OpenAI/OpenRouter tolerate `reasoning_effort: "none"`.
+        assert_eq!(
+            chat_reasoning_effort(Some(&reasoning(ReasoningEffort::None)), false),
+            Some("none".to_string())
+        );
+    }
+
+    #[test]
+    fn chat_reasoning_effort_maps_none_to_low_for_restricted_providers() {
+        // Cerebras / NVIDIA vLLM reject "none"; it must be rewritten to "low"
+        // so tool calling keeps working.
+        assert_eq!(
+            chat_reasoning_effort(Some(&reasoning(ReasoningEffort::None)), true),
+            Some("low".to_string())
+        );
+    }
+
+    #[test]
+    fn chat_reasoning_effort_gating_only_affects_none() {
+        for effort in [
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+        ] {
+            assert_eq!(
+                chat_reasoning_effort(Some(&reasoning(effort.clone())), false),
+                chat_reasoning_effort(Some(&reasoning(effort)), true),
+            );
+        }
+    }
+
+    #[test]
+    fn chat_request_rewrites_none_reasoning_effort_when_gated() {
+        let request = ResponsesApiRequest {
+            model: "gpt-oss-120b".to_string(),
+            instructions: "Be terse".to_string(),
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: Vec::new(),
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: true,
+            reasoning: Some(reasoning(ReasoningEffort::None)),
+            store: false,
+            stream: true,
+            include: Vec::new(),
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let gated = chat_request_from_responses(request.clone(), true).expect("request should map");
+        assert_eq!(gated.body["reasoning_effort"], "low");
+
+        let ungated = chat_request_from_responses(request, false).expect("request should map");
+        assert_eq!(ungated.body["reasoning_effort"], "none");
     }
 
     #[test]
@@ -1259,10 +1352,7 @@ mod tests {
         let messages = chat_messages_from_responses("", &[function_call("noop", "", "call_1")])
             .expect("messages should map");
 
-        assert_eq!(
-            messages[0]["tool_calls"][0]["function"]["arguments"],
-            "{}"
-        );
+        assert_eq!(messages[0]["tool_calls"][0]["function"]["arguments"], "{}");
     }
 
     #[test]
