@@ -116,6 +116,11 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.fetch_update.duration_ms", &[]);
         let auth = self.auth().await;
+        // The `client_version` query parameter is only understood by the Codex
+        // backend. Third-party OpenAI-compatible `/models` endpoints (e.g.
+        // Google Gemini's `/v1beta/openai`) reject unknown query parameters
+        // with a 400, so only append it when talking to the Codex backend.
+        let uses_codex_backend = auth.as_ref().is_some_and(CodexAuth::uses_codex_backend);
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let api_provider = self.provider_info.to_api_provider(auth_mode)?;
         let api_auth = resolve_provider_model_list_auth(auth.as_ref(), &self.provider_info)?;
@@ -129,6 +134,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         });
         let client = ModelsClient::new(transport, api_provider, api_auth)
             .with_provider_id(Some(self.provider_id.clone()))
+            .with_client_version_query(uses_codex_backend)
             .with_telemetry(Some(request_telemetry));
         let extra_headers = self.extra_model_list_headers()?;
 

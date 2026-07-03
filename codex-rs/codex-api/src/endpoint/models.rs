@@ -25,6 +25,7 @@ use std::sync::Arc;
 pub struct ModelsClient<T: HttpTransport> {
     session: EndpointSession<T>,
     provider_id: Option<String>,
+    append_client_version: bool,
 }
 
 impl<T: HttpTransport> ModelsClient<T> {
@@ -32,6 +33,12 @@ impl<T: HttpTransport> ModelsClient<T> {
         Self {
             session: EndpointSession::new(transport, provider, auth),
             provider_id: None,
+            // The `client_version` query param is a Codex-backend feature. It is
+            // appended by default to preserve behavior for the Codex `/models`
+            // endpoint; callers that talk to a third-party OpenAI-compatible
+            // endpoint (for example Google Gemini's `/v1beta/openai`, which
+            // rejects unknown query parameters) should disable it.
+            append_client_version: true,
         }
     }
 
@@ -39,15 +46,26 @@ impl<T: HttpTransport> ModelsClient<T> {
         let Self {
             session,
             provider_id,
+            append_client_version,
         } = self;
         Self {
             session: session.with_request_telemetry(request),
             provider_id,
+            append_client_version,
         }
     }
 
     pub fn with_provider_id(mut self, provider_id: Option<String>) -> Self {
         self.provider_id = provider_id;
+        self
+    }
+
+    /// Control whether the `client_version` query parameter is appended to the
+    /// `/models` request. Only the Codex backend understands this parameter;
+    /// third-party OpenAI-compatible endpoints (such as Google Gemini) reject
+    /// it with a 400 error, so it must be disabled for those providers.
+    pub fn with_client_version_query(mut self, enabled: bool) -> Self {
+        self.append_client_version = enabled;
         self
     }
 
@@ -73,7 +91,9 @@ impl<T: HttpTransport> ModelsClient<T> {
                 extra_headers,
                 /*body*/ None,
                 |req| {
-                    Self::append_client_version_query(req, client_version);
+                    if self.append_client_version {
+                        Self::append_client_version_query(req, client_version);
+                    }
                 },
             )
             .await?;
@@ -615,6 +635,49 @@ mod tests {
         assert_eq!(
             url,
             "https://example.com/api/codex/models?client_version=0.99.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn omits_client_version_query_when_disabled() {
+        // Third-party OpenAI-compatible endpoints (e.g. Google Gemini's
+        // `/v1beta/openai`) reject the unknown `client_version` query param, so
+        // it must not be appended when disabled.
+        let response = ModelsResponse { models: Vec::new() };
+
+        let transport = CapturingTransport {
+            last_request: Arc::new(Mutex::new(None)),
+            body: Arc::new(response),
+            etag: None,
+        };
+
+        let client = ModelsClient::new(
+            transport.clone(),
+            provider("https://generativelanguage.googleapis.com/v1beta/openai"),
+            Arc::new(DummyAuth),
+        )
+        .with_client_version_query(false);
+
+        client
+            .list_models("0.99.0", HeaderMap::new())
+            .await
+            .expect("request should succeed");
+
+        let url = transport
+            .last_request
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .url
+            .clone();
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert!(
+            !url.contains("client_version"),
+            "client_version must not be appended when disabled"
         );
     }
 
