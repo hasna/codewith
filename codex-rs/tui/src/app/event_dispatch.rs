@@ -277,9 +277,7 @@ impl App {
                             }
                         }
                         Err(err) => {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to fork current session through the app server: {err}"
-                            ));
+                            self.chat_widget.add_error_message(fork_error_message(&err));
                         }
                     }
                 } else {
