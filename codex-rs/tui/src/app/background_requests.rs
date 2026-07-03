@@ -207,7 +207,7 @@ impl App {
         tokio::spawn(async move {
             let result = fetch_connectors_list(request_handle, force_refetch, thread_id)
                 .await
-                .map_err(|err| err.to_string());
+                .map_err(|err| format_app_list_error(&err));
             app_event_tx.send(AppEvent::ConnectorsLoaded {
                 result,
                 is_final: true,
@@ -898,6 +898,15 @@ pub(super) async fn fetch_connectors_list(
     })
 }
 
+/// Render an `app/list` failure so the underlying reason (e.g. the app-server
+/// response error, "backend unavailable", or "not signed in") is surfaced to
+/// the user instead of only the generic outermost context. eyre's default
+/// `Display`/`to_string()` shows just the last `wrap_err` message, dropping the
+/// actionable cause; the alternate (`{:#}`) formatter walks the full chain.
+fn format_app_list_error(err: &color_eyre::eyre::Report) -> String {
+    format!("{err:#}")
+}
+
 pub(super) async fn fetch_plugins_list(
     request_handle: AppServerRequestHandle,
     cwd: PathBuf,
@@ -1358,6 +1367,37 @@ mod tests {
         ));
 
         assert_eq!(app.connectors_list_thread_id(), Some(thread_id.to_string()));
+    }
+
+    #[test]
+    fn format_app_list_error_surfaces_underlying_reason() {
+        use codex_app_server_client::TypedRequestError;
+        use codex_app_server_protocol::JSONRPCErrorError;
+        use color_eyre::eyre::WrapErr;
+
+        // Mirror `fetch_connectors_list`: an app-server failure wrapped with the
+        // generic TUI context. eyre's plain `Display` only shows the outermost
+        // context, hiding the actionable cause.
+        let report = Err::<(), _>(TypedRequestError::Server {
+            method: "app/list".to_string(),
+            source: JSONRPCErrorError {
+                code: -32000,
+                data: None,
+                message: "backend unavailable".to_string(),
+            },
+        })
+        .wrap_err("app/list failed in TUI")
+        .expect_err("expected an error");
+
+        // The old behavior (`to_string()`) dropped the reason.
+        assert_eq!(report.to_string(), "app/list failed in TUI");
+
+        // The fix surfaces the underlying reason so the cause is actionable.
+        let surfaced = format_app_list_error(&report);
+        assert!(
+            surfaced.contains("backend unavailable"),
+            "expected surfaced error to include the underlying reason, got: {surfaced}"
+        );
     }
 
     #[tokio::test]
