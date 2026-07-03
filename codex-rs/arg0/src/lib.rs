@@ -18,6 +18,11 @@ const MISSPELLED_APPLY_PATCH_ARG0: &str = "applypatch";
 #[cfg(unix)]
 const EXECVE_WRAPPER_ARG0: &str = "codex-execve-wrapper";
 const LOCK_FILENAME: &str = ".lock";
+/// Shared lock file that serializes the janitor with per-session directory
+/// creation. Held across `janitor_cleanup` + session-dir materialization so a
+/// concurrent janitor can never observe a session directory in the window
+/// between its creation and the moment its per-session `.lock` is acquired.
+const JANITOR_LOCK_FILENAME: &str = ".janitor.lock";
 const TOKIO_WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -347,55 +352,8 @@ fn prepare_path_entry_for_codex_aliases(
         std::fs::set_permissions(&temp_root, std::fs::Permissions::from_mode(0o700))?;
     }
 
-    // Best-effort cleanup of stale per-session dirs. Ignore failures so startup proceeds.
-    if let Err(err) = janitor_cleanup(&temp_root) {
-        eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
-    }
-
-    let temp_dir = tempfile::Builder::new()
-        .prefix("codex-arg0")
-        .tempdir_in(&temp_root)?;
+    let (temp_dir, lock_file) = create_locked_session_dir(&temp_root, materialize_codex_aliases)?;
     let path = temp_dir.path();
-
-    let lock_path = path.join(LOCK_FILENAME);
-    let lock_file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    lock_file.try_lock()?;
-
-    for filename in &[
-        APPLY_PATCH_ARG0,
-        MISSPELLED_APPLY_PATCH_ARG0,
-        #[cfg(target_os = "linux")]
-        CODEX_LINUX_SANDBOX_ARG0,
-        #[cfg(unix)]
-        EXECVE_WRAPPER_ARG0,
-    ] {
-        let exe = std::env::current_exe()?;
-
-        #[cfg(unix)]
-        {
-            let link = path.join(filename);
-            symlink(&exe, &link)?;
-        }
-
-        #[cfg(windows)]
-        {
-            let batch_script = path.join(format!("{filename}.bat"));
-            let exe = exe.display();
-            std::fs::write(
-                &batch_script,
-                format!(
-                    r#"@echo off
-"{exe}" {CODEX_CORE_APPLY_PATCH_ARG1} %*
-"#,
-                ),
-            )?;
-        }
-    }
 
     let updated_path_env_var = path_env_with_entry(path, existing_path);
 
@@ -458,6 +416,102 @@ fn path_env_with_entry(path_entry: &Path, existing_path: Option<OsString>) -> Os
         path_env_var.push(existing_path);
     }
     path_env_var
+}
+
+/// Creates a fresh per-session directory under `temp_root`, acquires its
+/// per-session lock, and invokes `populate` to materialize the session's helper
+/// links inside it.
+///
+/// The whole cleanup + create + lock + populate sequence runs while holding the
+/// shared [`JANITOR_LOCK_FILENAME`] lock. This serializes it against every other
+/// process's janitor, closing the race where a concurrent janitor could observe
+/// this directory in the window between its creation and the moment its
+/// per-session `.lock` is acquired — and delete it out from under a session that
+/// is about to exec the helper. Once this returns, the per-session lock is held
+/// (kept alive by the returned [`File`]), so any later janitor sees the lock as
+/// contended and skips the directory until this session exits.
+fn create_locked_session_dir(
+    temp_root: &Path,
+    populate: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<(TempDir, File)> {
+    // Held for the duration of the critical section; released on drop.
+    let _janitor_lock = acquire_janitor_lock(temp_root)?;
+
+    // Best-effort cleanup of stale per-session dirs. Ignore failures so startup proceeds.
+    if let Err(err) = janitor_cleanup(temp_root) {
+        eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
+    }
+
+    let temp_dir = tempfile::Builder::new()
+        .prefix("codex-arg0")
+        .tempdir_in(temp_root)?;
+    let path = temp_dir.path();
+
+    let lock_path = path.join(LOCK_FILENAME);
+    let lock_file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.try_lock()?;
+
+    populate(path)?;
+
+    Ok((temp_dir, lock_file))
+}
+
+/// Opens and takes an exclusive (blocking) lock on the shared janitor lock file
+/// in `temp_root`. The lock is advisory and tied to the returned file handle, so
+/// it is released automatically when the handle is dropped or the process exits.
+fn acquire_janitor_lock(temp_root: &Path) -> std::io::Result<File> {
+    let lock_path = temp_root.join(JANITOR_LOCK_FILENAME);
+    let lock_file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+    Ok(lock_file)
+}
+
+/// Materializes the Codewith alias helpers inside `path` (symlinks on UNIX,
+/// batch shims on Windows) so children can re-invoke this executable through the
+/// arg0 trick.
+fn materialize_codex_aliases(path: &Path) -> std::io::Result<()> {
+    for filename in &[
+        APPLY_PATCH_ARG0,
+        MISSPELLED_APPLY_PATCH_ARG0,
+        #[cfg(target_os = "linux")]
+        CODEX_LINUX_SANDBOX_ARG0,
+        #[cfg(unix)]
+        EXECVE_WRAPPER_ARG0,
+    ] {
+        let exe = std::env::current_exe()?;
+
+        #[cfg(unix)]
+        {
+            let link = path.join(filename);
+            symlink(&exe, &link)?;
+        }
+
+        #[cfg(windows)]
+        {
+            let batch_script = path.join(format!("{filename}.bat"));
+            let exe = exe.display();
+            std::fs::write(
+                &batch_script,
+                format!(
+                    r#"@echo off
+"{exe}" {CODEX_CORE_APPLY_PATCH_ARG1} %*
+"#,
+                ),
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 fn janitor_cleanup(temp_root: &Path) -> std::io::Result<()> {
@@ -720,6 +774,72 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert!(dir.exists());
+        Ok(())
+    }
+
+    /// Regression test for the arg0 helper spawn race: overlapping sessions
+    /// concurrently materialize their helper dirs (which each run the janitor)
+    /// while other sessions hold live, locked helper dirs. A live session's
+    /// helper must never disappear before it "spawns" (here: while its
+    /// per-session lock is still held). Before the fix, a concurrent janitor
+    /// could delete a sibling session's directory in the window between its
+    /// creation and its per-session lock being acquired.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_session_setup_never_loses_helper() -> anyhow::Result<()> {
+        use super::create_locked_session_dir;
+
+        const THREADS: usize = 8;
+        const ITERS: usize = 50;
+        const HELPER: &str = "codex-linux-sandbox";
+
+        let root = tempfile::tempdir()?;
+        let temp_root = root.path();
+
+        std::thread::scope(|scope| -> anyhow::Result<()> {
+            let mut handles = Vec::new();
+            for _ in 0..THREADS {
+                handles.push(scope.spawn(move || -> anyhow::Result<()> {
+                    for _ in 0..ITERS {
+                        let (temp_dir, _lock_file) =
+                            create_locked_session_dir(temp_root, |path| {
+                                // Stand in for the real helper symlinks.
+                                fs::write(path.join(HELPER), b"")?;
+                                Ok(())
+                            })?;
+
+                        let helper = temp_dir.path().join(HELPER);
+                        // Present the instant setup returns.
+                        ensure!(
+                            helper.exists(),
+                            "helper missing immediately after setup: {}",
+                            helper.display()
+                        );
+
+                        // Still present after a scheduling window that lets other
+                        // threads run their janitors — this is the "about to
+                        // spawn" gap that used to lose the helper.
+                        std::thread::yield_now();
+                        ensure!(
+                            helper.exists(),
+                            "helper vanished while session lock was held: {}",
+                            helper.display()
+                        );
+
+                        // Release the session so it becomes eligible for cleanup
+                        // by the next janitor, maximizing overlap/contention.
+                        drop(temp_dir);
+                    }
+                    Ok(())
+                }));
+            }
+
+            for handle in handles {
+                handle.join().expect("session thread panicked")?;
+            }
+            Ok(())
+        })?;
+
         Ok(())
     }
 
