@@ -20,6 +20,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::TokenUsage;
@@ -470,6 +471,13 @@ fn chat_messages_from_responses(
     // coalesced into a single assistant message with a `tool_calls` array.
     let mut pending_tool_calls: Vec<Value> = Vec::new();
 
+    // Buffer for a reasoning item that must be replayed onto the assistant
+    // message that follows it. Only *signed* reasoning is replayed (see
+    // `ResponseItem::Reasoning` arm below); it is attached to the next
+    // assistant message (either a plain assistant message or the coalesced
+    // `tool_calls` message).
+    let mut pending_reasoning: Option<PendingReasoning> = None;
+
     for item in input {
         if let ResponseItem::FunctionCall {
             name,
@@ -498,16 +506,55 @@ fn chat_messages_from_responses(
             continue;
         }
 
+        // A reasoning item ends the current run of tool calls (flushing them,
+        // which consumes any earlier pending reasoning), then records itself so
+        // it can be replayed onto the assistant message that follows.
+        if let ResponseItem::Reasoning {
+            content,
+            encrypted_content,
+            ..
+        } = item
+        {
+            flush_pending_tool_calls(
+                &mut messages,
+                &mut pending_tool_calls,
+                &mut pending_reasoning,
+            );
+            // Provider safety: only *signed* reasoning is echoed back. Signed
+            // reasoning (e.g. Anthropic-style extended thinking) must be
+            // preserved across tool turns for continuity, whereas unsigned
+            // chain-of-thought (e.g. DeepSeek's `reasoning_content`) must NOT be
+            // sent back — such providers reject `reasoning_content` on input.
+            if let Some(signature) = encrypted_content {
+                pending_reasoning = Some(PendingReasoning {
+                    text: reasoning_text_from_content(content),
+                    signature: signature.clone(),
+                });
+            }
+            continue;
+        }
+
         // Any non-function-call item ends the current run of tool calls, so
         // flush them into one assistant message before emitting this item.
-        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+        flush_pending_tool_calls(
+            &mut messages,
+            &mut pending_tool_calls,
+            &mut pending_reasoning,
+        );
 
         match item {
             ResponseItem::Message { role, content, .. } => {
-                messages.push(serde_json::json!({
+                let mut message = serde_json::json!({
                     "role": chat_message_role(role),
                     "content": text_from_content_items(content)?,
-                }));
+                });
+                // Attach buffered signed reasoning to this assistant message.
+                if chat_message_role(role) == "assistant"
+                    && let Some(reasoning) = pending_reasoning.take()
+                {
+                    apply_reasoning_to_message(&mut message, &reasoning);
+                }
+                messages.push(message);
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 messages.push(serde_json::json!({
@@ -535,7 +582,11 @@ fn chat_messages_from_responses(
     }
 
     // Flush any trailing tool calls that ended the input.
-    flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+    flush_pending_tool_calls(
+        &mut messages,
+        &mut pending_tool_calls,
+        &mut pending_reasoning,
+    );
 
     if messages.is_empty() {
         messages.push(serde_json::json!({
@@ -549,15 +600,68 @@ fn chat_messages_from_responses(
 
 /// Emit the buffered function calls (if any) as a single assistant message
 /// carrying a `tool_calls` array, so parallel calls form one valid message.
-fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+/// Any buffered signed reasoning is attached to that assistant message so it
+/// round-trips ahead of the tool calls it produced.
+fn flush_pending_tool_calls(
+    messages: &mut Vec<Value>,
+    pending_tool_calls: &mut Vec<Value>,
+    pending_reasoning: &mut Option<PendingReasoning>,
+) {
     if pending_tool_calls.is_empty() {
         return;
     }
-    messages.push(serde_json::json!({
+    let mut message = serde_json::json!({
         "role": "assistant",
         "content": null,
         "tool_calls": std::mem::take(pending_tool_calls),
-    }));
+    });
+    if let Some(reasoning) = pending_reasoning.take() {
+        apply_reasoning_to_message(&mut message, &reasoning);
+    }
+    messages.push(message);
+}
+
+/// Signed reasoning buffered for replay onto the following assistant message.
+#[derive(Debug, Clone)]
+struct PendingReasoning {
+    text: String,
+    signature: String,
+}
+
+/// Attach signed reasoning to an assistant chat message. The text is echoed
+/// under `reasoning_content` and the (opaque) signature under
+/// `reasoning_signature` so signature-based reasoning continuity survives the
+/// round-trip. Only ever called for signed reasoning (see the
+/// `ResponseItem::Reasoning` handling in `chat_messages_from_responses`).
+fn apply_reasoning_to_message(message: &mut Value, reasoning: &PendingReasoning) {
+    if let Some(object) = message.as_object_mut() {
+        if !reasoning.text.is_empty() {
+            object.insert(
+                "reasoning_content".to_string(),
+                Value::String(reasoning.text.clone()),
+            );
+        }
+        object.insert(
+            "reasoning_signature".to_string(),
+            Value::String(reasoning.signature.clone()),
+        );
+    }
+}
+
+/// Concatenate the textual parts of a reasoning item's `content`.
+fn reasoning_text_from_content(content: &Option<Vec<ReasoningItemContent>>) -> String {
+    let Some(items) = content.as_ref() else {
+        return String::new();
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            ReasoningItemContent::ReasoningText { text } | ReasoningItemContent::Text { text } => {
+                text.as_str()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// Chat-completions expects `arguments` to be a JSON object string. Zero-arg
@@ -661,7 +765,63 @@ struct ChatCompletionChoice {
 struct ChatCompletionDelta {
     role: Option<String>,
     content: Option<String>,
+    // DeepSeek (and several other OpenAI-compat providers) stream the model's
+    // chain-of-thought here, alongside `content`.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    // Some providers (e.g. OpenRouter) expose reasoning under `reasoning`, which
+    // may be a plain string or an object carrying `{text, signature}`. Kept as a
+    // raw value so an unexpected shape never fails the whole chunk parse.
+    #[serde(default)]
+    reasoning: Option<Value>,
     tool_calls: Option<Vec<ChatCompletionToolCallDelta>>,
+}
+
+/// A single reasoning delta extracted from a chat-completions chunk.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReasoningDelta {
+    text: String,
+    signature: Option<String>,
+}
+
+/// Pull the reasoning text (and optional signature) out of a streaming delta,
+/// preferring the dedicated `reasoning_content` field and falling back to the
+/// `reasoning` field (string or `{text, signature}` object).
+fn reasoning_delta_from_chunk(delta: &ChatCompletionDelta) -> Option<ReasoningDelta> {
+    if let Some(text) = delta
+        .reasoning_content
+        .as_deref()
+        .filter(|text| !text.is_empty())
+    {
+        return Some(ReasoningDelta {
+            text: text.to_string(),
+            signature: None,
+        });
+    }
+    match delta.reasoning.as_ref()? {
+        Value::String(text) if !text.is_empty() => Some(ReasoningDelta {
+            text: text.clone(),
+            signature: None,
+        }),
+        Value::Object(map) => {
+            let text = map
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let signature = map
+                .get("signature")
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+                .map(str::to_string);
+            if text.is_empty() && signature.is_none() {
+                None
+            } else {
+                Some(ReasoningDelta { text, signature })
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -737,6 +897,10 @@ struct ChatStreamState {
     assistant_role: Option<String>,
     assistant_text: String,
     assistant_item_started: bool,
+    reasoning_text: String,
+    reasoning_signature: Option<String>,
+    reasoning_item_started: bool,
+    reasoning_item_done: bool,
     tool_calls: BTreeMap<usize, AccumulatedToolCall>,
     completed: bool,
 }
@@ -832,11 +996,55 @@ async fn process_chat_sse(
             state.usage = Some(usage.into());
         }
 
-        for choice in chunk.choices {
-            if let Some(role) = choice.delta.role {
+        for mut choice in chunk.choices {
+            if let Some(role) = choice.delta.role.take() {
                 state.assistant_role = Some(role);
             }
+            // Reasoning is streamed (and buffered into a Reasoning item) before
+            // the assistant message content, mirroring the Responses path.
+            if !state.reasoning_item_done
+                && let Some(reasoning) = reasoning_delta_from_chunk(&choice.delta)
+            {
+                if !state.reasoning_item_started {
+                    state.reasoning_item_started = true;
+                    let item = ResponseItem::Reasoning {
+                        id: state.response_id.clone().unwrap_or_default(),
+                        summary: Vec::new(),
+                        content: None,
+                        encrypted_content: None,
+                    };
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                if let Some(signature) = reasoning.signature {
+                    state.reasoning_signature = Some(signature);
+                }
+                if !reasoning.text.is_empty() {
+                    state.reasoning_text.push_str(&reasoning.text);
+                    if tx_event
+                        .send(Ok(ResponseEvent::ReasoningContentDelta {
+                            delta: reasoning.text,
+                            content_index: 0,
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
             if let Some(content) = choice.delta.content {
+                // Finalize any in-progress reasoning item before opening the
+                // assistant message, so history ordering matches the Responses
+                // path (reasoning item precedes the message item).
+                if !finish_reasoning_item(&mut state, &tx_event).await {
+                    return;
+                }
                 if !state.assistant_item_started {
                     let item = ResponseItem::Message {
                         id: state.response_id.clone(),
@@ -924,11 +1132,43 @@ fn accumulate_tool_call_deltas(
     }
 }
 
+/// Emit the accumulated reasoning as a completed `ResponseItem::Reasoning` (so
+/// it is recorded in history and can be replayed on later turns). Idempotent:
+/// once the reasoning item is finalized it is never emitted again. Returns
+/// `false` if the event channel has closed and the caller should stop.
+async fn finish_reasoning_item(
+    state: &mut ChatStreamState,
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) -> bool {
+    if !state.reasoning_item_started || state.reasoning_item_done {
+        return true;
+    }
+    state.reasoning_item_done = true;
+    let item = ResponseItem::Reasoning {
+        id: state.response_id.clone().unwrap_or_default(),
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: std::mem::take(&mut state.reasoning_text),
+        }]),
+        encrypted_content: state.reasoning_signature.clone(),
+    };
+    tx_event
+        .send(Ok(ResponseEvent::OutputItemDone(item)))
+        .await
+        .is_ok()
+}
+
 async fn emit_chat_completion_finished(
     state: &mut ChatStreamState,
     tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     tool_name_map: &HashMap<String, ChatToolName>,
 ) {
+    // Reasoning-only or reasoning-then-tool-call responses never hit the content
+    // branch, so finalize any outstanding reasoning item first (ahead of the
+    // assistant message and tool calls).
+    if !finish_reasoning_item(state, tx_event).await {
+        return;
+    }
     if state.assistant_item_started {
         let item = ResponseItem::Message {
             id: state.response_id.clone(),
@@ -1571,6 +1811,192 @@ mod tests {
                 .expect("messages should map");
 
         assert!(messages[0]["tool_calls"][0].get("extra_content").is_none());
+    }
+
+    fn reasoning_item(text: &str, signature: Option<&str>) -> ResponseItem {
+        ResponseItem::Reasoning {
+            id: String::new(),
+            summary: Vec::new(),
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: text.to_string(),
+            }]),
+            encrypted_content: signature.map(str::to_string),
+        }
+    }
+
+    fn emitted_reasoning_deltas(events: &[Result<ResponseEvent, ApiError>]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ResponseEvent::ReasoningContentDelta { delta, .. }) => Some(delta.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn emitted_done_reasoning(events: &[Result<ResponseEvent, ApiError>]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ResponseEvent::OutputItemDone(ResponseItem::Reasoning { content, .. })) => {
+                    Some(reasoning_text_from_content(content))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reasoning_delta_prefers_reasoning_content_field() {
+        let delta = ChatCompletionDelta {
+            reasoning_content: Some("thinking".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasoning_delta_from_chunk(&delta),
+            Some(ReasoningDelta {
+                text: "thinking".to_string(),
+                signature: None,
+            })
+        );
+    }
+
+    #[test]
+    fn reasoning_delta_reads_string_and_object_reasoning() {
+        let string_delta = ChatCompletionDelta {
+            reasoning: Some(serde_json::json!("plain cot")),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasoning_delta_from_chunk(&string_delta),
+            Some(ReasoningDelta {
+                text: "plain cot".to_string(),
+                signature: None,
+            })
+        );
+
+        let object_delta = ChatCompletionDelta {
+            reasoning: Some(serde_json::json!({"text": "signed cot", "signature": "SIG"})),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasoning_delta_from_chunk(&object_delta),
+            Some(ReasoningDelta {
+                text: "signed cot".to_string(),
+                signature: Some("SIG".to_string()),
+            })
+        );
+
+        // No reasoning present -> None (and empty strings are ignored).
+        assert_eq!(
+            reasoning_delta_from_chunk(&ChatCompletionDelta::default()),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_stream_emits_reasoning_content_as_event_and_item() {
+        // A DeepSeek-style delta carrying `reasoning_content` must surface a
+        // ReasoningContentDelta event (live display) and a completed Reasoning
+        // item (history), ahead of the assistant message.
+        let events = collect_chat_events(
+            "data: {\"id\":\"chatcmpl-r\",\"model\":\"deepseek-v4\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"step 1 \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-r\",\"choices\":[{\"delta\":{\"reasoning_content\":\"step 2\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-r\",\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+        )
+        .await;
+
+        assert!(events.iter().all(Result::is_ok), "events: {events:?}");
+        assert_eq!(emitted_reasoning_deltas(&events), vec!["step 1 ", "step 2"]);
+        assert_eq!(emitted_done_reasoning(&events), vec!["step 1 step 2"]);
+
+        // The reasoning item must be finalized before the assistant message.
+        let done_positions: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ResponseEvent::OutputItemDone(ResponseItem::Reasoning { .. })) => {
+                    Some("reasoning")
+                }
+                Ok(ResponseEvent::OutputItemDone(ResponseItem::Message { .. })) => Some("message"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(done_positions, vec!["reasoning", "message"]);
+    }
+
+    #[test]
+    fn chat_request_replays_signed_reasoning_onto_assistant_message() {
+        // Signed reasoning in history is replayed (not dropped) onto the
+        // following assistant message.
+        let messages = chat_messages_from_responses(
+            "",
+            &[
+                reasoning_item("deep thought", Some("SIG_ABC")),
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "the answer".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+        )
+        .expect("messages should map");
+
+        assert_eq!(
+            messages,
+            vec![serde_json::json!({
+                "role": "assistant",
+                "content": "the answer",
+                "reasoning_content": "deep thought",
+                "reasoning_signature": "SIG_ABC",
+            })]
+        );
+    }
+
+    #[test]
+    fn chat_request_replays_signed_reasoning_onto_tool_call_message() {
+        // Signed reasoning ahead of tool calls attaches to the coalesced
+        // assistant tool_calls message.
+        let messages = chat_messages_from_responses(
+            "",
+            &[
+                reasoning_item("plan the call", Some("SIG_TOOL")),
+                function_call("search", "{}", "call_x"),
+            ],
+        )
+        .expect("messages should map");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[0]["reasoning_content"], "plan the call");
+        assert_eq!(messages[0]["reasoning_signature"], "SIG_TOOL");
+        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_x");
+    }
+
+    #[test]
+    fn chat_request_drops_unsigned_reasoning_for_provider_safety() {
+        // Unsigned reasoning (e.g. DeepSeek `reasoning_content`) must NOT be
+        // echoed back: such providers reject `reasoning_content` on input.
+        let messages = chat_messages_from_responses(
+            "",
+            &[
+                reasoning_item("private cot", None),
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "the answer".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+        )
+        .expect("messages should map");
+
+        assert_eq!(
+            messages,
+            vec![serde_json::json!({"role": "assistant", "content": "the answer"})]
+        );
     }
 
     #[tokio::test]
