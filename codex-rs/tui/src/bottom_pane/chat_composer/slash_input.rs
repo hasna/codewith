@@ -227,6 +227,23 @@ impl ChatComposer {
         } else {
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
+
+        // When the typed token exactly matches a command name or hidden alias,
+        // Enter dispatches that exact command instead of the popup's highlighted
+        // fuzzy suggestion. For example `/exit` quits (its hidden alias resolves
+        // to `/quit`) rather than opening `/experimental`, the top fuzzy match.
+        if matches!(
+            key_event,
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }
+        ) && let Some(result) = self.try_dispatch_exact_slash_command()
+        {
+            return (result, true);
+        }
+
         let ActivePopup::Command(popup) = &mut self.popups.active else {
             unreachable!();
         };
@@ -380,6 +397,65 @@ impl ChatComposer {
                 self.handle_key_event_without_popup(key_event)
             }
             input => self.handle_input_basic(input),
+        }
+    }
+
+    /// If the composer currently holds a *bare* slash command whose typed token
+    /// exactly matches a command name or hidden alias, dispatch it directly.
+    ///
+    /// This is deliberately narrow so it does not clobber arrow-key navigation in
+    /// the popup. It only short-circuits when the exact match either:
+    ///   (a) is hidden from the popup (`is_visible() == false`, e.g. `/exit`,
+    ///       `/stats`, `/btw`, `/subagents`, `/background-agent`), so the user can
+    ///       never navigate to it — Enter must resolve the hidden alias to its
+    ///       visible target (e.g. `Quit`) instead of the top fuzzy match shown in
+    ///       the popup (e.g. `/experimental`); or
+    ///   (b) equals the popup's currently selected item, i.e. plain Enter with no
+    ///       navigation.
+    ///
+    /// If the user navigated (arrow keys) to a *different* visible command, this
+    /// returns `None` so the popup's normal Enter handling dispatches the selected
+    /// item — e.g. `/status` + Down (`/statusline`) must dispatch `Statusline`, not
+    /// `Status`. Inline-arg drafts and service-tier commands keep their existing
+    /// popup-driven handling.
+    fn try_dispatch_exact_slash_command(&mut self) -> Option<InputResult> {
+        let SlashCommandItem::Builtin(cmd) = self
+            .slash_input()
+            .bare_command(self.draft.textarea.text())?
+        else {
+            return None;
+        };
+        // Visible commands appear in the popup and can be navigated to, so only
+        // short-circuit when the exact match is the current selection. Hidden
+        // commands are absent from the popup and always dispatch directly.
+        if cmd.is_visible() {
+            let selected_matches = matches!(
+                self.command_popup_selected_item(),
+                Some(CommandItem::Builtin(selected)) if selected == cmd
+            );
+            if !selected_matches {
+                return None;
+            }
+        }
+        // Hidden aliases (e.g. `/exit`) dispatch as their visible target.
+        let resolved = cmd.hidden_alias_target().unwrap_or(cmd);
+        let command = SlashCommandItem::Builtin(resolved);
+        if self.reject_slash_command_if_unavailable(&command) {
+            self.stage_slash_command_history(&command);
+            self.record_pending_slash_command_history();
+            return Some(InputResult::None);
+        }
+        self.stage_slash_command_history(&command);
+        self.draft.textarea.set_text_clearing_elements("");
+        self.draft.is_bash_mode = false;
+        Some(InputResult::Command(resolved))
+    }
+
+    /// The command popup's currently highlighted item, if the popup is active.
+    fn command_popup_selected_item(&self) -> Option<CommandItem> {
+        match &self.popups.active {
+            ActivePopup::Command(popup) => popup.selected_item(),
+            _ => None,
         }
     }
 
@@ -670,5 +746,75 @@ mod tests {
         assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
         assert_eq!(composer.draft.textarea.text(), "/session ");
         assert_eq!(composer.draft.textarea.cursor(), "/session ".len());
+    }
+
+    #[test]
+    fn exact_exit_alias_enter_dispatches_quit_not_highlighted_experimental() {
+        // `/exit` is a hidden alias absent from the popup, whose sole fuzzy match
+        // is `/experimental`. Enter must dispatch the exact alias (resolved to
+        // Quit) rather than the highlighted `/experimental` suggestion.
+        let mut composer = composer_with_text_at_cursor("/exit", "/exit".len());
+        assert!(matches!(composer.popups.active, ActivePopup::Command(_)));
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Quit)
+        );
+        assert!(composer.draft.textarea.is_empty());
+    }
+
+    #[test]
+    fn exact_quit_enter_still_dispatches_quit() {
+        let mut composer = composer_with_text_at_cursor("/quit", "/quit".len());
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Quit)
+        );
+        assert!(composer.draft.textarea.is_empty());
+    }
+
+    #[test]
+    fn exact_status_enter_without_navigation_dispatches_status() {
+        // Plain Enter with no arrow navigation on an exact visible match must
+        // still dispatch that command.
+        let mut composer = composer_with_text_at_cursor("/status", "/status".len());
+
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Status)
+        );
+        assert!(composer.draft.textarea.is_empty());
+    }
+
+    #[test]
+    fn status_navigated_to_statusline_dispatches_statusline_not_status() {
+        // Typing `/status` matches both `/status` (exact) and `/statusline`.
+        // Arrow-navigating down to `/statusline` must dispatch the *selected*
+        // command, not short-circuit back to the exact `/status` match.
+        let mut composer = composer_with_text_at_cursor("/status", "/status".len());
+        assert!(matches!(composer.popups.active, ActivePopup::Command(_)));
+
+        assert_eq!(press(&mut composer, KeyCode::Down), InputResult::None);
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Statusline)
+        );
+        assert!(composer.draft.textarea.is_empty());
+    }
+
+    #[test]
+    fn pr_navigated_to_profile_dispatches_profile_not_pr() {
+        // `/pr` is an exact command, but navigating down to `/profile` must
+        // dispatch the selected command rather than the exact `/pr` match.
+        let mut composer = composer_with_text_at_cursor("/pr", "/pr".len());
+        assert!(matches!(composer.popups.active, ActivePopup::Command(_)));
+
+        assert_eq!(press(&mut composer, KeyCode::Down), InputResult::None);
+        assert_eq!(
+            press(&mut composer, KeyCode::Enter),
+            InputResult::Command(SlashCommand::Profile)
+        );
+        assert!(composer.draft.textarea.is_empty());
     }
 }
