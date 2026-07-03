@@ -16,6 +16,7 @@ use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_BASE_URL;
 use codex_model_provider_info::QWEN_BASE_URL;
 use codex_model_provider_info::XAI_BASE_URL;
+use codex_model_provider_info::XAI_PROVIDER_ID;
 use codex_model_provider_info::XIAOMI_BASE_URL;
 use codex_model_provider_info::ZAI_BASE_URL;
 use codex_model_provider_info::provider_base_url_is_loopback;
@@ -524,9 +525,14 @@ impl ModelProvider for ConfiguredModelProvider {
         };
 
         let image_generation = matches!(web_search, HostedWebSearchProvider::OpenAiResponses);
+        // xAI's Responses API rejects the `namespace` tool type (it only accepts
+        // flat tool types such as `function`, `web_search`, `x_search`, `shell`,
+        // ...). Emitting namespace groupings there yields a 422 that breaks all
+        // tool calling, so treat xAI like the other providers that lack namespace
+        // support and expose flat tools instead.
         let namespace_tools = !matches!(
             self.provider_id.as_str(),
-            CEREBRAS_PROVIDER_ID | DEEPSEEK_PROVIDER_ID | NVIDIA_PROVIDER_ID
+            CEREBRAS_PROVIDER_ID | DEEPSEEK_PROVIDER_ID | NVIDIA_PROVIDER_ID | XAI_PROVIDER_ID
         );
 
         ProviderCapabilities {
@@ -889,6 +895,45 @@ mod tests {
 
             assert_eq!(provider.capabilities().web_search, expected_web_search);
         }
+    }
+
+    #[test]
+    fn providers_without_namespace_tool_support_disable_namespace_tools() {
+        // These providers reject the Responses `namespace` tool type, so they
+        // must expose flat tools instead of namespace groupings.
+        let disabled = [
+            (
+                CEREBRAS_PROVIDER_ID,
+                ModelProviderInfo::create_cerebras_provider(),
+            ),
+            (
+                DEEPSEEK_PROVIDER_ID,
+                ModelProviderInfo::create_deepseek_provider(),
+            ),
+            (
+                NVIDIA_PROVIDER_ID,
+                ModelProviderInfo::create_nvidia_provider(),
+            ),
+            (XAI_PROVIDER_ID, ModelProviderInfo::create_xai_provider()),
+        ];
+        for (provider_id, provider_info) in disabled {
+            let provider = create_model_provider_with_id(
+                provider_id,
+                provider_info,
+                /*auth_manager*/ None,
+            );
+            assert!(
+                !provider.capabilities().namespace_tools,
+                "expected namespace_tools disabled for {provider_id}"
+            );
+        }
+
+        // OpenAI supports namespace grouping and must keep it enabled.
+        let openai = create_model_provider(
+            ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            /*auth_manager*/ None,
+        );
+        assert!(openai.capabilities().namespace_tools);
     }
 
     #[test]
