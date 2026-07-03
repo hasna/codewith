@@ -18,6 +18,12 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "Cerebras hosted Z.ai GLM 4.7 model. Requires CEREBRAS_API_KEY for turns.",
         /*is_default*/ false,
     ),
+    KnownProviderFallbackModel::new(
+        "gemma-4-31b",
+        "Gemma 4 31B",
+        "Cerebras hosted Gemma 4 31B preview model. Requires CEREBRAS_API_KEY for turns.",
+        /*is_default*/ false,
+    ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
@@ -35,6 +41,13 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_tools*/ true,
             /*supports_parallel_tool_calls*/ true,
             /*supports_reasoning*/ true,
+        )),
+        "gemma-4-31b" => Some(KnownProviderModelMetadata::new(
+            "Gemma 4 31B",
+            /*context_window*/ 131_072,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ false,
+            /*supports_reasoning*/ false,
         )),
         _ => None,
     }

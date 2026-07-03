@@ -64,6 +64,27 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
+        "anthropic/claude-fable-5" => Some(KnownProviderModelMetadata::new(
+            "Claude Fable 5",
+            /*context_window*/ 1_000_000,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        )),
+        "anthropic/claude-opus-4-8" => Some(KnownProviderModelMetadata::new(
+            "Claude Opus 4.8",
+            /*context_window*/ 1_000_000,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        )),
+        "anthropic/claude-sonnet-5" => Some(KnownProviderModelMetadata::new(
+            "Claude Sonnet 5",
+            /*context_window*/ 1_000_000,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        )),
         "openai/gpt-oss-120b" => Some(KnownProviderModelMetadata::new(
             "OpenAI GPT OSS 120B",
             /*context_window*/ 131_072,
