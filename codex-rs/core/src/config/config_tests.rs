@@ -735,6 +735,46 @@ model_gateway = "{OPENROUTER_GATEWAY_ID}"
 }
 
 #[tokio::test]
+async fn load_config_resolves_ollama_local_provider() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "{OLLAMA_OSS_PROVIDER_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_provider_id, OLLAMA_OSS_PROVIDER_ID);
+}
+
+#[tokio::test]
+async fn load_config_resolves_lmstudio_local_provider() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "{LMSTUDIO_OSS_PROVIDER_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_provider_id, LMSTUDIO_OSS_PROVIDER_ID);
+}
+
+#[tokio::test]
 async fn load_config_rejects_incompatible_gateway_provider_pair() {
     let cfg = toml::from_str::<ConfigToml>(&format!(
         r#"

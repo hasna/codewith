@@ -807,6 +807,14 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_ollama_oss_provider() -> ModelProviderInfo {
+        create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses)
+    }
+
+    pub fn create_lmstudio_oss_provider() -> ModelProviderInfo {
+        create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses)
+    }
+
     pub fn is_openai(&self) -> bool {
         self.name == OPENAI_PROVIDER_NAME
     }
@@ -927,6 +935,18 @@ const BUILT_IN_MODEL_PROVIDER_SPECS: &[BuiltInModelProviderSpec] = &[
         factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_minimax_provider),
         allows_partial_override: true,
         default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: OLLAMA_OSS_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_ollama_oss_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Responses,
+    },
+    BuiltInModelProviderSpec {
+        id: LMSTUDIO_OSS_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_lmstudio_oss_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Responses,
     },
 ];
 
