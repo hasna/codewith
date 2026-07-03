@@ -5269,6 +5269,28 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
 }
 
 #[test]
+fn fork_error_message_guides_when_thread_has_no_rollout() {
+    let err = color_eyre::eyre::eyre!(
+        "thread/fork failed during TUI bootstrap: thread/fork failed: no rollout found for thread id 019da1a1-bed9-7a43-88a2-b49d43915021 (code -32600)"
+    );
+
+    assert_eq!(
+        fork_error_message(&err),
+        "Nothing to fork yet — send a message first, then try /fork again."
+    );
+}
+
+#[test]
+fn fork_error_message_falls_back_to_generic_wording() {
+    let err = color_eyre::eyre::eyre!("transport disconnected");
+
+    assert_eq!(
+        fork_error_message(&err),
+        "Failed to fork current session through the app server: transport disconnected"
+    );
+}
+
+#[test]
 fn active_turn_steer_race_detects_missing_active_turn() {
     let error = TypedRequestError::Server {
         method: "turn/steer".to_string(),
