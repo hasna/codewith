@@ -402,19 +402,6 @@ pub(crate) async fn finalize_non_tool_response_item(
 }
 
 #[instrument(level = "trace", skip_all)]
-/// Best-effort extraction of the originating tool call's `call_id` so that a
-/// synthesized `function_call_output` can be paired back to its call. Returns
-/// `None` for items that carry no usable call id.
-fn response_item_call_id(item: &ResponseItem) -> Option<String> {
-    match item {
-        ResponseItem::FunctionCall { call_id, .. }
-        | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id.clone()),
-        ResponseItem::LocalShellCall { call_id, .. }
-        | ResponseItem::ToolSearchCall { call_id, .. } => call_id.clone(),
-        _ => None,
-    }
-}
-
 pub(crate) async fn handle_output_item_done(
     ctx: &mut HandleOutputCtx,
     item: ResponseItem,
@@ -525,6 +512,19 @@ pub(crate) async fn handle_output_item_done(
     }
 
     Ok(output)
+}
+
+/// Best-effort extraction of the originating tool call's `call_id` so that a
+/// synthesized `function_call_output` can be paired back to its call. Returns
+/// `None` for items that carry no usable call id.
+fn response_item_call_id(item: &ResponseItem) -> Option<String> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id.clone()),
+        ResponseItem::LocalShellCall { call_id, .. }
+        | ResponseItem::ToolSearchCall { call_id, .. } => call_id.clone(),
+        _ => None,
+    }
 }
 
 pub(crate) async fn handle_non_tool_response_item(
