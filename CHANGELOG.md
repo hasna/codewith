@@ -42,6 +42,73 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.55] - 2026-07-02
+
+Tag: `rust-v0.1.55`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.55>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.54...rust-v0.1.55>
+
+Consolidation release: merges all outstanding work since 0.1.51 (40 pull requests,
+17 branches, and the 0.1.52-0.1.54 release lineage whose tags never published).
+Versions 0.1.52-0.1.54 were tagged but never reached npm due to release-pipeline
+failures fixed here.
+
+### Fixed
+
+- Release pipeline: libcap-2.75 musl download now falls back across verified
+  mirrors (kernel.org -> OSUOSL -> Debian) with mandatory checksum; macOS
+  builds use CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 and the aarch64 primary
+  runs on macos-15-xlarge, ending the 3-hour timeouts that killed 0.1.52-0.1.54.
+- Goals state: databases stamped by published 0.1.48 are repaired before
+  migration, preventing a permanent VersionMismatch(5) that disabled the
+  sqlite state layer (threads, schedules, mailbox, goals) after upgrade.
+- OpenRouter GLM-5.2 metadata restored (parallel tool calls, High/XHigh
+  reasoning presets, gpt-oss-120b as default fallback).
+- Usage-profile broker: scheduled dispatches now defer while all sibling
+  profiles are cooling down instead of feeding the failure circuit breaker.
+- Remote and sandboxed filesystems support symlink-safe reads, so project
+  instructions (CODEWITH.md/AGENTS.md) load in remote sessions.
+- Mailbox: queued-input API restored; delivery defer rolls back on enqueue
+  rejection; delivery-policy parsing matches the SQL claim filter; queued
+  context delivery is bounded.
+- Loops/schedules: deferred runs during usage waits; stale-scheduler guards;
+  live-session owner routing; scheduled turns no longer truncate interactive
+  session history.
+- macOS app: dock re-open restores the hidden window; deploy script bundles a
+  real CLI binary with CLI-derived bundle version.
+
+### Added
+
+- /teach, /variant, /usage, /pair TUI commands; slash-command alias dedupe.
+- Webhook event inbox; session PR worktree mode; nested loops to depth five;
+  goal plan appends; approval-gated agent MCP management; compact CLI output;
+  experimental smart suggest; CODEWITH.md native instruction imports.
+- Auth profile usage health checks and hardened usage-profile autoswitch.
+- Codewith bridge adapter surfaces (profile list --json, authProfile in thread
+  inventory); workflow model routing contract; sourced additional context.
+- Security hardening: canonical PR-mode cwd, thread-monitor path handling,
+  remote-control-origin RPC gating, mission-control model tool hardening,
+  update-RPC import blocking, symlinked project-instruction rejection,
+  remote-control credential handling.
+- macOS app: navigation data and session controls, profile settings flows,
+  visual system aligned with the Hasna dashboard.
+- Release CI: sccache (fail-open) across release workflows for warm-cache
+  builds from 0.1.56 onward.
+
+### Security
+
+- Node supply-chain advisories patched; anyhow 1.0.103 (RUSTSEC-2026-0190);
+  quick-xml advisories documented as compile-time-only exposure; gitleaks
+  config with tightly-scoped test-canary allowlist.
+
+### Known issues
+
+- Windows argument-comment-lint CI job fails on aws-lc-sys feature probes
+  under clang-cl (pre-existing; release builds unaffected).
+- sccache resolves its latest release at install time (fail-open; pin planned).
+- Remote no-follow reads have a documented TOCTOU window between metadata and
+  read RPCs.
+
 ### Fixed
 
 - Recovered loop-driven and long-running turns from context-window overflow
