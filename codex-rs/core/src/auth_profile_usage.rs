@@ -390,10 +390,6 @@ fn merge_retry_at(current: &mut Option<i64>, candidate: Option<i64>) {
 fn backend_usage_is_blocked(snapshot: &RateLimitSnapshot) -> bool {
     snapshot.rate_limit_reached_type.is_some()
         || snapshot
-            .credits
-            .as_ref()
-            .is_some_and(|credits| !credits.unlimited && !credits.has_credits)
-        || snapshot
             .individual_limit
             .as_ref()
             .is_some_and(|limit| limit.remaining_percent <= 0)
@@ -507,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_health_detects_backend_credit_and_spend_control_blocks() {
+    fn usage_health_ignores_credit_snapshot_when_codex_windows_have_capacity() {
         let mut credit_blocked = snapshot(10.0, 20.0);
         credit_blocked.credits = Some(CreditsSnapshot {
             has_credits: false,
@@ -515,10 +511,16 @@ mod tests {
             balance: Some("0".to_string()),
         });
         assert_eq!(
-            AuthProfileUsageHealth::Exhausted { retry_at: None },
+            AuthProfileUsageHealth::Healthy {
+                remaining_percent: 80.0,
+                resets_at: Some(100),
+            },
             usage_health_for_snapshots(&[credit_blocked], &config())
         );
+    }
 
+    #[test]
+    fn usage_health_detects_backend_reached_type_and_spend_control_blocks() {
         let mut spend_control_blocked = snapshot(10.0, 20.0);
         spend_control_blocked.individual_limit = Some(SpendControlLimitSnapshot {
             limit: "100".to_string(),
