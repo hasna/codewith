@@ -349,23 +349,25 @@ impl ExecutorFileSystem for DirectFileSystem {
     ) -> FileSystemResult<Vec<u8>> {
         reject_sandbox_context(sandbox)?;
         let path = path.as_path();
-        let initial_path_metadata = tokio::fs::symlink_metadata(path).await?;
-        reject_non_regular_or_symlink(&initial_path_metadata)?;
+        let initial_path_snapshot = path_snapshot_without_following_symlinks(path).await?;
+        initial_path_snapshot.reject_non_regular_or_symlink()?;
+
+        #[cfg(all(test, windows))]
+        replace_regular_file_before_open_for_test(path)?;
 
         let mut file = tokio::fs::File::open(path).await?;
         let file_metadata = file.metadata().await?;
-        let current_path_metadata = tokio::fs::symlink_metadata(path).await?;
-        reject_non_regular_or_symlink(&current_path_metadata)?;
+        let current_path_snapshot = path_snapshot_without_following_symlinks(path).await?;
+        current_path_snapshot.reject_non_regular_or_symlink()?;
 
         if !file_metadata.is_file() {
             return Err(not_regular_file_error());
         }
         verify_same_file_during_open(
-            path,
+            &initial_path_snapshot,
             &file,
-            &initial_path_metadata,
             &file_metadata,
-            &current_path_metadata,
+            &current_path_snapshot,
         )?;
         if file_metadata.len() > MAX_READ_FILE_BYTES {
             return Err(io::Error::new(
@@ -554,17 +556,77 @@ fn file_changed_during_open_error() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, FILE_CHANGED_DURING_OPEN_ERROR)
 }
 
+#[cfg(unix)]
+struct PathSnapshot {
+    metadata: std::fs::Metadata,
+}
+
+#[cfg(unix)]
+async fn path_snapshot_without_following_symlinks(path: &Path) -> io::Result<PathSnapshot> {
+    Ok(PathSnapshot {
+        metadata: tokio::fs::symlink_metadata(path).await?,
+    })
+}
+
+#[cfg(unix)]
+impl PathSnapshot {
+    fn reject_non_regular_or_symlink(&self) -> io::Result<()> {
+        reject_non_regular_or_symlink(&self.metadata)
+    }
+}
+
+#[cfg(windows)]
+struct PathSnapshot {
+    identity: WindowsFileIdentity,
+    file_attributes: u32,
+}
+
+#[cfg(windows)]
+async fn path_snapshot_without_following_symlinks(path: &Path) -> io::Result<PathSnapshot> {
+    windows_path_snapshot(path)
+}
+
+#[cfg(windows)]
+impl PathSnapshot {
+    fn reject_non_regular_or_symlink(&self) -> io::Result<()> {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        if self.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(symlinked_file_error());
+        }
+        if self.file_attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            return Err(not_regular_file_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+struct PathSnapshot;
+
+#[cfg(not(any(unix, windows)))]
+async fn path_snapshot_without_following_symlinks(_path: &Path) -> io::Result<PathSnapshot> {
+    Err(file_changed_during_open_error())
+}
+
+#[cfg(not(any(unix, windows)))]
+impl PathSnapshot {
+    fn reject_non_regular_or_symlink(&self) -> io::Result<()> {
+        Err(file_changed_during_open_error())
+    }
+}
+
 /// Guard against a TOCTOU swap of `path` while it is being opened: confirm that
-/// the file we actually opened is the same on-disk object that `symlink_metadata`
-/// observed. On success returns `Ok(())`; otherwise a "file changed during open"
-/// error.
+/// the file we actually opened is the same on-disk object as the initial and
+/// current no-follow path snapshots. On success returns `Ok(())`; otherwise a
+/// "file changed during open" error.
 #[cfg(unix)]
 fn verify_same_file_during_open(
-    _path: &Path,
+    initial_path_snapshot: &PathSnapshot,
     _file: &tokio::fs::File,
-    initial_path_metadata: &std::fs::Metadata,
     file_metadata: &std::fs::Metadata,
-    current_path_metadata: &std::fs::Metadata,
+    current_path_snapshot: &PathSnapshot,
 ) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
 
@@ -572,7 +634,9 @@ fn verify_same_file_during_open(
         a.dev() == b.dev() && a.ino() == b.ino()
     }
 
-    if same(initial_path_metadata, file_metadata) && same(file_metadata, current_path_metadata) {
+    if same(&initial_path_snapshot.metadata, file_metadata)
+        && same(file_metadata, &current_path_snapshot.metadata)
+    {
         Ok(())
     } else {
         Err(file_changed_during_open_error())
@@ -584,23 +648,23 @@ fn verify_same_file_during_open(
 /// `std::fs::Metadata` does not expose the volume serial number or file index on
 /// stable Rust (that lives behind the nightly-only `windows_by_handle` feature),
 /// so identity is queried directly from open handles via
-/// `GetFileInformationByHandle`. The path metadata was already verified to be a
-/// regular file, so we re-open the path (without following the final reparse
-/// point) and confirm its identity matches the file we actually opened.
+/// `GetFileInformationByHandle`. Path snapshots are captured by opening the
+/// path without following the final reparse point, so the initial snapshot, the
+/// file we actually opened, and the current path snapshot must all match.
 #[cfg(windows)]
 fn verify_same_file_during_open(
-    path: &Path,
+    initial_path_snapshot: &PathSnapshot,
     file: &tokio::fs::File,
-    _initial_path_metadata: &std::fs::Metadata,
     _file_metadata: &std::fs::Metadata,
-    _current_path_metadata: &std::fs::Metadata,
+    current_path_snapshot: &PathSnapshot,
 ) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
 
     let opened_identity = windows_file_identity(file.as_raw_handle())?;
-    let path_identity = windows_path_identity(path)?;
 
-    if opened_identity == path_identity {
+    if initial_path_snapshot.identity == opened_identity
+        && opened_identity == current_path_snapshot.identity
+    {
         Ok(())
     } else {
         Err(file_changed_during_open_error())
@@ -609,11 +673,10 @@ fn verify_same_file_during_open(
 
 #[cfg(not(any(unix, windows)))]
 fn verify_same_file_during_open(
-    _path: &Path,
+    _initial_path_snapshot: &PathSnapshot,
     _file: &tokio::fs::File,
-    _initial_path_metadata: &std::fs::Metadata,
     _file_metadata: &std::fs::Metadata,
-    _current_path_metadata: &std::fs::Metadata,
+    _current_path_snapshot: &PathSnapshot,
 ) -> io::Result<()> {
     // Fail closed on platforms where we cannot establish file identity.
     Err(file_changed_during_open_error())
@@ -626,6 +689,12 @@ struct WindowsFileIdentity {
     file_index: u64,
 }
 
+#[cfg(windows)]
+struct WindowsFileInformation {
+    identity: WindowsFileIdentity,
+    file_attributes: u32,
+}
+
 /// Query the volume serial number and file index for an open handle via
 /// `GetFileInformationByHandle`, the stable replacement for the nightly-only
 /// `Metadata::volume_serial_number`/`file_index` accessors.
@@ -633,6 +702,13 @@ struct WindowsFileIdentity {
 fn windows_file_identity(
     handle: std::os::windows::io::RawHandle,
 ) -> io::Result<WindowsFileIdentity> {
+    Ok(windows_file_information(handle)?.identity)
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    handle: std::os::windows::io::RawHandle,
+) -> io::Result<WindowsFileInformation> {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
@@ -645,17 +721,19 @@ fn windows_file_identity(
         return Err(io::Error::last_os_error());
     }
 
-    Ok(WindowsFileIdentity {
-        volume_serial_number: info.dwVolumeSerialNumber,
-        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    Ok(WindowsFileInformation {
+        identity: WindowsFileIdentity {
+            volume_serial_number: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        },
+        file_attributes: info.dwFileAttributes,
     })
 }
 
 /// Open `path` for attribute queries only, without following the final reparse
-/// point, and read its identity. Mirrors the `symlink_metadata` semantics used
-/// to capture the path snapshots.
+/// point, and read its identity plus file attributes as one path snapshot.
 #[cfg(windows)]
-fn windows_path_identity(path: &Path) -> io::Result<WindowsFileIdentity> {
+fn windows_path_snapshot(path: &Path) -> io::Result<PathSnapshot> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
@@ -670,7 +748,36 @@ fn windows_path_identity(path: &Path) -> io::Result<WindowsFileIdentity> {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
 
-    windows_file_identity(file.as_raw_handle())
+    let info = windows_file_information(file.as_raw_handle())?;
+    Ok(PathSnapshot {
+        identity: info.identity,
+        file_attributes: info.file_attributes,
+    })
+}
+
+#[cfg(all(test, windows))]
+static REPLACE_REGULAR_FILE_BEFORE_OPEN_FOR_TEST: std::sync::Mutex<Option<PathBuf>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(all(test, windows))]
+fn replace_regular_file_before_open_for_test(path: &Path) -> io::Result<()> {
+    let mut pending_path = REPLACE_REGULAR_FILE_BEFORE_OPEN_FOR_TEST
+        .lock()
+        .map_err(|_| io::Error::other("test replacement hook poisoned"))?;
+    let Some(path_to_replace) = pending_path.take() else {
+        return Ok(());
+    };
+
+    if path != path_to_replace {
+        *pending_path = Some(path_to_replace);
+        return Ok(());
+    }
+    drop(pending_path);
+
+    let original_path = path.with_extension("original-before-open");
+    std::fs::rename(path, original_path)?;
+    std::fs::write(path, b"replacement contents")?;
+    Ok(())
 }
 
 fn reject_platform_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Result<()> {
@@ -831,6 +938,29 @@ mod tests {
         std::fs::remove_dir(&source_dir)?;
 
         assert_eq!(symlink_points_to_directory(&link_path)?, true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_without_following_symlinks_rejects_regular_file_replacement_during_open()
+    -> io::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let file_path = temp_dir.path().join("note.txt");
+        std::fs::write(&file_path, b"initial contents")?;
+        let absolute_path =
+            AbsolutePathBuf::try_from(file_path.clone()).expect("temp file path is absolute");
+
+        *REPLACE_REGULAR_FILE_BEFORE_OPEN_FOR_TEST
+            .lock()
+            .expect("test replacement hook should not be poisoned") = Some(file_path.clone());
+        let error = LocalFileSystem::unsandboxed()
+            .read_file_without_following_symlinks(&absolute_path, /*sandbox*/ None)
+            .await
+            .expect_err("regular-file replacement during open must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), FILE_CHANGED_DURING_OPEN_ERROR);
+        assert_eq!(std::fs::read(file_path)?, b"replacement contents");
         Ok(())
     }
 }
