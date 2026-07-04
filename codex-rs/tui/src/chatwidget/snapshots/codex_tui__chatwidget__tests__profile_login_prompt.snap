@@ -5,10 +5,8 @@ expression: popup
   Choose subscription
   Create a profile tied to one provider subscription.
 
-› 1. ChatGPT                  Create a profile tied to ChatGPT.
-  2. Cursor                   Tie this profile to your Cursor subscription
-                              login.
-  3. Grok                     Tie this profile to your Grok subscription
-                              login.
+› 1. ChatGPT  Create a profile tied to ChatGPT.
+  2. Cursor   Tie this profile to your Cursor subscription login.
+  3. Grok     Tie this profile to your Grok subscription login.
 
   Press enter to confirm or esc to go back

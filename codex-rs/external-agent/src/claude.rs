@@ -168,8 +168,12 @@ impl ClaudeCodeHarness {
             Err(err) => return self.runtime_missing_readiness(err.to_string()),
         };
 
-        if has_agent_sdk_auth_env(source_env) {
-            return self.runtime_ready_readiness(&program);
+        match agent_sdk_auth_env(source_env) {
+            AgentSdkAuthEnv::Ready => return self.runtime_ready_readiness(&program),
+            AgentSdkAuthEnv::MissingCredentials(reason) => {
+                return self.runtime_missing_provider_auth_readiness(reason);
+            }
+            AgentSdkAuthEnv::NotConfigured => {}
         }
 
         match Command::new(&program)
@@ -336,6 +340,17 @@ impl ClaudeCodeHarness {
                 "`{} auth status` reported no active local Claude login and no Claude Agent SDK auth environment was configured",
                 program.display()
             )),
+        }
+    }
+
+    fn runtime_missing_provider_auth_readiness(&self, reason: String) -> ExternalAgentReadiness {
+        ExternalAgentReadiness {
+            runtime: self.id(),
+            status: ExternalAgentReadinessStatus::MissingAuth,
+            display_name: self.descriptor.display_name.to_string(),
+            version: None,
+            supported_modes: self.descriptor.supported_modes.to_vec(),
+            detail: Some(reason),
         }
     }
 
@@ -650,19 +665,122 @@ fn add_agent_sdk_auth_env(
     }
 }
 
-fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
-    env_value_is_set(source_env, "ANTHROPIC_API_KEY")
+/// Outcome of evaluating the Claude Agent SDK auth environment against what the
+/// sanitized external-agent sandbox can actually reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentSdkAuthEnv {
+    /// Env-based credentials (or an explicit gateway-auth opt-out) that work
+    /// inside the sanitized launch environment are present.
+    Ready,
+    /// A provider route was selected, but the credentials it needs are not
+    /// reachable from the sanitized sandbox (e.g. only a file-based source such
+    /// as an AWS shared-config profile or Google application-default
+    /// credentials is available). The string is a non-secret explanation.
+    MissingCredentials(String),
+    /// No Claude Agent SDK auth environment was configured; fall back to the
+    /// local Claude Code CLI login (`claude auth status`).
+    NotConfigured,
+}
+
+/// Decide whether Claude Code can authenticate from the sanitized launch
+/// environment alone.
+///
+/// Provider selectors take precedence over a bare `ANTHROPIC_API_KEY` because
+/// Claude Code routes to the selected provider and ignores the direct key once
+/// a provider is enabled. A selector is only treated as ready when the matching
+/// credentials can be sourced from environment variables the sandbox forwards;
+/// routes whose only credential source is a file the sandbox deliberately does
+/// not expose are reported as missing auth rather than ready.
+fn agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> AgentSdkAuthEnv {
+    if bedrock_route_selected(source_env) {
+        return bedrock_auth_env(source_env);
+    }
+    if vertex_route_selected(source_env) {
+        return vertex_auth_env(source_env);
+    }
+    if foundry_route_selected(source_env) {
+        return foundry_auth_env(source_env);
+    }
+    if env_value_is_set(source_env, "ANTHROPIC_API_KEY")
         || env_value_is_set(source_env, "ANTHROPIC_AUTH_TOKEN")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
+    {
+        return AgentSdkAuthEnv::Ready;
+    }
+    AgentSdkAuthEnv::NotConfigured
+}
+
+fn bedrock_route_selected(source_env: &BTreeMap<String, String>) -> bool {
+    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_VERTEX")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_FOUNDRY")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_MANTLE")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH")
+        || bedrock_auth_skipped(source_env)
+}
+
+fn bedrock_auth_skipped(source_env: &BTreeMap<String, String>) -> bool {
+    env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_BEDROCK_AUTH")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_MANTLE_AUTH")
+}
+
+fn bedrock_auth_env(source_env: &BTreeMap<String, String>) -> AgentSdkAuthEnv {
+    // A skip flag means an upstream gateway performs the AWS auth, so Claude
+    // Code does not need any local AWS credentials.
+    if bedrock_auth_skipped(source_env) {
+        return AgentSdkAuthEnv::Ready;
+    }
+    let has_env_credentials = env_value_is_set(source_env, "AWS_BEARER_TOKEN_BEDROCK")
+        || env_value_is_set(source_env, "ANTHROPIC_AWS_API_KEY")
+        || (env_value_is_set(source_env, "AWS_ACCESS_KEY_ID")
+            && env_value_is_set(source_env, "AWS_SECRET_ACCESS_KEY"));
+    if has_env_credentials {
+        return AgentSdkAuthEnv::Ready;
+    }
+    AgentSdkAuthEnv::MissingCredentials(
+        "Claude Code Bedrock/Claude Platform on AWS routing needs AWS_BEARER_TOKEN_BEDROCK, \
+         ANTHROPIC_AWS_API_KEY, or AWS_ACCESS_KEY_ID with AWS_SECRET_ACCESS_KEY in the \
+         environment; AWS_PROFILE shared-config credentials are not reachable from the \
+         sanitized external-agent sandbox"
+            .to_string(),
+    )
+}
+
+fn vertex_route_selected(source_env: &BTreeMap<String, String>) -> bool {
+    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_VERTEX")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_VERTEX_AUTH")
+}
+
+fn vertex_auth_env(source_env: &BTreeMap<String, String>) -> AgentSdkAuthEnv {
+    // Vertex authenticates with Google application-default credentials, which
+    // live in a file the sandbox does not expose. Only a gateway that injects
+    // credentials (signalled by the skip flag) can work here.
+    if env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_VERTEX_AUTH") {
+        return AgentSdkAuthEnv::Ready;
+    }
+    AgentSdkAuthEnv::MissingCredentials(
+        "Claude Code Vertex AI routing relies on Google application-default credentials, which \
+         are not reachable from the sanitized external-agent sandbox; route through a gateway \
+         and set CLAUDE_CODE_SKIP_VERTEX_AUTH to use it"
+            .to_string(),
+    )
+}
+
+fn foundry_route_selected(source_env: &BTreeMap<String, String>) -> bool {
+    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_FOUNDRY")
+        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH")
+}
+
+fn foundry_auth_env(source_env: &BTreeMap<String, String>) -> AgentSdkAuthEnv {
+    if env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH") {
+        return AgentSdkAuthEnv::Ready;
+    }
+    if env_value_is_set(source_env, "ANTHROPIC_FOUNDRY_API_KEY") {
+        return AgentSdkAuthEnv::Ready;
+    }
+    AgentSdkAuthEnv::MissingCredentials(
+        "Claude Code Foundry routing needs ANTHROPIC_FOUNDRY_API_KEY in the sanitized \
+         external-agent environment"
+            .to_string(),
+    )
 }
 
 fn copy_env_vars(
@@ -1054,6 +1172,177 @@ fi
 exit 2
 "#,
         );
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::MissingAuth);
+    }
+
+    fn env_from(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_ready_for_direct_api_key() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[("ANTHROPIC_API_KEY", "test-value")])),
+            AgentSdkAuthEnv::Ready
+        );
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[("ANTHROPIC_AUTH_TOKEN", "test-value")])),
+            AgentSdkAuthEnv::Ready
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_not_configured_without_indicators() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[("PATH", "/bin")])),
+            AgentSdkAuthEnv::NotConfigured
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_ready_for_bedrock_env_credentials() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[
+                ("CLAUDE_CODE_USE_BEDROCK", "1"),
+                ("AWS_BEARER_TOKEN_BEDROCK", "test-value"),
+            ])),
+            AgentSdkAuthEnv::Ready
+        );
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[
+                ("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1"),
+                ("ANTHROPIC_AWS_API_KEY", "test-value"),
+            ])),
+            AgentSdkAuthEnv::Ready
+        );
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[
+                ("CLAUDE_CODE_USE_BEDROCK", "1"),
+                ("AWS_ACCESS_KEY_ID", "test-value"),
+                ("AWS_SECRET_ACCESS_KEY", "test-value"),
+            ])),
+            AgentSdkAuthEnv::Ready
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_missing_for_bedrock_profile_only() {
+        // AWS_PROFILE resolves against the shared config file, which the
+        // sanitized sandbox does not expose, so a flag-only route is not ready.
+        let outcome = agent_sdk_auth_env(&env_from(&[
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_PROFILE", "dev"),
+        ]));
+        assert!(
+            matches!(outcome, AgentSdkAuthEnv::MissingCredentials(_)),
+            "flag-only Bedrock route should report missing credentials: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_ready_for_bedrock_gateway_skip() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[("CLAUDE_CODE_SKIP_BEDROCK_AUTH", "1")])),
+            AgentSdkAuthEnv::Ready
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_missing_for_vertex_flag_only() {
+        let outcome = agent_sdk_auth_env(&env_from(&[("CLAUDE_CODE_USE_VERTEX", "1")]));
+        assert!(
+            matches!(outcome, AgentSdkAuthEnv::MissingCredentials(_)),
+            "flag-only Vertex route should report missing credentials: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_ready_for_vertex_gateway_skip() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[("CLAUDE_CODE_SKIP_VERTEX_AUTH", "1")])),
+            AgentSdkAuthEnv::Ready
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_ready_for_foundry_api_key() {
+        assert_eq!(
+            agent_sdk_auth_env(&env_from(&[
+                ("CLAUDE_CODE_USE_FOUNDRY", "1"),
+                ("ANTHROPIC_FOUNDRY_API_KEY", "test-value"),
+            ])),
+            AgentSdkAuthEnv::Ready
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_missing_for_foundry_flag_only() {
+        let outcome = agent_sdk_auth_env(&env_from(&[("CLAUDE_CODE_USE_FOUNDRY", "1")]));
+        assert!(
+            matches!(outcome, AgentSdkAuthEnv::MissingCredentials(_)),
+            "flag-only Foundry route should report missing credentials: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn agent_sdk_auth_env_provider_selector_takes_precedence_over_direct_key() {
+        // A direct key is ignored once a provider is selected, so a Bedrock
+        // route without AWS credentials is still missing auth.
+        let outcome = agent_sdk_auth_env(&env_from(&[
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("ANTHROPIC_API_KEY", "test-value"),
+        ]));
+        assert!(
+            matches!(outcome, AgentSdkAuthEnv::MissingCredentials(_)),
+            "selected provider without its credentials should not fall back to the direct key: {outcome:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readiness_ready_for_provider_env_without_local_login() {
+        let (_temp_dir, mut env) = fake_claude_env(
+            r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 1
+fi
+exit 2
+"#,
+        );
+        env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
+        env.insert(
+            "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+            "test-value".to_string(),
+        );
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readiness_missing_auth_for_flag_only_provider_route() {
+        let (_temp_dir, mut env) = fake_claude_env(
+            r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+exit 2
+"#,
+        );
+        // Even though `claude auth status` would succeed, a selected provider
+        // route without reachable credentials must report missing auth instead
+        // of silently falling back to the local login.
+        env.insert("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string());
         let harness = claude_code_harness().expect("claude harness");
 
         let readiness = harness.readiness_with_env(&env).await;

@@ -1044,12 +1044,19 @@ mod tests {
 
         let source_env = external_agent_source_env(&policy, ExternalAgentRuntimeId::CLAUDE);
 
+        // The agent SDK auth policy values must survive. `external_agent_source_env`
+        // also layers in stable-config paths (HOME, CLAUDE_CONFIG_DIR, XDG_*) from
+        // the ambient process environment, so assert on the auth entries directly
+        // rather than exact map equality (which would be sensitive to the host env).
         assert_eq!(
-            source_env,
-            BTreeMap::from([
-                ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
-                ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
-            ])
+            source_env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("test-value")
+        );
+        assert_eq!(
+            source_env
+                .get("CLAUDE_CODE_USE_BEDROCK")
+                .map(String::as_str),
+            Some("1")
         );
     }
 

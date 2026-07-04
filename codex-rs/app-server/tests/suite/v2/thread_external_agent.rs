@@ -54,6 +54,10 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     std::fs::create_dir(&bin_dir)?;
     write_fake_executable(&bin_dir, "agent")?;
     write_fake_executable(&bin_dir, "cursor-agent")?;
+    // A controlled fake `claude` that fails `auth status` keeps the Claude
+    // readiness gate deterministic regardless of whether a real `claude` binary
+    // is installed on the host PATH.
+    write_fake_claude_executable(&bin_dir)?;
     let path = path_with_fake_bin(&bin_dir)?;
 
     let mut mcp = McpProcess::new_with_env(
@@ -219,8 +223,8 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     assert!(
         claude_response
             .message
-            .starts_with("Claude Code external-agent runtime is gated: missing runtime."),
-        "expected Claude runtime readiness gate, got: {}",
+            .starts_with("Claude Code external-agent runtime is gated: missing auth."),
+        "expected Claude local-login readiness gate, got: {}",
         claude_response.message
     );
     assert!(
@@ -229,6 +233,160 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         claude_response.message
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_external_agent_claude_starts_with_api_key_env_without_profile() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        200_000,
+        None,
+        "mock_provider",
+        "compact",
+    )?;
+    // Supply Claude Agent SDK API-key auth through the thread shell-environment
+    // policy so readiness resolves without an active Claude.ai profile and
+    // without shelling out to `claude auth status`.
+    append_api_key_shell_env_policy(codex_home.as_path())?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    write_fake_claude_executable(&bin_dir)?;
+    let path = path_with_fake_bin(&bin_dir)?;
+
+    // No CODEWITH_AUTH_PROFILE: prove Claude does not depend on a subscription
+    // profile being active.
+    let mut mcp =
+        McpProcess::new_with_env(codex_home.as_path(), &[("PATH", Some(path.as_str()))]).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            auth_profile: Some(None),
+            ..ThreadStartParams::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    let claude_id = mcp
+        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
+            thread_id: thread.id.clone(),
+            runtime_id: "claude".to_string(),
+            task: "inspect the auth wiring".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+        })
+        .await?;
+    let claude_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(claude_id)),
+    )
+    .await??;
+    let response: ThreadExternalAgentStartResponse = to_response(claude_resp)?;
+    assert_eq!(
+        response.status,
+        ThreadExternalAgentStartStatus::Started,
+        "Claude should start with API-key env auth and no profile: {}",
+        response.message
+    );
+    let run_id = response
+        .run_id
+        .clone()
+        .expect("claude external-agent run id");
+
+    let started_notification = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/externalAgent/event"),
+    )
+    .await??;
+    let started: ThreadExternalAgentEventNotification = serde_json::from_value(
+        started_notification
+            .params
+            .expect("external-agent event params"),
+    )?;
+    assert_eq!(started.run_id, run_id);
+    assert_eq!(
+        started.event,
+        ThreadExternalAgentEvent::RunStarted {
+            runtime_id: "claude".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+            task: "inspect the auth wiring".to_string(),
+        }
+    );
+
+    // Tear down the fake long-running Claude process.
+    let cancel_id = mcp
+        .send_thread_external_agent_cancel_request(ThreadExternalAgentCancelParams {
+            thread_id: thread.id,
+            run_id,
+        })
+        .await?;
+    let cancel_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(cancel_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<ThreadExternalAgentCancelResponse>(cancel_resp)?,
+        ThreadExternalAgentCancelResponse {
+            cancelled: true,
+            message: "external-agent run cancellation requested".to_string(),
+        }
+    );
+
+    Ok(())
+}
+
+fn append_api_key_shell_env_policy(codex_home: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let config_toml = codex_home.join("config.toml");
+    let mut file = std::fs::OpenOptions::new().append(true).open(config_toml)?;
+    // `inherit = "core"` keeps PATH (to resolve the fake `claude`) while keeping
+    // the environment deterministic, and `set` supplies the placeholder API key.
+    writeln!(
+        file,
+        "\n[shell_environment_policy]\ninherit = \"core\"\n\n[shell_environment_policy.set]\nANTHROPIC_API_KEY = \"test-anthropic-key\"\n"
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_fake_claude_executable(bin_dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = bin_dir.join("claude");
+    // Fail `claude auth status` so the run only succeeds via the API-key env
+    // path; otherwise sleep to model a long-running plan-mode session.
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 1\nfi\nsleep 30\n",
+    )?;
+    let mut permissions = std::fs::metadata(&path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_fake_claude_executable(bin_dir: &Path) -> Result<()> {
+    std::fs::write(
+        bin_dir.join("claude.cmd"),
+        "@echo off\r\nif \"%1\"==\"auth\" exit /b 1\r\nping -n 30 127.0.0.1 >NUL\r\n",
+    )?;
     Ok(())
 }
 
