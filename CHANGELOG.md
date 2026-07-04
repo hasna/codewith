@@ -42,6 +42,44 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.56] - 2026-07-04
+
+Tag: `rust-v0.1.56`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.56>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.55...rust-v0.1.56>
+
+Stability and provider-compatibility release. Follows 0.1.55 with 17 merged
+pull requests (#90-#107) focused on sqlite state-layer contention, chat and
+responses API compatibility across providers, TUI robustness, and the release
+toolchain pin that unblocks reproducible platform builds.
+
+### Fixed
+
+- State layer: writes are serialized on a single-connection pool to eliminate
+  intra-process `SQLITE_BUSY (517)` under concurrent sessions; hot write paths
+  (mailbox, logs, rollout) retry `BUSY_SNAPSHOT` and use `BEGIN IMMEDIATE`.
+- Chat-Completions tool-calling hardened for compatibility providers; dropped
+  SSE items are now observable and `function_call_arguments.delta` is handled;
+  reasoning is read and replayed on the chat-completions path.
+- `reasoning_effort: none` maps to `low` for Cerebras/NVIDIA chat/completions;
+  namespace tools are disabled for the xAI responses API; Gemini
+  `thought_signature` round-trips and the stray `client_version` query
+  parameter is dropped.
+- Provider catalog: ollama and lmstudio built-in providers restored; known
+  provider-model metadata and fallbacks refreshed.
+- TUI: `/fork` degrades gracefully on a thread with no rollout yet; `/apps`
+  surfaces the underlying app/list failure reason; Enter dispatches the exact
+  slash alias (`/exit` no longer opens `/experimental`).
+- Core: router `FunctionCallError` auto-log downgraded from error to debug;
+  arg0 helper-symlink spawn race closed under concurrent sessions.
+- Release: Rust toolchain pinned to 1.96.1 in the release workflows for
+  reproducible cross-platform builds.
+
+### Performance
+
+- State: default INFO-level log capture, bounded HTTP traces, off-transaction
+  prune, and WAL checkpoints across all pools.
+
 ## [0.1.55] - 2026-07-02
 
 Tag: `rust-v0.1.55`
