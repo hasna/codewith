@@ -586,6 +586,20 @@ ON CONFLICT(id) DO NOTHING
         thread_id: ThreadId,
         updated_at: DateTime<Utc>,
     ) -> anyhow::Result<bool> {
+        // Hot rollout write path (called on every rollout flush). Retry
+        // transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517) so a raced touch
+        // is not silently dropped.
+        crate::busy_retry::retry_on_busy("touch thread updated_at", || {
+            self.touch_thread_updated_at_once(thread_id, updated_at)
+        })
+        .await
+    }
+
+    async fn touch_thread_updated_at_once(
+        &self,
+        thread_id: ThreadId,
+        updated_at: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
         let updated_at = self.allocate_thread_updated_at(updated_at)?;
         let result =
             sqlx::query("UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?")
@@ -673,6 +687,21 @@ WHERE id = ?
     }
 
     async fn upsert_thread_with_creation_memory_mode(
+        &self,
+        metadata: &crate::ThreadMetadata,
+        creation_memory_mode: Option<&str>,
+    ) -> anyhow::Result<()> {
+        // Hot rollout write path (live rollout flushes call `upsert_thread`).
+        // Retry transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517); the upsert
+        // is an idempotent ON CONFLICT statement so re-running an attempt is
+        // safe.
+        crate::busy_retry::retry_on_busy("upsert thread", || {
+            self.upsert_thread_with_creation_memory_mode_once(metadata, creation_memory_mode)
+        })
+        .await
+    }
+
+    async fn upsert_thread_with_creation_memory_mode_once(
         &self,
         metadata: &crate::ThreadMetadata,
         creation_memory_mode: Option<&str>,
