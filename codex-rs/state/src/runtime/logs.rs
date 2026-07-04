@@ -12,8 +12,19 @@ impl StateRuntime {
         if entries.is_empty() {
             return Ok(());
         }
+        // Log ingestion is a hot, high-frequency write path shared across every
+        // process. Retry transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517)
+        // errors with jittered backoff (each attempt restarts the BEGIN
+        // IMMEDIATE transaction) instead of dropping the batch.
+        crate::busy_retry::retry_on_busy("insert logs", || self.insert_logs_once(entries)).await
+    }
 
-        let mut tx = self.logs_pool.begin().await?;
+    async fn insert_logs_once(&self, entries: &[LogEntry]) -> anyhow::Result<()> {
+        // BEGIN IMMEDIATE grabs the write lock before the insert+prune
+        // read/write cycle, so contention waits on busy_timeout (plain BUSY)
+        // rather than failing instantly with BUSY_SNAPSHOT (517). Safe only
+        // because `insert_logs` retries transient busy errors.
+        let mut tx = self.logs_pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid, module_path, file, line, estimated_bytes) ",
         );

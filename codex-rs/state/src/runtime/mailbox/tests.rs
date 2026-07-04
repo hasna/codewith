@@ -938,6 +938,83 @@ async fn claimed_message_survives_restart_and_reclaims_expired_lease() -> anyhow
     Ok(())
 }
 
+/// The dispatcher polls `claim_next_*` once per second in every process. If a
+/// claim raced another writer and simply failed, the poll would drop the
+/// message with a warning. This test defeats the connection `busy_timeout`
+/// (set to zero) so contention surfaces as `SQLITE_BUSY` immediately, then
+/// holds the write lock on a second connection while a claim runs. The claim
+/// can only succeed because `claim_next_message_inner` wraps the write in
+/// `retry_on_busy`; without the wrapper it would fail on the first `BEGIN
+/// IMMEDIATE`.
+#[tokio::test]
+async fn claim_next_message_retries_under_write_lock_contention() -> anyhow::Result<()> {
+    use sqlx::ConnectOptions;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::sqlite::SqliteJournalMode;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let enqueued = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "contended-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
+
+    // A second connection group to the same state DB file, with the busy
+    // handler disabled so lock contention raises SQLITE_BUSY instantly instead
+    // of waiting. This isolates the application-level retry loop.
+    let db_path = crate::runtime::state_db_path(runtime.codex_home());
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::ZERO);
+
+    // Hold the write lock on a dedicated connection.
+    let mut holder = options.clone().connect().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await?;
+    sqlx::query("DELETE FROM thread_mailbox_target_leases WHERE 1 = 0")
+        .execute(&mut holder)
+        .await?;
+
+    let contended_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let store = MailboxMessageStore::new(Arc::new(contended_pool));
+
+    let claim_task = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            store
+                .claim_next_message(MailboxClaimParams {
+                    target_thread_id: thread_id,
+                    lease_owner: "dispatcher".to_string(),
+                    lease_duration: std::time::Duration::from_secs(30),
+                    now: Utc::now(),
+                })
+                .await
+        })
+    };
+
+    // Give the claim time to hit SQLITE_BUSY and enter its retry loop, then
+    // release the write lock so a retry can succeed.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    sqlx::query("COMMIT").execute(&mut holder).await?;
+    drop(holder);
+
+    let claim = claim_task
+        .await?
+        .expect("claim should not error under contention")
+        .expect("a queued message should be claimed after retrying");
+    assert_eq!(claim.message.message_id, enqueued.message.message_id);
+    assert_eq!(claim.message.status, crate::MailboxMessageStatus::Claimed);
+
+    Ok(())
+}
+
 async fn test_runtime_with_thread() -> anyhow::Result<Arc<StateRuntime>> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     runtime
