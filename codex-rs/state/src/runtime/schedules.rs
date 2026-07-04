@@ -98,7 +98,7 @@ impl ScheduleStore {
         self.create_thread_schedule_with_recorded_auth_profile(
             params,
             Some(parent_schedule_id),
-            None,
+            /*auth_profile*/ None,
         )
         .await
     }
