@@ -313,7 +313,7 @@ pub fn process_responses_event(
                         warn!(
                             error = %err,
                             payload = %truncate_payload_for_log(&item_val),
-                            "dropping unparseable ResponseItem from response.output_item.done",
+                            "dropping unparsable ResponseItem from response.output_item.done",
                         );
                     }
                 }
@@ -435,7 +435,7 @@ pub fn process_responses_event(
                         warn!(
                             error = %err,
                             payload = %truncate_payload_for_log(&item_val),
-                            "dropping unparseable ResponseItem from response.output_item.added",
+                            "dropping unparsable ResponseItem from response.output_item.added",
                         );
                     }
                 }
@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unparseable_output_item_done_is_dropped_not_fatal() {
+    async fn unparsable_output_item_done_is_dropped_not_fatal() {
         // An `output_item.done` whose body does not deserialize into a known
         // `ResponseItem` must be skipped (still observable via a warn log) while
         // the stream continues to `response.completed`.
@@ -885,7 +885,7 @@ mod tests {
         ])
         .await;
 
-        // The unparseable item is dropped; only the completed event survives.
+        // The unparsable item is dropped; only the completed event survives.
         assert_eq!(events.len(), 1);
         assert_matches!(
             &events[0],
