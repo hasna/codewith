@@ -271,6 +271,13 @@ jobs:
         with:
           toolchain: "1.96.1"
           targets: ${{ matrix.target }}
+          # Install the exact components pinned in codex-rs/rust-toolchain.toml.
+          # If the installed toolchain does not already satisfy the toml, the
+          # first `cargo build` inside codex-rs triggers a fresh toml-override
+          # toolchain sync ("syncing channel updates for 1.96.1-...") that
+          # reinstalls only the host std and drops the cross target added above,
+          # causing error[E0463]: can't find crate for `core`.
+          components: clippy,rustfmt,rust-src
 
       - name: Install sccache
         # Fail-open: a GitHub API outage or a bad latest sccache release must
@@ -326,6 +333,22 @@ jobs:
         uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
+
+      - name: Ensure cross target std is installed in the build's rustup home
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Runs AFTER "Use hermetic Cargo home (musl)" relocates CARGO_HOME and
+          # BEFORE the first `cargo build --target` (the bwrap build below, then
+          # the main Cargo build). This guarantees the matrix target's std is
+          # present in the exact rustup home the build uses, so cross-compiled
+          # targets (musl on x86_64/arm64, x86_64-apple-darwin on the arm64
+          # macOS runner) do not fail with error[E0463]: can't find crate for
+          # `core`. `--toolchain 1.96.1` pins the install to the same toolchain
+          # the pinned rust-toolchain.toml selects. Idempotent when the target
+          # is already installed (e.g. the native target).
+          rustup target add --toolchain 1.96.1 "${{ matrix.target }}"
+          rustup target list --toolchain 1.96.1 --installed
 
       - if: ${{ contains(matrix.target, 'linux') }}
         name: Build bwrap and export digest
