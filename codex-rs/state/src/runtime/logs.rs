@@ -393,7 +393,9 @@ WHERE id IN (
 
         let rows = builder
             .build_query_as::<LogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            // Read-only query: route to the reader pool so log tailing stays
+            // concurrent with the single-connection logs writer.
+            .fetch_all(self.logs_reader_pool.as_ref())
             .await?;
         Ok(rows)
     }
@@ -474,7 +476,8 @@ WHERE cumulative_estimated_bytes <=
         builder.push(" ORDER BY ts DESC, ts_nanos DESC, id DESC");
         let rows = builder
             .build_query_as::<FeedbackLogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            // Read-only query: route to the reader pool (see `query_logs`).
+            .fetch_all(self.logs_reader_pool.as_ref())
             .await?;
 
         let mut lines = Vec::new();
@@ -507,7 +510,11 @@ WHERE cumulative_estimated_bytes <=
         let mut builder =
             QueryBuilder::<Sqlite>::new("SELECT MAX(id) AS max_id FROM logs WHERE 1 = 1");
         push_log_filters(&mut builder, query);
-        let row = builder.build().fetch_one(self.logs_pool.as_ref()).await?;
+        // Read-only query: route to the reader pool (see `query_logs`).
+        let row = builder
+            .build()
+            .fetch_one(self.logs_reader_pool.as_ref())
+            .await?;
         let max_id: Option<i64> = row.try_get("max_id")?;
         Ok(max_id.unwrap_or(0))
     }
