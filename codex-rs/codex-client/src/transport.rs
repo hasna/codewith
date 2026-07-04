@@ -78,11 +78,38 @@ impl ReqwestTransport {
     }
 }
 
+/// Environment flag that opts into dumping full HTTP request bodies at TRACE.
+///
+/// Off by default: full request bodies are large (they were a dominant source
+/// of log-DB write volume) and can carry sensitive payloads, so ordinary TRACE
+/// logging emits only a bounded summary (method, url, byte count). Set to `1`,
+/// `true`, or `yes` to restore full-body capture for debugging.
+const LOG_HTTP_BODIES_ENV: &str = "CODEWITH_LOG_HTTP_BODIES";
+
+fn log_full_http_bodies() -> bool {
+    matches!(
+        std::env::var(LOG_HTTP_BODIES_ENV).ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+/// Render the request body for a TRACE log line.
+///
+/// By default this is a bounded summary (byte count only) so we never persist
+/// full request bodies or secrets to the log DB. Full bodies are emitted only
+/// when [`LOG_HTTP_BODIES_ENV`] opts in. Request/response headers (which carry
+/// auth tokens) are never logged here.
 fn request_body_for_trace(req: &Request) -> String {
     match req.body.as_ref() {
-        Some(RequestBody::Json(body)) => body.to_string(),
+        Some(RequestBody::Json(body)) => {
+            if log_full_http_bodies() {
+                body.to_string()
+            } else {
+                format!("<json body: {} bytes>", body.to_string().len())
+            }
+        }
         Some(RequestBody::Raw(body)) => format!("<raw body: {} bytes>", body.len()),
-        None => String::new(),
+        None => "<no body>".to_string(),
     }
 }
 

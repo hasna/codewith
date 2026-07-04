@@ -105,6 +105,7 @@ mod goal_plans;
 mod goals;
 mod local_active_sessions;
 mod logs;
+pub(crate) use logs::LogPruneTargets;
 mod machine_registry;
 mod mailbox;
 mod managed_worktrees;
@@ -133,6 +134,10 @@ const WAL_JOURNAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// How often long-lived processes opportunistically checkpoint the state DB
 /// WAL so that checkpoint starvation cannot let it grow without bound.
 const STATE_WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(300);
+/// Auto-checkpoint threshold in WAL pages. With SQLite's default 4 KiB page
+/// size this is ~4 MiB, matching SQLite's built-in default but set explicitly
+/// so short-lived processes reliably checkpoint on their own.
+const WAL_AUTOCHECKPOINT_PAGES: u32 = 1000;
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
@@ -320,6 +325,8 @@ pub struct StateRuntime {
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    goals_pool: Arc<sqlx::SqlitePool>,
+    memories_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
@@ -522,6 +529,8 @@ impl StateRuntime {
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
+            goals_pool: Arc::clone(&goals_pool),
+            memories_pool: Arc::clone(&memories_pool),
             codex_home,
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
@@ -609,15 +618,41 @@ impl StateRuntime {
         Ok(true)
     }
 
-    /// Opportunistically checkpoints the state DB WAL so that checkpoint
-    /// starvation across many concurrent processes cannot let the WAL grow
-    /// without bound (which in turn inflates busy/snapshot contention).
+    /// Opportunistically checkpoints the WAL for every runtime SQLite pool
+    /// (state, logs, goals, memories) so that checkpoint starvation across many
+    /// concurrent processes cannot let any WAL grow without bound (which in
+    /// turn inflates busy/snapshot contention). The logs WAL in particular is
+    /// the hottest write target, so it must be checkpointed on the same cadence
+    /// as the state DB rather than only on startup.
     ///
     /// Uses a non-blocking PASSIVE checkpoint by default and escalates to
-    /// TRUNCATE once the WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`].
+    /// TRUNCATE once a WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`]. Each pool
+    /// is attempted independently; a failure on one pool is logged and does not
+    /// prevent the others from being checkpointed.
     pub async fn run_state_wal_checkpoint_maintenance(&self) -> anyhow::Result<()> {
-        let state_path = STATE_DB.path(self.codex_home.as_path());
-        checkpoint_wal_in_pool(self.pool.as_ref(), state_path.as_path()).await
+        let home = self.codex_home.as_path();
+        let pools: [(&SqlitePool, PathBuf); 4] = [
+            (self.pool.as_ref(), STATE_DB.path(home)),
+            (self.logs_pool.as_ref(), LOGS_DB.path(home)),
+            (self.goals_pool.as_ref(), GOALS_DB.path(home)),
+            (self.memories_pool.as_ref(), MEMORIES_DB.path(home)),
+        ];
+        let mut first_error: Option<anyhow::Error> = None;
+        for (pool, path) in pools {
+            if let Err(err) = checkpoint_wal_in_pool(pool, path.as_path()).await {
+                tracing::debug!(
+                    "WAL checkpoint maintenance failed for {}: {err}",
+                    path.display()
+                );
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 }
 
@@ -683,6 +718,12 @@ fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
             "journal_size_limit",
             WAL_JOURNAL_SIZE_LIMIT_BYTES.to_string(),
         )
+        // Explicitly bound the auto-checkpoint threshold (in WAL pages) so even
+        // short-lived processes that exit before the periodic checkpoint task
+        // ticks still checkpoint opportunistically once the WAL crosses this
+        // size. Left implicit, a process that only ever writes small batches
+        // could leave an ever-growing WAL for the next process to inherit.
+        .pragma("wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES.to_string())
         .log_statements(LevelFilter::Off)
 }
 
@@ -931,6 +972,8 @@ mod tests {
     use super::StateRuntime;
     use super::decode_hex_checksum;
     use super::goals_db_path;
+    use super::logs_db_path;
+    use super::memories_db_path;
     use super::open_state_sqlite;
     use super::runtime_goals_migrator;
     use super::runtime_state_migrator;
@@ -1818,6 +1861,58 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
 
         runtime.pool.close().await;
         runtime.logs_pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn wal_checkpoint_maintenance_checkpoints_all_runtime_pools() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        // Generate WAL frames on the logs pool -- the hottest write target,
+        // which previously was not covered by periodic checkpoint maintenance.
+        runtime
+            .insert_logs(&[crate::LogEntry {
+                ts: 1,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some("checkpoint-coverage".to_string()),
+                feedback_log_body: Some("checkpoint-coverage".to_string()),
+                thread_id: Some("thread-ckpt".to_string()),
+                process_uuid: Some("proc-ckpt".to_string()),
+                module_path: Some("mod".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(1),
+            }])
+            .await
+            .expect("insert log");
+
+        // Maintenance must succeed across every runtime pool, not just state.
+        runtime
+            .run_state_wal_checkpoint_maintenance()
+            .await
+            .expect("checkpoint maintenance across all pools");
+
+        // All four runtime databases are opened and reachable by maintenance.
+        for path in [
+            state_db_path(codex_home.as_path()),
+            logs_db_path(codex_home.as_path()),
+            goals_db_path(codex_home.as_path()),
+            memories_db_path(codex_home.as_path()),
+        ] {
+            assert!(path.exists(), "expected db file at {}", path.display());
+        }
+
+        // The inserted log survives the checkpoint (frames flushed into the DB).
+        let rows = runtime
+            .query_logs(&crate::LogQuery::default())
+            .await
+            .expect("query logs after checkpoint");
+        assert_eq!(rows.len(), 1);
+
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

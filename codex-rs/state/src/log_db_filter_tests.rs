@@ -68,7 +68,11 @@ async fn default_filter_drops_low_value_persistent_log_targets() {
     tracing::trace!(target: "log", "dropped-bridged-log");
     tracing::info!(target: "codex_otel.log_only", "dropped-otel-log");
     tracing::info!(target: "codex_otel.trace_safe", "dropped-otel-trace");
-    tracing::trace!(target: "codex_state", "retained-trace");
+    // The default capture level is INFO, so sub-INFO events are dropped even
+    // for otherwise-retained targets; INFO and above are kept.
+    tracing::trace!(target: "codex_state", "dropped-trace");
+    tracing::debug!(target: "codex_state", "dropped-debug");
+    tracing::info!(target: "codex_state", "retained-info");
 
     layer.flush().await;
     drop(guard);
@@ -85,7 +89,7 @@ async fn default_filter_drops_low_value_persistent_log_targets() {
                 row.message.as_deref()
             ))
             .collect::<Vec<_>>(),
-        vec![("TRACE", "codex_state", Some("retained-trace"))]
+        vec![("INFO", "codex_state", Some("retained-info"))]
     );
 
     let _ = tokio::fs::remove_dir_all(codex_home).await;
