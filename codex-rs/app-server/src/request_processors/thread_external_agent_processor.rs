@@ -21,6 +21,7 @@ use codex_external_agent::ExternalAgentRequest;
 use codex_external_agent::ExternalAgentRuntimeId;
 use codex_external_agent::ExternalAgentSandboxConfig;
 use codex_external_agent::claude_code_harness;
+use codex_external_agent::claude_provider_credential_read_roots;
 use codex_external_agent::cursor_acp_harness;
 use codex_external_agent::grok_build_acp_harness;
 use codex_login::AuthProfileSubscriptionProvider;
@@ -356,20 +357,8 @@ fn add_claude_provider_credential_read_roots(
     roots: &mut Vec<AbsolutePathBuf>,
     source_env: &BTreeMap<String, String>,
 ) {
-    if source_env_value_is_set(source_env, "AWS_PROFILE") {
-        push_home_child_read_root(roots, source_env, ".aws");
-    }
-    for name in [
-        "AWS_CONFIG_FILE",
-        "AWS_SHARED_CREDENTIALS_FILE",
-        "AWS_WEB_IDENTITY_TOKEN_FILE",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "CLOUDSDK_CONFIG",
-        "AZURE_CLIENT_CERTIFICATE_PATH",
-        "AZURE_CONFIG_DIR",
-        "AZURE_FEDERATED_TOKEN_FILE",
-    ] {
-        push_env_path_read_root(roots, source_env, name);
+    for path in claude_provider_credential_read_roots(source_env) {
+        push_readable_root(roots, path);
     }
 }
 
@@ -386,19 +375,6 @@ fn push_home_child_read_root(
     }
 }
 
-fn push_env_path_read_root(
-    roots: &mut Vec<AbsolutePathBuf>,
-    source_env: &BTreeMap<String, String>,
-    env_name: &str,
-) {
-    if let Some(path) = source_env
-        .get(env_name)
-        .filter(|value| !value.trim().is_empty())
-    {
-        push_readable_root(roots, path);
-    }
-}
-
 fn push_xdg_child_read_root(
     roots: &mut Vec<AbsolutePathBuf>,
     source_env: &BTreeMap<String, String>,
@@ -408,12 +384,6 @@ fn push_xdg_child_read_root(
     if let Some(root) = source_env.get(env_name) {
         push_readable_root(roots, PathBuf::from(root).join(child));
     }
-}
-
-fn source_env_value_is_set(source_env: &BTreeMap<String, String>, name: &str) -> bool {
-    source_env
-        .get(name)
-        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn push_readable_root(roots: &mut Vec<AbsolutePathBuf>, path: impl AsRef<Path>) {
@@ -1344,7 +1314,9 @@ mod tests {
         let aws_config = home.path().join(".aws");
         let aws_credentials = home.path().join(".aws").join("credentials");
         let google_credentials = home.path().join("gcp.json");
+        let gcloud_config = home.path().join(".config").join("gcloud");
         let azure_dir = home.path().join(".azure");
+        let azure_token = home.path().join("azure-token.jwt");
         let source_env = BTreeMap::from([
             ("HOME".to_string(), home.path().display().to_string()),
             (
@@ -1358,14 +1330,23 @@ mod tests {
             ),
             ("AWS_PROFILE".to_string(), "dev".to_string()),
             ("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string()),
+            ("GOOGLE_CLOUD_PROJECT".to_string(), "project-1".to_string()),
             (
                 "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
                 google_credentials.display().to_string(),
             ),
             ("CLAUDE_CODE_USE_FOUNDRY".to_string(), "1".to_string()),
             (
+                "ANTHROPIC_FOUNDRY_RESOURCE".to_string(),
+                "resource".to_string(),
+            ),
+            (
                 "AZURE_CONFIG_DIR".to_string(),
                 azure_dir.display().to_string(),
+            ),
+            (
+                "AZURE_FEDERATED_TOKEN_FILE".to_string(),
+                azure_token.display().to_string(),
             ),
         ]);
 
@@ -1419,8 +1400,149 @@ mod tests {
         );
         assert!(
             read_paths
+                .contains(&AbsolutePathBuf::from_absolute_path(gcloud_config).expect("gcloud")),
+            "Vertex project/default-chain signal should expose the default gcloud config"
+        );
+        assert!(
+            read_paths
                 .contains(&AbsolutePathBuf::from_absolute_path(azure_dir).expect("azure dir")),
             "explicit Azure config dir should be readable"
+        );
+        assert!(
+            read_paths
+                .contains(&AbsolutePathBuf::from_absolute_path(azure_token).expect("azure token")),
+            "explicit Azure token file should be readable"
+        );
+    }
+
+    #[test]
+    fn external_agent_permission_profile_excludes_unselected_claude_provider_roots() {
+        let cwd = tempfile::TempDir::new().expect("cwd tempdir");
+        let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+        let home = tempfile::TempDir::new().expect("home tempdir");
+        let cwd = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
+        let workspace =
+            AbsolutePathBuf::from_absolute_path(workspace.path()).expect("absolute workspace");
+        let aws_credentials = home.path().join(".aws").join("credentials");
+        let google_credentials = home.path().join("gcp.json");
+        let azure_dir = home.path().join(".azure");
+        let source_env = BTreeMap::from([
+            ("HOME".to_string(), home.path().display().to_string()),
+            ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE".to_string(),
+                aws_credentials.display().to_string(),
+            ),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                google_credentials.display().to_string(),
+            ),
+            (
+                "AZURE_CONFIG_DIR".to_string(),
+                azure_dir.display().to_string(),
+            ),
+        ]);
+
+        let profile = external_agent_permission_profile(
+            &cwd,
+            std::slice::from_ref(&workspace),
+            ExternalAgentRuntimeId::CLAUDE,
+            &source_env,
+        );
+        let (file_system, _) = profile.to_runtime_permissions();
+        let read_paths = file_system
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.path {
+                FileSystemPath::Path { path } if entry.access == FileSystemAccessMode::Read => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(read_paths.contains(&workspace));
+        assert!(read_paths.contains(
+            &AbsolutePathBuf::from_absolute_path(aws_credentials).expect("aws credentials")
+        ));
+        assert!(
+            !read_paths.contains(
+                &AbsolutePathBuf::from_absolute_path(google_credentials)
+                    .expect("google credentials")
+            ),
+            "unselected Vertex credential paths must not become readable"
+        );
+        assert!(
+            !read_paths
+                .contains(&AbsolutePathBuf::from_absolute_path(azure_dir).expect("azure dir")),
+            "unselected Foundry credential paths must not become readable"
+        );
+    }
+
+    #[test]
+    fn external_agent_permission_profile_uses_settings_claude_provider_roots() {
+        let cwd = tempfile::TempDir::new().expect("cwd tempdir");
+        let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+        let home = tempfile::TempDir::new().expect("home tempdir");
+        let cwd = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
+        let workspace =
+            AbsolutePathBuf::from_absolute_path(workspace.path()).expect("absolute workspace");
+        let claude_config = home.path().join("claude-config");
+        let aws_credentials = home.path().join(".aws").join("settings-credentials");
+        let google_credentials = home.path().join("gcp.json");
+        std::fs::create_dir(&claude_config).expect("create claude config");
+        std::fs::write(
+            claude_config.join("settings.json"),
+            serde_json::json!({
+                "env": {
+                    "CLAUDE_CODE_USE_BEDROCK": true,
+                    "AWS_REGION": "us-west-2",
+                    "AWS_SHARED_CREDENTIALS_FILE": aws_credentials,
+                    "GOOGLE_APPLICATION_CREDENTIALS": google_credentials,
+                },
+            })
+            .to_string(),
+        )
+        .expect("write settings");
+        let source_env = BTreeMap::from([
+            ("HOME".to_string(), home.path().display().to_string()),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                claude_config.display().to_string(),
+            ),
+        ]);
+
+        let profile = external_agent_permission_profile(
+            &cwd,
+            std::slice::from_ref(&workspace),
+            ExternalAgentRuntimeId::CLAUDE,
+            &source_env,
+        );
+        let (file_system, _) = profile.to_runtime_permissions();
+        let read_paths = file_system
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.path {
+                FileSystemPath::Path { path } if entry.access == FileSystemAccessMode::Read => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(read_paths.contains(&workspace));
+        assert!(read_paths.contains(
+            &AbsolutePathBuf::from_absolute_path(aws_credentials).expect("aws credentials")
+        ));
+        assert!(read_paths.contains(
+            &AbsolutePathBuf::from_absolute_path(home.path().join(".aws")).expect("aws")
+        ));
+        assert!(
+            !read_paths.contains(
+                &AbsolutePathBuf::from_absolute_path(google_credentials)
+                    .expect("google credentials")
+            ),
+            "settings-only Bedrock routing must not expose unrelated Vertex credentials"
         );
     }
 

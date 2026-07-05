@@ -15,6 +15,7 @@ mod runtimes;
 
 pub use acp::*;
 pub use claude::*;
+pub use claude_auth::claude_provider_credential_read_roots;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;

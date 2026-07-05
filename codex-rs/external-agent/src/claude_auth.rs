@@ -109,6 +109,29 @@ pub(crate) enum AgentSdkAuthEnv {
     NotConfigured,
 }
 
+/// Returns bounded credential file and config directory paths needed by the
+/// selected Claude provider route.
+pub fn claude_provider_credential_read_roots(
+    source_env: &BTreeMap<String, String>,
+) -> Vec<PathBuf> {
+    let settings = ClaudeSettingsSignals::from_source_env(source_env);
+    let signals = ClaudeAuthSignals {
+        source_env,
+        settings,
+    };
+    let mut roots = Vec::new();
+    if bedrock_signals_route_selected(&signals) {
+        add_bedrock_credential_read_roots(&mut roots, &signals);
+    }
+    if vertex_signals_route_selected(&signals) {
+        add_vertex_credential_read_roots(&mut roots, &signals);
+    }
+    if foundry_signals_route_selected(&signals) {
+        add_foundry_credential_read_roots(&mut roots, &signals);
+    }
+    roots
+}
+
 pub(crate) fn add_agent_sdk_auth_env(
     env: &mut BTreeMap<String, String>,
     source_env: &BTreeMap<String, String>,
@@ -197,6 +220,13 @@ impl ClaudeAuthSignals<'_> {
             .filter(|value| !value.trim().is_empty())
             .map(String::as_str)
             .or_else(|| self.settings.env_vars.get(name).map(String::as_str))
+    }
+
+    fn source_env_value(&self, name: &str) -> Option<&str> {
+        self.source_env
+            .get(name)
+            .filter(|value| !value.trim().is_empty())
+            .map(String::as_str)
     }
 }
 
@@ -407,6 +437,100 @@ fn foundry_auth_env(signals: &ClaudeAuthSignals<'_>) -> AgentSdkAuthEnv {
          API-key, Entra ID/default-chain, or gateway authentication"
             .to_string(),
     )
+}
+
+fn add_bedrock_credential_read_roots(roots: &mut Vec<PathBuf>, signals: &ClaudeAuthSignals<'_>) {
+    for name in [
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ] {
+        push_launch_env_path(roots, signals, name);
+    }
+
+    if signals.any_value_is_set(&[
+        "AWS_DEFAULT_REGION",
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_SDK_LOAD_CONFIG",
+    ]) || signals.setting_is_set("awsAuthRefresh")
+        || signals.setting_is_set("awsCredentialExport")
+    {
+        push_source_home_child_path(roots, signals, ".aws");
+    }
+}
+
+fn add_vertex_credential_read_roots(roots: &mut Vec<PathBuf>, signals: &ClaudeAuthSignals<'_>) {
+    for name in [
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+        "CLOUDSDK_CONFIG",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ] {
+        push_launch_env_path(roots, signals, name);
+    }
+
+    if signals.any_value_is_set(&[
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "CLOUD_ML_REGION",
+        "CLOUDSDK_CORE_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_QUOTA_PROJECT",
+        "GOOGLE_PROJECT",
+    ]) || signals.any_value_starts_with(&["VERTEX_REGION_CLAUDE_"])
+        || signals.setting_is_set("gcpAuthRefresh")
+    {
+        push_source_home_child_path(roots, signals, ".config/gcloud");
+        push_source_xdg_child_path(roots, signals, "XDG_CONFIG_HOME", "gcloud");
+        push_source_xdg_child_path(roots, signals, "APPDATA", "gcloud");
+    }
+}
+
+fn add_foundry_credential_read_roots(roots: &mut Vec<PathBuf>, signals: &ClaudeAuthSignals<'_>) {
+    for name in [
+        "AZURE_CLIENT_CERTIFICATE_PATH",
+        "AZURE_CONFIG_DIR",
+        "AZURE_FEDERATED_TOKEN_FILE",
+    ] {
+        push_launch_env_path(roots, signals, name);
+    }
+
+    if !signals.value_is_set("ANTHROPIC_FOUNDRY_API_KEY")
+        && (signals.value_is_set("ANTHROPIC_FOUNDRY_BASE_URL")
+            || signals.value_is_set("ANTHROPIC_FOUNDRY_RESOURCE"))
+    {
+        push_source_home_child_path(roots, signals, ".azure");
+    }
+}
+
+fn push_launch_env_path(roots: &mut Vec<PathBuf>, signals: &ClaudeAuthSignals<'_>, name: &str) {
+    if let Some(path) = signals.launch_env_value(name) {
+        push_unique_path(roots, PathBuf::from(path));
+    }
+}
+
+fn push_source_home_child_path(
+    roots: &mut Vec<PathBuf>,
+    signals: &ClaudeAuthSignals<'_>,
+    child: &str,
+) {
+    if let Some(home) = signals
+        .source_env_value("HOME")
+        .or_else(|| signals.source_env_value("USERPROFILE"))
+    {
+        push_unique_path(roots, PathBuf::from(home).join(child));
+    }
+}
+
+fn push_source_xdg_child_path(
+    roots: &mut Vec<PathBuf>,
+    signals: &ClaudeAuthSignals<'_>,
+    name: &str,
+    child: &str,
+) {
+    if let Some(root) = signals.source_env_value(name) {
+        push_unique_path(roots, PathBuf::from(root).join(child));
+    }
 }
 
 fn copy_env_vars(
@@ -707,5 +831,142 @@ mod tests {
                 ("CLAUDE_CODE_USE_BEDROCK", "true"),
             ])
         );
+    }
+
+    #[test]
+    fn credential_read_roots_follow_bedrock_route_only() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let home = temp_dir.path();
+        let aws_credentials = home.join(".aws/credentials");
+        let google_credentials = home.join("gcp.json");
+        let azure_config = home.join(".azure");
+        let source = env_from(&[
+            ("HOME", home.to_string_lossy().as_ref()),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_PROFILE", "dev"),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE",
+                aws_credentials.to_string_lossy().as_ref(),
+            ),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                google_credentials.to_string_lossy().as_ref(),
+            ),
+            ("AZURE_CONFIG_DIR", azure_config.to_string_lossy().as_ref()),
+        ]);
+
+        let roots = claude_provider_credential_read_roots(&source);
+
+        assert_eq!(
+            roots,
+            vec![aws_credentials, home.join(".aws")],
+            "Bedrock should expose AWS credential sources without leaking unrelated GCP/Azure paths"
+        );
+    }
+
+    #[test]
+    fn credential_read_roots_follow_vertex_route_only() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let home = temp_dir.path();
+        let aws_credentials = home.join(".aws/credentials");
+        let google_credentials = home.join("gcp.json");
+        let cloudsdk_config = home.join("gcloud-config");
+        let azure_config = home.join(".azure");
+        let source = env_from(&[
+            ("HOME", home.to_string_lossy().as_ref()),
+            ("CLAUDE_CODE_USE_VERTEX", "1"),
+            ("GOOGLE_CLOUD_PROJECT", "project-1"),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                google_credentials.to_string_lossy().as_ref(),
+            ),
+            (
+                "CLOUDSDK_CONFIG",
+                cloudsdk_config.to_string_lossy().as_ref(),
+            ),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE",
+                aws_credentials.to_string_lossy().as_ref(),
+            ),
+            ("AZURE_CONFIG_DIR", azure_config.to_string_lossy().as_ref()),
+        ]);
+
+        let roots = claude_provider_credential_read_roots(&source);
+
+        assert_eq!(
+            roots,
+            vec![
+                cloudsdk_config,
+                google_credentials,
+                home.join(".config/gcloud")
+            ],
+            "Vertex should expose GCP credential sources without leaking unrelated AWS/Azure paths"
+        );
+    }
+
+    #[test]
+    fn credential_read_roots_follow_foundry_route_only() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let home = temp_dir.path();
+        let aws_credentials = home.join(".aws/credentials");
+        let google_credentials = home.join("gcp.json");
+        let azure_config = home.join("azure-config");
+        let azure_token = home.join("token.jwt");
+        let source = env_from(&[
+            ("HOME", home.to_string_lossy().as_ref()),
+            ("CLAUDE_CODE_USE_FOUNDRY", "1"),
+            ("ANTHROPIC_FOUNDRY_RESOURCE", "resource"),
+            ("AZURE_CONFIG_DIR", azure_config.to_string_lossy().as_ref()),
+            (
+                "AZURE_FEDERATED_TOKEN_FILE",
+                azure_token.to_string_lossy().as_ref(),
+            ),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE",
+                aws_credentials.to_string_lossy().as_ref(),
+            ),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                google_credentials.to_string_lossy().as_ref(),
+            ),
+        ]);
+
+        let roots = claude_provider_credential_read_roots(&source);
+
+        assert_eq!(
+            roots,
+            vec![azure_config, azure_token, home.join(".azure")],
+            "Foundry should expose Azure credential sources without leaking unrelated AWS/GCP paths"
+        );
+    }
+
+    #[test]
+    fn credential_read_roots_use_settings_provider_paths() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let home = temp_dir.path();
+        let aws_credentials = home.join(".aws").join("settings-credentials");
+        let settings = serde_json::json!({
+            "env": {
+                "CLAUDE_CODE_USE_BEDROCK": true,
+                "AWS_REGION": "us-west-2",
+                "AWS_SHARED_CREDENTIALS_FILE": aws_credentials,
+                "GOOGLE_APPLICATION_CREDENTIALS": home.join("gcp.json"),
+            },
+        })
+        .to_string();
+        let claude_config = home.join("claude-config");
+        std::fs::create_dir(&claude_config).expect("create claude config");
+        std::fs::write(claude_config.join("settings.json"), settings).expect("write settings");
+        let source = env_from(&[
+            ("HOME", home.to_string_lossy().as_ref()),
+            (
+                "CLAUDE_CONFIG_DIR",
+                claude_config.to_string_lossy().as_ref(),
+            ),
+        ]);
+
+        let roots = claude_provider_credential_read_roots(&source);
+
+        assert_eq!(roots, vec![aws_credentials, home.join(".aws")]);
     }
 }
