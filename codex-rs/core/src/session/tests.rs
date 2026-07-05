@@ -4303,7 +4303,7 @@ async fn update_settings_model_provider_rebuilds_runtime_model_client() -> anyho
 #[tokio::test]
 async fn new_default_turn_uses_active_provider_model_metadata_after_provider_switch()
 -> anyhow::Result<()> {
-    let overlapping_model = "z-ai/glm-5.1";
+    let overlapping_model = "z-ai/glm-5.2";
     let session = make_session_with_config(|config| {
         let openrouter_provider = config
             .model_providers

@@ -19,9 +19,9 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
-        "z-ai/glm-5.1",
-        "Z.ai GLM 5.1",
-        "NVIDIA hosted Z.ai GLM 5.1 model. Requires NVIDIA_API_KEY for turns.",
+        "z-ai/glm-5.2",
+        "Z.ai GLM 5.2",
+        "NVIDIA hosted Z.ai GLM 5.2 model. Requires NVIDIA_API_KEY for turns.",
         /*is_default*/ false,
     ),
 ];
@@ -67,8 +67,8 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_parallel_tool_calls*/ false,
             /*supports_reasoning*/ false,
         )),
-        "z-ai/glm-5.1" => Some(KnownProviderModelMetadata::new(
-            "Z.ai GLM 5.1",
+        "z-ai/glm-5.2" => Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.2",
             /*context_window*/ 131_072,
             /*supports_tools*/ true,
             /*supports_parallel_tool_calls*/ false,

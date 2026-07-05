@@ -116,9 +116,9 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
 
 #[test]
 fn known_nvidia_glm_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("z-ai/glm-5.1", Some("nvidia"));
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.2", Some("nvidia"));
 
-    assert_eq!(model.display_name, "Z.ai GLM 5.1");
+    assert_eq!(model.display_name, "Z.ai GLM 5.2");
     assert_eq!(model.context_window, Some(131_072));
     assert_eq!(model.max_context_window, Some(131_072));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);

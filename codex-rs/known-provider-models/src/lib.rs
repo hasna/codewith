@@ -565,6 +565,32 @@ mod tests {
     }
 
     #[test]
+    fn nvidia_fallback_tracks_zai_glm_5_2_catalog() {
+        let models = fallback_models_for_provider("nvidia");
+
+        assert!(
+            models.iter().any(|model| model.id == "z-ai/glm-5.2"),
+            "nvidia fallback should include z-ai/glm-5.2 from the current NVIDIA catalog"
+        );
+        assert!(
+            !models.iter().any(|model| model.id == "z-ai/glm-5.1"),
+            "nvidia fallback should drop z-ai/glm-5.1 which is no longer in the NVIDIA catalog"
+        );
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("nvidia"), "z-ai/glm-5.2")
+                .expect("nvidia z-ai/glm-5.2 metadata should exist")
+                .display_name,
+            "Z.ai GLM 5.2"
+        );
+        assert_eq!(
+            metadata_for_local_fallback(Some("nvidia"), "z-ai/glm-5.1"),
+            None,
+            "nvidia should no longer expose z-ai/glm-5.1 metadata"
+        );
+    }
+
+    #[test]
     fn openrouter_exposes_anthropic_claude_metadata() {
         let expected = Some(KnownProviderModelMetadata::new(
             "Claude Sonnet 5",
