@@ -6,10 +6,10 @@ expression: preview
 
   ## [Unreleased]
 
-  ### Fixed
+  ## [0.1.56] - 2026-07-04
 
-  - Recovered loop-driven and long-running turns from context-window overflow
-    errors by compacting mid-turn and retrying once before surfacing the
-    failure.
-
-  ## [0.1.54] - 2026-07-02
+  Tag: rust-v0.1.56
+  npm: https://www.npmjs.com/package/@hasna/codewith/v/0.1.56
+  (https://www.npmjs.com/package/@hasna/codewith/v/0.1.56)
+  Compare: https://github.com/hasna/codewith/compare/rust-v0.1.55...rust-v0.1.56
+  (https://github.com/hasna/codewith/compare/rust-v0.1.55...rust-v0.1.56)
