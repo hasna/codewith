@@ -8,6 +8,7 @@
 
 mod acp;
 mod claude;
+mod claude_auth;
 mod contract;
 mod platform_sandbox;
 mod runtimes;

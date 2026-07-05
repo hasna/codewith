@@ -1,11 +1,16 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_sandboxing::SandboxCommand;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
@@ -99,12 +104,18 @@ pub(crate) fn platform_sandbox_external_agent_launch_with_writable_roots(
         SandboxType::MacosSeatbelt | SandboxType::LinuxSeccomp => {}
     }
 
+    let executable_read_roots =
+        executable_read_roots(&launch.program, config.codex_linux_sandbox_exe.as_deref());
     let command = SandboxCommand {
         program: launch.program.into_os_string(),
         args: launch.args,
         cwd: cwd.clone(),
         env: launch.env.into_iter().collect::<HashMap<_, _>>(),
-        additional_permissions: additional_permissions(&runtime, writable_roots)?,
+        additional_permissions: additional_permissions(
+            &runtime,
+            executable_read_roots,
+            writable_roots,
+        )?,
     };
     let request = manager
         .transform(SandboxTransformRequest {
@@ -150,32 +161,83 @@ pub(crate) fn platform_sandbox_external_agent_launch_with_writable_roots(
 
 fn additional_permissions(
     runtime: &ExternalAgentRuntimeId,
+    read_roots: Vec<PathBuf>,
     writable_roots: Vec<PathBuf>,
 ) -> Result<Option<AdditionalPermissionProfile>, ExternalAgentError> {
-    if writable_roots.is_empty() {
-        return Ok(None);
+    let mut entries = vec![FileSystemSandboxEntry {
+        path: FileSystemPath::Special {
+            value: FileSystemSpecialPath::Minimal,
+        },
+        access: FileSystemAccessMode::Read,
+    }];
+
+    for root in read_roots {
+        let path = AbsolutePathBuf::from_absolute_path_checked(&root).map_err(|err| {
+            not_ready(
+                runtime,
+                format!(
+                    "external-agent executable read root must be absolute: {} ({err})",
+                    root.display()
+                ),
+            )
+        })?;
+        entries.push(FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path },
+            access: FileSystemAccessMode::Read,
+        });
     }
-    let mut roots = Vec::with_capacity(writable_roots.len());
+
     for root in writable_roots {
-        roots.push(
-            AbsolutePathBuf::from_absolute_path_checked(&root).map_err(|err| {
-                not_ready(
-                    runtime,
-                    format!(
-                        "external-agent writable sandbox root must be absolute: {} ({err})",
-                        root.display()
-                    ),
-                )
-            })?,
-        );
+        let path = AbsolutePathBuf::from_absolute_path_checked(&root).map_err(|err| {
+            not_ready(
+                runtime,
+                format!(
+                    "external-agent writable sandbox root must be absolute: {} ({err})",
+                    root.display()
+                ),
+            )
+        })?;
+        entries.push(FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path },
+            access: FileSystemAccessMode::Write,
+        });
     }
     Ok(Some(AdditionalPermissionProfile {
         network: None,
-        file_system: Some(FileSystemPermissions::from_read_write_roots(
-            /*read*/ None,
-            Some(roots),
-        )),
+        file_system: Some(FileSystemPermissions {
+            entries,
+            glob_scan_max_depth: None,
+        }),
     }))
+}
+
+fn executable_read_roots(program: &Path, codex_linux_sandbox_exe: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    push_executable_parent_roots(&mut roots, program);
+    if let Some(codex_linux_sandbox_exe) = codex_linux_sandbox_exe {
+        push_executable_parent_roots(&mut roots, codex_linux_sandbox_exe);
+    }
+    roots
+}
+
+fn push_executable_parent_roots(roots: &mut Vec<PathBuf>, executable: &Path) {
+    push_parent_root(roots, executable);
+    if let Ok(canonical) = executable.canonicalize() {
+        push_parent_root(roots, canonical.as_path());
+    }
+}
+
+fn push_parent_root(roots: &mut Vec<PathBuf>, executable: &Path) {
+    let Some(parent) = executable.parent() else {
+        return;
+    };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    let parent = parent.to_path_buf();
+    if !roots.iter().any(|root| root == &parent) {
+        roots.push(parent);
+    }
 }
 
 fn not_ready(runtime: &ExternalAgentRuntimeId, reason: impl Into<String>) -> ExternalAgentError {
@@ -189,6 +251,10 @@ fn not_ready(runtime: &ExternalAgentRuntimeId, reason: impl Into<String>) -> Ext
 mod tests {
     use super::*;
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::permissions::FileSystemAccessMode;
+    use codex_protocol::permissions::FileSystemPath;
+    use codex_protocol::permissions::FileSystemSandboxEntry;
+    use codex_protocol::permissions::FileSystemSandboxPolicy;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use pretty_assertions::assert_eq;
 
@@ -274,11 +340,19 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn wraps_linux_launch_with_platform_sandbox() {
-        let config = ExternalAgentSandboxConfig {
-            permission_profile: PermissionProfile::External {
-                network: NetworkSandboxPolicy::Restricted,
+        let file_system = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::from_absolute_path(Path::new("/workspace"))
+                    .expect("absolute path"),
             },
-            codex_linux_sandbox_exe: Some(PathBuf::from("/tmp/codex-linux-sandbox")),
+            access: FileSystemAccessMode::Read,
+        }]);
+        let config = ExternalAgentSandboxConfig {
+            permission_profile: PermissionProfile::from_runtime_permissions(
+                &file_system,
+                NetworkSandboxPolicy::Restricted,
+            ),
+            codex_linux_sandbox_exe: Some(PathBuf::from("/tmp/codewith-bin/codex-linux-sandbox")),
             use_legacy_landlock: true,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -288,9 +362,35 @@ mod tests {
             .expect("sandboxed launch");
 
         let spec = spec.as_launch_spec();
-        assert_eq!(spec.program, PathBuf::from("/tmp/codex-linux-sandbox"));
-        assert_eq!(spec.arg0, Some("/tmp/codex-linux-sandbox".to_string()));
+        assert_eq!(
+            spec.program,
+            PathBuf::from("/tmp/codewith-bin/codex-linux-sandbox")
+        );
+        assert_eq!(
+            spec.arg0,
+            Some("/tmp/codewith-bin/codex-linux-sandbox".to_string())
+        );
         assert!(spec.args.iter().any(|arg| arg == "/bin/echo"));
+        let permission_profile = transformed_permission_profile(spec);
+        let (file_system_policy, _) = permission_profile.to_runtime_permissions();
+        assert!(file_system_policy.include_platform_defaults());
+        let readable_roots = file_system_policy.get_readable_roots_with_cwd(Path::new("/tmp"));
+        let program_parent = std::fs::canonicalize("/bin/echo")
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("/bin"));
+        assert!(
+            readable_roots
+                .iter()
+                .any(|root| root.as_path() == program_parent.as_path()),
+            "launch program parent should be readable: {readable_roots:?}"
+        );
+        assert!(
+            readable_roots
+                .iter()
+                .any(|root| root.as_path() == Path::new("/tmp/codewith-bin")),
+            "Linux sandbox helper parent should be readable: {readable_roots:?}"
+        );
         assert!(spec.isolation.is_process_enforced());
         assert_eq!(
             match &spec.isolation {
@@ -300,5 +400,15 @@ mod tests {
             },
             "Codewith seccomp platform sandbox"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn transformed_permission_profile(spec: &ExternalAgentLaunchSpec) -> PermissionProfile {
+        let profile_index = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--permission-profile")
+            .expect("permission profile arg");
+        serde_json::from_str(&spec.args[profile_index + 1]).expect("permission profile json")
     }
 }
