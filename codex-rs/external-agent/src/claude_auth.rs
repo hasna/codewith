@@ -113,19 +113,24 @@ pub(crate) fn add_agent_sdk_auth_env(
     env: &mut BTreeMap<String, String>,
     source_env: &BTreeMap<String, String>,
 ) {
-    copy_env_vars(env, source_env, CLAUDE_AGENT_SDK_AUTH_ENV_VARS);
-    copy_env_vars(env, source_env, CLAUDE_MODEL_CONFIG_ENV_VARS);
-    copy_env_vars_with_prefix(env, source_env, CLAUDE_MODEL_CONFIG_ENV_PREFIXES);
+    let settings = ClaudeSettingsSignals::from_source_env(source_env);
+    let signals = ClaudeAuthSignals {
+        source_env,
+        settings,
+    };
+    copy_env_vars(env, &signals, CLAUDE_AGENT_SDK_AUTH_ENV_VARS);
+    copy_env_vars(env, &signals, CLAUDE_MODEL_CONFIG_ENV_VARS);
+    copy_env_vars_with_prefix(env, &signals, CLAUDE_MODEL_CONFIG_ENV_PREFIXES);
 
-    if bedrock_route_selected(source_env) {
-        copy_env_vars(env, source_env, CLAUDE_AWS_AUTH_ENV_VARS);
+    if bedrock_signals_route_selected(&signals) {
+        copy_env_vars(env, &signals, CLAUDE_AWS_AUTH_ENV_VARS);
     }
-    if vertex_route_selected(source_env) {
-        copy_env_vars(env, source_env, CLAUDE_VERTEX_AUTH_ENV_VARS);
-        copy_env_vars_with_prefix(env, source_env, &["VERTEX_REGION_CLAUDE_"]);
+    if vertex_signals_route_selected(&signals) {
+        copy_env_vars(env, &signals, CLAUDE_VERTEX_AUTH_ENV_VARS);
+        copy_env_vars_with_prefix(env, &signals, &["VERTEX_REGION_CLAUDE_"]);
     }
-    if foundry_route_selected(source_env) {
-        copy_env_vars(env, source_env, CLAUDE_FOUNDRY_AUTH_ENV_VARS);
+    if foundry_signals_route_selected(&signals) {
+        copy_env_vars(env, &signals, CLAUDE_FOUNDRY_AUTH_ENV_VARS);
     }
 }
 
@@ -161,7 +166,7 @@ struct ClaudeAuthSignals<'a> {
 
 impl ClaudeAuthSignals<'_> {
     fn value_is_set(&self, name: &str) -> bool {
-        env_value_is_set(self.source_env, name) || self.settings.env_vars.contains(name)
+        env_value_is_set(self.source_env, name) || self.settings.env_vars.contains_key(name)
     }
 
     fn flag_is_enabled(&self, name: &str) -> bool {
@@ -182,14 +187,22 @@ impl ClaudeAuthSignals<'_> {
         }) || self
             .settings
             .env_vars
-            .iter()
+            .keys()
             .any(|name| prefixes.iter().any(|prefix| name.starts_with(prefix)))
+    }
+
+    fn launch_env_value(&self, name: &str) -> Option<&str> {
+        self.source_env
+            .get(name)
+            .filter(|value| !value.trim().is_empty())
+            .map(String::as_str)
+            .or_else(|| self.settings.env_vars.get(name).map(String::as_str))
     }
 }
 
 #[derive(Default)]
 struct ClaudeSettingsSignals {
-    env_vars: BTreeSet<String>,
+    env_vars: BTreeMap<String, String>,
     enabled_flags: BTreeSet<String>,
     settings: BTreeSet<String>,
 }
@@ -216,8 +229,8 @@ impl ClaudeSettingsSignals {
     fn merge_settings_value(&mut self, value: &JsonValue) {
         if let Some(env) = value.get("env").and_then(JsonValue::as_object) {
             for (name, value) in env {
-                if json_env_value_is_set(value) {
-                    self.env_vars.insert(name.clone());
+                if let Some(value) = json_env_value(value) {
+                    self.env_vars.insert(name.clone(), value);
                 }
                 if json_env_flag_is_enabled(value) {
                     self.enabled_flags.insert(name.clone());
@@ -258,11 +271,12 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn json_env_value_is_set(value: &JsonValue) -> bool {
+fn json_env_value(value: &JsonValue) -> Option<String> {
     match value {
-        JsonValue::String(value) => !value.trim().is_empty(),
-        JsonValue::Bool(_) | JsonValue::Number(_) => true,
-        _ => false,
+        JsonValue::String(value) if !value.trim().is_empty() => Some(value.clone()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        JsonValue::Number(number) => Some(number.to_string()),
+        _ => None,
     }
 }
 
@@ -284,34 +298,11 @@ fn json_setting_value_is_set(value: &JsonValue) -> bool {
     }
 }
 
-fn bedrock_route_selected(source_env: &BTreeMap<String, String>) -> bool {
-    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_MANTLE")
-        || bedrock_auth_skipped(source_env)
-}
-
-fn vertex_route_selected(source_env: &BTreeMap<String, String>) -> bool {
-    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_VERTEX")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_VERTEX_AUTH")
-}
-
-fn foundry_route_selected(source_env: &BTreeMap<String, String>) -> bool {
-    env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_FOUNDRY")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_FOUNDRY_AUTH")
-}
-
 fn bedrock_signals_route_selected(signals: &ClaudeAuthSignals<'_>) -> bool {
     signals.flag_is_enabled("CLAUDE_CODE_USE_BEDROCK")
         || signals.flag_is_enabled("CLAUDE_CODE_USE_ANTHROPIC_AWS")
         || signals.flag_is_enabled("CLAUDE_CODE_USE_MANTLE")
         || bedrock_signals_auth_skipped(signals)
-}
-
-fn bedrock_auth_skipped(source_env: &BTreeMap<String, String>) -> bool {
-    env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_BEDROCK_AUTH")
-        || env_flag_is_enabled(source_env, "CLAUDE_CODE_SKIP_MANTLE_AUTH")
 }
 
 fn bedrock_signals_auth_skipped(signals: &ClaudeAuthSignals<'_>) -> bool {
@@ -420,24 +411,27 @@ fn foundry_auth_env(signals: &ClaudeAuthSignals<'_>) -> AgentSdkAuthEnv {
 
 fn copy_env_vars(
     env: &mut BTreeMap<String, String>,
-    source_env: &BTreeMap<String, String>,
+    signals: &ClaudeAuthSignals<'_>,
     names: &[&str],
 ) {
     for name in names {
-        if let Some(value) = source_env.get(*name)
-            && !value.trim().is_empty()
-        {
-            env.insert((*name).to_string(), value.clone());
+        if let Some(value) = signals.launch_env_value(name) {
+            env.insert((*name).to_string(), value.to_string());
         }
     }
 }
 
 fn copy_env_vars_with_prefix(
     env: &mut BTreeMap<String, String>,
-    source_env: &BTreeMap<String, String>,
+    signals: &ClaudeAuthSignals<'_>,
     prefixes: &[&str],
 ) {
-    for (name, value) in source_env {
+    for (name, value) in &signals.settings.env_vars {
+        if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+            env.insert(name.clone(), value.clone());
+        }
+    }
+    for (name, value) in signals.source_env {
         if prefixes.iter().any(|prefix| name.starts_with(prefix)) && !value.trim().is_empty() {
             env.insert(name.clone(), value.clone());
         }
@@ -684,6 +678,33 @@ mod tests {
                 ("CLAUDE_CODE_USE_FOUNDRY", "1"),
                 ("CLAUDE_CODE_USE_VERTEX", "1"),
                 ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/gcp.json"),
+            ])
+        );
+    }
+
+    #[test]
+    fn launch_env_copies_settings_provider_env_without_unrelated_keys() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(
+            temp_dir.path().join("settings.json"),
+            r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":true,"AWS_PROFILE":"settings-dev","AWS_REGION":"us-west-2","ANTHROPIC_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-5","OPENAI_API_KEY":"must-not-leak"}}"#,
+        )
+        .expect("write settings");
+        let config_dir = temp_dir.path().to_string_lossy().into_owned();
+        let source = env_from(&[("CLAUDE_CONFIG_DIR", config_dir.as_str())]);
+        let mut env = BTreeMap::new();
+
+        assert_eq!(agent_sdk_auth_env(&source), AgentSdkAuthEnv::Ready);
+        add_agent_sdk_auth_env(&mut env, &source);
+
+        assert_eq!(
+            env,
+            env_from(&[
+                ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-5"),
+                ("ANTHROPIC_MODEL", "claude-sonnet-5"),
+                ("AWS_PROFILE", "settings-dev"),
+                ("AWS_REGION", "us-west-2"),
+                ("CLAUDE_CODE_USE_BEDROCK", "true"),
             ])
         );
     }

@@ -104,8 +104,9 @@ pub(crate) fn platform_sandbox_external_agent_launch_with_writable_roots(
         SandboxType::MacosSeatbelt | SandboxType::LinuxSeccomp => {}
     }
 
-    let executable_read_roots =
+    let mut executable_read_roots =
         executable_read_roots(&launch.program, config.codex_linux_sandbox_exe.as_deref());
+    executable_read_roots.extend(runtime_credential_read_roots(&runtime, &launch.env));
     let command = SandboxCommand {
         program: launch.program.into_os_string(),
         args: launch.args,
@@ -220,6 +221,59 @@ fn executable_read_roots(program: &Path, codex_linux_sandbox_exe: Option<&Path>)
     roots
 }
 
+fn runtime_credential_read_roots(
+    runtime: &ExternalAgentRuntimeId,
+    env: &BTreeMap<String, String>,
+) -> Vec<PathBuf> {
+    if runtime.as_str() != ExternalAgentRuntimeId::CLAUDE {
+        return Vec::new();
+    }
+
+    let mut roots = Vec::new();
+    if env_value_is_set(env, "AWS_PROFILE") {
+        push_home_child_read_root(&mut roots, env, ".aws");
+    }
+    for name in [
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "CLOUDSDK_CONFIG",
+        "AZURE_CLIENT_CERTIFICATE_PATH",
+        "AZURE_CONFIG_DIR",
+        "AZURE_FEDERATED_TOKEN_FILE",
+    ] {
+        push_env_path_read_root(&mut roots, env, name);
+    }
+    roots
+}
+
+fn push_home_child_read_root(
+    roots: &mut Vec<PathBuf>,
+    env: &BTreeMap<String, String>,
+    child: &str,
+) {
+    if let Some(home) = env.get("HOME").or_else(|| env.get("USERPROFILE")) {
+        push_read_root(roots, PathBuf::from(home).join(child));
+    }
+}
+
+fn push_env_path_read_root(roots: &mut Vec<PathBuf>, env: &BTreeMap<String, String>, name: &str) {
+    if let Some(path) = env.get(name).filter(|value| !value.trim().is_empty()) {
+        push_read_root(roots, PathBuf::from(path));
+    }
+}
+
+fn push_read_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if root.is_absolute() && !roots.iter().any(|existing| existing == &root) {
+        roots.push(root);
+    }
+}
+
+fn env_value_is_set(env: &BTreeMap<String, String>, name: &str) -> bool {
+    env.get(name).is_some_and(|value| !value.trim().is_empty())
+}
+
 fn push_executable_parent_roots(roots: &mut Vec<PathBuf>, executable: &Path) {
     push_parent_root(roots, executable);
     if let Ok(canonical) = executable.canonicalize() {
@@ -251,9 +305,13 @@ fn not_ready(runtime: &ExternalAgentRuntimeId, reason: impl Into<String>) -> Ext
 mod tests {
     use super::*;
     use codex_protocol::models::PermissionProfile;
+    #[cfg(target_os = "linux")]
     use codex_protocol::permissions::FileSystemAccessMode;
+    #[cfg(target_os = "linux")]
     use codex_protocol::permissions::FileSystemPath;
+    #[cfg(target_os = "linux")]
     use codex_protocol::permissions::FileSystemSandboxEntry;
+    #[cfg(target_os = "linux")]
     use codex_protocol::permissions::FileSystemSandboxPolicy;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use pretty_assertions::assert_eq;
@@ -399,6 +457,71 @@ mod tests {
                 _ => panic!("expected platform sandbox"),
             },
             "Codewith seccomp platform sandbox"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wraps_linux_launch_with_claude_provider_credential_roots() {
+        let home = tempfile::TempDir::new().expect("home");
+        let gcp_credentials = home.path().join("gcp.json");
+        let azure_dir = home.path().join(".azure");
+        let mut launch = launch_spec();
+        launch.runtime = ExternalAgentRuntimeId::from(ExternalAgentRuntimeId::CLAUDE);
+        launch.env.extend([
+            ("HOME".to_string(), home.path().display().to_string()),
+            ("AWS_PROFILE".to_string(), "dev".to_string()),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                gcp_credentials.display().to_string(),
+            ),
+            (
+                "AZURE_CONFIG_DIR".to_string(),
+                azure_dir.display().to_string(),
+            ),
+        ]);
+        let file_system = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::from_absolute_path(Path::new("/workspace"))
+                    .expect("absolute path"),
+            },
+            access: FileSystemAccessMode::Read,
+        }]);
+        let config = ExternalAgentSandboxConfig {
+            permission_profile: PermissionProfile::from_runtime_permissions(
+                &file_system,
+                NetworkSandboxPolicy::Restricted,
+            ),
+            codex_linux_sandbox_exe: Some(PathBuf::from("/tmp/codewith-bin/codex-linux-sandbox")),
+            use_legacy_landlock: true,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        };
+
+        let spec =
+            platform_sandbox_external_agent_launch(launch, &config).expect("sandboxed launch");
+        let spec = spec.as_launch_spec();
+        let permission_profile = transformed_permission_profile(spec);
+        let (file_system_policy, _) = permission_profile.to_runtime_permissions();
+        let readable_roots = file_system_policy.get_readable_roots_with_cwd(Path::new("/tmp"));
+
+        assert!(
+            readable_roots
+                .iter()
+                .any(|root| root.as_path() == home.path().join(".aws").as_path()),
+            "AWS_PROFILE should grant the default AWS credential store: {readable_roots:?}"
+        );
+        assert!(
+            readable_roots
+                .iter()
+                .any(|root| root.as_path() == gcp_credentials.as_path()),
+            "explicit Google credential file should be readable: {readable_roots:?}"
+        );
+        assert!(
+            readable_roots
+                .iter()
+                .any(|root| root.as_path() == azure_dir.as_path()),
+            "explicit Azure config dir should be readable: {readable_roots:?}"
         );
     }
 

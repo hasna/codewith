@@ -405,6 +405,125 @@ async fn thread_external_agent_claude_starts_with_bedrock_profile_env_and_saniti
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn thread_external_agent_claude_starts_with_settings_provider_env_and_sanitized_launch()
+-> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+
+    let claude_config_dir = tmp.path().join("claude_config");
+    std::fs::create_dir(&claude_config_dir)?;
+    std::fs::write(
+        claude_config_dir.join("settings.json"),
+        r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":true,"AWS_PROFILE":"dev","AWS_REGION":"us-east-1","ANTHROPIC_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-5","OPENAI_API_KEY":"must-not-leak"}}"#,
+    )?;
+
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    write_env_echoing_fake_claude_executable(&bin_dir)?;
+    let path = path_with_fake_bin(&bin_dir)?;
+    let claude_config_dir = claude_config_dir.to_string_lossy().into_owned();
+
+    let mut mcp = McpProcess::new_with_env(
+        codex_home.as_path(),
+        &[
+            ("PATH", Some(path.as_str())),
+            ("CLAUDE_CONFIG_DIR", Some(claude_config_dir.as_str())),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            auth_profile: Some(None),
+            ..ThreadStartParams::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    let claude_id = mcp
+        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
+            thread_id: thread.id,
+            runtime_id: "claude".to_string(),
+            task: "inspect the settings auth wiring".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+        })
+        .await?;
+    let claude_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(claude_id)),
+    )
+    .await??;
+    let response: ThreadExternalAgentStartResponse = to_response(claude_resp)?;
+    assert_eq!(
+        response.status,
+        ThreadExternalAgentStartStatus::Started,
+        "Claude should start with Bedrock settings.json env and no profile: {}",
+        response.message
+    );
+    let run_id = response.run_id.expect("claude external-agent run id");
+
+    let output = read_external_agent_output_until_completed(&mut mcp, &run_id).await?;
+    assert!(
+        output.contains("ARGS:--safe-mode"),
+        "expected safe-mode args in fake Claude output: {output}"
+    );
+    assert!(
+        output.contains("--permission-mode plan"),
+        "expected plan permission mode in fake Claude output: {output}"
+    );
+    assert!(
+        output.contains("--output-format stream-json"),
+        "expected stream-json output mode in fake Claude output: {output}"
+    );
+    assert!(
+        output.contains("CLAUDE_CODE_USE_BEDROCK=present"),
+        "expected Bedrock selector in fake Claude env: {output}"
+    );
+    assert!(
+        output.contains("AWS_PROFILE=present"),
+        "expected AWS_PROFILE in fake Claude env: {output}"
+    );
+    assert!(
+        output.contains("AWS_REGION=present"),
+        "expected AWS_REGION in fake Claude env: {output}"
+    );
+    assert!(
+        output.contains("ANTHROPIC_MODEL=present"),
+        "expected model override in fake Claude env: {output}"
+    );
+    assert!(
+        output.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=present"),
+        "expected default model override in fake Claude env: {output}"
+    );
+    assert!(
+        output.contains("OPENAI_API_KEY=absent"),
+        "unrelated provider auth leaked into fake Claude env: {output}"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_external_agent_claude_gates_incomplete_provider_selector_without_profile_requirement()
 -> Result<()> {

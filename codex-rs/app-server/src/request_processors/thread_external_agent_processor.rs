@@ -331,6 +331,7 @@ fn add_runtime_config_read_roots(
             push_xdg_child_read_root(roots, source_env, "XDG_CACHE_HOME", "claude");
             push_xdg_child_read_root(roots, source_env, "APPDATA", "Claude");
             push_xdg_child_read_root(roots, source_env, "LOCALAPPDATA", "Claude");
+            add_claude_provider_credential_read_roots(roots, source_env);
         }
         ExternalAgentRuntimeId::GROK_BUILD => {
             push_home_child_read_root(roots, source_env, ".grok");
@@ -351,6 +352,27 @@ fn add_runtime_config_read_roots(
     }
 }
 
+fn add_claude_provider_credential_read_roots(
+    roots: &mut Vec<AbsolutePathBuf>,
+    source_env: &BTreeMap<String, String>,
+) {
+    if source_env_value_is_set(source_env, "AWS_PROFILE") {
+        push_home_child_read_root(roots, source_env, ".aws");
+    }
+    for name in [
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "CLOUDSDK_CONFIG",
+        "AZURE_CLIENT_CERTIFICATE_PATH",
+        "AZURE_CONFIG_DIR",
+        "AZURE_FEDERATED_TOKEN_FILE",
+    ] {
+        push_env_path_read_root(roots, source_env, name);
+    }
+}
+
 fn push_home_child_read_root(
     roots: &mut Vec<AbsolutePathBuf>,
     source_env: &BTreeMap<String, String>,
@@ -364,6 +386,19 @@ fn push_home_child_read_root(
     }
 }
 
+fn push_env_path_read_root(
+    roots: &mut Vec<AbsolutePathBuf>,
+    source_env: &BTreeMap<String, String>,
+    env_name: &str,
+) {
+    if let Some(path) = source_env
+        .get(env_name)
+        .filter(|value| !value.trim().is_empty())
+    {
+        push_readable_root(roots, path);
+    }
+}
+
 fn push_xdg_child_read_root(
     roots: &mut Vec<AbsolutePathBuf>,
     source_env: &BTreeMap<String, String>,
@@ -373,6 +408,12 @@ fn push_xdg_child_read_root(
     if let Some(root) = source_env.get(env_name) {
         push_readable_root(roots, PathBuf::from(root).join(child));
     }
+}
+
+fn source_env_value_is_set(source_env: &BTreeMap<String, String>, name: &str) -> bool {
+    source_env
+        .get(name)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn push_readable_root(roots: &mut Vec<AbsolutePathBuf>, path: impl AsRef<Path>) {
@@ -1300,6 +1341,7 @@ mod tests {
         let workspace =
             AbsolutePathBuf::from_absolute_path(workspace.path()).expect("absolute workspace");
         let claude_config = home.path().join(".claude");
+        let aws_config = home.path().join(".aws");
         let aws_credentials = home.path().join(".aws").join("credentials");
         let google_credentials = home.path().join("gcp.json");
         let azure_dir = home.path().join(".azure");
@@ -1314,6 +1356,7 @@ mod tests {
                 "AWS_SHARED_CREDENTIALS_FILE".to_string(),
                 aws_credentials.display().to_string(),
             ),
+            ("AWS_PROFILE".to_string(), "dev".to_string()),
             ("CLAUDE_CODE_USE_VERTEX".to_string(), "1".to_string()),
             (
                 "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
@@ -1357,22 +1400,27 @@ mod tests {
             &AbsolutePathBuf::from_absolute_path(claude_config).expect("absolute claude config")
         ));
         assert!(
-            !read_paths.contains(
-                &AbsolutePathBuf::from_absolute_path(aws_credentials).expect("aws credentials")
-            ),
-            "external-agent readable roots must not expose cloud credential files"
+            read_paths
+                .contains(&AbsolutePathBuf::from_absolute_path(aws_config).expect("aws config")),
+            "AWS_PROFILE should expose the default AWS credential store"
         );
         assert!(
-            !read_paths.contains(
+            read_paths.contains(
+                &AbsolutePathBuf::from_absolute_path(aws_credentials).expect("aws credentials")
+            ),
+            "explicit AWS credential file should be readable"
+        );
+        assert!(
+            read_paths.contains(
                 &AbsolutePathBuf::from_absolute_path(google_credentials)
                     .expect("google credentials")
             ),
-            "external-agent readable roots must not expose cloud credential files"
+            "explicit Google credential file should be readable"
         );
         assert!(
-            !read_paths
+            read_paths
                 .contains(&AbsolutePathBuf::from_absolute_path(azure_dir).expect("azure dir")),
-            "external-agent readable roots must not expose cloud credential directories"
+            "explicit Azure config dir should be readable"
         );
     }
 
