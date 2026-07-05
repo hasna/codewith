@@ -21,8 +21,7 @@ const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/
 const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const QWEN_BASE_URL: &str =
-    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+const QWEN_BASE_URL: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";

@@ -69,8 +69,7 @@ pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 const QWEN_PROVIDER_NAME: &str = "Alibaba Qwen";
 pub const QWEN_PROVIDER_ID: &str = "qwen";
-pub const QWEN_BASE_URL: &str =
-    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+pub const QWEN_BASE_URL: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 const GOOGLE_PROVIDER_NAME: &str = "Google Gemini";
 pub const GOOGLE_PROVIDER_ID: &str = "google";
 pub const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
