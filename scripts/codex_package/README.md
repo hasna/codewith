@@ -52,9 +52,14 @@ override was provided:
 
 The default cargo profile is `dev-small` because local iteration should favor
 fast, small builds. Release jobs should pass `--cargo-profile release` and an
-explicit target. Release jobs that already built and signed/notarized the
-entrypoint should pass `--entrypoint-bin` so the package contains that exact
-binary instead of rebuilding it.
+explicit target. Cross-target release workflows must install the components
+pinned in `codex-rs/rust-toolchain.toml` and add the target std inside the
+same Rust home used for the package build before the first
+`cargo build --target`. Installing target std before a hermetic Rust home is
+selected can leave the build without `std` after Cargo syncs the toml-selected
+toolchain. Release jobs that already
+built and signed/notarized the entrypoint should pass `--entrypoint-bin` so the
+package contains that exact binary instead of rebuilding it.
 
 Release jobs that already built package resource binaries should also pass the
 corresponding resource flags: `--bwrap-bin` for Linux packages, and

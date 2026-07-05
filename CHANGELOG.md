@@ -48,10 +48,10 @@ Tag: `rust-v0.1.56`
 npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.56>
 Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.55...rust-v0.1.56>
 
-Stability and provider-compatibility release. Follows 0.1.55 with 17 merged
-pull requests (#90-#107) focused on sqlite state-layer contention, chat and
-responses API compatibility across providers, TUI robustness, and the release
-toolchain pin that unblocks reproducible platform builds.
+Stability and provider-compatibility release. Follows 0.1.55 with 22 merged
+pull requests (#90-#112) focused on sqlite state-layer contention, chat and
+responses API compatibility across providers, TUI robustness, release
+toolchain hardening, Windows file-read safety, and auth-profile usage health.
 
 ### Fixed
 
@@ -73,7 +73,16 @@ toolchain pin that unblocks reproducible platform builds.
 - Core: router `FunctionCallError` auto-log downgraded from error to debug;
   arg0 helper-symlink spawn race closed under concurrent sessions.
 - Release: Rust toolchain pinned to 1.96.1 in the release workflows for
-  reproducible cross-platform builds.
+  reproducible cross-platform builds; workflows also install the pinned
+  `rust-toolchain.toml` components, and the non-Windows release workflow
+  re-adds matrix target std inside the build rustup home before the first
+  cross-target build.
+- Exec server: Windows same-file checks use stable handle-based file identity
+  instead of nightly-only metadata access, preserving the
+  file-changed-during-open guard for local file reads.
+- Auth profiles: usage health ignores empty workspace credit snapshots when the
+  Codex quota windows still have capacity, while reached usage-limit and spend
+  control blocks continue to mark the profile exhausted.
 
 ### Performance
 
