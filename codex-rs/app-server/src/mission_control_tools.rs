@@ -30,6 +30,8 @@ use codex_tools::ToolExposure;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 
 const MISSION_CONTROL_OVERVIEW_TOOL_NAME: &str = "mission_control_overview";
 const MISSION_CONTROL_ENQUEUE_INSTRUCTION_TOOL_NAME: &str = "mission_control_enqueue_instruction";
@@ -890,6 +892,10 @@ fn truncate_preview(value: &str) -> String {
     value.chars().take(MISSION_CONTROL_PREVIEW_CHARS).collect()
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 fn mailbox_message_json(message: codex_state::MailboxMessage) -> Value {
     json!({
         "messageId": message.message_id,
@@ -957,10 +963,25 @@ fn local_session_json(
 }
 
 fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
+    let prompt_char_count = schedule.prompt.chars().count();
+    let prompt_preview_chars =
+        MISSION_CONTROL_PREVIEW_CHARS.min(prompt_char_count.saturating_sub(1));
+    let prompt_preview = schedule
+        .prompt
+        .chars()
+        .take(prompt_preview_chars)
+        .collect::<String>();
+    let prompt_preview_truncated = prompt_preview_chars < prompt_char_count;
+    let prompt_sha256 = sha256_hex(schedule.prompt.as_bytes());
     json!({
         "threadId": schedule.thread_id.to_string(),
         "scheduleId": schedule.schedule_id,
-        "prompt": schedule.prompt,
+        "promptOmitted": true,
+        "promptSha256": prompt_sha256,
+        "promptPreview": prompt_preview,
+        "promptPreviewDisposition": "untrustedDisplayOnly",
+        "promptPreviewTruncated": prompt_preview_truncated,
+        "promptLengthChars": prompt_char_count,
         "promptSource": schedule.prompt_source.as_str(),
         "schedule": schedule_spec_json(schedule.schedule),
         "timezone": schedule.timezone,
@@ -992,6 +1013,15 @@ fn schedule_spec_json(schedule: codex_state::ThreadScheduleSpec) -> Value {
 }
 
 fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Value {
+    let request_payload_preview = truncate_preview(interaction.request_payload_preview.as_str());
+    let response_payload_omitted = interaction.response_payload_sha256.is_some();
+    let response_payload_preview = interaction
+        .response_payload_preview
+        .as_deref()
+        .map(truncate_preview);
+    let response_payload_preview_disposition = response_payload_preview
+        .as_ref()
+        .map(|_| "untrustedDisplayOnly");
     json!({
         "interactionId": interaction.interaction_id,
         "threadId": interaction.thread_id.to_string(),
@@ -1001,13 +1031,15 @@ fn pending_interaction_json(interaction: codex_state::PendingInteraction) -> Val
         "workerRequestId": interaction.worker_request_id,
         "kind": interaction.kind.as_str(),
         "status": interaction.status.as_str(),
-        "requestPayload": interaction.request_payload_json,
+        "requestPayloadOmitted": true,
         "requestPayloadSha256": interaction.request_payload_sha256,
-        "requestPayloadPreview": interaction.request_payload_preview,
+        "requestPayloadPreview": request_payload_preview,
+        "requestPayloadPreviewDisposition": "untrustedDisplayOnly",
         "requestRedactions": interaction.request_redactions_json,
-        "responsePayload": interaction.response_payload_json,
+        "responsePayloadOmitted": response_payload_omitted,
         "responsePayloadSha256": interaction.response_payload_sha256,
-        "responsePayloadPreview": interaction.response_payload_preview,
+        "responsePayloadPreview": response_payload_preview,
+        "responsePayloadPreviewDisposition": response_payload_preview_disposition,
         "responseRedactions": interaction.response_redactions_json,
         "noClientPolicy": interaction.no_client_policy,
         "timeoutAt": interaction.timeout_at.map(|timestamp| timestamp.timestamp()),
@@ -1253,6 +1285,22 @@ mod tests {
         let state_db = test_state_db().await;
         let thread_id = test_thread_id();
         let interaction_id = "int-1";
+        let raw_request_tail = "RAW_REQUEST_SENTINEL_DO_NOT_EMIT";
+        let raw_response_tail = "RAW_RESPONSE_SENTINEL_DO_NOT_EMIT";
+        let raw_schedule_tail = "RAW_SCHEDULE_SENTINEL_DO_NOT_EMIT";
+        let short_schedule_prompt = "Short schedule sentinel".to_string();
+        let raw_request_payload = format!(
+            "needs user decision {} {raw_request_tail}",
+            "x".repeat(MISSION_CONTROL_PREVIEW_CHARS + 16)
+        );
+        let raw_response_payload = format!(
+            "go ahead {} {raw_response_tail}",
+            "x".repeat(MISSION_CONTROL_PREVIEW_CHARS + 16)
+        );
+        let raw_schedule_prompt = format!(
+            "Check schedule visibility {} {raw_schedule_tail}",
+            "x".repeat(MISSION_CONTROL_PREVIEW_CHARS + 16)
+        );
         state_db
             .create_thread_pending_interaction(&codex_state::PendingInteractionCreateParams {
                 interaction_id: interaction_id.to_string(),
@@ -1263,7 +1311,7 @@ mod tests {
                 worker_request_id: Some("worker-1".to_string()),
                 server_request_id_json: None,
                 kind: codex_state::PendingInteractionKind::Blocked,
-                request_payload_json: json!({ "reason": "needs user decision" }),
+                request_payload_json: json!({ "reason": raw_request_payload }),
                 request_payload_preview: "needs user decision".to_string(),
                 request_redactions_json: json!([]),
                 no_client_policy: "persist".to_string(),
@@ -1275,7 +1323,7 @@ mod tests {
             .thread_schedules()
             .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
                 thread_id,
-                prompt: "Check schedule visibility".to_string(),
+                prompt: raw_schedule_prompt.clone(),
                 prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
                 schedule: codex_state::ThreadScheduleSpec::Once,
                 timezone: "UTC".to_string(),
@@ -1285,6 +1333,20 @@ mod tests {
             })
             .await
             .expect("schedule should be created");
+        state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: short_schedule_prompt.clone(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: DateTime::<Utc>::from_timestamp(1_901, 0),
+                expires_at: None,
+            })
+            .await
+            .expect("short schedule should be created");
         let runtime = MissionControlRuntime {
             state_db: state_db.clone(),
             thread_manager: Weak::new(),
@@ -1316,13 +1378,86 @@ mod tests {
             overview["pendingInteractions"][0]["interactionId"],
             interaction_id
         );
-        assert_eq!(
-            overview["localSessions"][0]["schedules"]
-                .as_array()
-                .expect("schedules")
-                .len(),
-            1
+        assert!(
+            overview["pendingInteractions"][0]
+                .get("requestPayload")
+                .is_none()
         );
+        assert!(
+            overview["pendingInteractions"][0]
+                .get("responsePayload")
+                .is_none()
+        );
+        assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadOmitted"],
+            true
+        );
+        assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadPreview"],
+            "needs user decision"
+        );
+        assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadPreviewDisposition"],
+            "untrustedDisplayOnly"
+        );
+        assert_eq!(
+            overview["pendingInteractions"][0]["requestPayloadSha256"],
+            sha256_hex(
+                serde_json::to_string(&json!({ "reason": raw_request_payload }))
+                    .expect("request payload should serialize")
+                    .as_bytes()
+            )
+        );
+        assert!(!overview.to_string().contains(raw_request_tail));
+        let schedules = overview["localSessions"][0]["schedules"]
+            .as_array()
+            .expect("schedules");
+        assert_eq!(schedules.len(), 2);
+        let schedule = schedules
+            .iter()
+            .find(|schedule| schedule["promptSha256"] == sha256_hex(raw_schedule_prompt.as_bytes()))
+            .expect("long schedule should be listed");
+        assert!(schedule.get("prompt").is_none());
+        assert_eq!(schedule["promptOmitted"], true);
+        assert_eq!(
+            schedule["promptSha256"],
+            sha256_hex(raw_schedule_prompt.as_bytes())
+        );
+        assert_eq!(schedule["promptSource"], "inline");
+        assert_eq!(schedule["promptPreviewDisposition"], "untrustedDisplayOnly");
+        assert_eq!(schedule["promptPreviewTruncated"], true);
+        assert_eq!(
+            schedule["promptLengthChars"].as_u64(),
+            Some(raw_schedule_prompt.chars().count() as u64)
+        );
+        assert!(
+            schedule["promptPreview"]
+                .as_str()
+                .expect("prompt preview should be a string")
+                .chars()
+                .count()
+                <= MISSION_CONTROL_PREVIEW_CHARS
+        );
+        let short_schedule = schedules
+            .iter()
+            .find(|schedule| {
+                schedule["promptSha256"] == sha256_hex(short_schedule_prompt.as_bytes())
+            })
+            .expect("short schedule should be listed");
+        assert!(short_schedule.get("prompt").is_none());
+        assert_eq!(short_schedule["promptOmitted"], true);
+        assert_eq!(short_schedule["promptPreviewTruncated"], true);
+        assert!(
+            short_schedule["promptPreview"]
+                .as_str()
+                .expect("short prompt preview should be a string")
+                .chars()
+                .count()
+                < short_schedule_prompt.chars().count()
+        );
+        let overview_text = overview.to_string();
+        assert!(!overview_text.contains(raw_schedule_tail));
+        assert!(!overview_text.contains(short_schedule_prompt.as_str()));
         assert_eq!(overview["capabilities"]["scheduledTasks"], true);
         assert_eq!(overview["capabilities"]["workflowMutation"], false);
 
@@ -1357,7 +1492,7 @@ mod tests {
                     interaction_id: interaction_id.to_string(),
                     terminal_status: "responded".to_string(),
                     response: ThreadPendingInteractionResponsePayload::Terminal {
-                        reason: "go ahead".to_string(),
+                        reason: raw_response_payload.clone(),
                     },
                     response_preview: None,
                     dry_run: Some(true),
@@ -1368,6 +1503,9 @@ mod tests {
         .await;
         assert_eq!(dry_run["dryRun"], true);
         assert_eq!(dry_run["updated"], false);
+        assert!(dry_run["interaction"].get("requestPayload").is_none());
+        assert!(dry_run["interaction"].get("responsePayload").is_none());
+        assert!(!dry_run.to_string().contains(raw_request_tail));
 
         let response = output_json(
             runtime
@@ -1375,7 +1513,7 @@ mod tests {
                     interaction_id: interaction_id.to_string(),
                     terminal_status: "responded".to_string(),
                     response: ThreadPendingInteractionResponsePayload::Terminal {
-                        reason: "go ahead".to_string(),
+                        reason: raw_response_payload.clone(),
                     },
                     response_preview: Some("go ahead".to_string()),
                     dry_run: None,
@@ -1387,6 +1525,29 @@ mod tests {
         assert_eq!(response["updated"], true);
         assert_eq!(response["interaction"]["status"], "responded");
         assert_eq!(response["responsePreview"], "go ahead");
+        assert!(response["interaction"].get("requestPayload").is_none());
+        assert!(response["interaction"].get("responsePayload").is_none());
+        assert_eq!(response["interaction"]["responsePayloadOmitted"], true);
+        assert_eq!(
+            response["interaction"]["responsePayloadPreview"],
+            "go ahead"
+        );
+        assert_eq!(
+            response["interaction"]["responsePayloadPreviewDisposition"],
+            "untrustedDisplayOnly"
+        );
+        assert_eq!(
+            response["interaction"]["responsePayloadSha256"],
+            sha256_hex(
+                serde_json::to_string(
+                    &json!({ "type": "terminal", "reason": raw_response_payload })
+                )
+                .expect("response payload should serialize")
+                .as_bytes()
+            )
+        );
+        assert!(!response.to_string().contains(raw_request_tail));
+        assert!(!response.to_string().contains(raw_response_tail));
     }
 
     #[tokio::test]
