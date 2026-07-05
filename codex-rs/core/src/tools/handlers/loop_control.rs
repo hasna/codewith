@@ -794,6 +794,8 @@ fn compact_loop_response(response: &ManageLoopResponse) -> JsonValue {
 fn compact_loop_schedule(schedule: &LoopScheduleSnapshot) -> JsonValue {
     json!({
         "scheduleId": schedule.schedule_id,
+        "parentScheduleId": schedule.parent_schedule_id,
+        "nestingDepth": schedule.nesting_depth,
         "status": schedule.status,
         "schedule": schedule.schedule,
         "timezone": schedule.timezone,
@@ -928,6 +930,8 @@ mod tests {
 
         assert_eq!(compact["count"], 1);
         assert_eq!(compact["schedules"][0]["scheduleId"], "loop-1");
+        assert_eq!(compact["schedules"][0]["parentScheduleId"], JsonValue::Null);
+        assert_eq!(compact["schedules"][0]["nestingDepth"], 1);
         assert_eq!(compact["schedules"][0]["promptChars"], 480);
         assert!(
             compact["schedules"][0]["promptPreview"]
@@ -937,6 +941,34 @@ mod tests {
         );
         assert!(compact["schedules"][0]["prompt"].is_null());
         assert!(compact["schedules"][0]["leaseExpiresAt"].is_null());
+    }
+
+    #[test]
+    fn compact_loop_response_includes_nested_loop_identity() {
+        let mut schedule = loop_snapshot("child loop prompt");
+        schedule.schedule_id = "loop-child".to_string();
+        schedule.parent_schedule_id = Some("loop-parent".to_string());
+        schedule.nesting_depth = 2;
+        let response = ManageLoopResponse {
+            action: LoopAction::List,
+            schedule_id: None,
+            affected_schedule: Some(schedule.clone()),
+            schedules: vec![schedule],
+            deleted: None,
+            message: "Listed loops for this thread.".to_string(),
+        };
+
+        let compact = compact_loop_response(&response);
+
+        assert_eq!(compact["affectedSchedule"]["scheduleId"], "loop-child");
+        assert_eq!(
+            compact["affectedSchedule"]["parentScheduleId"],
+            "loop-parent"
+        );
+        assert_eq!(compact["affectedSchedule"]["nestingDepth"], 2);
+        assert_eq!(compact["schedules"][0]["scheduleId"], "loop-child");
+        assert_eq!(compact["schedules"][0]["parentScheduleId"], "loop-parent");
+        assert_eq!(compact["schedules"][0]["nestingDepth"], 2);
     }
 
     async fn upsert_test_thread(runtime: &codex_state::StateRuntime, thread_id: ThreadId) {

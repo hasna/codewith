@@ -802,9 +802,18 @@ Goal objective:
 fn scheduled_loop_nesting_guidance(schedule: &codex_state::ThreadSchedule) -> String {
     let depth = schedule.nesting_depth;
     let schedule_id = schedule.schedule_id.as_str();
+    let can_be_nested_parent = matches!(
+        schedule.schedule,
+        codex_state::ThreadScheduleSpec::Dynamic | codex_state::ThreadScheduleSpec::Interval(_)
+    );
     if depth >= codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH {
         format!(
             "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. This is the maximum nesting level; do not create nested child loops from this run.",
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    } else if !can_be_nested_parent {
+        format!(
+            "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. This schedule cannot be used as a nested-loop parent; do not create nested child loops from this run.",
             codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
         )
     } else {
@@ -3027,11 +3036,17 @@ mod tests {
 
     #[test]
     fn scheduled_goal_thread_prompt_tells_model_not_to_spawn_followups() {
+        let mut schedule = prompt_test_schedule(/*nesting_depth*/ 5);
+        schedule.schedule =
+            codex_state::ThreadScheduleSpec::Interval(codex_state::ThreadScheduleInterval {
+                amount: 5,
+                unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+            });
         let prompt = scheduled_goal_thread_prompt(
             "finish release readiness checks every hour",
             "run-123",
             Some(at(/*seconds*/ 1_700_000_000)),
-            &prompt_test_schedule(/*nesting_depth*/ 5),
+            &schedule,
         );
 
         assert!(prompt.contains("one new scheduled Codewith goal objective"));
@@ -3046,6 +3061,33 @@ mod tests {
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("finish release readiness checks every hour"));
         assert!(!prompt.contains("/goal finish release readiness checks"));
+    }
+
+    #[test]
+    fn scheduled_goal_thread_prompt_skips_nested_loop_guidance_for_unsupported_parent_cadence() {
+        let mut cron_schedule = prompt_test_schedule(/*nesting_depth*/ 1);
+        cron_schedule.schedule = codex_state::ThreadScheduleSpec::Cron {
+            expression: "*/5 * * * *".to_string(),
+        };
+        let cron_prompt = scheduled_goal_thread_prompt(
+            "start nested work every ten minutes",
+            "run-123",
+            Some(at(/*seconds*/ 1_700_000_000)),
+            &cron_schedule,
+        );
+        assert!(cron_prompt.contains("cannot be used as a nested-loop parent"));
+        assert!(!cron_prompt.contains("pass schedule-parent as parent_schedule_id"));
+
+        let mut once_schedule = prompt_test_schedule(/*nesting_depth*/ 1);
+        once_schedule.schedule = codex_state::ThreadScheduleSpec::Once;
+        let once_prompt = scheduled_goal_thread_prompt(
+            "start nested work every ten minutes",
+            "run-456",
+            Some(at(/*seconds*/ 1_700_000_000)),
+            &once_schedule,
+        );
+        assert!(once_prompt.contains("cannot be used as a nested-loop parent"));
+        assert!(!once_prompt.contains("pass schedule-parent as parent_schedule_id"));
     }
 
     #[test]
