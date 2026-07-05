@@ -10849,6 +10849,100 @@ max_threads = 3
 }
 
 #[tokio::test]
+async fn agents_max_threads_from_config_file_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 4
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::Disabled),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_defaults_to_builtin_when_unset() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    // Unset preserves current behavior: the built-in default cap applies.
+    assert_eq!(config.agent_max_threads, None);
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        DEFAULT_AGENT_MAX_THREADS
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_cli_override_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    // Mirrors `-c agents.max_threads=4` on the command line.
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .cli_overrides(vec![(
+            "agents.max_threads".to_string(),
+            toml::Value::Integer(4),
+        )])
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_zero_is_rejected() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 0
+"#,
+    )?;
+
+    let err = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("agents.max_threads = 0 should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(err.to_string(), "agents.max_threads must be at least 1");
+    Ok(())
+}
+
+#[tokio::test]
 async fn multi_agent_v2_rejects_invalid_wait_timeouts() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
