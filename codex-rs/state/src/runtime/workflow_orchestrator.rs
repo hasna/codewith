@@ -311,6 +311,7 @@ RETURNING generation
         )
         .await?;
         let changed = admission.changed;
+        let blocked_by_provider_preflight = admission.blocked_by_provider_preflight;
         if changed {
             recompute_workflow_run_status_in_tx(
                 &mut tx,
@@ -322,6 +323,11 @@ RETURNING generation
         }
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
         tx.commit().await?;
+        if blocked_by_provider_preflight {
+            self.thread_goals
+                .block_workflow_goal_plan_projection(params.run_id.as_str())
+                .await?;
+        }
         Ok(Some(WorkflowRunBranchAdmissionOutcome {
             snapshot,
             admitted: admission.admitted,
@@ -473,6 +479,7 @@ async fn admit_ready_workflow_branches_in_tx(
         return Ok(WorkflowRunBranchAdmissionTxOutcome {
             admitted: Vec::new(),
             changed: false,
+            blocked_by_provider_preflight: false,
         });
     }
 
@@ -500,6 +507,7 @@ async fn admit_ready_workflow_branches_in_tx(
         return Ok(WorkflowRunBranchAdmissionTxOutcome {
             admitted: Vec::new(),
             changed: true,
+            blocked_by_provider_preflight: true,
         });
     }
 
@@ -624,6 +632,7 @@ WHERE step_run_id = ?
     Ok(WorkflowRunBranchAdmissionTxOutcome {
         changed: !admitted.is_empty(),
         admitted,
+        blocked_by_provider_preflight: false,
     })
 }
 
@@ -833,6 +842,7 @@ struct TerminalWorkflowBranch {
 struct WorkflowRunBranchAdmissionTxOutcome {
     admitted: Vec<WorkflowRunBranchAdmission>,
     changed: bool,
+    blocked_by_provider_preflight: bool,
 }
 
 struct ReadyBranchCandidate {
@@ -2875,6 +2885,15 @@ WHERE plan_id = ? AND key = ?
             ),
         )
         .await;
+        let projection = runtime
+            .project_workflow_run_to_goal_plan(WorkflowGoalPlanProjectionParams {
+                workflow_run_id: run.run.run_id.clone(),
+                thread_id,
+                idempotency_key: Some("wf_branch_openrouter_missing_env-projection".to_string()),
+            })
+            .await
+            .expect("workflow projection should succeed")
+            .expect("workflow run should project");
         let claim = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
@@ -3009,6 +3028,25 @@ WHERE plan_id = ? AND key = ?
                 .await
                 .expect("execution snapshot count should load");
         assert_eq!(0, execution_snapshots);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(projection.plan_id, plan.plan.plan_id);
+        assert_eq!(crate::ThreadGoalPlanStatus::Blocked, plan.plan.status);
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Blocked,
+                crate::ThreadGoalPlanNodeStatus::Blocked,
+            ],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
 
         let retry = runtime
             .admit_workflow_run_branches_with_provider_env_check(
