@@ -1294,11 +1294,18 @@ jobs:
               --dir dist/npm
           done
 
-      # No NODE_AUTH_TOKEN needed because we use OIDC.
+      # npm trusted publishing (OIDC) is not configured on npmjs.org for the
+      # @hasna/codewith* packages, so authenticate with the NODE_AUTH_TOKEN
+      # repository secret through the .npmrc that setup-node writes above
+      # (registry-url + scope). Every prior fork release had to be published
+      # by hand because this env var was missing (0.1.51 run 28254747302
+      # failed E404 with a placeholder token; 0.1.52-0.1.56 never published
+      # from CI at all).
       - name: Publish to npm
         env:
           VERSION: ${{ needs.release.outputs.version }}
           NPM_TAG: ${{ needs.release.outputs.npm_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           prefix=""
