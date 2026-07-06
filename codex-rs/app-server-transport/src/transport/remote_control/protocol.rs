@@ -161,8 +161,6 @@ pub enum ServerEvent {
         message_size_bytes: usize,
         message_chunk_base64: String,
     },
-    #[allow(dead_code)]
-    Ack,
     Pong {
         status: PongStatus,
     },
@@ -172,7 +170,7 @@ impl ServerEvent {
     pub(crate) fn segment_id(&self) -> Option<usize> {
         match self {
             Self::ServerMessageChunk { segment_id, .. } => Some(*segment_id),
-            Self::ServerMessage { .. } | Self::Ack | Self::Pong { .. } => None,
+            Self::ServerMessage { .. } | Self::Pong { .. } => None,
         }
     }
 }
