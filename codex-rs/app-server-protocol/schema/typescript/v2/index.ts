@@ -304,6 +304,7 @@ export type { ModelProviderListResponse } from "./ModelProviderListResponse";
 export type { ModelProviderSummary } from "./ModelProviderSummary";
 export type { ModelRerouteReason } from "./ModelRerouteReason";
 export type { ModelReroutedNotification } from "./ModelReroutedNotification";
+export type { ModelSafetyBufferingUpdatedNotification } from "./ModelSafetyBufferingUpdatedNotification";
 export type { ModelServiceTier } from "./ModelServiceTier";
 export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
 export type { ModelVerification } from "./ModelVerification";

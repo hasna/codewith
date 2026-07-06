@@ -51,6 +51,7 @@ mod remote_thread_store;
 mod request_permissions;
 mod request_user_input;
 mod review;
+mod safety_buffering;
 mod safety_check_downgrade;
 mod skills_list;
 mod thread_archive;

@@ -72,6 +72,7 @@ pub struct MemorySummarizeOutput {
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
+    SafetyBuffering(SafetyBuffering),
     OutputItemDone(ResponseItem),
     OutputItemAdded(ResponseItem),
     /// Emitted when the server includes `OpenAI-Model` on the stream response.
@@ -111,6 +112,23 @@ pub enum ResponseEvent {
     },
     RateLimits(RateLimitSnapshot),
     ModelsEtag(String),
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SafetyBuffering {
+    pub use_cases: Vec<String>,
+    pub reasons: Vec<String>,
+    #[serde(skip)]
+    pub show_buffering_ui: bool,
+    pub faster_model: Option<String>,
+    #[serde(skip)]
+    pub learn_more_link: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SafetyBufferingTreatment {
+    pub faster_model: Option<String>,
+    pub learn_more_link: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
