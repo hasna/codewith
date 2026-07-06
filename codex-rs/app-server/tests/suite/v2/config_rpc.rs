@@ -205,6 +205,45 @@ forced_chatgpt_workspace_id = "{WORKSPACE_ID}"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_without_layers_serializes_layers_as_present_null() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"
+model = "gpt-user"
+"#,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let result = resp
+        .result
+        .as_object()
+        .expect("config/read result must be a JSON object");
+    assert!(
+        result.contains_key("layers"),
+        "layers key must be present even when includeLayers is false, got: {:?}",
+        resp.result
+    );
+    assert_eq!(result.get("layers"), Some(&serde_json::Value::Null));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_read_accepts_forced_chatgpt_workspace_id_list() -> Result<()> {
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
     const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";

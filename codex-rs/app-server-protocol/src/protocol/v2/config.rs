@@ -291,7 +291,6 @@ pub struct ConfigLayer {
     pub name: ConfigLayerSource,
     pub version: String,
     pub config: JsonValue,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
 }
 
@@ -363,7 +362,6 @@ pub struct ConfigReadResponse {
     #[experimental(nested)]
     pub config: Config,
     pub origins: HashMap<String, ConfigLayerMetadata>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub layers: Option<Vec<ConfigLayer>>,
 }
 
@@ -747,4 +745,45 @@ pub struct ConfigWarningNotification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub range: Option<TextRange>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn config_read_response_serializes_layers_as_present_null() {
+        let response = ConfigReadResponse {
+            config: serde_json::from_value(json!({})).expect("empty config"),
+            origins: HashMap::new(),
+            layers: None,
+        };
+
+        let value = serde_json::to_value(&response).expect("serialize");
+        let object = value.as_object().expect("object");
+        assert!(
+            object.contains_key("layers"),
+            "layers key must be present, got: {value}"
+        );
+        assert_eq!(object.get("layers"), Some(&JsonValue::Null));
+    }
+
+    #[test]
+    fn config_layer_serializes_disabled_reason_as_present_null() {
+        let layer = ConfigLayer {
+            name: ConfigLayerSource::SessionFlags,
+            version: "1".to_string(),
+            config: json!({}),
+            disabled_reason: None,
+        };
+
+        let value = serde_json::to_value(&layer).expect("serialize");
+        let object = value.as_object().expect("object");
+        assert!(
+            object.contains_key("disabledReason"),
+            "disabledReason key must be present, got: {value}"
+        );
+        assert_eq!(object.get("disabledReason"), Some(&JsonValue::Null));
+    }
 }
