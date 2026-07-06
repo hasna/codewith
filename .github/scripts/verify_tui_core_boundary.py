@@ -21,13 +21,14 @@ TUI_ROOT = ROOT / "codex-rs" / "tui"
 TUI_MANIFEST = TUI_ROOT / "Cargo.toml"
 FORBIDDEN_PACKAGE = "codex-core"
 FORBIDDEN_SOURCE_PATTERNS = (
-    re.compile(r"\bcodex_core::"),
+    re.compile(r"\bcodex_core\s*::"),
     re.compile(r"\buse\s+codex_core\b"),
     re.compile(r"\bextern\s+crate\s+codex_core\b"),
 )
 
-# Optional `b`/`br` prefix, `r`, any number of `#`, then the opening quote.
-_RAW_STRING_START = re.compile(r'(?:b)?r(?P<hashes>#*)"')
+# Optional `b`/`br` or `c`/`cr` prefix, `r`, any number of `#`, then the
+# opening quote.
+_RAW_STRING_START = re.compile(r'(?:b|c)?r(?P<hashes>#*)"')
 
 
 def main() -> int:
@@ -134,9 +135,9 @@ def strip_comments_and_strings(text: str) -> str:
             i = j
             continue
 
-        # Normal / byte string literal: "..." or b"...".
-        if ch == '"' or (ch == "b" and nxt == '"'):
-            j = i + 1 if ch == '"' else i + 2  # skip opening quote (and b).
+        # Normal / byte / C string literal: "...", b"...", or c"...".
+        if ch == '"' or (ch in ("b", "c") and nxt == '"'):
+            j = i + 1 if ch == '"' else i + 2  # skip opening quote and prefix.
             while j < n:
                 if text[j] == "\\":
                     j += 2
