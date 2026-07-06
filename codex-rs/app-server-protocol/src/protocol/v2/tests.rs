@@ -2801,6 +2801,56 @@ fn skills_list_params_serialization_uses_force_reload() {
 }
 
 #[test]
+fn skill_metadata_serializes_absent_fields_as_present_null() {
+    assert_eq!(
+        serde_json::to_value(SkillMetadata {
+            name: "plan-work".to_string(),
+            description: "Plan the work".to_string(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            path: absolute_path("repo/.codewith/skills/plan-work/SKILL.md"),
+            scope: SkillScope::Repo,
+            enabled: true,
+        })
+        .unwrap(),
+        json!({
+            "name": "plan-work",
+            "description": "Plan the work",
+            "shortDescription": null,
+            "interface": null,
+            "dependencies": null,
+            "path": absolute_path_string("repo/.codewith/skills/plan-work/SKILL.md"),
+            "scope": "repo",
+            "enabled": true,
+        }),
+    );
+}
+
+#[test]
+fn skill_tool_dependency_serializes_absent_details_as_present_null() {
+    assert_eq!(
+        serde_json::to_value(SkillToolDependency {
+            r#type: "mcp".to_string(),
+            value: "linear".to_string(),
+            description: None,
+            transport: None,
+            command: None,
+            url: None,
+        })
+        .unwrap(),
+        json!({
+            "type": "mcp",
+            "value": "linear",
+            "description": null,
+            "transport": null,
+            "command": null,
+            "url": null,
+        }),
+    );
+}
+
+#[test]
 fn skills_extra_roots_set_params_serialization_uses_extra_roots() {
     assert_eq!(
         serde_json::to_value(SkillsExtraRootsSetParams {
