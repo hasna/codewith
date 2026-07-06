@@ -125,12 +125,6 @@ pub use thread_manager::thread_store_from_config;
 pub use web_search::web_search_action_detail;
 pub use web_search::web_search_detail;
 pub use windows_sandbox_read_grants::grant_read_root_non_elevated;
-#[deprecated(note = "use ThreadManager")]
-pub type ConversationManager = ThreadManager;
-#[deprecated(note = "use NewThread")]
-pub type NewConversation = NewThread;
-#[deprecated(note = "use CodexThread")]
-pub type CodexConversation = CodexThread;
 pub(crate) mod agents_md;
 pub use agents_md::AgentsMdManager;
 pub use agents_md::DEFAULT_AGENTS_MD_FILENAME;
@@ -164,8 +158,6 @@ pub use rollout::ThreadSortKey;
 pub use rollout::ThreadsPage;
 pub use rollout::append_thread_name;
 pub use rollout::find_archived_thread_path_by_id_str;
-#[deprecated(note = "use find_thread_path_by_id_str")]
-pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::find_thread_meta_by_name_str;
 pub use rollout::find_thread_name_by_id;
 pub use rollout::find_thread_names_by_ids;
