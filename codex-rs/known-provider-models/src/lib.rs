@@ -531,17 +531,25 @@ mod tests {
     }
 
     #[test]
-    fn qwen_fallback_models_expose_qwen36_flash() {
+    fn qwen_fallback_models_prefer_current_recommended_text_models() {
         let models = fallback_models_for_provider("qwen");
 
-        assert_eq!(models[0].id, "qwen3.5-flash");
+        assert_eq!(models[0].id, "qwen3.6-flash");
         assert!(models[0].is_default);
-        assert!(
+        assert_eq!(
             models
                 .iter()
-                .any(|model| model.id == "qwen3.6-flash" && !model.is_default)
+                .map(|model| (model.id, model.is_default))
+                .collect::<Vec<_>>(),
+            vec![
+                ("qwen3.6-flash", true),
+                ("qwen3.7-plus", false),
+                ("qwen3.7-max", false),
+                ("qwen3.5-flash", false),
+                ("qwen3.5-plus", false),
+                ("qwen3-max", false),
+            ]
         );
-        // The orphaned metadata entry is now reachable from the fallback list.
         assert!(
             metadata_for_local_fallback(Some("qwen"), "qwen3.6-flash")
                 .expect("qwen3.6-flash metadata should exist")
@@ -668,7 +676,7 @@ mod tests {
             ("minimax", "MiniMax-M3"),
             ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
             ("openrouter", "z-ai/glm-5.2"),
-            ("qwen", "qwen3.5-flash"),
+            ("qwen", "qwen3.6-flash"),
             ("xai", "grok-4.3"),
             ("xiaomi", "mimo-v2.5-pro"),
             ("zai", "glm-5.2"),

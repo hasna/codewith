@@ -290,6 +290,29 @@ mod tests {
     }
 
     #[test]
+    fn qwen_fallback_models_prefer_current_recommended_text_models() {
+        let models = fallback_supported_models_for_provider("qwen", /*include_hidden*/ false);
+
+        assert_eq!(models.len(), 6);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| (model.model.as_str(), model.is_default))
+                .collect::<Vec<_>>(),
+            vec![
+                ("qwen3.6-flash", true),
+                ("qwen3.7-plus", false),
+                ("qwen3.7-max", false),
+                ("qwen3.5-flash", false),
+                ("qwen3.5-plus", false),
+                ("qwen3-max", false),
+            ]
+        );
+        assert_eq!(models[0].display_name, "Qwen3.6 Flash");
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::High);
+    }
+
+    #[test]
     fn openrouter_fallback_models_include_current_gateway_defaults() {
         let models =
             fallback_supported_models_for_provider("openrouter", /*include_hidden*/ false);

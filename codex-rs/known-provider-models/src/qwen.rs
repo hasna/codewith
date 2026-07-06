@@ -3,28 +3,10 @@ use super::KnownProviderModelMetadata;
 
 pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
     KnownProviderFallbackModel::new(
-        "qwen3.5-flash",
-        "Qwen3.5 Flash",
-        "Alibaba Qwen's fast model with native Model Studio web search support.",
-        /*is_default*/ true,
-    ),
-    KnownProviderFallbackModel::new(
-        "qwen3.5-plus",
-        "Qwen3.5 Plus",
-        "Alibaba Qwen's balanced model with native Model Studio web search support.",
-        /*is_default*/ false,
-    ),
-    KnownProviderFallbackModel::new(
-        "qwen3-max",
-        "Qwen3 Max",
-        "Alibaba Qwen's highest-capability model with native Model Studio web search support.",
-        /*is_default*/ false,
-    ),
-    KnownProviderFallbackModel::new(
         "qwen3.6-flash",
         "Qwen3.6 Flash",
         "Alibaba Qwen3.6 fast model with native Model Studio web search support.",
-        /*is_default*/ false,
+        /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
         "qwen3.7-plus",
@@ -36,6 +18,24 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "qwen3.7-max",
         "Qwen3.7 Max",
         "Alibaba Qwen3.7 flagship model with native Model Studio web search support.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
+        "qwen3.5-flash",
+        "Qwen3.5 Flash",
+        "Alibaba Qwen's fast model with native Model Studio web search support.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
+        "qwen3.5-plus",
+        "Qwen3.5 Plus",
+        "Alibaba Qwen's balanced model with native Model Studio web search support.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
+        "qwen3-max",
+        "Qwen3 Max",
+        "Alibaba Qwen's highest-capability model with native Model Studio web search support.",
         /*is_default*/ false,
     ),
 ];
