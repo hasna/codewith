@@ -241,7 +241,7 @@ fn unix_socket_policy(proxy: &ProxyPolicyInputs) -> String {
     policy
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn dynamic_network_policy(
     sandbox_policy: &SandboxPolicy,
     enforce_managed_network: bool,
@@ -565,7 +565,7 @@ fn seatbelt_regex_for_unreadable_glob(pattern: &str) -> Option<String> {
     Some(regex)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn create_seatbelt_command_args_for_legacy_policy(
     command: Vec<String>,
     sandbox_policy: &SandboxPolicy,

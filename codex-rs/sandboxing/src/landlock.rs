@@ -60,7 +60,7 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
 
 /// Converts the sandbox cwd and execution options into the CLI invocation for
 /// `codex-linux-sandbox`.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn create_linux_sandbox_command_args(
     command: Vec<String>,
     command_cwd: &Path,
