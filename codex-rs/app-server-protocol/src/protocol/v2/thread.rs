@@ -2009,6 +2009,8 @@ pub enum ThreadExternalAgentEvent {
     /// reaches a terminal decision, whether answered by the client, denied by
     /// default on timeout, or otherwise resolved by the server.
     PermissionResolved {
+        #[serde(rename = "requestId")]
+        #[ts(rename = "requestId")]
         request_id: String,
         decision: ThreadExternalAgentPermissionOption,
         resolution: ThreadExternalAgentPermissionResolution,

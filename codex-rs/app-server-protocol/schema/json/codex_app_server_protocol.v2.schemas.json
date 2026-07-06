@@ -17340,7 +17340,7 @@
             "decision": {
               "$ref": "#/definitions/ThreadExternalAgentPermissionOption"
             },
-            "request_id": {
+            "requestId": {
               "type": "string"
             },
             "resolution": {
@@ -17356,7 +17356,7 @@
           },
           "required": [
             "decision",
-            "request_id",
+            "requestId",
             "resolution",
             "type"
           ],
