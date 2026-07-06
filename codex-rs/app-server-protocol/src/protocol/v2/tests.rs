@@ -2774,6 +2774,39 @@ fn mcp_tool_call_serializes_absent_resource_uri_as_null() {
 }
 
 #[test]
+fn mcp_tool_call_deserializes_omitted_resource_uri_as_none() {
+    let item: ThreadItem = serde_json::from_value(json!({
+        "type": "mcpToolCall",
+        "id": "mcp-1",
+        "server": "server",
+        "tool": "tool",
+        "status": "inProgress",
+        "arguments": null,
+        "pluginId": null,
+        "result": null,
+        "error": null,
+        "durationMs": null,
+    }))
+    .expect("deserialize mcp tool call with omitted resource uri");
+
+    assert_eq!(
+        item,
+        ThreadItem::McpToolCall {
+            id: "mcp-1".to_string(),
+            server: "server".to_string(),
+            tool: "tool".to_string(),
+            status: McpToolCallStatus::InProgress,
+            arguments: JsonValue::Null,
+            mcp_app_resource_uri: None,
+            plugin_id: None,
+            result: None,
+            error: None,
+            duration_ms: None,
+        }
+    );
+}
+
+#[test]
 fn image_generation_serializes_absent_saved_path_as_null() {
     let item = ThreadItem::ImageGeneration {
         id: "img-1".to_string(),
@@ -2790,6 +2823,29 @@ fn image_generation_serializes_absent_saved_path_as_null() {
         "savedPath should be present even when None"
     );
     assert_eq!(map["savedPath"], JsonValue::Null);
+}
+
+#[test]
+fn image_generation_deserializes_omitted_saved_path_as_none() {
+    let item: ThreadItem = serde_json::from_value(json!({
+        "type": "imageGeneration",
+        "id": "img-1",
+        "status": "completed",
+        "revisedPrompt": null,
+        "result": "result",
+    }))
+    .expect("deserialize image generation with omitted saved path");
+
+    assert_eq!(
+        item,
+        ThreadItem::ImageGeneration {
+            id: "img-1".to_string(),
+            status: "completed".to_string(),
+            revised_prompt: None,
+            result: "result".to_string(),
+            saved_path: None,
+        }
+    );
 }
 
 #[test]
