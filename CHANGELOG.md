@@ -42,6 +42,55 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Fixed
+
+- codex-api: reasoning now round-trips on the Chat-Completions path -- streamed
+  `reasoning_content`/`reasoning` deltas surface as live reasoning and are
+  recorded in history, and signed reasoning is replayed back to the provider on
+  later turns (unsigned chain-of-thought is not echoed, since such providers
+  reject it on input).
+- codex-api: Responses streaming now logs the serde error and truncated payload
+  when an output item fails to deserialize instead of silently dropping it, and
+  handles `response.function_call_arguments.delta` (previously discarded) by
+  emitting a tool-call input delta.
+- codex-api: Gemini 3 (OpenAI-compat) tool loops no longer fail with a missing
+  `thought_signature` -- the encrypted signature is captured per tool call and
+  echoed back on replay; the Codex-only `client_version` query parameter is no
+  longer appended to third-party `/models` endpoints that reject unknown params.
+- codex-api: hardened Chat-Completions tool calling for compat providers
+  (Anthropic-via-OpenRouter, xAI, DeepSeek, and other non-Responses providers)
+  -- coalesce parallel tool calls into one assistant message, tolerate SSE
+  chunks that omit the tool-call index or usage fields, emit `{}` for zero-arg
+  calls, keep synthetic call ids unique and paired, and truncate over-long tool
+  names.
+- codex-api: map `reasoning_effort` `none` to `low` for Cerebras and NVIDIA
+  chat/completions, which reject `none` and silently broke tool calling for
+  gpt-oss models.
+- model-provider: restored the built-in `ollama` and `lmstudio` local providers
+  so `--oss` and `model_provider=ollama|lmstudio` resolve again; the LM Studio
+  warm-up endpoint is now derived from the provider wire API instead of
+  hardcoding the Responses path.
+- model-provider: disable namespace tools for the xAI Responses API, which
+  rejects the `namespace` tool type with a 422 that broke all tool calling.
+- known-provider-models: refreshed the provider catalog and fallbacks --
+  DeepSeek v4 flash/pro advertise reasoning, Cerebras gains a gemma-4-31b
+  fallback, Qwen surfaces qwen3.6-flash, Anthropic adds a claude-sonnet-5
+  fallback, NVIDIA corrects DeepSeek tool support, and OpenRouter adds Claude
+  fable-5/opus-4-8/sonnet-5 metadata.
+- tui: Enter now dispatches the exact typed slash command or hidden alias
+  (`/exit` no longer opens `/experimental`) while still respecting popup
+  arrow-key navigation.
+- tui: `/apps` surfaces the underlying app/list failure reason instead of a
+  generic error.
+- tui: `/fork` handles a thread with no rollout yet gracefully instead of
+  failing.
+- core: router `FunctionCallError` auto-logging dropped from error to debug so
+  benign model self-corrections no longer flood logs or trip false critical
+  auto-tasks.
+- arg0: closed a helper-symlink spawn race where a concurrent session's janitor
+  could delete a sibling session's helper dir mid-setup, causing exec spawns to
+  fail with a missing sandbox helper.
+
 ## [0.1.55] - 2026-07-02
 
 Tag: `rust-v0.1.55`
