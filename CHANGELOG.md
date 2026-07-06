@@ -42,6 +42,41 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.57] - 2026-07-05
+
+Tag: `rust-v0.1.57`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.57>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.56...rust-v0.1.57>
+
+Hotfix release for the loop-worker fork-conflict failure class, plus a
+user-facing agent max-threads control and the CI npm publish repair
+(#121, #123).
+
+### Fixed
+
+- Core: a full-history subagent fork (`fork_context=true` on stable v1,
+  `fork_turns=all` on multi_agent_v2) combined with `agent_type`, `model`, or
+  `reasoning_effort` no longer hard-rejects the spawn. Those overrides were
+  already ignored on the full-fork path (the child config is built from the
+  parent), so the reject was converted into a notice of the ignored fields
+  (logged via `tracing::warn`) and the fork proceeds with inherited values.
+  This removes the conflict-class errors that were failing routed loop
+  workers in production; tool-schema descriptions now state the fields are
+  inherited on a full-history fork. (#121)
+- Release: the `publish-npm` job now authenticates with the
+  `NODE_AUTH_TOKEN` repository secret. npm trusted publishing (OIDC) was
+  never configured for the `@hasna/codewith*` packages, so no fork release
+  had ever published from CI; every prior npm release was published by hand.
+  (#123)
+
+### Added
+
+- TUI: `/config` gains an agent max-threads control for the existing
+  `[agents] max_threads` cap (preset choices, persisted to `config.toml`,
+  live-applied to the session), replacing hand-editing of
+  `~/.codewith/config.toml`. Hidden while `multi_agent_v2` governs threads.
+  (#121)
+
 ## [0.1.56] - 2026-07-04
 
 Tag: `rust-v0.1.56`

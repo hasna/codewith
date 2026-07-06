@@ -5,8 +5,11 @@ expression: popup
   Config
   Choose a focused config.toml settings section.
 
-› 1. Account & automation  Auth failover, recaps, and update policy. 6 settings.
-  2. AI context            What Codewith shows the model. 5 settings.
-  3. Interface & privacy   Composer, transcript, privacy, and TUI behavior. 8 settings.
+› 1. Account & automation    Auth failover, recaps, and update policy. 6 settings.
+  2. AI context              What Codewith shows the model. 5 settings.
+  3. Interface & privacy     Composer, transcript, privacy, and TUI behavior. 8
+                             settings.
+  4. Agent subagent threads  Max concurrent subagent threads per agent run (currently
+                             the built-in default).
 
   Press enter to open; esc to close

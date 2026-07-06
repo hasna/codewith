@@ -3376,6 +3376,53 @@ async fn config_popup_snapshot_and_toggle() {
 }
 
 #[tokio::test]
+async fn config_agent_max_threads_popup_selects_value() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    // Start from a known current value so the initial highlight is deterministic (index 0 = "1").
+    chat.config.agent_max_threads = Some(1);
+    while rx.try_recv().is_ok() {}
+
+    chat.open_agent_max_threads_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Agent subagent threads"), "{popup}");
+    assert!(popup.contains("(default)"), "{popup}");
+
+    // Presets are [1, 2, 3, 4, 6, 8, 12]; move from "1" to "4" and select it.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "agents.max_threads"
+            && value == serde_json::json!(4)
+            && label == "Agent subagent thread limit"
+    );
+}
+
+#[tokio::test]
+async fn config_agent_max_threads_menu_item_disabled_under_multi_agent_v2() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config
+        .features
+        .enable(codex_features::Feature::MultiAgentV2)
+        .expect("enable multi_agent_v2");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_config_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Agent subagent threads"), "{popup}");
+    assert!(popup.contains("multi_agent_v2"), "{popup}");
+}
+
+#[tokio::test]
 async fn provider_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
