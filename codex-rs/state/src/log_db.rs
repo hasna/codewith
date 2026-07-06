@@ -49,13 +49,54 @@ use crate::StateRuntime;
 const LOG_QUEUE_CAPACITY: usize = 512;
 const LOG_BATCH_SIZE: usize = 128;
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+/// How often the background inserter runs retention pruning. Pruning is a
+/// heavier window-function read/write cycle, so it is decoupled from the hot
+/// insert path and run on its own cadence (in its own IMMEDIATE transaction)
+/// rather than on every flush. Any partitions touched since the last prune are
+/// accumulated and pruned together on the next tick.
+const LOG_PRUNE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Environment variable that overrides the default capture level for the
+/// SQLite log database. Accepts `off`, `error`, `warn`, `info`, `debug`, or
+/// `trace` (case-insensitive). Defaults to `info`; set to `debug` or `trace`
+/// to opt back into verbose capture for debugging.
+pub const LOG_DB_LEVEL_ENV: &str = "CODEWITH_LOG_DB_LEVEL";
+/// Legacy alias for [`LOG_DB_LEVEL_ENV`], honored when the primary variable is
+/// unset.
+pub const LOG_DB_LEVEL_ENV_LEGACY: &str = "CODEX_LOG_DB_LEVEL";
 
 pub fn default_filter() -> Targets {
     Targets::new()
-        .with_default(LevelFilter::TRACE)
+        .with_default(configured_default_level())
         .with_target("log", LevelFilter::OFF)
         .with_target("codex_otel.log_only", LevelFilter::OFF)
         .with_target("codex_otel.trace_safe", LevelFilter::OFF)
+}
+
+/// Resolve the default capture level for the log DB.
+///
+/// Defaults to `INFO` to keep the hot log-write path (and the WAL) lean, but
+/// remains overridable via [`LOG_DB_LEVEL_ENV`] (or the legacy
+/// [`LOG_DB_LEVEL_ENV_LEGACY`]) so `TRACE`/`DEBUG` capture can be re-enabled
+/// for debugging without a rebuild.
+fn configured_default_level() -> LevelFilter {
+    std::env::var(LOG_DB_LEVEL_ENV)
+        .or_else(|_| std::env::var(LOG_DB_LEVEL_ENV_LEGACY))
+        .ok()
+        .and_then(|value| parse_level_filter(value.trim()))
+        .unwrap_or(LevelFilter::INFO)
+}
+
+fn parse_level_filter(value: &str) -> Option<LevelFilter> {
+    match value.to_ascii_lowercase().as_str() {
+        "off" => Some(LevelFilter::OFF),
+        "error" => Some(LevelFilter::ERROR),
+        "warn" | "warning" => Some(LevelFilter::WARN),
+        "info" => Some(LevelFilter::INFO),
+        "debug" => Some(LevelFilter::DEBUG),
+        "trace" => Some(LevelFilter::TRACE),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -394,9 +435,17 @@ async fn run_inserter(
     config: LogSinkQueueConfig,
 ) {
     let mut buffer = Vec::with_capacity(config.batch_size);
+    // Partitions touched since the last prune tick; pruned in a single
+    // separate transaction on the prune cadence to keep the writer lock off the
+    // hot insert path.
+    let mut prune_targets = crate::runtime::LogPruneTargets::default();
     let mut ticker = tokio::time::interval(config.flush_interval);
     // Consume the immediate startup tick so entries flush after the interval.
     ticker.tick().await;
+    let mut prune_ticker = tokio::time::interval(LOG_PRUNE_INTERVAL);
+    prune_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Consume the immediate startup prune tick; there is nothing to prune yet.
+    prune_ticker.tick().await;
     loop {
         tokio::select! {
             maybe_command = receiver.recv() => {
@@ -404,32 +453,53 @@ async fn run_inserter(
                     Some(LogDbCommand::Entry(entry)) => {
                         buffer.push(*entry);
                         if buffer.len() >= config.batch_size {
-                            flush(&state_db, &mut buffer).await;
+                            flush(&state_db, &mut buffer, &mut prune_targets).await;
                         }
                     }
                     Some(LogDbCommand::Flush(reply)) => {
-                        flush(&state_db, &mut buffer).await;
+                        flush(&state_db, &mut buffer, &mut prune_targets).await;
+                        prune(&state_db, &mut prune_targets).await;
                         let _ = reply.send(());
                     }
                     None => {
-                        flush(&state_db, &mut buffer).await;
+                        flush(&state_db, &mut buffer, &mut prune_targets).await;
+                        prune(&state_db, &mut prune_targets).await;
                         break;
                     }
                 }
             }
             _ = ticker.tick() => {
-                flush(&state_db, &mut buffer).await;
+                flush(&state_db, &mut buffer, &mut prune_targets).await;
+            }
+            _ = prune_ticker.tick() => {
+                prune(&state_db, &mut prune_targets).await;
             }
         }
     }
 }
 
-async fn flush(state_db: &StateRuntime, buffer: &mut Vec<LogEntry>) {
+async fn flush(
+    state_db: &StateRuntime,
+    buffer: &mut Vec<LogEntry>,
+    prune_targets: &mut crate::runtime::LogPruneTargets,
+) {
     if buffer.is_empty() {
         return;
     }
     let entries = buffer.split_off(0);
-    let _ = state_db.insert_logs(entries.as_slice()).await;
+    if state_db.insert_logs(entries.as_slice()).await.is_ok() {
+        // Only track partitions for inserts that succeeded, so a dropped batch
+        // does not schedule a prune for rows that were never written.
+        prune_targets.record(entries.as_slice());
+    }
+}
+
+async fn prune(state_db: &StateRuntime, prune_targets: &mut crate::runtime::LogPruneTargets) {
+    if prune_targets.is_empty() {
+        return;
+    }
+    let targets = std::mem::take(prune_targets);
+    let _ = state_db.prune_logs(&targets).await;
 }
 
 #[derive(Default)]
@@ -573,6 +643,31 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn parse_level_filter_maps_canonical_levels_case_insensitively() {
+        assert_eq!(parse_level_filter("trace"), Some(LevelFilter::TRACE));
+        assert_eq!(parse_level_filter("DEBUG"), Some(LevelFilter::DEBUG));
+        assert_eq!(parse_level_filter("Info"), Some(LevelFilter::INFO));
+        assert_eq!(parse_level_filter("warn"), Some(LevelFilter::WARN));
+        assert_eq!(parse_level_filter("warning"), Some(LevelFilter::WARN));
+        assert_eq!(parse_level_filter("error"), Some(LevelFilter::ERROR));
+        assert_eq!(parse_level_filter("off"), Some(LevelFilter::OFF));
+        // Unknown values fall through so the caller can default to INFO.
+        assert_eq!(parse_level_filter("verbose"), None);
+        assert_eq!(parse_level_filter(""), None);
+    }
+
+    #[test]
+    fn default_filter_defaults_to_info_when_unset() {
+        // Tests run in-process and env is shared, so only assert the default
+        // when the override variables are not present in this environment.
+        if std::env::var_os(LOG_DB_LEVEL_ENV).is_none()
+            && std::env::var_os(LOG_DB_LEVEL_ENV_LEGACY).is_none()
+        {
+            assert_eq!(configured_default_level(), LevelFilter::INFO);
         }
     }
 

@@ -99,9 +99,16 @@ jobs:
           Write-Host "Total RAM: $ramGiB GiB"
           Write-Host "Disk usage:"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize Name, @{Name='Size(GB)';Expression={[math]::Round(($_.Used + $_.Free) / 1GB, 1)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free / 1GB, 1)}}
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # action pinned; toolchain must match codex-rs/rust-toolchain.toml
         with:
+          toolchain: "1.96.1"
           targets: ${{ matrix.target }}
+          # Match the components pinned in codex-rs/rust-toolchain.toml so the
+          # first `cargo build` inside codex-rs does not trigger a fresh
+          # toml-override toolchain sync (which reinstalls only the host std and
+          # can drop the target's std -> error[E0463]: can't find crate for
+          # `core`).
+          components: clippy,rustfmt,rust-src
 
       - name: Install sccache
         # Fail-open: a GitHub API outage or a bad latest sccache release must

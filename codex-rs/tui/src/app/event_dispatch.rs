@@ -1603,6 +1603,9 @@ impl App {
             AppEvent::OpenConfigSection { section } => {
                 self.chat_widget.open_config_section_popup(section);
             }
+            AppEvent::OpenAgentMaxThreadsMenu => {
+                self.chat_widget.open_agent_max_threads_popup();
+            }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
             }

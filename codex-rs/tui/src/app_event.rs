@@ -1355,6 +1355,9 @@ pub(crate) enum AppEvent {
         section: crate::common_config_options::CommonConfigSection,
     },
 
+    /// Open the agent subagent-thread-limit picker from the root config menu.
+    OpenAgentMaxThreadsMenu,
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,

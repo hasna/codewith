@@ -105,6 +105,7 @@ mod goal_plans;
 mod goals;
 mod local_active_sessions;
 mod logs;
+pub(crate) use logs::LogPruneTargets;
 mod machine_registry;
 mod mailbox;
 mod managed_worktrees;
@@ -133,6 +134,29 @@ const WAL_JOURNAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// How often long-lived processes opportunistically checkpoint the state DB
 /// WAL so that checkpoint starvation cannot let it grow without bound.
 const STATE_WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(300);
+/// Auto-checkpoint threshold in WAL pages. With SQLite's default 4 KiB page
+/// size this is ~4 MiB, matching SQLite's built-in default but set explicitly
+/// so short-lived processes reliably checkpoint on their own.
+const WAL_AUTOCHECKPOINT_PAGES: u32 = 1000;
+/// Writer pools are capped at a single connection so that, within one process,
+/// at most one connection per DB can ever hold (or attempt to acquire) the
+/// SQLite write lock. This eliminates *intra-process*
+/// `SQLITE_BUSY_SNAPSHOT` (extended code 517), which can otherwise occur when
+/// one pooled connection commits a write while a second pooled connection is
+/// mid-read-snapshot and then tries to write against the now-stale snapshot —
+/// no other process needs to be involved. Serializing writes onto one
+/// connection does not hurt read throughput because read-only query paths are
+/// routed to a separate multi-connection reader pool (see
+/// [`READER_MAX_CONNECTIONS`]); WAL permits many concurrent readers alongside
+/// the single writer.
+const WRITER_MAX_CONNECTIONS: u32 = 1;
+/// Reader pools open the database read-only (`SQLITE_OPEN_READONLY`) and allow
+/// several concurrent connections. Under WAL these readers run concurrently
+/// with the single writer, and because a read-only connection never attempts a
+/// write it can never raise 517. `read_only(true)` is also a safety belt: if a
+/// write-bearing statement is ever routed here by mistake it fails loudly at
+/// the database layer instead of silently re-introducing multi-writer 517.
+const READER_MAX_CONNECTIONS: u32 = 5;
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
@@ -265,6 +289,7 @@ struct RuntimeDbSpec {
     filename: &'static str,
     kind: DbKind,
     open_phase: &'static str,
+    open_reader_phase: &'static str,
     migrate_phase: &'static str,
 }
 
@@ -279,6 +304,7 @@ const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: STATE_DB_FILENAME,
     kind: DbKind::State,
     open_phase: "open_state",
+    open_reader_phase: "open_state_reader",
     migrate_phase: "migrate_state",
 };
 
@@ -287,6 +313,7 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: LOGS_DB_FILENAME,
     kind: DbKind::Logs,
     open_phase: "open_logs",
+    open_reader_phase: "open_logs_reader",
     migrate_phase: "migrate_logs",
 };
 
@@ -295,6 +322,7 @@ const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: GOALS_DB_FILENAME,
     kind: DbKind::Goals,
     open_phase: "open_goals",
+    open_reader_phase: "open_goals_reader",
     migrate_phase: "migrate_goals",
 };
 
@@ -303,6 +331,7 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: MEMORIES_DB_FILENAME,
     kind: DbKind::Memories,
     open_phase: "open_memories",
+    open_reader_phase: "open_memories_reader",
     migrate_phase: "migrate_memories",
 };
 
@@ -318,8 +347,20 @@ pub struct RuntimeDbPath {
 pub struct StateRuntime {
     codex_home: PathBuf,
     default_provider: String,
+    /// Single-connection writer pool for the state DB (see
+    /// [`WRITER_MAX_CONNECTIONS`]). All writes and read-then-write
+    /// transactions run here; this is the pool every store is handed.
     pool: Arc<sqlx::SqlitePool>,
+    /// Read-only, multi-connection reader pool for the state DB (see
+    /// [`READER_MAX_CONNECTIONS`]). Pure-`SELECT` query paths (e.g. thread
+    /// listing) are routed here so they stay concurrent despite the
+    /// single-connection writer.
+    reader_pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    /// Read-only reader pool for the logs DB; see [`Self::reader_pool`].
+    logs_reader_pool: Arc<sqlx::SqlitePool>,
+    goals_pool: Arc<sqlx::SqlitePool>,
+    memories_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
@@ -483,6 +524,32 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        // Reader pools are opened only after the writer pools above have created
+        // and migrated the database files, so a read-only connection never has
+        // to create the file or run WAL recovery. They serve the read-heavy,
+        // pure-`SELECT` query paths concurrently with the single writer.
+        let reader_pool = match open_reader_sqlite(&state_path, STATE_DB, telemetry_override).await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!(
+                    "failed to open state reader db at {}: {err}",
+                    state_path.display()
+                );
+                return Err(err);
+            }
+        };
+        let logs_reader_pool =
+            match open_reader_sqlite(&logs_path, LOGS_DB, telemetry_override).await {
+                Ok(db) => Arc::new(db),
+                Err(err) => {
+                    warn!(
+                        "failed to open logs reader db at {}: {err}",
+                        logs_path.display()
+                    );
+                    return Err(err);
+                }
+            };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -521,7 +588,11 @@ impl StateRuntime {
             workflow_automation: WorkflowAutomationStore::new(Arc::clone(&pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
+            reader_pool,
             logs_pool,
+            logs_reader_pool,
+            goals_pool: Arc::clone(&goals_pool),
+            memories_pool: Arc::clone(&memories_pool),
             codex_home,
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
@@ -609,15 +680,41 @@ impl StateRuntime {
         Ok(true)
     }
 
-    /// Opportunistically checkpoints the state DB WAL so that checkpoint
-    /// starvation across many concurrent processes cannot let the WAL grow
-    /// without bound (which in turn inflates busy/snapshot contention).
+    /// Opportunistically checkpoints the WAL for every runtime SQLite pool
+    /// (state, logs, goals, memories) so that checkpoint starvation across many
+    /// concurrent processes cannot let any WAL grow without bound (which in
+    /// turn inflates busy/snapshot contention). The logs WAL in particular is
+    /// the hottest write target, so it must be checkpointed on the same cadence
+    /// as the state DB rather than only on startup.
     ///
     /// Uses a non-blocking PASSIVE checkpoint by default and escalates to
-    /// TRUNCATE once the WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`].
+    /// TRUNCATE once a WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`]. Each pool
+    /// is attempted independently; a failure on one pool is logged and does not
+    /// prevent the others from being checkpointed.
     pub async fn run_state_wal_checkpoint_maintenance(&self) -> anyhow::Result<()> {
-        let state_path = STATE_DB.path(self.codex_home.as_path());
-        checkpoint_wal_in_pool(self.pool.as_ref(), state_path.as_path()).await
+        let home = self.codex_home.as_path();
+        let pools: [(&SqlitePool, PathBuf); 4] = [
+            (self.pool.as_ref(), STATE_DB.path(home)),
+            (self.logs_pool.as_ref(), LOGS_DB.path(home)),
+            (self.goals_pool.as_ref(), GOALS_DB.path(home)),
+            (self.memories_pool.as_ref(), MEMORIES_DB.path(home)),
+        ];
+        let mut first_error: Option<anyhow::Error> = None;
+        for (pool, path) in pools {
+            if let Err(err) = checkpoint_wal_in_pool(pool, path.as_path()).await {
+                tracing::debug!(
+                    "WAL checkpoint maintenance failed for {}: {err}",
+                    path.display()
+                );
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 }
 
@@ -683,6 +780,12 @@ fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
             "journal_size_limit",
             WAL_JOURNAL_SIZE_LIMIT_BYTES.to_string(),
         )
+        // Explicitly bound the auto-checkpoint threshold (in WAL pages) so even
+        // short-lived processes that exit before the periodic checkpoint task
+        // ticks still checkpoint opportunistically once the WAL crosses this
+        // size. Left implicit, a process that only ever writes small batches
+        // could leave an ever-growing WAL for the next process to inherit.
+        .pragma("wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES.to_string())
         .log_statements(LevelFilter::Off)
 }
 
@@ -729,8 +832,12 @@ async fn open_sqlite(
 ) -> anyhow::Result<SqlitePool> {
     let options = base_sqlite_options(path).auto_vacuum(SqliteAutoVacuum::Incremental);
     let started = Instant::now();
+    // Single writer connection per DB: see WRITER_MAX_CONNECTIONS. This is the
+    // pool used for every write and every read-then-write transaction, so at
+    // most one connection per process can hold the SQLite write lock and
+    // intra-process SQLITE_BUSY_SNAPSHOT (517) cannot occur.
     let pool_result = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(WRITER_MAX_CONNECTIONS)
         .connect_with(options)
         .await
         .map_err(anyhow::Error::from);
@@ -759,6 +866,52 @@ async fn open_sqlite(
     );
     migrate_result?;
     Ok(pool)
+}
+
+/// Connect options for a read-only reader pool.
+///
+/// Deliberately minimal: it opens the file read-only and does **not** set the
+/// `journal_mode`/`synchronous`/`journal_size_limit`/`wal_autocheckpoint`
+/// pragmas, all of which require write access and would fail on a
+/// `SQLITE_OPEN_READONLY` connection. WAL journaling and its tuning are owned
+/// by the writer pool ([`base_sqlite_options`]); a read-only connection simply
+/// attaches to the existing WAL to read the latest committed snapshot.
+/// `create_if_missing(false)` ensures the reader never races the writer to
+/// create the database or its `-wal`/`-shm` sidecars.
+fn reader_sqlite_options(path: &Path) -> SqliteConnectOptions {
+    SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .busy_timeout(Duration::from_secs(30))
+        .log_statements(LevelFilter::Off)
+}
+
+/// Open a read-only, multi-connection reader pool for `spec`'s database.
+///
+/// Must be called only after the corresponding writer pool has created and
+/// migrated the file (see [`open_sqlite`]); reading is otherwise racy against
+/// file/WAL creation.
+async fn open_reader_sqlite(
+    path: &Path,
+    spec: RuntimeDbSpec,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    let options = reader_sqlite_options(path);
+    let started = Instant::now();
+    let pool_result = SqlitePoolOptions::new()
+        .max_connections(READER_MAX_CONNECTIONS)
+        .connect_with(options)
+        .await
+        .map_err(anyhow::Error::from);
+    crate::telemetry::record_init_result(
+        telemetry_override,
+        spec.kind,
+        spec.open_reader_phase,
+        started.elapsed(),
+        &pool_result,
+    );
+    pool_result
 }
 
 /// SHA-384 checksum of the goals migration file
@@ -931,6 +1084,8 @@ mod tests {
     use super::StateRuntime;
     use super::decode_hex_checksum;
     use super::goals_db_path;
+    use super::logs_db_path;
+    use super::memories_db_path;
     use super::open_state_sqlite;
     use super::runtime_goals_migrator;
     use super::runtime_state_migrator;
@@ -1112,6 +1267,98 @@ mod tests {
         assert!(err.to_string().contains("state startup lock at"));
         let _ = tokio::fs::remove_dir_all(locked_home).await;
         let _ = tokio::fs::remove_dir_all(target_home).await;
+    }
+
+    #[tokio::test]
+    async fn writer_pools_use_a_single_connection_and_readers_stay_concurrent() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+
+        // Every writer pool must expose exactly one connection so that, within
+        // a single process, at most one connection per DB can hold the SQLite
+        // write lock. This is what makes intra-process SQLITE_BUSY_SNAPSHOT
+        // (extended code 517) impossible.
+        for (label, pool) in [
+            ("state", runtime.pool.as_ref()),
+            ("logs", runtime.logs_pool.as_ref()),
+            ("goals", runtime.goals_pool.as_ref()),
+            ("memories", runtime.memories_pool.as_ref()),
+        ] {
+            assert_eq!(
+                1,
+                pool.options().get_max_connections(),
+                "{label} writer pool must have a single connection"
+            );
+        }
+
+        // Reader pools keep multiple connections so read-only query paths stay
+        // concurrent alongside the single writer.
+        for (label, reader) in [
+            ("state", runtime.reader_pool.as_ref()),
+            ("logs", runtime.logs_reader_pool.as_ref()),
+        ] {
+            assert_eq!(
+                super::READER_MAX_CONNECTIONS,
+                reader.options().get_max_connections(),
+                "{label} reader pool must allow concurrent connections"
+            );
+        }
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_state_writes_and_reads_do_not_raise_busy_snapshot() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+
+        // Seed a known thread that concurrent readers can fetch while writers
+        // keep committing new rows.
+        let seed_id = ThreadId::new();
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                codex_home.as_path(),
+                seed_id,
+                codex_home.clone(),
+            ))
+            .await
+            .expect("seed thread should upsert");
+
+        // Fan out many concurrent writers and readers against the state DB.
+        // With a multi-connection writer pool, one connection committing a
+        // write while another connection held a read snapshot could raise
+        // SQLITE_BUSY_SNAPSHOT (517) with no other process involved; the
+        // single-connection writer pool plus the read-only reader pool must
+        // make that impossible (and must not deadlock).
+        let mut handles = Vec::new();
+        for _ in 0..12 {
+            let runtime = runtime.clone();
+            let cwd = codex_home.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..8 {
+                    let thread_id = ThreadId::new();
+                    let metadata = test_thread_metadata(cwd.as_path(), thread_id, cwd.clone());
+                    runtime.upsert_thread(&metadata).await?;
+                    // Reads exercise the separate reader pool concurrently with
+                    // the writes above.
+                    runtime.get_thread(thread_id).await?;
+                    runtime.get_thread(seed_id).await?;
+                }
+                anyhow::Ok(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("write/read task should not panic")
+                .expect("concurrent writes and reads must not raise 517");
+        }
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
@@ -1808,6 +2055,8 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
             "migrate_goals",
             "open_memories",
             "migrate_memories",
+            "open_state_reader",
+            "open_logs_reader",
             "ensure_backfill_state",
             "post_init_query",
         ]
@@ -1818,6 +2067,58 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
 
         runtime.pool.close().await;
         runtime.logs_pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn wal_checkpoint_maintenance_checkpoints_all_runtime_pools() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        // Generate WAL frames on the logs pool -- the hottest write target,
+        // which previously was not covered by periodic checkpoint maintenance.
+        runtime
+            .insert_logs(&[crate::LogEntry {
+                ts: 1,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some("checkpoint-coverage".to_string()),
+                feedback_log_body: Some("checkpoint-coverage".to_string()),
+                thread_id: Some("thread-ckpt".to_string()),
+                process_uuid: Some("proc-ckpt".to_string()),
+                module_path: Some("mod".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(1),
+            }])
+            .await
+            .expect("insert log");
+
+        // Maintenance must succeed across every runtime pool, not just state.
+        runtime
+            .run_state_wal_checkpoint_maintenance()
+            .await
+            .expect("checkpoint maintenance across all pools");
+
+        // All four runtime databases are opened and reachable by maintenance.
+        for path in [
+            state_db_path(codex_home.as_path()),
+            logs_db_path(codex_home.as_path()),
+            goals_db_path(codex_home.as_path()),
+            memories_db_path(codex_home.as_path()),
+        ] {
+            assert!(path.exists(), "expected db file at {}", path.display());
+        }
+
+        // The inserted log survives the checkpoint (frames flushed into the DB).
+        let rows = runtime
+            .query_logs(&crate::LogQuery::default())
+            .await
+            .expect("query logs after checkpoint");
+        assert_eq!(rows.len(), 1);
+
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

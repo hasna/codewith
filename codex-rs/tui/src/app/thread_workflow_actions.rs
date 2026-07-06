@@ -9,6 +9,9 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
         self.chat_widget
             .show_thread_workflow_manager_loading(thread_id);
 

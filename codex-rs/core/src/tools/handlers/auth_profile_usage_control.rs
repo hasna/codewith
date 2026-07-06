@@ -653,6 +653,7 @@ mod tests {
     use super::*;
     use crate::config::AuthProfileAutoSwitchConfig;
     use crate::config::AuthProfileAutoSwitchStrategy;
+    use codex_protocol::protocol::CreditsSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use pretty_assertions::assert_eq;
 
@@ -723,6 +724,31 @@ mod tests {
             serde_json::json!({
                 "status": "healthy",
                 "remainingPercent": 20.0,
+                "resetsAt": 100,
+                "capturedAt": captured_at,
+                "stale": false
+            })
+        );
+    }
+
+    #[test]
+    fn usage_summary_ignores_empty_credits_when_codex_windows_are_healthy() {
+        let captured_at = chrono::Utc::now().timestamp();
+        let mut snapshot = snapshot(4.0, 39.0);
+        snapshot.credits = Some(CreditsSnapshot {
+            has_credits: false,
+            unlimited: false,
+            balance: Some("0".to_string()),
+        });
+
+        let response = AuthProfileUsageSummary::from_snapshots(&[snapshot], &config(), captured_at);
+        let response = serde_json::to_value(response).expect("serialize summary");
+
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "status": "healthy",
+                "remainingPercent": 61.0,
                 "resetsAt": 100,
                 "capturedAt": captured_at,
                 "stale": false
