@@ -304,7 +304,12 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
-async fn spawn_agent_fork_context_rejects_agent_type_override() {
+async fn spawn_agent_fork_context_ignores_agent_type_override() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
     let manager = thread_manager();
@@ -314,7 +319,11 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
-    let err = SpawnAgentHandler::default()
+    // The role "fork-context-role" would swap the child to gpt-5-role-override; a full-history
+    // fork must instead inherit the parent's resolved model.
+    let parent_model = turn.model_info.slug.clone();
+    assert_ne!(parent_model, "gpt-5-role-override");
+    let output = SpawnAgentHandler::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -326,19 +335,33 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
             })),
         ))
         .await
-        .err()
-        .expect("fork_context should reject agent_type overrides");
+        .expect("full-history fork should ignore agent_type override and spawn");
 
-    assert_eq!(
-        err,
-        FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
-        )
-    );
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model, parent_model);
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
+        snapshot.session_source
+    else {
+        panic!("spawned agent should have thread-spawn session source");
+    };
+    assert_eq!(agent_role, None);
 }
 
 #[tokio::test]
-async fn spawn_agent_fork_context_rejects_child_model_overrides() {
+async fn spawn_agent_fork_context_ignores_child_model_overrides() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -348,7 +371,9 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
 
-    let err = SpawnAgentHandler::default()
+    let parent_model = turn.model_info.slug.clone();
+    assert_ne!(parent_model, "gpt-5-child-override");
+    let output = SpawnAgentHandler::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -361,19 +386,23 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
             })),
         ))
         .await
-        .err()
-        .expect("forked spawn should reject child model overrides");
+        .expect("full-history fork should ignore child model/effort overrides and spawn");
 
-    assert_eq!(
-        err,
-            FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
-        )
-    );
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    // The forked child inherits the parent's model rather than the ignored override.
+    assert_eq!(snapshot.model, parent_model);
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
+async fn multi_agent_v2_spawn_fork_turns_all_ignores_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
     let manager = thread_manager();
@@ -393,8 +422,10 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
         multi_agent_version: codex_protocol::protocol::MultiAgentVersion::V2,
         ..turn
     };
+    let parent_model = turn.model_info.slug.clone();
+    assert_ne!(parent_model, "gpt-5-role-override");
 
-    let err = SpawnAgentHandlerV2::default()
+    SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -407,19 +438,32 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
             })),
         ))
         .await
-        .err()
-        .expect("fork_turns=all should reject agent_type overrides");
+        .expect("fork_turns=all should ignore agent_type override and spawn");
 
-    assert_eq!(
-        err,
-        FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
-        )
-    );
+    let agent_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    // Full-history fork inherits the parent; the role override must not have been applied.
+    assert_eq!(snapshot.model, parent_model);
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
+        snapshot.session_source
+    else {
+        panic!("spawned agent should have thread-spawn session source");
+    };
+    assert_eq!(agent_role, None);
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_overrides() {
+async fn multi_agent_v2_spawn_defaults_to_full_fork_and_ignores_child_model_overrides() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -434,8 +478,10 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     set_turn_config(&mut turn, config);
+    let parent_model = turn.model_info.slug.clone();
+    assert_ne!(parent_model, "gpt-5-child-override");
 
-    let err = SpawnAgentHandlerV2::default()
+    SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -448,15 +494,22 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
             })),
         ))
         .await
-        .err()
-        .expect("default full fork should reject child model overrides");
+        .expect("default full fork should ignore child model overrides and spawn");
 
-    assert_eq!(
-        err,
-            FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
-        )
-    );
+    let agent_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    // The forked child inherits the parent's model rather than the ignored override.
+    assert_eq!(snapshot.model, parent_model);
 }
 
 #[tokio::test]
@@ -4564,4 +4617,40 @@ async fn build_agent_resume_config_clears_base_instructions() {
         .set_permission_profile(turn.permission_profile())
         .expect("permission profile set");
     assert_eq!(config, expected);
+}
+
+#[test]
+fn full_fork_ignored_overrides_notice_is_none_when_no_overrides_supplied() {
+    let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
+        None, None, None,
+    );
+    assert_eq!(notice, None);
+}
+
+#[test]
+fn full_fork_ignored_overrides_notice_names_each_supplied_override() {
+    let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
+        Some("explorer"),
+        Some("gpt-5-child-override"),
+        Some(&ReasoningEffort::Low),
+    )
+    .expect("supplied overrides should produce a notice");
+    assert!(notice.contains("agent_type"), "notice: {notice}");
+    assert!(notice.contains("model"), "notice: {notice}");
+    assert!(notice.contains("reasoning_effort"), "notice: {notice}");
+    // The notice must not claim to be a hard error: the spawn proceeds.
+    assert!(notice.contains("ignoring"), "notice: {notice}");
+}
+
+#[test]
+fn full_fork_ignored_overrides_notice_reports_only_supplied_fields() {
+    let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
+        None,
+        Some("gpt-5-child-override"),
+        None,
+    )
+    .expect("supplied model override should produce a notice");
+    assert!(notice.contains("model"), "notice: {notice}");
+    assert!(!notice.contains("agent_type"), "notice: {notice}");
+    assert!(!notice.contains("reasoning_effort"), "notice: {notice}");
 }
