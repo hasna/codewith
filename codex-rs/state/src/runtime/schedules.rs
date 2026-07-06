@@ -183,6 +183,15 @@ SELECT
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Vec<crate::ThreadSchedule>> {
+        self.list_thread_schedules_limited(thread_id, None).await
+    }
+
+    pub async fn list_thread_schedules_limited(
+        &self,
+        thread_id: ThreadId,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<crate::ThreadSchedule>> {
+        let limit = limit.map(i64::try_from).transpose()?;
         let rows = sqlx::query(
             r#"
 SELECT
@@ -211,12 +220,28 @@ SELECT
 FROM thread_schedules
 WHERE thread_id = ?
 ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
+LIMIT COALESCE(?, -1)
             "#,
         )
         .bind(thread_id.to_string())
+        .bind(limit)
         .fetch_all(self.pool.as_ref())
         .await?;
         rows.iter().map(thread_schedule_from_row).collect()
+    }
+
+    pub async fn count_thread_schedules(&self, thread_id: ThreadId) -> anyhow::Result<usize> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)
+FROM thread_schedules
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        Ok(count as usize)
     }
 
     pub async fn update_thread_schedule(
