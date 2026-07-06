@@ -50,7 +50,9 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
 }
 
 fn min_responses_version() -> Version {
-    Version::new(0, 13, 4)
+    // Ollama's OpenAI-compatibility docs list `/v1/responses` as added in v0.13.3
+    // (non-stateful only). Codewith's usage is stateless, so 0.13.3 is the floor.
+    Version::new(0, 13, 3)
 }
 
 fn supports_responses(version: &Version) -> bool {
@@ -87,12 +89,12 @@ mod tests {
 
     #[test]
     fn does_not_support_responses_before_cutoff() {
-        assert!(!supports_responses(&Version::new(0, 13, 3)));
+        assert!(!supports_responses(&Version::new(0, 13, 2)));
     }
 
     #[test]
     fn supports_responses_at_or_after_cutoff() {
-        assert!(supports_responses(&Version::new(0, 13, 4)));
+        assert!(supports_responses(&Version::new(0, 13, 3)));
         assert!(supports_responses(&Version::new(0, 14, 0)));
     }
 }
