@@ -244,6 +244,7 @@ mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
 mod webhook;
+mod workflow_manager;
 mod worktree_display;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;

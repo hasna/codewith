@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/workflow_manager.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Specs (1)  [Runs (1)]  Approvals
+
+  Search workflows
+› spec_workflow-alpha · waiting ·… 2 agent steps active, 1 steps waiting for verifiers, 9 monitor/activity events · 4
+                                   verifiers · 9 events · workflow workflow-alp
+
+  Press enter to confirm or esc to go back

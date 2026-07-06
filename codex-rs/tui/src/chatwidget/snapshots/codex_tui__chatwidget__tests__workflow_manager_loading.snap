@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/workflow_manager.rs
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Workflows
+  Loading workflow specs and runs
+
+› 1. Loading workflows       Fetching saved specs and recent runs for this thread
+
+  Press enter to confirm or esc to go back

@@ -1154,11 +1154,9 @@ impl ChatWidget {
                     return;
                 }
                 if let Some(thread_id) = self.thread_id {
-                    self.app_event_tx.send(AppEvent::ManageThreadWorkflow {
-                        thread_id,
-                        action: ThreadWorkflowAction::List,
-                    });
-                    self.append_message_history_entry("/workflow".to_string());
+                    self.app_event_tx
+                        .send(AppEvent::OpenThreadWorkflowManager { thread_id });
+                    self.append_message_history_entry(format!("/{}", cmd.command()));
                 } else {
                     self.add_info_message(
                         WORKFLOW_USAGE.to_string(),

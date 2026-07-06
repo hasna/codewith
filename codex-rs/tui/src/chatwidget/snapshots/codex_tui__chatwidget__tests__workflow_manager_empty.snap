@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/workflow_manager.rs
+expression: "render_bottom_popup(&chat, 110)"
+---
+  [Specs (0)]  Runs (0)  Approvals
+
+  Search workflows
+› Create from prompt            Draft workflow YAML from a natural-language request
+  No saved workflow specs       Create one from a prompt or use /workflow draft <request>
+
+  Press enter to confirm or esc to go back

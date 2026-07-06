@@ -2348,6 +2348,27 @@ async fn workflow_list_slash_command_emits_metadata_event() {
 }
 
 #[tokio::test]
+async fn workflows_alias_opens_interactive_manager() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    submit_composer_text(&mut chat, "/workflows");
+
+    let event = rx.try_recv().expect("expected workflow manager event");
+    let AppEvent::OpenThreadWorkflowManager {
+        thread_id: actual_thread_id,
+    } = event
+    else {
+        panic!("expected OpenThreadWorkflowManager, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/workflows");
+}
+
+#[tokio::test]
 async fn workflow_run_slash_commands_emit_management_events() {
     let cases = [
         (

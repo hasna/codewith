@@ -958,6 +958,24 @@ impl App {
                 self.manage_thread_workflow(app_server, thread_id, action)
                     .await;
             }
+            AppEvent::OpenThreadWorkflowManager { thread_id } => {
+                self.open_thread_workflow_manager(app_server, thread_id)
+                    .await;
+            }
+            AppEvent::OpenThreadWorkflowDraftPrompt => {
+                self.chat_widget.show_thread_workflow_draft_prompt();
+            }
+            AppEvent::OpenThreadWorkflowActions {
+                thread_id,
+                workflow,
+            } => {
+                self.chat_widget
+                    .show_thread_workflow_actions(thread_id, workflow);
+            }
+            AppEvent::OpenThreadWorkflowRunActions { thread_id, run } => {
+                self.chat_widget
+                    .show_thread_workflow_run_actions(thread_id, run);
+            }
             AppEvent::OpenThreadGoalPlanDetail { thread_id, plan } => {
                 self.chat_widget.show_goal_plan_detail(thread_id, plan);
             }
