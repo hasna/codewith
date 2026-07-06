@@ -49,7 +49,6 @@ const SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT: &[&str] = &[
     "auth_elicitation",
     "memories",
     "mentions_v2",
-    "remote_control",
     "remote_plugin",
     "tool_suggest",
 ];
