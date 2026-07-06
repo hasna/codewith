@@ -94,11 +94,13 @@ async fn handle_spawn_agent(
         config.service_tier = Some(service_tier.clone());
     }
     if args.fork_context {
-        reject_full_fork_spawn_overrides(
+        if let Some(notice) = full_fork_ignored_overrides_notice(
             role_name,
             args.model.as_deref(),
-            args.reasoning_effort.clone(),
-        )?;
+            args.reasoning_effort.as_ref(),
+        ) {
+            tracing::warn!("{notice}");
+        }
     } else {
         apply_requested_spawn_agent_model_overrides(
             &session,

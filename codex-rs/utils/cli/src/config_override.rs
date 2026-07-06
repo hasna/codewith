@@ -222,4 +222,19 @@ mod tests {
         assert_eq!(tbl.get("a").unwrap().as_integer(), Some(1));
         assert_eq!(tbl.get("b").unwrap().as_integer(), Some(2));
     }
+
+    #[test]
+    fn applies_agents_max_threads_dotted_override() {
+        // `-c agents.max_threads=4` must land as `[agents] max_threads = 4`.
+        let overrides = CliConfigOverrides {
+            raw_overrides: vec!["agents.max_threads=4".to_string()],
+        };
+        let parsed = overrides.parse_overrides().expect("parse_overrides");
+        assert_eq!(parsed[0].0.as_str(), "agents.max_threads");
+        assert_eq!(parsed[0].1.as_integer(), Some(4));
+
+        let mut root = Value::Table(toml::value::Table::new());
+        overrides.apply_on_value(&mut root).expect("apply");
+        assert_eq!(root["agents"]["max_threads"].as_integer(), Some(4));
+    }
 }
