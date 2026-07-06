@@ -1,0 +1,163 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadWorkflowRun": {
+      "properties": {
+        "activeStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "blockedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "eventCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "failedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pendingStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "readyStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "type": "string"
+        },
+        "skippedStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sourceYamlSha256": {
+          "type": "string"
+        },
+        "specWorkflowId": {
+          "type": "string"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadWorkflowRunStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "succeededStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "verifierCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "waitingVerifierStepCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workflowRecordId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "activeStepCount",
+        "blockedStepCount",
+        "createdAt",
+        "eventCount",
+        "failedStepCount",
+        "generation",
+        "pendingStepCount",
+        "readyStepCount",
+        "runId",
+        "schemaVersion",
+        "skippedStepCount",
+        "sourceYamlSha256",
+        "specWorkflowId",
+        "status",
+        "succeededStepCount",
+        "updatedAt",
+        "verifierCount",
+        "waitingVerifierStepCount",
+        "workflowRecordId"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowRunStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "waiting",
+        "blocked",
+        "paused",
+        "cancelRequested",
+        "cancelled",
+        "failed",
+        "completed",
+        "other"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Server -> client notification emitted whenever a workflow run's status or progress counters change (start, pause, resume, cancel, and future runtime transitions). Carries the run summary so subscribers can track progress without re-fetching the full snapshot.",
+  "properties": {
+    "run": {
+      "$ref": "#/definitions/ThreadWorkflowRun"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "run",
+    "threadId"
+  ],
+  "title": "ThreadWorkflowRunUpdatedNotification",
+  "type": "object"
+}

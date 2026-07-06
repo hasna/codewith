@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct ThreadWorkflowRequestProcessor {
     thread_manager: Arc<ThreadManager>,
+    outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     state_db: Option<StateDbHandle>,
 }
@@ -13,11 +14,13 @@ pub(crate) struct ThreadWorkflowRequestProcessor {
 impl ThreadWorkflowRequestProcessor {
     pub(crate) fn new(
         thread_manager: Arc<ThreadManager>,
+        outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         state_db: Option<StateDbHandle>,
     ) -> Self {
         Self {
             thread_manager,
+            outgoing,
             config,
             state_db,
         }
@@ -46,6 +49,24 @@ impl ThreadWorkflowRequestProcessor {
         params: ThreadWorkflowListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_workflow_list_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_update(
+        &self,
+        params: ThreadWorkflowUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_update_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_delete(
+        &self,
+        params: ThreadWorkflowDeleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_delete_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -172,6 +193,52 @@ impl ThreadWorkflowRequestProcessor {
         })
     }
 
+    async fn thread_workflow_update_inner(
+        &self,
+        params: ThreadWorkflowUpdateParams,
+    ) -> Result<ThreadWorkflowUpdateResponse, JSONRPCErrorError> {
+        self.ensure_enabled()?;
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        let workflow = state_db
+            .workflows()
+            .update_thread_workflow_spec_yaml(
+                thread_id,
+                params.workflow_record_id.as_str(),
+                params.yaml,
+            )
+            .await
+            .map_err(workflow_store_error)?
+            .map(|workflow| api_thread_workflow_from_state(thread_id, workflow));
+        Ok(ThreadWorkflowUpdateResponse { workflow })
+    }
+
+    async fn thread_workflow_delete_inner(
+        &self,
+        params: ThreadWorkflowDeleteParams,
+    ) -> Result<ThreadWorkflowDeleteResponse, JSONRPCErrorError> {
+        self.ensure_enabled()?;
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        let outcome = retry_transient_sqlite_busy("delete thread workflow", || {
+            state_db
+                .workflows()
+                .delete_thread_workflow_spec(thread_id, params.workflow_record_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to delete thread workflow: {err}")))?;
+        let deleted = match outcome {
+            codex_state::WorkflowSpecDeleteOutcome::Deleted => true,
+            codex_state::WorkflowSpecDeleteOutcome::NotFound => false,
+            codex_state::WorkflowSpecDeleteOutcome::HasRuns => {
+                return Err(invalid_request(
+                    "workflow has existing runs and cannot be deleted",
+                ));
+            }
+        };
+        Ok(ThreadWorkflowDeleteResponse { deleted })
+    }
+
     async fn thread_workflow_run_list_inner(
         &self,
         params: ThreadWorkflowRunListParams,
@@ -280,10 +347,9 @@ impl ThreadWorkflowRequestProcessor {
             ))
         })?
         .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
-        Ok(ThreadWorkflowRunStartResponse {
-            run: api_thread_workflow_run_snapshot_from_state(snapshot),
-            goal_plan,
-        })
+        let run = api_thread_workflow_run_snapshot_from_state(snapshot);
+        self.emit_run_updated(thread_id, &run.run).await;
+        Ok(ThreadWorkflowRunStartResponse { run, goal_plan })
     }
 
     async fn thread_workflow_run_pause_inner(
@@ -308,6 +374,9 @@ impl ThreadWorkflowRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to pause thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
+        if let Some(snapshot) = run.as_ref() {
+            self.emit_run_updated(thread_id, &snapshot.run).await;
+        }
         Ok(ThreadWorkflowRunPauseResponse { run })
     }
 
@@ -329,6 +398,9 @@ impl ThreadWorkflowRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
+        if let Some(snapshot) = run.as_ref() {
+            self.emit_run_updated(thread_id, &snapshot.run).await;
+        }
         Ok(ThreadWorkflowRunResumeResponse { run })
     }
 
@@ -354,7 +426,21 @@ impl ThreadWorkflowRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to cancel thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
+        if let Some(snapshot) = run.as_ref() {
+            self.emit_run_updated(thread_id, &snapshot.run).await;
+        }
         Ok(ThreadWorkflowRunCancelResponse { run })
+    }
+
+    async fn emit_run_updated(&self, thread_id: ThreadId, run: &ThreadWorkflowRun) {
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadWorkflowRunUpdated(
+                ThreadWorkflowRunUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    run: run.clone(),
+                },
+            ))
+            .await;
     }
 
     fn ensure_enabled(&self) -> Result<(), JSONRPCErrorError> {

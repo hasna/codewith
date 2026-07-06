@@ -589,6 +589,7 @@ export type { ThreadWorkflowRunStep } from "./ThreadWorkflowRunStep";
 export type { ThreadWorkflowRunStepStatus } from "./ThreadWorkflowRunStepStatus";
 export type { ThreadWorkflowRunStepVerifier } from "./ThreadWorkflowRunStepVerifier";
 export type { ThreadWorkflowRunStepVerifierStatus } from "./ThreadWorkflowRunStepVerifierStatus";
+export type { ThreadWorkflowRunUpdatedNotification } from "./ThreadWorkflowRunUpdatedNotification";
 export type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
 export type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";
 export type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";

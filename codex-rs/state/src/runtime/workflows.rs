@@ -40,6 +40,17 @@ pub struct WorkflowSpecListPage {
     pub next_cursor: Option<String>,
 }
 
+/// Outcome of a thread-scoped workflow definition delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowSpecDeleteOutcome {
+    /// The definition was deleted.
+    Deleted,
+    /// No definition matched the (thread, workflow_record_id) pair.
+    NotFound,
+    /// The definition still has associated runs and was left untouched.
+    HasRuns,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunListPage {
     pub data: Vec<crate::WorkflowRunSnapshot>,
@@ -178,6 +189,126 @@ RETURNING
         .await?;
 
         workflow_spec_from_row(&row)
+    }
+
+    /// Re-parses `source_yaml`, recomputes the compiled metadata, and updates the
+    /// existing definition identified by `(thread_id, workflow_record_id)`.
+    ///
+    /// Returns `Ok(None)` when no definition matches so callers can surface a
+    /// not-found result without treating it as an error. The update is scoped to
+    /// the owning thread and never touches definitions on other threads.
+    pub async fn update_thread_workflow_spec_yaml(
+        &self,
+        thread_id: ThreadId,
+        workflow_record_id: &str,
+        source_yaml: String,
+    ) -> anyhow::Result<Option<crate::WorkflowSpecRecord>> {
+        let spec = codex_workflows::parse_workflow_yaml(&source_yaml)?;
+        let source_yaml_sha256 = workflow_source_sha256(&source_yaml);
+        let metadata = metadata_from_spec(&spec, source_yaml_sha256)?;
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let row = sqlx::query(
+            r#"
+UPDATE workflow_specs SET
+    spec_workflow_id = ?,
+    schema_version = ?,
+    display_name = ?,
+    status = ?,
+    source_yaml = ?,
+    source_yaml_sha256 = ?,
+    agent_count = ?,
+    step_count = ?,
+    parallel_group_count = ?,
+    verifier_count = ?,
+    run_command_verifier_count = ?,
+    model_routed_step_count = ?,
+    updated_at_ms = ?
+WHERE source_thread_id = ? AND workflow_record_id = ?
+RETURNING
+    workflow_record_id,
+    spec_workflow_id,
+    source_thread_id,
+    schema_version,
+    display_name,
+    status,
+    source_yaml,
+    source_yaml_sha256,
+    agent_count,
+    step_count,
+    parallel_group_count,
+    verifier_count,
+    run_command_verifier_count,
+    model_routed_step_count,
+    created_at_ms,
+    updated_at_ms
+            "#,
+        )
+        .bind(metadata.spec_workflow_id)
+        .bind(metadata.schema_version)
+        .bind(metadata.display_name)
+        .bind(metadata.status.as_str())
+        .bind(source_yaml)
+        .bind(metadata.source_yaml_sha256)
+        .bind(metadata.agent_count)
+        .bind(metadata.step_count)
+        .bind(metadata.parallel_group_count)
+        .bind(metadata.verifier_count)
+        .bind(metadata.run_command_verifier_count)
+        .bind(metadata.model_routed_step_count)
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .bind(workflow_record_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+
+        row.map(|row| workflow_spec_from_row(&row)).transpose()
+    }
+
+    /// Deletes the definition identified by `(thread_id, workflow_record_id)`.
+    ///
+    /// The delete is blocked when any workflow run still references the
+    /// definition so historical run rows are never orphaned or cascade-deleted;
+    /// callers receive [`WorkflowSpecDeleteOutcome::HasRuns`] in that case. The
+    /// existence check, run guard, and delete run inside a single transaction so
+    /// the guard cannot race a concurrent run insert.
+    pub async fn delete_thread_workflow_spec(
+        &self,
+        thread_id: ThreadId,
+        workflow_record_id: &str,
+    ) -> anyhow::Result<WorkflowSpecDeleteOutcome> {
+        let mut tx = self.pool.begin().await?;
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(1) FROM workflow_specs WHERE source_thread_id = ? AND workflow_record_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(workflow_record_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if exists == 0 {
+            tx.commit().await?;
+            return Ok(WorkflowSpecDeleteOutcome::NotFound);
+        }
+
+        let run_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(1) FROM workflow_runs WHERE workflow_record_id = ?",
+        )
+        .bind(workflow_record_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if run_count > 0 {
+            tx.commit().await?;
+            return Ok(WorkflowSpecDeleteOutcome::HasRuns);
+        }
+
+        sqlx::query(
+            "DELETE FROM workflow_specs WHERE source_thread_id = ? AND workflow_record_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(workflow_record_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(WorkflowSpecDeleteOutcome::Deleted)
     }
 
     pub async fn get_workflow_spec(
@@ -1497,6 +1628,147 @@ mod tests {
                 .get_workflow_spec_by_spec_workflow_id("not")
                 .await
                 .expect("lookup should succeed")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_thread_workflow_spec_recomputes_metadata_and_is_thread_scoped() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 1);
+        let other_thread_id = test_thread_id(/*id*/ 2);
+        upsert_test_thread(&runtime, thread_id).await;
+        upsert_test_thread(&runtime, other_thread_id).await;
+
+        let saved = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save");
+
+        let updated_yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML
+            .replace("wf_dental_lead_saas_launch", "wf_updated_id");
+        let updated = runtime
+            .workflows()
+            .update_thread_workflow_spec_yaml(
+                thread_id,
+                saved.workflow_record_id.as_str(),
+                updated_yaml.clone(),
+            )
+            .await
+            .expect("workflow spec update should succeed")
+            .expect("workflow spec should exist for update");
+
+        assert_eq!(saved.workflow_record_id, updated.workflow_record_id);
+        assert_eq!("wf_updated_id", updated.spec_workflow_id);
+        assert_eq!(
+            workflow_source_sha256(&updated_yaml),
+            updated.source_yaml_sha256
+        );
+        assert_eq!(saved.created_at, updated.created_at);
+
+        // Updating from a different thread must not touch this record.
+        let cross_thread = runtime
+            .workflows()
+            .update_thread_workflow_spec_yaml(
+                other_thread_id,
+                saved.workflow_record_id.as_str(),
+                DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            )
+            .await
+            .expect("cross-thread update should not error");
+        assert_eq!(None, cross_thread);
+
+        let reloaded = runtime
+            .workflows()
+            .get_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("lookup should succeed")
+            .expect("record should still exist");
+        assert_eq!("wf_updated_id", reloaded.spec_workflow_id);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workflow_spec_reports_outcomes_and_blocks_when_runs_exist() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 1);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        // Deleting a missing record is a no-op with a NotFound outcome.
+        assert_eq!(
+            WorkflowSpecDeleteOutcome::NotFound,
+            runtime
+                .workflows()
+                .delete_thread_workflow_spec(thread_id, "missing-record")
+                .await
+                .expect("delete of missing record should succeed")
+        );
+
+        let deletable = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML
+                    .replace("wf_dental_lead_saas_launch", "wf_deletable"),
+            })
+            .await
+            .expect("workflow spec should save");
+
+        assert_eq!(
+            WorkflowSpecDeleteOutcome::Deleted,
+            runtime
+                .workflows()
+                .delete_thread_workflow_spec(thread_id, deletable.workflow_record_id.as_str())
+                .await
+                .expect("delete without runs should succeed")
+        );
+        assert_eq!(
+            None,
+            runtime
+                .workflows()
+                .get_thread_workflow_spec(thread_id, deletable.workflow_record_id.as_str())
+                .await
+                .expect("lookup should succeed")
+        );
+
+        // A definition with an associated run cannot be deleted.
+        let with_run = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML
+                    .replace("wf_dental_lead_saas_launch", "wf_with_run"),
+            })
+            .await
+            .expect("workflow spec should save");
+        runtime
+            .workflows()
+            .create_workflow_run(WorkflowRunCreateParams {
+                workflow_record_id: with_run.workflow_record_id.clone(),
+                source_thread_id: Some(thread_id),
+                idempotency_key: Some("run-key".to_string()),
+            })
+            .await
+            .expect("workflow run should be created");
+
+        assert_eq!(
+            WorkflowSpecDeleteOutcome::HasRuns,
+            runtime
+                .workflows()
+                .delete_thread_workflow_spec(thread_id, with_run.workflow_record_id.as_str())
+                .await
+                .expect("delete with runs should succeed")
+        );
+        // The definition is untouched.
+        assert!(
+            runtime
+                .workflows()
+                .get_thread_workflow_spec(thread_id, with_run.workflow_record_id.as_str())
+                .await
+                .expect("lookup should succeed")
+                .is_some()
         );
     }
 

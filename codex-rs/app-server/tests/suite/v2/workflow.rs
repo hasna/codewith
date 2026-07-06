@@ -14,6 +14,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadWorkflowCreateResponse;
+use codex_app_server_protocol::ThreadWorkflowDeleteResponse;
 use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
 use codex_app_server_protocol::ThreadWorkflowRunCancelResponse;
@@ -23,7 +24,9 @@ use codex_app_server_protocol::ThreadWorkflowRunPauseResponse;
 use codex_app_server_protocol::ThreadWorkflowRunResumeResponse;
 use codex_app_server_protocol::ThreadWorkflowRunStartResponse;
 use codex_app_server_protocol::ThreadWorkflowRunStatus;
+use codex_app_server_protocol::ThreadWorkflowRunUpdatedNotification;
 use codex_app_server_protocol::ThreadWorkflowStatus;
+use codex_app_server_protocol::ThreadWorkflowUpdateResponse;
 use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
@@ -404,6 +407,211 @@ async fn workflow_create_returns_sanitized_validation_error() -> Result<()> {
     assert_does_not_leak(&serde_json::to_string(&error)?)?;
     assert!(!marker.exists());
     assert_no_thread_workflows(codex_home.path(), thread_id.as_str()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_update_replaces_definition_and_reports_missing() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow update")?;
+    let marker = codex_home.path().join("workflow-update-command-ran");
+    let yaml = valid_workflow_yaml(&marker, "wf_app_server_update_before");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    let updated_yaml = valid_workflow_yaml(&marker, "wf_app_server_update_after");
+    let update_id = mcp
+        .send_raw_request(
+            "thread/workflow/update",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "yaml": updated_yaml,
+            })),
+        )
+        .await?;
+    let update_resp = read_response(&mut mcp, update_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&update_resp.result)?)?;
+    let ThreadWorkflowUpdateResponse { workflow: updated } =
+        to_response::<ThreadWorkflowUpdateResponse>(update_resp)?;
+    let updated = updated.expect("update should return the modified workflow");
+    assert_eq!(workflow.workflow_record_id, updated.workflow_record_id);
+    assert_eq!("wf_app_server_update_after", updated.spec_workflow_id);
+    assert_ne!(workflow.source_yaml_sha256, updated.source_yaml_sha256);
+    assert!(!marker.exists());
+
+    // Updating a record that does not exist returns a null workflow rather than
+    // an error, so callers can treat it as not-found.
+    let missing_id = mcp
+        .send_raw_request(
+            "thread/workflow/update",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": "does-not-exist",
+                "yaml": valid_workflow_yaml(&marker, "wf_app_server_update_missing"),
+            })),
+        )
+        .await?;
+    let missing_resp = read_response(&mut mcp, missing_id).await?;
+    let ThreadWorkflowUpdateResponse { workflow: missing } =
+        to_response::<ThreadWorkflowUpdateResponse>(missing_resp)?;
+    assert_eq!(None, missing);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_delete_removes_definition_and_blocks_when_runs_exist() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow delete")?;
+    let marker = codex_home.path().join("workflow-delete-command-ran");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    // A definition without runs can be deleted.
+    let deletable_yaml = valid_workflow_yaml(&marker, "wf_app_server_deletable");
+    let create_id =
+        send_workflow_create(&mut mcp, thread_id.as_str(), deletable_yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse {
+        workflow: deletable,
+    } = to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    let delete_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": deletable.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let delete_resp = read_response(&mut mcp, delete_id).await?;
+    let ThreadWorkflowDeleteResponse { deleted } =
+        to_response::<ThreadWorkflowDeleteResponse>(delete_resp)?;
+    assert!(deleted);
+
+    let get_id = mcp
+        .send_raw_request(
+            "thread/workflow/get",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": deletable.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let get_resp = read_response(&mut mcp, get_id).await?;
+    let ThreadWorkflowGetResponse { workflow: loaded } =
+        to_response::<ThreadWorkflowGetResponse>(get_resp)?;
+    assert_eq!(None, loaded);
+
+    // Deleting a missing record is idempotent: deleted = false.
+    let missing_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": "does-not-exist",
+            })),
+        )
+        .await?;
+    let missing_resp = read_response(&mut mcp, missing_id).await?;
+    let ThreadWorkflowDeleteResponse { deleted: missing } =
+        to_response::<ThreadWorkflowDeleteResponse>(missing_resp)?;
+    assert!(!missing);
+
+    // A definition with an associated run cannot be deleted.
+    let run_yaml = valid_workflow_yaml(&marker, "wf_app_server_delete_with_run");
+    let create_run_id =
+        send_workflow_create(&mut mcp, thread_id.as_str(), run_yaml.as_str()).await?;
+    let create_run_resp = read_response(&mut mcp, create_run_id).await?;
+    let ThreadWorkflowCreateResponse { workflow: with_run } =
+        to_response::<ThreadWorkflowCreateResponse>(create_run_resp)?;
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": with_run.workflow_record_id.as_str(),
+                "idempotencyKey": "delete-guard",
+            })),
+        )
+        .await?;
+    let _ = read_response(&mut mcp, start_id).await?;
+
+    let blocked_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": with_run.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let blocked = read_error(&mut mcp, blocked_id).await?;
+    assert_eq!(blocked.error.code, -32600);
+    assert_eq!(
+        blocked.error.message,
+        "workflow has existing runs and cannot be deleted"
+    );
+    assert!(!marker.exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_run_start_emits_run_updated_notification() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow run notification")?;
+    let marker = codex_home.path().join("workflow-run-notify-command-ran");
+    let yaml = valid_workflow_yaml(&marker, "wf_app_server_run_notify");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "idempotencyKey": "run-notify",
+            })),
+        )
+        .await?;
+    let start_resp = read_response(&mut mcp, start_id).await?;
+    let started = to_response::<ThreadWorkflowRunStartResponse>(start_resp)?;
+
+    let notification = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/workflow/run/updated"),
+    )
+    .await??;
+    assert_does_not_leak(&serde_json::to_string(&notification)?)?;
+    let payload: ThreadWorkflowRunUpdatedNotification =
+        serde_json::from_value(notification.params.expect("notification params"))?;
+    assert_eq!(thread_id, payload.thread_id);
+    assert_eq!(started.run.run.run_id, payload.run.run_id);
+    assert_eq!(ThreadWorkflowRunStatus::Pending, payload.run.status);
 
     Ok(())
 }

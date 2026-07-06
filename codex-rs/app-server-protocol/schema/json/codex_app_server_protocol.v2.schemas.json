@@ -15041,6 +15041,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/workflow/run/updated"
+              ],
+              "title": "Thread/workflow/run/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadWorkflowRunUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/workflow/run/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/monitor/updated"
               ],
               "title": "Thread/monitor/updatedNotificationMethod",
@@ -22825,6 +22845,24 @@
         "other"
       ],
       "type": "string"
+    },
+    "ThreadWorkflowRunUpdatedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Server -> client notification emitted whenever a workflow run's status or progress counters change (start, pause, resume, cancel, and future runtime transitions). Carries the run summary so subscribers can track progress without re-fetching the full snapshot.",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/ThreadWorkflowRun"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "threadId"
+      ],
+      "title": "ThreadWorkflowRunUpdatedNotification",
+      "type": "object"
     },
     "TokenUsageBreakdown": {
       "properties": {

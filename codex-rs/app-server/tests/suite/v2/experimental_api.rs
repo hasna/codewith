@@ -314,6 +314,29 @@ async fn coordination_methods_require_experimental_api_capability() -> Result<()
         ),
         (
             mcp.send_raw_request(
+                "thread/workflow/update",
+                Some(json!({
+                    "threadId": thread_id,
+                    "workflowRecordId": "workflow-1",
+                    "yaml": "schema_version: workflow.codex.codewith/v0",
+                })),
+            )
+            .await?,
+            "thread/workflow/update",
+        ),
+        (
+            mcp.send_raw_request(
+                "thread/workflow/delete",
+                Some(json!({
+                    "threadId": thread_id,
+                    "workflowRecordId": "workflow-1",
+                })),
+            )
+            .await?,
+            "thread/workflow/delete",
+        ),
+        (
+            mcp.send_raw_request(
                 "thread/pendingInteraction/list",
                 Some(json!({
                     "threadId": thread_id,

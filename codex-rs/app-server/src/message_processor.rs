@@ -561,6 +561,7 @@ impl MessageProcessor {
         );
         let thread_workflow_processor = ThreadWorkflowRequestProcessor::new(
             Arc::clone(&thread_manager),
+            outgoing.clone(),
             Arc::clone(&config),
             state_db.clone(),
         );
@@ -1388,6 +1389,16 @@ impl MessageProcessor {
             ClientRequest::ThreadWorkflowList { params, .. } => {
                 self.thread_workflow_processor
                     .thread_workflow_list(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowUpdate { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_update(params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowDelete { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_delete(params)
                     .await
             }
             ClientRequest::ThreadWorkflowRunList { params, .. } => {

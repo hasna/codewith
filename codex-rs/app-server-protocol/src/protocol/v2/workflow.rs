@@ -92,6 +92,37 @@ pub struct ThreadWorkflowListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowUpdateParams {
+    pub thread_id: String,
+    pub workflow_record_id: String,
+    pub yaml: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowUpdateResponse {
+    pub workflow: Option<ThreadWorkflow>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowDeleteParams {
+    pub thread_id: String,
+    pub workflow_record_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowDeleteResponse {
+    pub deleted: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
@@ -355,4 +386,16 @@ pub struct ThreadWorkflowRunCancelParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadWorkflowRunCancelResponse {
     pub run: Option<ThreadWorkflowRunSnapshot>,
+}
+
+/// Server -> client notification emitted whenever a workflow run's status or
+/// progress counters change (start, pause, resume, cancel, and future runtime
+/// transitions). Carries the run summary so subscribers can track progress
+/// without re-fetching the full snapshot.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowRunUpdatedNotification {
+    pub thread_id: String,
+    pub run: ThreadWorkflowRun,
 }

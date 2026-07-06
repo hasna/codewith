@@ -157,9 +157,12 @@ Example with notification opt-out:
 - `thread/workflow/create` — experimental; validate and save a Codewith workflow YAML spec for a materialized thread. Requires `capabilities.experimentalApi: true` and the default-off `workflows` feature.
 - `thread/workflow/get` — experimental; fetch sanitized saved workflow spec metadata for a materialized thread without returning raw YAML or source prompts.
 - `thread/workflow/list` — experimental; page through sanitized saved workflow spec metadata for a materialized thread.
+- `thread/workflow/update` — experimental; replace a saved workflow definition's YAML for the same materialized thread, recomputing sanitized metadata and returning `workflow: null` when no matching record exists.
+- `thread/workflow/delete` — experimental; delete a saved workflow definition for the same materialized thread, returning `deleted: false` when missing and rejecting definitions that still have workflow runs.
 - `thread/workflow/run/start` — experimental; create a workflow run from a saved spec for the same materialized thread and project it into a durable goal plan.
 - `thread/workflow/run/get` and `thread/workflow/run/list` — experimental; fetch or page through sanitized workflow run state for a materialized thread.
 - `thread/workflow/run/pause`, `thread/workflow/run/resume`, and `thread/workflow/run/cancel` — experimental; request lifecycle changes for a workflow run in the same materialized thread and keep any projected goal plan in sync when the run status actually changes.
+- `thread/workflow/run/updated` — notification emitted when workflow run start, pause, resume, or cancel changes a run snapshot; includes the thread id and sanitized run state.
 - `thread/mailbox/enqueue`, `thread/mailbox/list`, `thread/mailbox/read`, `thread/mailbox/claim`, `thread/mailbox/ack`, `thread/mailbox/fail`, and `thread/mailbox/receipts/list` — experimental; persist local durable mailbox messages for materialized threads with idempotency, leases, attempts, receipts, retry/poison state, and redacted list views. This is separate from `activeSession/send`.
 - `webhook/event/ingest`, `webhook/event/list`, `webhook/event/read`, and `webhook/event/mark` — persist and inspect local app webhook events. Stored payloads are redacted before display, idempotency keys are hidden from summaries, and clients must treat payload content as untrusted external data. These APIs do not create public webhook receivers or auto-inject events into conversations.
 - `thread/queuedMessage/list`, `thread/queuedMessage/update`, and `thread/queuedMessage/move` — inspect and manage in-memory active-session messages that have been delivered through `activeSession/send` while the target thread is busy and are waiting for the next turn. These calls require the thread to be loaded; they do not resume unloaded threads or mutate durable mailbox rows.
@@ -1087,30 +1090,48 @@ Use `thread/workflow/get` to read one saved workflow metadata record, or `thread
 { "id": 35, "result": { "data": [{ "workflowRecordId": "workflow_123" }], "nextCursor": null } }
 ```
 
+Use `thread/workflow/update` to replace the saved YAML for a definition in the same thread. The response returns the refreshed sanitized metadata, or `workflow: null` when the record is missing or belongs to another thread. Use `thread/workflow/delete` to remove a definition that has no existing workflow runs; a missing definition returns `deleted: false`.
+
+```json
+{ "method": "thread/workflow/update", "id": 36, "params": {
+    "threadId": "thr_123",
+    "workflowRecordId": "workflow_123",
+    "yaml": "schema_version: \"workflow.codex.codewith/v0\"\nworkflow_id: \"wf_dentist_leads\"\ndisplay_name: \"Dentist Lead SaaS v2\"\n..."
+} }
+{ "id": 36, "result": { "workflow": { "workflowRecordId": "workflow_123", "displayName": "Dentist Lead SaaS v2" } } }
+
+{ "method": "thread/workflow/delete", "id": 37, "params": {
+    "threadId": "thr_123",
+    "workflowRecordId": "workflow_123"
+} }
+{ "id": 37, "result": { "deleted": true } }
+```
+
 Use `thread/workflow/run/start` to start a saved workflow for the same thread. The response includes sanitized run state and the projected goal plan when projection succeeds. Use run list/get for inspection and pause/resume/cancel for lifecycle control.
 
 ```json
-{ "method": "thread/workflow/run/start", "id": 36, "params": {
+{ "method": "thread/workflow/run/start", "id": 38, "params": {
     "threadId": "thr_123",
     "workflowRecordId": "workflow_123",
     "idempotencyKey": "dentist-leads-run-1"
 } }
-{ "id": 36, "result": {
+{ "id": 38, "result": {
     "run": { "run": { "runId": "run_123", "status": "pending" } },
     "goalPlan": { "planId": "plan_123", "nodeCount": 12 }
 } }
 
-{ "method": "thread/workflow/run/list", "id": 37, "params": { "threadId": "thr_123", "limit": 20 } }
-{ "id": 37, "result": { "data": [{ "runId": "run_123", "status": "pending" }], "nextCursor": null } }
+{ "method": "thread/workflow/run/list", "id": 39, "params": { "threadId": "thr_123", "limit": 20 } }
+{ "id": 39, "result": { "data": [{ "runId": "run_123", "status": "pending" }], "nextCursor": null } }
 
-{ "method": "thread/workflow/run/pause", "id": 38, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "pause for review" } }
-{ "id": 38, "result": { "run": { "run": { "runId": "run_123", "status": "paused" } } } }
+{ "method": "thread/workflow/run/pause", "id": 40, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "pause for review" } }
+{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "paused" } } } }
+{ "method": "thread/workflow/run/updated", "params": { "threadId": "thr_123", "run": { "runId": "run_123", "status": "paused" } } }
 
-{ "method": "thread/workflow/run/resume", "id": 39, "params": { "threadId": "thr_123", "runId": "run_123" } }
-{ "id": 39, "result": { "run": { "run": { "runId": "run_123", "status": "waiting" } } } }
+{ "method": "thread/workflow/run/resume", "id": 41, "params": { "threadId": "thr_123", "runId": "run_123" } }
+{ "id": 41, "result": { "run": { "run": { "runId": "run_123", "status": "waiting" } } } }
 
-{ "method": "thread/workflow/run/cancel", "id": 40, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "stop this workflow" } }
-{ "id": 40, "result": { "run": { "run": { "runId": "run_123", "status": "cancelRequested" } } } }
+{ "method": "thread/workflow/run/cancel", "id": 42, "params": { "threadId": "thr_123", "runId": "run_123", "reason": "stop this workflow" } }
+{ "id": 42, "result": { "run": { "run": { "runId": "run_123", "status": "cancelRequested" } } } }
 ```
 
 ### Example: Schedule a thread loop

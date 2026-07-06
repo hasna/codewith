@@ -740,6 +740,18 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadWorkflowListResponse,
     },
+    #[experimental("thread/workflow/update")]
+    ThreadWorkflowUpdate => "thread/workflow/update" {
+        params: v2::ThreadWorkflowUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowUpdateResponse,
+    },
+    #[experimental("thread/workflow/delete")]
+    ThreadWorkflowDelete => "thread/workflow/delete" {
+        params: v2::ThreadWorkflowDeleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowDeleteResponse,
+    },
     #[experimental("thread/workflow/run/list")]
     ThreadWorkflowRunList => "thread/workflow/run/list" {
         params: v2::ThreadWorkflowRunListParams,
@@ -2120,6 +2132,7 @@ server_notification_definitions! {
     ThreadScheduleUpdated => "thread/schedule/updated" (v2::ThreadScheduleUpdatedNotification),
     ThreadScheduleDeleted => "thread/schedule/deleted" (v2::ThreadScheduleDeletedNotification),
     ThreadScheduleRunUpdated => "thread/schedule/run/updated" (v2::ThreadScheduleRunUpdatedNotification),
+    ThreadWorkflowRunUpdated => "thread/workflow/run/updated" (v2::ThreadWorkflowRunUpdatedNotification),
     ThreadMonitorUpdated => "thread/monitor/updated" (v2::ThreadMonitorUpdatedNotification),
     ThreadMonitorDeleted => "thread/monitor/deleted" (v2::ThreadMonitorDeletedNotification),
     ThreadMonitorEvent => "thread/monitor/event" (v2::ThreadMonitorEventNotification),
@@ -4403,6 +4416,21 @@ mod tests {
                 limit: None,
             },
         };
+        let update_request = ClientRequest::ThreadWorkflowUpdate {
+            request_id: RequestId::Integer(10),
+            params: v2::ThreadWorkflowUpdateParams {
+                thread_id: "thr_123".to_string(),
+                workflow_record_id: "workflow_123".to_string(),
+                yaml: "schema_version: workflow.codex.codewith/v0".to_string(),
+            },
+        };
+        let delete_request = ClientRequest::ThreadWorkflowDelete {
+            request_id: RequestId::Integer(11),
+            params: v2::ThreadWorkflowDeleteParams {
+                thread_id: "thr_123".to_string(),
+                workflow_record_id: "workflow_123".to_string(),
+            },
+        };
         let run_list_request = ClientRequest::ThreadWorkflowRunList {
             request_id: RequestId::Integer(4),
             params: v2::ThreadWorkflowRunListParams {
@@ -4461,6 +4489,14 @@ mod tests {
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
             Some("thread/workflow/list")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&update_request),
+            Some("thread/workflow/update")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&delete_request),
+            Some("thread/workflow/delete")
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&run_list_request),
@@ -4671,6 +4707,35 @@ mod tests {
         }
     }
 
+    fn test_thread_workflow_run() -> v2::ThreadWorkflowRun {
+        v2::ThreadWorkflowRun {
+            thread_id: Some("thr_123".to_string()),
+            run_id: "run_123".to_string(),
+            workflow_record_id: "workflow_123".to_string(),
+            spec_workflow_id: "wf_demo".to_string(),
+            schema_version: "workflow.codex.codewith/v0".to_string(),
+            source_yaml_sha256: "0".repeat(64),
+            status: v2::ThreadWorkflowRunStatus::Running,
+            status_reason: None,
+            reason_code: None,
+            generation: 1,
+            pending_step_count: 0,
+            ready_step_count: 1,
+            active_step_count: 1,
+            waiting_verifier_step_count: 0,
+            blocked_step_count: 0,
+            failed_step_count: 0,
+            succeeded_step_count: 1,
+            skipped_step_count: 0,
+            verifier_count: 2,
+            event_count: 3,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_123,
+            started_at: Some(1_700_000_050),
+            completed_at: None,
+        }
+    }
+
     #[test]
     fn thread_schedule_methods_are_not_marked_experimental() {
         let requests = [
@@ -4789,6 +4854,21 @@ mod tests {
             crate::experimental_api::ExperimentalApi::experimental_reason(&deleted),
             None
         );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&run_updated),
+            None
+        );
+    }
+
+    #[test]
+    fn thread_workflow_run_updated_notification_is_not_marked_experimental() {
+        let run_updated = ServerNotification::ThreadWorkflowRunUpdated(
+            v2::ThreadWorkflowRunUpdatedNotification {
+                thread_id: "thr_123".to_string(),
+                run: test_thread_workflow_run(),
+            },
+        );
+
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&run_updated),
             None
