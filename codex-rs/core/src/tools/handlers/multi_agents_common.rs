@@ -8,6 +8,8 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_login::load_auth_profile;
+use codex_login::validate_auth_profile_name;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -405,6 +407,69 @@ pub(crate) async fn apply_spawn_agent_service_tier(
     Ok(())
 }
 
+/// Validates a requested named auth profile and pins it onto the child spawn config.
+///
+/// Validation happens before spawn so an unknown, malformed, or unusable profile fails fast with a
+/// clear, name-only error. The check reuses the shared login profile helpers rather than
+/// duplicating profile lookup. Only the caller-supplied profile label appears in errors; no
+/// credential values, tokens, or auth-storage internals are surfaced.
+pub(crate) fn apply_spawn_agent_auth_profile(
+    config: &mut Config,
+    requested_auth_profile: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let Some(requested) = requested_auth_profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+    else {
+        return Ok(());
+    };
+
+    validate_auth_profile_name(requested).map_err(|_| {
+        FunctionCallError::RespondToModel(format!(
+            "Auth profile `{requested}` is not a valid profile name. Use letters, numbers, dots, dashes, or underscores, and start with a letter or number."
+        ))
+    })?;
+
+    let profile = load_auth_profile(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        requested,
+    )
+        .map_err(|_| {
+            FunctionCallError::RespondToModel(format!(
+                "Auth profile `{requested}` was not found or is unavailable in this session. Create or select it with `codewith profile`, or omit auth_profile to inherit the current profile."
+            ))
+        })?;
+
+    if profile.auth_mode.is_none() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "Auth profile `{requested}` has no usable credentials. Sign in with `codewith login --auth-profile {requested}`, or choose another profile."
+        )));
+    }
+
+    config.selected_auth_profile = Some(requested.to_string());
+    Ok(())
+}
+
+pub(crate) fn reject_forked_spawn_auth_profile(
+    requested_auth_profile: Option<&str>,
+    forked: bool,
+) -> Result<(), FunctionCallError> {
+    if !forked
+        || requested_auth_profile
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+            .is_none()
+    {
+        return Ok(());
+    }
+
+    Err(FunctionCallError::RespondToModel(
+        "auth_profile cannot be combined with forked conversation history. Use fork_context=false or fork_turns=\"none\" when spawning under a different auth profile."
+            .to_string(),
+    ))
+}
+
 fn find_spawn_agent_model_name(
     available_models: &[codex_protocol::openai_models::ModelPreset],
     requested_model: &str,
@@ -445,4 +510,161 @@ fn validate_spawn_agent_reasoning_effort(
     Err(FunctionCallError::RespondToModel(format!(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     )))
+}
+
+#[cfg(test)]
+mod auth_profile_tests {
+    use super::*;
+    use crate::config::ConfigBuilder;
+    use codex_app_server_protocol::AuthMode;
+    use codex_login::AuthDotJson;
+    use codex_login::AuthProfileMetadata;
+    use codex_login::save_auth_profile;
+    use codex_login::save_auth_profile_metadata;
+    use tempfile::TempDir;
+
+    async fn test_config() -> (TempDir, Config) {
+        let home = TempDir::new().expect("create temp dir");
+        let config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        (home, config)
+    }
+
+    const FAKE_API_KEY: &str = "fake-test-api-key-not-a-secret";
+
+    fn api_key_auth() -> AuthDotJson {
+        AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some(FAKE_API_KEY.to_string()),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+            personal_access_token: None,
+        }
+    }
+
+    fn error_message(result: Result<(), FunctionCallError>) -> String {
+        match result {
+            Err(FunctionCallError::RespondToModel(message)) => message,
+            other => panic!("expected RespondToModel error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn omitting_auth_profile_is_a_backward_compatible_noop() {
+        let (_home, mut config) = test_config().await;
+        config.selected_auth_profile = None;
+
+        apply_spawn_agent_auth_profile(&mut config, None).expect("no-op");
+        assert_eq!(config.selected_auth_profile, None);
+
+        // Whitespace-only requests are treated as "not provided".
+        apply_spawn_agent_auth_profile(&mut config, Some("   ")).expect("no-op");
+        assert_eq!(config.selected_auth_profile, None);
+    }
+
+    #[tokio::test]
+    async fn selects_a_known_usable_profile() {
+        let (_home, mut config) = test_config().await;
+        save_auth_profile(
+            &config.codex_home,
+            config.cli_auth_credentials_store_mode,
+            "account001",
+            &api_key_auth(),
+        )
+        .expect("save profile");
+
+        apply_spawn_agent_auth_profile(&mut config, Some("account001")).expect("select profile");
+        assert_eq!(config.selected_auth_profile.as_deref(), Some("account001"));
+    }
+
+    #[tokio::test]
+    async fn unknown_profile_fails_before_spawn_without_leaking_secrets() {
+        let (_home, mut config) = test_config().await;
+        let original_auth_profile = config.selected_auth_profile.clone();
+        save_auth_profile(
+            &config.codex_home,
+            config.cli_auth_credentials_store_mode,
+            "account001",
+            &api_key_auth(),
+        )
+        .expect("save profile");
+
+        let message = error_message(apply_spawn_agent_auth_profile(
+            &mut config,
+            Some("missing_profile"),
+        ));
+        assert!(message.contains("missing_profile"), "message: {message}");
+        assert!(message.contains("was not found"), "message: {message}");
+        assert!(
+            !message.contains(FAKE_API_KEY),
+            "error must not leak credentials: {message}"
+        );
+        // A failed selection must not mutate the config.
+        assert_eq!(config.selected_auth_profile, original_auth_profile);
+    }
+
+    #[tokio::test]
+    async fn malformed_profile_name_is_rejected() {
+        let (_home, mut config) = test_config().await;
+        let original_auth_profile = config.selected_auth_profile.clone();
+
+        let message = error_message(apply_spawn_agent_auth_profile(
+            &mut config,
+            Some("bad/name"),
+        ));
+        assert!(message.contains("bad/name"), "message: {message}");
+        assert!(
+            message.contains("not a valid profile name"),
+            "message: {message}"
+        );
+        assert_eq!(config.selected_auth_profile, original_auth_profile);
+    }
+
+    #[tokio::test]
+    async fn profile_without_usable_credentials_is_rejected() {
+        let (_home, mut config) = test_config().await;
+        let original_auth_profile = config.selected_auth_profile.clone();
+        // Metadata-only profile: exists but has no loadable credentials.
+        save_auth_profile_metadata(
+            &config.codex_home,
+            "account002",
+            AuthProfileMetadata::default(),
+        )
+        .expect("save profile metadata");
+
+        let message = error_message(apply_spawn_agent_auth_profile(
+            &mut config,
+            Some("account002"),
+        ));
+        assert!(message.contains("account002"), "message: {message}");
+        assert!(
+            message.contains("was not found") || message.contains("no usable credentials"),
+            "message: {message}"
+        );
+        assert_eq!(config.selected_auth_profile, original_auth_profile);
+    }
+
+    #[test]
+    fn forked_spawn_rejects_auth_profile_to_avoid_cross_profile_history_leaks() {
+        let message = error_message(reject_forked_spawn_auth_profile(
+            Some("account001"),
+            /*forked*/ true,
+        ));
+        assert!(message.contains("auth_profile"), "message: {message}");
+        assert!(message.contains("forked"), "message: {message}");
+    }
+
+    #[test]
+    fn non_forked_spawn_allows_auth_profile_validation_to_continue() {
+        reject_forked_spawn_auth_profile(Some("account001"), /*forked*/ false)
+            .expect("non-forked auth-profile spawn should be allowed");
+        reject_forked_spawn_auth_profile(None, /*forked*/ true)
+            .expect("forking without auth_profile should be allowed");
+        reject_forked_spawn_auth_profile(Some("   "), /*forked*/ true)
+            .expect("blank auth_profile is treated as omitted");
+    }
 }

@@ -96,6 +96,11 @@ pub(crate) enum AgentSubcommand {
     Diagnostics(AgentDiagnosticsCommand),
 }
 
+/// Enqueue a durable background-agent run.
+///
+/// This command has no local `--auth-profile` flag: it inherits the top-level
+/// `codewith --auth-profile <name>` selector (or the `CODEWITH_AUTH_PROFILE`/`CODEX_AUTH_PROFILE`
+/// environment variables), so the durable agent runs under that profile.
 #[derive(Debug, Args)]
 pub(crate) struct AgentStartCommand {
     /// Prompt to run in the background.

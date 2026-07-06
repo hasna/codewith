@@ -16,10 +16,13 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_app_server_protocol::AuthMode;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
+use codex_login::AuthDotJson;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::save_auth_profile;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
@@ -100,6 +103,23 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+}
+
+fn save_test_auth_profile(turn: &TurnContext, name: &str) {
+    save_auth_profile(
+        &turn.config.codex_home,
+        turn.config.cli_auth_credentials_store_mode,
+        name,
+        &AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some("fake-test-api-key-not-a-secret".to_string()),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+            personal_access_token: None,
+        },
+    )
+    .expect("save auth profile");
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -938,6 +958,42 @@ async fn spawn_agent_full_history_fork_accepts_explicit_service_tier() {
 }
 
 #[tokio::test]
+async fn spawn_agent_fork_context_rejects_auth_profile() {
+    let (mut session, turn) = make_session_and_context().await;
+    save_test_auth_profile(&turn, "account001");
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let err = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "fork_context": true,
+                "auth_profile": "account001"
+            })),
+        ))
+        .await
+        .err()
+        .expect("forked auth-profile spawn should be rejected");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "auth_profile cannot be combined with forked conversation history. Use fork_context=false or fork_turns=\"none\" when spawning under a different auth profile."
+                .to_string()
+        )
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_full_history_fork_accepts_explicit_service_tier() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
@@ -1275,6 +1331,48 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && !communication.trigger_turn
             )
     }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_default_fork_rejects_auth_profile() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    save_test_auth_profile(&turn, "account001");
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "auth_profile": "account001"
+            })),
+        ))
+        .await
+        .err()
+        .expect("default full-history auth-profile spawn should be rejected");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "auth_profile cannot be combined with forked conversation history. Use fork_context=false or fork_turns=\"none\" when spawning under a different auth profile."
+                .to_string()
+        )
+    );
 }
 
 #[tokio::test]
